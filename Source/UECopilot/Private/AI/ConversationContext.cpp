@@ -219,9 +219,14 @@ FString UProjectContextCollector::GetBlueprintVariables(UBlueprint* Blueprint)
 
 	for (const FBPVariableDescription& Var : Blueprint->NewVariables)
 	{
+		FString TypeName = Var.VarType.PinCategory.ToString();
+		if (Var.VarType.PinSubCategoryObject.IsValid())
+		{
+			TypeName = Var.VarType.PinSubCategoryObject->GetName();
+		}
 		Variables += FString::Printf(TEXT("- %s: %s\n"),
 			*Var.VarName.ToString(),
-			*Var.VarType.ToString());
+			*TypeName);
 	}
 
 	return Variables;

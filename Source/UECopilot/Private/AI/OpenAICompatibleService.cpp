@@ -128,45 +128,9 @@ void UOpenAICompatibleService::SendChatRequestStreaming(
 	}
 
 	CurrentRequest->SetTimeout(Settings->RequestTimeoutSeconds);
+	// Note: Using non-streaming request, then parsing SSE response at completion
+	// True streaming requires platform-specific implementation in UE 5.7+
 	CurrentRequest->SetContentAsString(BuildRequestBody(Messages, true));
-
-	// Handle streaming response
-	CurrentRequest->OnRequestProgress().BindLambda([this](FHttpRequestPtr Request, int32 BytesSent, int32 BytesReceived)
-	{
-		if (Request && Request->GetResponse())
-		{
-			FString Content = Request->GetResponse()->GetContentAsString();
-
-			// Process new content since last update
-			if (Content.Len() > AccumulatedResponse.Len())
-			{
-				FString NewContent = Content.Mid(AccumulatedResponse.Len());
-				AccumulatedResponse = Content;
-
-				// Parse SSE data
-				TArray<FString> Lines;
-				NewContent.ParseIntoArrayLines(Lines);
-
-				for (const FString& Line : Lines)
-				{
-					if (Line.StartsWith(TEXT("data: ")))
-					{
-						FString Data = Line.Mid(6);
-						if (Data == TEXT("[DONE]"))
-						{
-							continue;
-						}
-
-						FString Chunk = ParseStreamChunk(Data);
-						if (!Chunk.IsEmpty())
-						{
-							StreamChunkCallback.ExecuteIfBound(Chunk);
-						}
-					}
-				}
-			}
-		}
-	});
 
 	CurrentRequest->OnProcessRequestComplete().BindLambda([this](FHttpRequestPtr Request, FHttpResponsePtr Response, bool bSuccess)
 	{
@@ -175,6 +139,32 @@ void UOpenAICompatibleService::SendChatRequestStreaming(
 
 		if (bSuccess && Response.IsValid() && EHttpResponseCodes::IsOk(Response->GetResponseCode()))
 		{
+			// Parse SSE response and extract all chunks
+			FString Content = Response->GetContentAsString();
+			TArray<FString> Lines;
+			Content.ParseIntoArrayLines(Lines);
+
+			FString FullResponse;
+			for (const FString& Line : Lines)
+			{
+				if (Line.StartsWith(TEXT("data: ")))
+				{
+					FString Data = Line.Mid(6);
+					if (Data == TEXT("[DONE]"))
+					{
+						continue;
+					}
+
+					FString Chunk = ParseStreamChunk(Data);
+					if (!Chunk.IsEmpty())
+					{
+						FullResponse += Chunk;
+						StreamChunkCallback.ExecuteIfBound(Chunk);
+					}
+				}
+			}
+
+			AccumulatedResponse = FullResponse;
 			StreamCompleteCallback.ExecuteIfBound();
 		}
 		else

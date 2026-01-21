@@ -16,6 +16,8 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/GameModeBase.h"
 
 DEFINE_LOG_CATEGORY(LogBlueprintFactory);
 
@@ -433,17 +435,13 @@ int32 UAIBlueprintFactory::ConnectNodes(
 				// Make connection
 				if (SourcePin->Direction == EGPD_Output && TargetPin->Direction == EGPD_Input)
 				{
-					if (SourcePin->MakeLinkTo(TargetPin))
-					{
-						SuccessfulConnections++;
-					}
+					SourcePin->MakeLinkTo(TargetPin);
+					SuccessfulConnections++;
 				}
 				else if (SourcePin->Direction == EGPD_Input && TargetPin->Direction == EGPD_Output)
 				{
-					if (TargetPin->MakeLinkTo(SourcePin))
-					{
-						SuccessfulConnections++;
-					}
+					TargetPin->MakeLinkTo(SourcePin);
+					SuccessfulConnections++;
 				}
 			}
 		}
@@ -588,7 +586,7 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 			UEdGraphSchema_K2::StaticClass()
 		);
 
-		FBlueprintEditorUtils::AddFunctionGraph(Blueprint, FunctionGraph, false);
+		FBlueprintEditorUtils::AddFunctionGraph<UFunction>(Blueprint, FunctionGraph, false, nullptr);
 
 		// Initialize function with entry node
 		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();

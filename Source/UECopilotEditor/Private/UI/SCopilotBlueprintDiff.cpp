@@ -321,7 +321,12 @@ void SCopilotBlueprintDiff::CompareVariables()
 		FBlueprintDiffEntry Entry;
 		Entry.Category = TEXT("Variable");
 		Entry.Name = Var.VarName.ToString();
-		Entry.Description = FString::Printf(TEXT("Type: %s"), *Var.VarType.ToString());
+		FString TypeName = Var.VarType.PinCategory.ToString();
+		if (Var.VarType.PinSubCategoryObject.IsValid())
+		{
+			TypeName = Var.VarType.PinSubCategoryObject->GetName();
+		}
+		Entry.Description = FString::Printf(TEXT("Type: %s"), *TypeName);
 
 		if (OriginalVars.Contains(Var.VarName))
 		{
