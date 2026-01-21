@@ -28,8 +28,14 @@ UOpenAICompatibleService* UOpenAICompatibleService::Get()
 
 void UOpenAICompatibleService::SendChatRequest(const TArray<FChatMessage>& Messages, FOnAIResponseReceived OnComplete)
 {
+	static int32 RequestCounter = 0;
+	int32 ThisRequestId = ++RequestCounter;
+
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Starting new chat request"), ThisRequestId);
+
 	if (bRequestInProgress)
 	{
+		UE_LOG(LogAIService, Warning, TEXT("[Request %d] Blocked - another request is in progress"), ThisRequestId);
 		FAIResponse ErrorResponse;
 		ErrorResponse.bSuccess = false;
 		ErrorResponse.ErrorMessage = TEXT("A request is already in progress");
@@ -59,6 +65,7 @@ void UOpenAICompatibleService::SendChatRequest(const TArray<FChatMessage>& Messa
 		return;
 	}
 
+	CurrentRequestId = ThisRequestId;
 	ResponseCallback = OnComplete;
 	bRequestInProgress = true;
 
@@ -73,11 +80,38 @@ void UOpenAICompatibleService::SendChatRequest(const TArray<FChatMessage>& Messa
 		CurrentRequest->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *APIKey));
 	}
 
-	CurrentRequest->SetTimeout(Settings->RequestTimeoutSeconds);
-	CurrentRequest->SetContentAsString(BuildRequestBody(Messages, false));
+	// Set timeout - convert to float for SetTimeout
+	float TimeoutSeconds = static_cast<float>(Settings->RequestTimeoutSeconds);
+	CurrentRequest->SetTimeout(TimeoutSeconds);
+
+	// Also try to set activity timeout if available (UE 5.4+)
+	// This controls how long to wait for data between chunks
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
+	CurrentRequest->SetActivityTimeout(TimeoutSeconds);
+#endif
+
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Setting timeout to %.0f seconds (from settings: %d)"),
+		ThisRequestId, TimeoutSeconds, Settings->RequestTimeoutSeconds);
+
+	FString RequestBody = BuildRequestBody(Messages, false);
+	int32 RequestSizeBytes = RequestBody.Len() * sizeof(TCHAR);
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Body size: %d bytes (%d characters)"),
+		ThisRequestId, RequestSizeBytes, RequestBody.Len());
+
+	// Warn if request is very large
+	if (RequestBody.Len() > 50000)
+	{
+		UE_LOG(LogAIService, Warning, TEXT("[Request %d] Request body is very large (%d chars), this may cause issues"), ThisRequestId, RequestBody.Len());
+	}
+
+	CurrentRequest->SetContentAsString(RequestBody);
 	CurrentRequest->OnProcessRequestComplete().BindUObject(this, &UOpenAICompatibleService::OnHttpRequestComplete);
 
-	UE_LOG(LogAIService, Log, TEXT("Sending chat request to: %s"), *Endpoint);
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Sending to: %s"), ThisRequestId, *Endpoint);
+
+	double StartTime = FPlatformTime::Seconds();
+	RequestStartTime = StartTime;
+
 	CurrentRequest->ProcessRequest();
 }
 
@@ -127,7 +161,14 @@ void UOpenAICompatibleService::SendChatRequestStreaming(
 		CurrentRequest->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *APIKey));
 	}
 
-	CurrentRequest->SetTimeout(Settings->RequestTimeoutSeconds);
+	// Set timeout
+	float TimeoutSeconds = static_cast<float>(Settings->RequestTimeoutSeconds);
+	CurrentRequest->SetTimeout(TimeoutSeconds);
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
+	CurrentRequest->SetActivityTimeout(TimeoutSeconds);
+#endif
+	UE_LOG(LogAIService, Log, TEXT("Streaming request timeout set to %.0f seconds"), TimeoutSeconds);
+
 	// Note: Using non-streaming request, then parsing SSE response at completion
 	// True streaming requires platform-specific implementation in UE 5.7+
 	CurrentRequest->SetContentAsString(BuildRequestBody(Messages, true));
@@ -321,15 +362,67 @@ FString UOpenAICompatibleService::ParseStreamChunk(const FString& ChunkData) con
 
 void UOpenAICompatibleService::OnHttpRequestComplete(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bSuccess)
 {
+	double ElapsedTime = FPlatformTime::Seconds() - RequestStartTime;
+	int32 CompletedRequestId = CurrentRequestId;
+
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Response received after %.2f seconds, bSuccess=%s"),
+		CompletedRequestId, ElapsedTime, bSuccess ? TEXT("true") : TEXT("false"));
+
 	bRequestInProgress = false;
 	CurrentRequest = nullptr;
 
 	FAIResponse Result;
 
-	if (!bSuccess || !Response.IsValid())
+	if (!bSuccess)
 	{
 		Result.bSuccess = false;
-		Result.ErrorMessage = TEXT("HTTP request failed");
+
+		// Try to get more detailed error info
+		if (Request.IsValid())
+		{
+			EHttpRequestStatus::Type Status = Request->GetStatus();
+			FString StatusName;
+			switch (Status)
+			{
+			case EHttpRequestStatus::NotStarted:
+				StatusName = TEXT("NotStarted");
+				Result.ErrorMessage = TEXT("HTTP request was not started");
+				break;
+			case EHttpRequestStatus::Processing:
+				StatusName = TEXT("Processing");
+				Result.ErrorMessage = TEXT("HTTP request is still processing (timeout?)");
+				break;
+			case EHttpRequestStatus::Failed:
+				StatusName = TEXT("Failed");
+				Result.ErrorMessage = TEXT("HTTP request failed - connection error or network issue. Check your internet connection and API endpoint URL.");
+				break;
+			case EHttpRequestStatus::Succeeded:
+				StatusName = TEXT("Succeeded");
+				Result.ErrorMessage = TEXT("Request completed but marked as failed");
+				break;
+			default:
+				StatusName = FString::Printf(TEXT("Unknown(%d)"), (int32)Status);
+				Result.ErrorMessage = FString::Printf(TEXT("HTTP request failed with status: %d"), (int32)Status);
+				break;
+			}
+			UE_LOG(LogAIService, Warning, TEXT("[Request %d] HTTP Status: %s, Elapsed: %.2fs"),
+				CompletedRequestId, *StatusName, ElapsedTime);
+		}
+		else
+		{
+			Result.ErrorMessage = TEXT("HTTP request failed - unknown error");
+		}
+
+		UE_LOG(LogAIService, Error, TEXT("[Request %d] %s"), CompletedRequestId, *Result.ErrorMessage);
+		ResponseCallback.ExecuteIfBound(Result);
+		return;
+	}
+
+	if (!Response.IsValid())
+	{
+		Result.bSuccess = false;
+		Result.ErrorMessage = TEXT("Invalid HTTP response received");
+		UE_LOG(LogAIService, Error, TEXT("[Request %d] %s"), CompletedRequestId, *Result.ErrorMessage);
 		ResponseCallback.ExecuteIfBound(Result);
 		return;
 	}
@@ -337,17 +430,44 @@ void UOpenAICompatibleService::OnHttpRequestComplete(FHttpRequestPtr Request, FH
 	int32 ResponseCode = Response->GetResponseCode();
 	FString ResponseContent = Response->GetContentAsString();
 
-	UE_LOG(LogAIService, Verbose, TEXT("Response code: %d"), ResponseCode);
-	UE_LOG(LogAIService, Verbose, TEXT("Response content: %s"), *ResponseContent);
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Response code: %d, Content size: %d bytes"),
+		CompletedRequestId, ResponseCode, ResponseContent.Len());
+	UE_LOG(LogAIService, Verbose, TEXT("[Request %d] Response content: %s"), CompletedRequestId, *ResponseContent);
 
 	if (!EHttpResponseCodes::IsOk(ResponseCode))
 	{
 		Result.bSuccess = false;
-		Result.ErrorMessage = FString::Printf(TEXT("HTTP Error %d: %s"), ResponseCode, *ResponseContent);
+		if (ResponseCode == 401)
+		{
+			Result.ErrorMessage = TEXT("Authentication failed (401) - check your API key");
+		}
+		else if (ResponseCode == 403)
+		{
+			Result.ErrorMessage = TEXT("Access forbidden (403) - API key may not have permission");
+		}
+		else if (ResponseCode == 404)
+		{
+			Result.ErrorMessage = TEXT("Endpoint not found (404) - check your API endpoint URL");
+		}
+		else if (ResponseCode == 429)
+		{
+			Result.ErrorMessage = TEXT("Rate limit exceeded (429) - please wait and try again");
+		}
+		else if (ResponseCode >= 500)
+		{
+			Result.ErrorMessage = FString::Printf(TEXT("Server error (%d) - the API service may be down"), ResponseCode);
+		}
+		else
+		{
+			Result.ErrorMessage = FString::Printf(TEXT("HTTP Error %d: %s"), ResponseCode, *ResponseContent);
+		}
+		UE_LOG(LogAIService, Error, TEXT("[Request %d] %s"), CompletedRequestId, *Result.ErrorMessage);
 		ResponseCallback.ExecuteIfBound(Result);
 		return;
 	}
 
 	Result = ParseResponse(ResponseContent);
+	UE_LOG(LogAIService, Log, TEXT("[Request %d] Successfully parsed response, Content length: %d chars"),
+		CompletedRequestId, Result.Content.Len());
 	ResponseCallback.ExecuteIfBound(Result);
 }

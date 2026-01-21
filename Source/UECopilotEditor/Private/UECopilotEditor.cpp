@@ -3,6 +3,7 @@
 #include "UECopilotEditor.h"
 #include "Commands/CopilotEditorCommands.h"
 #include "UI/SCopilotChatWindow.h"
+#include "UI/SBSLTestWindow.h"
 #include "ToolMenus.h"
 #include "LevelEditor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -17,6 +18,7 @@
 DEFINE_LOG_CATEGORY(LogUECopilotEditor);
 
 static const FName CopilotChatTabId("UECopilotChat");
+static const FName BSLTestTabId("BSLCompilerTest");
 
 void FUECopilotEditorModule::StartupModule()
 {
@@ -39,8 +41,9 @@ void FUECopilotEditorModule::StartupModule()
 		FCanExecuteAction()
 	);
 
-	// Register tab spawner
+	// Register tab spawners
 	RegisterChatWindowTab();
+	RegisterBSLTestTab();
 
 	// Register menu extensions
 	RegisterMenuExtensions();
@@ -55,6 +58,7 @@ void FUECopilotEditorModule::ShutdownModule()
 	// Unregister everything
 	UnregisterMenuExtensions();
 	UnregisterChatWindowTab();
+	UnregisterBSLTestTab();
 
 	FCopilotEditorCommands::Unregister();
 
@@ -116,6 +120,46 @@ TSharedRef<SDockTab> FUECopilotEditorModule::SpawnChatWindowTab(const FSpawnTabA
 		];
 }
 
+void FUECopilotEditorModule::RegisterBSLTestTab()
+{
+	if (bBSLTestRegistered)
+	{
+		return;
+	}
+
+	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(BSLTestTabId,
+		FOnSpawnTab::CreateRaw(this, &FUECopilotEditorModule::SpawnBSLTestTab))
+		.SetDisplayName(LOCTEXT("BSLTestTabTitle", "BSL Compiler Test"))
+		.SetTooltipText(LOCTEXT("BSLTestTabTooltip", "Test BSL compiler without AI"))
+		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"));
+
+	bBSLTestRegistered = true;
+}
+
+void FUECopilotEditorModule::UnregisterBSLTestTab()
+{
+	if (bBSLTestRegistered)
+	{
+		FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(BSLTestTabId);
+		bBSLTestRegistered = false;
+	}
+}
+
+TSharedRef<SDockTab> FUECopilotEditorModule::SpawnBSLTestTab(const FSpawnTabArgs& Args)
+{
+	return SNew(SDockTab)
+		.TabRole(ETabRole::NomadTab)
+		[
+			SNew(SBSLTestWindow)
+		];
+}
+
+void FUECopilotEditorModule::OpenBSLTestWindow()
+{
+	FGlobalTabmanager::Get()->TryInvokeTab(BSLTestTabId);
+}
+
 void FUECopilotEditorModule::RegisterMenuExtensions()
 {
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateLambda([this]()
@@ -127,8 +171,28 @@ void FUECopilotEditorModule::RegisterMenuExtensions()
 			FToolMenuSection& Section = ToolsMenu->FindOrAddSection("UECopilot");
 			Section.Label = LOCTEXT("UECopilotMenuLabel", "UE Copilot");
 
-			Section.AddMenuEntry(FCopilotEditorCommands::Get().OpenChatWindow);
-			Section.AddMenuEntry(FCopilotEditorCommands::Get().OpenSettings);
+			Section.AddMenuEntry(
+				"OpenChatWindow",
+				LOCTEXT("OpenChatWindowLabel", "Open Copilot"),
+				LOCTEXT("OpenChatWindowTooltip", "Open the UE Copilot AI chat window"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Help"),
+				FUIAction(FExecuteAction::CreateRaw(this, &FUECopilotEditorModule::OnOpenChatWindow))
+			);
+			Section.AddMenuEntry(
+				"OpenSettings",
+				LOCTEXT("OpenSettingsLabel", "Copilot Settings"),
+				LOCTEXT("OpenSettingsTooltip", "Open UE Copilot settings"),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateRaw(this, &FUECopilotEditorModule::OnOpenSettings))
+			);
+
+			Section.AddMenuEntry(
+				"OpenBSLTest",
+				LOCTEXT("OpenBSLTestLabel", "BSL Compiler Test"),
+				LOCTEXT("OpenBSLTestTooltip", "Open BSL compiler test window"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"),
+				FUIAction(FExecuteAction::CreateRaw(this, &FUECopilotEditorModule::OnOpenBSLTest))
+			);
 		}
 
 		// Add toolbar button
@@ -137,8 +201,9 @@ void FUECopilotEditorModule::RegisterMenuExtensions()
 		{
 			FToolMenuSection& Section = ToolbarMenu->FindOrAddSection("UECopilot");
 
-			FToolMenuEntry& Entry = Section.AddEntry(FToolMenuEntry::InitToolBarButton(
-				FCopilotEditorCommands::Get().OpenChatWindow,
+			Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+				"CopilotToolbarButton",
+				FUIAction(FExecuteAction::CreateRaw(this, &FUECopilotEditorModule::OnOpenChatWindow)),
 				LOCTEXT("ToolbarButtonLabel", "Copilot"),
 				LOCTEXT("ToolbarButtonTooltip", "Open UE Copilot AI Assistant"),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Help")
@@ -175,6 +240,11 @@ void FUECopilotEditorModule::OnOpenSettings()
 	{
 		SettingsModule->ShowViewer("Editor", "Plugins", "UE Copilot");
 	}
+}
+
+void FUECopilotEditorModule::OnOpenBSLTest()
+{
+	OpenBSLTestWindow();
 }
 
 #undef LOCTEXT_NAMESPACE

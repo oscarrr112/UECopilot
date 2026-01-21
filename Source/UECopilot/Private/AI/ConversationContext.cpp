@@ -98,27 +98,26 @@ FString UProjectContextCollector::CollectContext()
 {
 	FString Context;
 
-	// Get list of blueprints
+	// Get list of blueprints (limit to 20 to avoid huge context)
 	TArray<FString> Blueprints = GetProjectBlueprints();
 
 	if (Blueprints.Num() > 0)
 	{
 		Context += TEXT("### Available Blueprints:\n");
-		for (const FString& BP : Blueprints)
+		int32 MaxBlueprints = FMath::Min(Blueprints.Num(), 20);
+		for (int32 i = 0; i < MaxBlueprints; i++)
 		{
-			Context += FString::Printf(TEXT("- %s\n"), *BP);
+			Context += FString::Printf(TEXT("- %s\n"), *Blueprints[i]);
+		}
+		if (Blueprints.Num() > 20)
+		{
+			Context += FString::Printf(TEXT("... and %d more\n"), Blueprints.Num() - 20);
 		}
 	}
 
 	// Add common UE classes for reference
 	Context += TEXT("\n### Common Base Classes:\n");
-	Context += TEXT("- /Script/Engine.Actor\n");
-	Context += TEXT("- /Script/Engine.Pawn\n");
-	Context += TEXT("- /Script/Engine.Character\n");
-	Context += TEXT("- /Script/Engine.PlayerController\n");
-	Context += TEXT("- /Script/Engine.GameModeBase\n");
-	Context += TEXT("- /Script/Engine.ActorComponent\n");
-	Context += TEXT("- /Script/Engine.SceneComponent\n");
+	Context += TEXT("- Actor, Pawn, Character, PlayerController, GameModeBase, ActorComponent, SceneComponent\n");
 
 	return Context;
 }

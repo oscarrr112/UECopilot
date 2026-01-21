@@ -94,6 +94,11 @@ public:
 	static FNodeSpawnResult SpawnArrayNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
 
 	/**
+	 * Spawn a return node for functions
+	 */
+	static FNodeSpawnResult SpawnReturnNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
+
+	/**
 	 * Find a function by path
 	 * @param FunctionPath - Fully qualified function path (e.g., "/Script/Engine.Actor.GetActorLocation")
 	 * @return The function if found, nullptr otherwise

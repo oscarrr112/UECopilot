@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factory/AIBlueprintFactory.h"
+#include "UECopilot.h"
 #include "Factory/NodeSpawner.h"
 #include "Factory/LayoutEngine.h"
 #include "Engine/Blueprint.h"
@@ -18,6 +19,9 @@
 #include "UObject/SavePackage.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
+#include "HAL/PlatformFileManager.h"
+#include "Misc/Paths.h"
+#include "EditorAssetLibrary.h"
 
 DEFINE_LOG_CATEGORY(LogBlueprintFactory);
 
@@ -35,6 +39,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 		return Result;
 	}
 
+	// Sanitize blueprint name (remove invalid characters)
+	FString SanitizedName = Data.Name;
+	SanitizedName = FPaths::MakeValidFileName(SanitizedName);
+	SanitizedName.ReplaceInline(TEXT(" "), TEXT("_"));
+
 	// Resolve parent class
 	UClass* ParentClass = ResolveParentClass(Data.ParentClass);
 	if (!ParentClass)
@@ -43,8 +52,16 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 		return Result;
 	}
 
+	// Check if blueprint already exists
+	FString PackageName = PackagePath / SanitizedName;
+	FString AssetPath = PackageName + TEXT(".") + SanitizedName;
+	if (UEditorAssetLibrary::DoesAssetExist(AssetPath))
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Blueprint already exists at: %s. Use /modify to modify existing blueprints."), *AssetPath);
+		return Result;
+	}
+
 	// Create package
-	FString PackageName = PackagePath / Data.Name;
 	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
@@ -52,11 +69,14 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 		return Result;
 	}
 
+	// Mark package as fully loaded
+	Package->FullyLoad();
+
 	// Create blueprint
 	UBlueprint* NewBlueprint = FKismetEditorUtilities::CreateBlueprint(
 		ParentClass,
 		Package,
-		FName(*Data.Name),
+		FName(*SanitizedName),
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
 		UBlueprintGeneratedClass::StaticClass()
@@ -112,13 +132,18 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	// Apply auto layout
 	if (bAutoLayout)
 	{
+		FLayoutSettings LayoutSettings;
+		LayoutSettings.HorizontalSpacing = 350.0f;  // Wider spacing for readability
+		LayoutSettings.VerticalSpacing = 120.0f;   // Tighter vertical spacing
+		LayoutSettings.bPrioritizeExecFlow = false; // Also consider data flow for pure nodes
+
 		for (UEdGraph* Graph : NewBlueprint->UbergraphPages)
 		{
-			ULayoutEngine::AutoLayoutGraph(Graph);
+			ULayoutEngine::AutoLayoutGraph(Graph, LayoutSettings);
 		}
 		for (UEdGraph* Graph : NewBlueprint->FunctionGraphs)
 		{
-			ULayoutEngine::AutoLayoutGraph(Graph);
+			ULayoutEngine::AutoLayoutGraph(Graph, LayoutSettings);
 		}
 	}
 
@@ -128,9 +153,31 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 
 	// Save package
 	FString PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+
+	// Ensure the directory exists
+	FString PackageDir = FPaths::GetPath(PackageFileName);
+	if (!FPaths::DirectoryExists(PackageDir))
+	{
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		PlatformFile.CreateDirectoryTree(*PackageDir);
+	}
+
+	// Mark package as dirty and fully loaded before saving
+	Package->MarkPackageDirty();
+
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, NewBlueprint, *PackageFileName, SaveArgs);
+	SaveArgs.Error = GError;
+
+	FSavePackageResultStruct SaveResult = UPackage::Save(Package, NewBlueprint, *PackageFileName, SaveArgs);
+
+	if (SaveResult.Result != ESavePackageResult::Success)
+	{
+		// Even if save fails, the blueprint is created in memory
+		// User can save it manually from editor
+		Result.Warnings.Add(FString::Printf(TEXT("Blueprint created but save failed. Save manually from editor. Path: %s"), *PackageFileName));
+		UE_LOG(LogBlueprintFactory, Warning, TEXT("Failed to save package: %s"), *PackageFileName);
+	}
 
 	// Register with asset registry
 	FAssetRegistryModule::AssetCreated(NewBlueprint);
@@ -138,7 +185,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	Result.bSuccess = true;
 	Result.Blueprint = NewBlueprint;
 
-	UE_LOG(LogBlueprintFactory, Log, TEXT("Successfully created blueprint: %s"), *Data.Name);
+	UE_LOG(LogBlueprintFactory, Log, TEXT("Successfully created blueprint: %s"), *SanitizedName);
 
 	return Result;
 }
@@ -393,6 +440,18 @@ int32 UAIBlueprintFactory::ConnectNodes(
 
 		for (const FBlueprintPinData& PinData : Data.Pins)
 		{
+			// Handle default values for pins without connections
+			if (!PinData.DefaultValue.IsEmpty() && PinData.Connections.Num() == 0)
+			{
+				UEdGraphPin* Pin = FindPinByName(TargetNode, PinData.Name, EGPD_Input);
+				if (Pin)
+				{
+					Pin->DefaultValue = PinData.DefaultValue;
+					UE_LOG(LogUECopilot, Log, TEXT("Set default value for pin %s.%s = %s"),
+						*Data.NodeId, *PinData.Name, *PinData.DefaultValue);
+				}
+			}
+
 			for (const FBlueprintPinConnection& Conn : PinData.Connections)
 			{
 				UK2Node* const* SourceNodePtr = NodeMap.Find(Conn.SourceNodeId);
@@ -593,43 +652,130 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		Schema->CreateDefaultNodesForGraph(*FunctionGraph);
 	}
 
-	// Find entry node
+	// Find entry and result nodes
 	UK2Node_FunctionEntry* EntryNode = nullptr;
+	UK2Node_FunctionResult* ResultNode = nullptr;
 	for (UEdGraphNode* Node : FunctionGraph->Nodes)
 	{
 		if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(Node))
 		{
 			EntryNode = Entry;
-			break;
+		}
+		if (UK2Node_FunctionResult* Result = Cast<UK2Node_FunctionResult>(Node))
+		{
+			ResultNode = Result;
 		}
 	}
 
-	// Add function parameters
+	// Add function input parameters to Entry node
 	if (EntryNode)
 	{
 		for (const FBlueprintPinData& Input : GraphData.Inputs)
 		{
-			FEdGraphPinType PinType = GetPinType(EBlueprintVarType::Object, Input.Type);
-			// Add user defined pin would be done here
+			// Parse type string to get pin type
+			FEdGraphPinType PinType;
+			if (Input.Type == TEXT("float") || Input.Type == TEXT("Float"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			}
+			else if (Input.Type == TEXT("int") || Input.Type == TEXT("Int"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
+			}
+			else if (Input.Type == TEXT("bool") || Input.Type == TEXT("Bool"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+			}
+			else if (Input.Type == TEXT("string") || Input.Type == TEXT("String"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_String;
+			}
+			else
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			}
+
+			// Create user defined pin on entry node
+			TSharedPtr<FUserPinInfo> PinInfo = MakeShareable(new FUserPinInfo());
+			PinInfo->PinName = FName(*Input.Name);
+			PinInfo->PinType = PinType;
+			PinInfo->DesiredPinDirection = EGPD_Output;
+
+			EntryNode->UserDefinedPins.Add(PinInfo);
 		}
+
+		// Reconstruct node to apply pin changes
+		EntryNode->ReconstructNode();
+
+		// Add Entry node to node map with special ID
+		OutNodeMap.Add(TEXT("fn_entry"), EntryNode);
 	}
 
-	// Set function flags
-	if (EntryNode)
+	// Create Result node if we have outputs and it doesn't exist
+	if (GraphData.Outputs.Num() > 0)
 	{
-		if (GraphData.bIsPure)
+		if (!ResultNode)
 		{
-			// Mark as pure (no exec pins)
+			// Create result node
+			FGraphNodeCreator<UK2Node_FunctionResult> NodeCreator(*FunctionGraph);
+			ResultNode = NodeCreator.CreateNode();
+			ResultNode->NodePosX = 800;
+			ResultNode->NodePosY = 0;
+			NodeCreator.Finalize();
 		}
-		if (GraphData.bIsConst)
+
+		// Add output parameters to Result node
+		for (const FBlueprintPinData& Output : GraphData.Outputs)
 		{
-			// Mark as const
+			FEdGraphPinType PinType;
+			if (Output.Type == TEXT("float") || Output.Type == TEXT("Float"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			}
+			else if (Output.Type == TEXT("int") || Output.Type == TEXT("Int"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
+			}
+			else if (Output.Type == TEXT("bool") || Output.Type == TEXT("Bool"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
+			}
+			else if (Output.Type == TEXT("string") || Output.Type == TEXT("String"))
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_String;
+			}
+			else
+			{
+				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+			}
+
+			TSharedPtr<FUserPinInfo> PinInfo = MakeShareable(new FUserPinInfo());
+			PinInfo->PinName = FName(*Output.Name);
+			PinInfo->PinType = PinType;
+			PinInfo->DesiredPinDirection = EGPD_Input;
+
+			ResultNode->UserDefinedPins.Add(PinInfo);
 		}
+
+		ResultNode->ReconstructNode();
+
+		// Add Result node to node map with special ID
+		OutNodeMap.Add(TEXT("fn_result"), ResultNode);
 	}
 
-	// Spawn nodes
+	// Spawn additional nodes (skip fn_entry and fn_result as they're already created)
 	for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
 	{
+		// Skip special nodes that are already in the NodeMap
+		if (NodeData.NodeId == TEXT("fn_entry") || NodeData.NodeId == TEXT("fn_result"))
+		{
+			continue;
+		}
+
 		FNodeSpawnResult SpawnResult = UNodeSpawner::SpawnNode(FunctionGraph, NodeData, Blueprint);
 
 		if (SpawnResult.bSuccess && SpawnResult.Node)
@@ -730,6 +876,7 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 		return nullptr;
 	}
 
+	// Exact match first
 	for (UEdGraphPin* Pin : Node->Pins)
 	{
 		if (Pin && Pin->PinName.ToString() == PinName)
@@ -737,6 +884,40 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 			if (Direction == EGPD_MAX || Pin->Direction == Direction)
 			{
 				return Pin;
+			}
+		}
+	}
+
+	// Handle positional argument names like "Arg0", "Arg1", etc.
+	if (PinName.StartsWith(TEXT("Arg")))
+	{
+		FString IndexStr = PinName.Mid(3);
+		if (IndexStr.IsNumeric())
+		{
+			int32 ArgIndex = FCString::Atoi(*IndexStr);
+			int32 CurrentIndex = 0;
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && Pin->Direction == EGPD_Input)
+				{
+					// Skip exec pins
+					if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+					{
+						continue;
+					}
+					// Skip self/world context pins
+					if (Pin->PinName == TEXT("self") || Pin->PinName == TEXT("WorldContextObject"))
+					{
+						continue;
+					}
+
+					if (CurrentIndex == ArgIndex)
+					{
+						return Pin;
+					}
+					CurrentIndex++;
+				}
 			}
 		}
 	}

@@ -39,6 +39,11 @@ public:
 	void OpenChatWindow();
 
 	/**
+	 * Open the BSL Compiler Test window
+	 */
+	void OpenBSLTestWindow();
+
+	/**
 	 * Get the chat window tab ID
 	 */
 	static FName GetChatWindowTabId();
@@ -59,6 +64,15 @@ private:
 	/** Create the chat window tab */
 	TSharedRef<class SDockTab> SpawnChatWindowTab(const class FSpawnTabArgs& Args);
 
+	/** Register the BSL test tab spawner */
+	void RegisterBSLTestTab();
+
+	/** Unregister the BSL test tab spawner */
+	void UnregisterBSLTestTab();
+
+	/** Create the BSL test tab */
+	TSharedRef<class SDockTab> SpawnBSLTestTab(const class FSpawnTabArgs& Args);
+
 	/** Add toolbar extension */
 	void AddToolbarExtension(FToolBarBuilder& Builder);
 
@@ -68,10 +82,14 @@ private:
 	/** Plugin commands */
 	void OnOpenChatWindow();
 	void OnOpenSettings();
+	void OnOpenBSLTest();
 
 	/** Plugin commands list */
 	TSharedPtr<FUICommandList> PluginCommands;
 
 	/** Has the chat window been registered */
 	bool bChatWindowRegistered = false;
+
+	/** Has the BSL test window been registered */
+	bool bBSLTestRegistered = false;
 };

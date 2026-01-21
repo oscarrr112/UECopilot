@@ -1,0 +1,119 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "BSL/BSLTypes.h"
+#include "BSL/BSLParser.h"
+#include "JSON/BlueprintJSONSchema.h"
+
+namespace BSL
+{
+
+/**
+ * Compile result
+ */
+struct UECOPILOT_API FCompileResult
+{
+	bool bSuccess = false;
+	FBlueprintData BlueprintData;
+	TArray<FString> Errors;
+	TArray<FString> Warnings;
+};
+
+/**
+ * Compiler - converts BSL AST to FBlueprintData
+ *
+ * This bridges the BSL language to the existing blueprint generation system.
+ */
+class UECOPILOT_API FCompiler
+{
+public:
+	/**
+	 * Compile BSL source code to FBlueprintData
+	 * @param Source - BSL source code
+	 * @return Compile result with FBlueprintData
+	 */
+	static FCompileResult Compile(const FString& Source);
+
+	/**
+	 * Compile BSL AST to FBlueprintData
+	 * @param Blueprint - Parsed BSL AST
+	 * @return Compile result with FBlueprintData
+	 */
+	static FCompileResult CompileAST(const FBlueprint& Blueprint);
+
+private:
+	FCompiler();
+
+	/** Compile the blueprint structure */
+	bool CompileBlueprint(const FBlueprint& Source, FBlueprintData& OutData);
+
+	/** Compile a variable declaration */
+	FBlueprintVariableData CompileVariable(const FVariable& Var);
+
+	/** Compile an event to event graph */
+	bool CompileEvent(const FFunction& Event, FBlueprintGraphData& OutGraph);
+
+	/** Compile a function */
+	bool CompileFunction(const FFunction& Func, FBlueprintGraphData& OutGraph);
+
+	/** Compile statements to nodes */
+	bool CompileStatements(
+		const TArray<TSharedPtr<FStatement>>& Statements,
+		TArray<FBlueprintNodeData>& OutNodes,
+		const FString& EntryNodeId,
+		const FString& EntryPinName);
+
+	/** Compile a single statement */
+	bool CompileStatement(
+		const FStatement& Stmt,
+		TArray<FBlueprintNodeData>& OutNodes,
+		FString& InOutLastExecNodeId,
+		FString& InOutLastExecPinName);
+
+	/** Compile an expression to nodes (returns the output pin name) */
+	FString CompileExpression(
+		const FExpression& Expr,
+		TArray<FBlueprintNodeData>& OutNodes,
+		FString& OutNodeId);
+
+	/** Generate unique node ID */
+	FString GenerateNodeId(const FString& Prefix = TEXT("n"));
+
+	/** Map BSL type to blueprint variable type */
+	static EBlueprintVarType MapType(EType Type);
+
+	/** Map BSL binary op to comparison node type */
+	static EBlueprintNodeType MapBinaryOp(EBinaryOp Op);
+
+	/** Determine the operand type suffix for math/comparison operations */
+	FString DetermineOperandType(const FExpression* Left, const FExpression* Right);
+
+	/** Get the type of an expression */
+	EType GetExpressionType(const FExpression* Expr);
+
+	/** Add error */
+	void Error(const FString& Message);
+
+	/** Add warning */
+	void Warning(const FString& Message);
+
+private:
+	int32 NodeCounter = 0;
+	TArray<FString> Errors;
+	TArray<FString> Warnings;
+
+	// Context for current compilation
+	const FFunction* CurrentFunction = nullptr;
+	TMap<FString, FString> VariableNodeMap;  // Variable name -> Get node ID
+	TMap<FString, EType> VariableTypeMap;    // Variable name -> Type
+
+	// For function output parameters: maps output name -> (node id, pin name)
+	TMap<FString, TPair<FString, FString>> OutputValueMap;
+
+	/** Check if a name is a function output parameter */
+	bool IsFunctionOutputParameter(const FString& Name) const;
+};
+
+} // namespace BSL

@@ -44,6 +44,7 @@ public class UECopilotEditor : ModuleRules
 				"GraphEditor",
 				"WorkspaceMenuStructure",
 				"Projects",
+				"ContentBrowser",
 			}
 		);
 

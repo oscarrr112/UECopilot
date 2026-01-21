@@ -224,6 +224,10 @@ struct UECOPILOT_API FBlueprintNodeData
 	UPROPERTY(BlueprintReadWrite, Category = "Node")
 	FString LiteralValue;
 
+	/** For math/comparison nodes: operand type suffix (e.g., "IntInt", "FloatFloat", "DoubleDouble") */
+	UPROPERTY(BlueprintReadWrite, Category = "Node")
+	FString OperandType;
+
 	/** Node comment */
 	UPROPERTY(BlueprintReadWrite, Category = "Node")
 	FString Comment;

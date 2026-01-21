@@ -147,6 +147,12 @@ private:
 	/** Accumulated streaming response */
 	FString AccumulatedResponse;
 
+	/** Current request ID for tracking */
+	int32 CurrentRequestId = 0;
+
+	/** Request start time for measuring duration */
+	double RequestStartTime = 0.0;
+
 	/** Singleton instance */
 	static UOpenAICompatibleService* Instance;
 };

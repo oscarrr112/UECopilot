@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Factory/NodeSpawner.h"
+#include "UECopilot.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Event.h"
 #include "K2Node_CustomEvent.h"
@@ -13,6 +14,8 @@
 #include "K2Node_DynamicCast.h"
 #include "K2Node_CommutativeAssociativeBinaryOperator.h"
 #include "K2Node_MakeArray.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_FunctionEntry.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -98,6 +101,10 @@ FNodeSpawnResult UNodeSpawner::SpawnNode(UEdGraph* Graph, const FBlueprintNodeDa
 	case EBlueprintNodeType::Array_Clear:
 		return SpawnArrayNode(Graph, NodeData, Blueprint);
 
+	// Return node for functions
+	case EBlueprintNodeType::Return:
+		return SpawnReturnNode(Graph, NodeData, Blueprint);
+
 	default:
 		Result.ErrorMessage = FString::Printf(TEXT("Unsupported node type: %d"), static_cast<int32>(NodeData.NodeType));
 		return Result;
@@ -109,17 +116,54 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 	FNodeSpawnResult Result;
 
 	UK2Node* Node = nullptr;
+	FName EventFunctionName;
 
+	// Determine event function name based on node type
+	switch (NodeData.NodeType)
+	{
+	case EBlueprintNodeType::Event_BeginPlay:
+		EventFunctionName = FName(TEXT("ReceiveBeginPlay"));
+		break;
+	case EBlueprintNodeType::Event_Tick:
+		EventFunctionName = FName(TEXT("ReceiveTick"));
+		break;
+	case EBlueprintNodeType::Event_Custom:
+		// Custom events are handled separately
+		break;
+	default:
+		Result.ErrorMessage = TEXT("Unknown event type");
+		return Result;
+	}
+
+	// For built-in events, first check if the event already exists in the graph
+	if (NodeData.NodeType != EBlueprintNodeType::Event_Custom && !EventFunctionName.IsNone())
+	{
+		for (UEdGraphNode* ExistingNode : Graph->Nodes)
+		{
+			if (UK2Node_Event* ExistingEvent = Cast<UK2Node_Event>(ExistingNode))
+			{
+				if (ExistingEvent->EventReference.GetMemberName() == EventFunctionName)
+				{
+					// Found existing event node, reuse it
+					UE_LOG(LogUECopilot, Log, TEXT("Reusing existing event node: %s"), *EventFunctionName.ToString());
+					Result.bSuccess = true;
+					Result.Node = ExistingEvent;
+					return Result;
+				}
+			}
+		}
+	}
+
+	// Event doesn't exist, create new one
 	switch (NodeData.NodeType)
 	{
 	case EBlueprintNodeType::Event_BeginPlay:
 	{
-		// Find BeginPlay in AActor
-		UFunction* BeginPlayFunc = AActor::StaticClass()->FindFunctionByName(FName(TEXT("ReceiveBeginPlay")));
+		UFunction* BeginPlayFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
 		if (BeginPlayFunc)
 		{
 			UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
-			EventNode->EventReference.SetExternalMember(FName(TEXT("ReceiveBeginPlay")), AActor::StaticClass());
+			EventNode->EventReference.SetExternalMember(EventFunctionName, AActor::StaticClass());
 			EventNode->bOverrideFunction = true;
 			EventNode->AllocateDefaultPins();
 			Node = EventNode;
@@ -129,11 +173,11 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 
 	case EBlueprintNodeType::Event_Tick:
 	{
-		UFunction* TickFunc = AActor::StaticClass()->FindFunctionByName(FName(TEXT("ReceiveTick")));
+		UFunction* TickFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
 		if (TickFunc)
 		{
 			UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
-			EventNode->EventReference.SetExternalMember(FName(TEXT("ReceiveTick")), AActor::StaticClass());
+			EventNode->EventReference.SetExternalMember(EventFunctionName, AActor::StaticClass());
 			EventNode->bOverrideFunction = true;
 			EventNode->AllocateDefaultPins();
 			Node = EventNode;
@@ -143,16 +187,31 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 
 	case EBlueprintNodeType::Event_Custom:
 	{
+		// For custom events, check if it already exists by name
+		FName CustomEventName = FName(*NodeData.EventName);
+		for (UEdGraphNode* ExistingNode : Graph->Nodes)
+		{
+			if (UK2Node_CustomEvent* ExistingCustom = Cast<UK2Node_CustomEvent>(ExistingNode))
+			{
+				if (ExistingCustom->CustomFunctionName == CustomEventName)
+				{
+					Result.bSuccess = true;
+					Result.Node = ExistingCustom;
+					return Result;
+				}
+			}
+		}
+
+		// Create new custom event
 		UK2Node_CustomEvent* CustomEvent = CreateNode<UK2Node_CustomEvent>(Graph);
-		CustomEvent->CustomFunctionName = FName(*NodeData.EventName);
+		CustomEvent->CustomFunctionName = CustomEventName;
 		CustomEvent->AllocateDefaultPins();
 		Node = CustomEvent;
 		break;
 	}
 
 	default:
-		Result.ErrorMessage = TEXT("Unknown event type");
-		return Result;
+		break;
 	}
 
 	if (Node)
@@ -173,7 +232,41 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 {
 	FNodeSpawnResult Result;
 
-	UFunction* Function = FindFunctionByPath(NodeData.FunctionReference);
+	UFunction* Function = nullptr;
+	FString FunctionRef = NodeData.FunctionReference;
+
+	// Check if it's already a full path
+	if (FunctionRef.StartsWith(TEXT("/")))
+	{
+		Function = FindFunctionByPath(FunctionRef);
+	}
+	else
+	{
+		// Simple function name - try common libraries
+		TArray<FString> LibrariesToTry = {
+			TEXT("/Script/Engine.KismetSystemLibrary"),
+			TEXT("/Script/Engine.KismetMathLibrary"),
+			TEXT("/Script/Engine.KismetStringLibrary"),
+			TEXT("/Script/Engine.KismetTextLibrary"),
+			TEXT("/Script/Engine.KismetArrayLibrary"),
+			TEXT("/Script/Engine.GameplayStatics"),
+			TEXT("/Script/Engine.KismetMaterialLibrary"),
+			TEXT("/Script/Engine.KismetRenderingLibrary"),
+			TEXT("/Script/Engine.KismetInputLibrary"),
+		};
+
+		for (const FString& Library : LibrariesToTry)
+		{
+			FString FullPath = FString::Printf(TEXT("%s.%s"), *Library, *FunctionRef);
+			Function = FindFunctionByPath(FullPath);
+			if (Function)
+			{
+				UE_LOG(LogUECopilot, Log, TEXT("Resolved function '%s' to '%s'"), *FunctionRef, *FullPath);
+				break;
+			}
+		}
+	}
+
 	if (!Function)
 	{
 		Result.ErrorMessage = FString::Printf(TEXT("Function not found: %s"), *NodeData.FunctionReference);
@@ -240,6 +333,49 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 			DoOnceNode->SetFromFunction(DoOnceFunc);
 			DoOnceNode->AllocateDefaultPins();
 			Node = DoOnceNode;
+		}
+		break;
+	}
+
+	case EBlueprintNodeType::Flow_ForLoop:
+	{
+		// ForLoop is a macro in the standard library
+		UFunction* ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.ForLoop"));
+		if (!ForLoopFunc)
+		{
+			// Try alternative path
+			ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetMathLibrary.ForLoop"));
+		}
+		if (ForLoopFunc)
+		{
+			UK2Node_CallFunction* ForLoopNode = CreateNode<UK2Node_CallFunction>(Graph);
+			ForLoopNode->SetFromFunction(ForLoopFunc);
+			ForLoopNode->AllocateDefaultPins();
+			Node = ForLoopNode;
+		}
+		else
+		{
+			Result.ErrorMessage = TEXT("ForLoop function not found - use ForLoopWithBreak macro instead");
+			return Result;
+		}
+		break;
+	}
+
+	case EBlueprintNodeType::Flow_WhileLoop:
+	{
+		// WhileLoop is typically implemented as a macro
+		UFunction* WhileFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"));
+		if (WhileFunc)
+		{
+			UK2Node_CallFunction* WhileNode = CreateNode<UK2Node_CallFunction>(Graph);
+			WhileNode->SetFromFunction(WhileFunc);
+			WhileNode->AllocateDefaultPins();
+			Node = WhileNode;
+		}
+		else
+		{
+			Result.ErrorMessage = TEXT("WhileLoop not directly available - implement using Branch in a loop");
+			return Result;
 		}
 		break;
 	}
@@ -326,31 +462,59 @@ FNodeSpawnResult UNodeSpawner::SpawnMathNode(UEdGraph* Graph, const FBlueprintNo
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionPath;
+	FString FunctionName;
 
 	switch (NodeData.NodeType)
 	{
 	case EBlueprintNodeType::Math_Add:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Add_FloatFloat");
+		FunctionName = TEXT("Add");
 		break;
 	case EBlueprintNodeType::Math_Subtract:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Subtract_FloatFloat");
+		FunctionName = TEXT("Subtract");
 		break;
 	case EBlueprintNodeType::Math_Multiply:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Multiply_FloatFloat");
+		FunctionName = TEXT("Multiply");
 		break;
 	case EBlueprintNodeType::Math_Divide:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Divide_FloatFloat");
+		FunctionName = TEXT("Divide");
 		break;
 	default:
 		Result.ErrorMessage = TEXT("Unknown math operation");
 		return Result;
 	}
 
-	UFunction* Function = FindFunctionByPath(FunctionPath);
+	// Use specific operand type if provided by compiler, otherwise fall back to default order
+	UFunction* Function = nullptr;
+
+	if (!NodeData.OperandType.IsEmpty())
+	{
+		// Use the operand type specified by the compiler
+		FString SpecificPath = FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_%s"), *FunctionName, *NodeData.OperandType);
+		Function = FindFunctionByPath(SpecificPath);
+	}
+
 	if (!Function)
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Math function not found: %s"), *FunctionPath);
+		// Fall back to trying common types (Double first for UE5)
+		TArray<FString> FunctionPaths = {
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_DoubleDouble"), *FunctionName),
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_FloatFloat"), *FunctionName),
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_IntInt"), *FunctionName)
+		};
+
+		for (const FString& Path : FunctionPaths)
+		{
+			Function = FindFunctionByPath(Path);
+			if (Function)
+			{
+				break;
+			}
+		}
+	}
+
+	if (!Function)
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Math function not found for: %s"), *FunctionName);
 		return Result;
 	}
 
@@ -370,37 +534,71 @@ FNodeSpawnResult UNodeSpawner::SpawnComparisonNode(UEdGraph* Graph, const FBluep
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionPath;
+	FString FunctionName;
 
 	switch (NodeData.NodeType)
 	{
 	case EBlueprintNodeType::Compare_Equal:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.EqualEqual_FloatFloat");
+		FunctionName = TEXT("EqualEqual");
 		break;
 	case EBlueprintNodeType::Compare_NotEqual:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.NotEqual_FloatFloat");
+		FunctionName = TEXT("NotEqual");
 		break;
 	case EBlueprintNodeType::Compare_Greater:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Greater_FloatFloat");
+		FunctionName = TEXT("Greater");
 		break;
 	case EBlueprintNodeType::Compare_Less:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Less_FloatFloat");
+		FunctionName = TEXT("Less");
 		break;
 	case EBlueprintNodeType::Compare_GreaterEqual:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.GreaterEqual_FloatFloat");
+		FunctionName = TEXT("GreaterEqual");
 		break;
 	case EBlueprintNodeType::Compare_LessEqual:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.LessEqual_FloatFloat");
+		FunctionName = TEXT("LessEqual");
 		break;
 	default:
 		Result.ErrorMessage = TEXT("Unknown comparison operation");
 		return Result;
 	}
 
-	UFunction* Function = FindFunctionByPath(FunctionPath);
+	// Use specific operand type if provided by compiler, otherwise fall back to default order
+	UFunction* Function = nullptr;
+	FString TriedPaths;
+
+	if (!NodeData.OperandType.IsEmpty())
+	{
+		// Use the operand type specified by the compiler
+		FString SpecificPath = FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_%s"), *FunctionName, *NodeData.OperandType);
+		Function = FindFunctionByPath(SpecificPath);
+		if (!Function)
+		{
+			TriedPaths = SpecificPath;
+		}
+	}
+
 	if (!Function)
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Comparison function not found: %s"), *FunctionPath);
+		// Fall back to trying common types
+		TArray<FString> FunctionPaths = {
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_IntInt"), *FunctionName),
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_DoubleDouble"), *FunctionName),
+			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_FloatFloat"), *FunctionName)
+		};
+
+		for (const FString& Path : FunctionPaths)
+		{
+			Function = FindFunctionByPath(Path);
+			if (Function)
+			{
+				break;
+			}
+			TriedPaths += Path + TEXT(", ");
+		}
+	}
+
+	if (!Function)
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Comparison function not found. Tried: %s"), *TriedPaths);
 		return Result;
 	}
 
@@ -605,4 +803,52 @@ void UNodeSpawner::SetNodePosition(UK2Node* Node, const FNodePosition& Position)
 		Node->NodePosX = static_cast<int32>(Position.X);
 		Node->NodePosY = static_cast<int32>(Position.Y);
 	}
+}
+
+FNodeSpawnResult UNodeSpawner::SpawnReturnNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
+{
+	FNodeSpawnResult Result;
+
+	// Check if this is a function graph (has function entry)
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (EntryNode)
+		{
+			break;
+		}
+	}
+
+	if (!EntryNode)
+	{
+		// Not a function graph, return nodes don't apply
+		Result.ErrorMessage = TEXT("Return node can only be used in function graphs");
+		return Result;
+	}
+
+	// Check if there's already a result node
+	UK2Node_FunctionResult* ResultNode = nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		ResultNode = Cast<UK2Node_FunctionResult>(Node);
+		if (ResultNode)
+		{
+			break;
+		}
+	}
+
+	if (!ResultNode)
+	{
+		// Create new result node
+		ResultNode = CreateNode<UK2Node_FunctionResult>(Graph);
+		ResultNode->AllocateDefaultPins();
+	}
+
+	SetNodePosition(ResultNode, NodeData.Position);
+
+	Result.bSuccess = true;
+	Result.Node = ResultNode;
+
+	return Result;
 }

@@ -39,6 +39,7 @@ public class UECopilot : ModuleRules
 				"KismetCompiler",
 				"GraphEditor",
 				"DeveloperSettings",
+				"EditorScriptingUtilities",
 			}
 		);
 
