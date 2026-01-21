@@ -3,7 +3,7 @@
 #include "UI/SCopilotChatWindow.h"
 #include "UECopilotSettings.h"
 #include "JSON/BlueprintJSONParser.h"
-#include "Factory/BlueprintFactory.h"
+#include "Factory/AIBlueprintFactory.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SScrollBox.h"

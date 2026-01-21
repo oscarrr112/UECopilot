@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "JSON/BlueprintJSONSchema.h"
 #include "Factory/LayoutEngine.h"
-#include "BlueprintFactory.generated.h"
+#include "AIBlueprintFactory.generated.h"
 
 class UBlueprint;
 class UEdGraph;

@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Factory/BlueprintFactory.h"
+#include "Factory/AIBlueprintFactory.h"
 #include "Factory/NodeSpawner.h"
 #include "Factory/LayoutEngine.h"
 #include "Engine/Blueprint.h"
