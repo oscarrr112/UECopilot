@@ -20,6 +20,11 @@
 ### 节点生成改进 (NodeSpawner)
 - [x] 使用 OperandType 字段选择正确的数学运算函数
 - [x] Pin 名称匹配改进（支持位置参数）
+- [x] Pin 名称大小写不敏感匹配（execute vs Execute）
+- [x] ForLoopWithBreak 宏节点支持
+
+### 布局算法改进 (LayoutEngine) - 续
+- [x] 跳过 Break pin 的 back-edge（避免循环依赖导致层级计算错误）
 
 ## 待完成功能
 
