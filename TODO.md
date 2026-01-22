@@ -24,12 +24,16 @@
 ## 待完成功能
 
 ### 布局算法
+- [x] 引脚顺序与节点Y位置对应（Sequence/Loop等多输出引脚节点）
 - [ ] 进一步优化数据节点的 Y 轴位置（减少连线交叉）
 - [ ] 考虑节点实际尺寸进行重叠检测
 - [ ] 支持手动调整后的位置保持
 
 ### BSL 语言支持
-- [ ] 循环语句 (for, while)
+- [x] For 循环语句 (`for i in start..end { body }`)
+- [x] While 循环语句 (`while (condition) { body }`)
+- [x] Break 语句（For 循环使用 ForLoopWithBreak 宏）
+- [x] Continue 语句（终止当前迭代执行流）
 - [ ] 数组操作
 - [ ] 结构体支持
 - [ ] 更多内置函数

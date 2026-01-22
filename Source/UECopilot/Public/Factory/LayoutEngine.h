@@ -265,4 +265,19 @@ private:
 	 * Calculate bounding box of nodes
 	 */
 	static void CalculateBoundingBox(const TArray<UK2Node*>& Nodes, float& OutMinX, float& OutMaxX, float& OutMinY, float& OutMaxY);
+
+	/**
+	 * Enforce exec pin order constraint
+	 * For nodes with multiple output exec pins (Sequence, Branch, ForLoop, etc.),
+	 * ensures that successor nodes' Y positions match pin order (top pin -> lower Y)
+	 */
+	static void EnforceExecPinOrder(TArray<UK2Node*>& Nodes, const FLayoutSettings& Settings);
+
+	/**
+	 * Get ordered exec successors for a node
+	 * Returns successor nodes in the order of their connected output exec pins
+	 * @param Node - The source node
+	 * @return Array of (PinIndex, SuccessorNode) pairs, sorted by pin index
+	 */
+	static TArray<TPair<int32, UK2Node*>> GetOrderedExecSuccessors(UK2Node* Node);
 };

@@ -888,6 +888,56 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 		}
 	}
 
+	// Case-insensitive match for exec pins (common issue: "execute" vs "Execute")
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->PinName.ToString().Equals(PinName, ESearchCase::IgnoreCase))
+		{
+			if (Direction == EGPD_MAX || Pin->Direction == Direction)
+			{
+				return Pin;
+			}
+		}
+	}
+
+	// Special handling for "execute" - find the main input exec pin
+	// Many macros have unnamed or differently named exec input pins
+	// Avoid returning "Break" or other secondary exec pins
+	if (PinName.Equals(TEXT("execute"), ESearchCase::IgnoreCase) && Direction == EGPD_Input)
+	{
+		UEdGraphPin* FirstExecPin = nullptr;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Input &&
+				Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+			{
+				FString CurrentPinName = Pin->PinName.ToString();
+				// Skip "Break" pin - that's a secondary exec pin for ForLoopWithBreak
+				if (CurrentPinName.Equals(TEXT("Break"), ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+				// Prefer pins named "Execute" or empty (default exec pin)
+				if (CurrentPinName.IsEmpty() ||
+					CurrentPinName.Equals(TEXT("Execute"), ESearchCase::IgnoreCase) ||
+					CurrentPinName.Equals(TEXT("In"), ESearchCase::IgnoreCase))
+				{
+					return Pin;
+				}
+				// Store the first non-Break exec pin as fallback
+				if (!FirstExecPin)
+				{
+					FirstExecPin = Pin;
+				}
+			}
+		}
+		// Return the first non-Break exec pin if no preferred pin was found
+		if (FirstExecPin)
+		{
+			return FirstExecPin;
+		}
+	}
+
 	// Handle positional argument names like "Arg0", "Arg1", etc.
 	if (PinName.StartsWith(TEXT("Arg")))
 	{
@@ -922,13 +972,14 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 		}
 	}
 
-	// Try partial match (sometimes pins have prefixes/suffixes)
+	// Try partial match - case-insensitive (sometimes pins have prefixes/suffixes)
 	for (UEdGraphPin* Pin : Node->Pins)
 	{
 		if (Pin)
 		{
 			FString CurrentPinName = Pin->PinName.ToString();
-			if (CurrentPinName.Contains(PinName) || PinName.Contains(CurrentPinName))
+			if (CurrentPinName.Contains(PinName, ESearchCase::IgnoreCase) ||
+				PinName.Contains(CurrentPinName, ESearchCase::IgnoreCase))
 			{
 				if (Direction == EGPD_MAX || Pin->Direction == Direction)
 				{

@@ -18,6 +18,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectIterator.h"
@@ -47,6 +48,7 @@ FNodeSpawnResult UNodeSpawner::SpawnNode(UEdGraph* Graph, const FBlueprintNodeDa
 	case EBlueprintNodeType::Flow_Branch:
 	case EBlueprintNodeType::Flow_Sequence:
 	case EBlueprintNodeType::Flow_ForLoop:
+	case EBlueprintNodeType::Flow_ForLoopWithBreak:
 	case EBlueprintNodeType::Flow_ForEachLoop:
 	case EBlueprintNodeType::Flow_WhileLoop:
 	case EBlueprintNodeType::Flow_DoOnce:
@@ -305,6 +307,14 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	{
 		UK2Node_ExecutionSequence* SeqNode = CreateNode<UK2Node_ExecutionSequence>(Graph);
 		SeqNode->AllocateDefaultPins();
+
+		// Add extra output pins if needed (default has 2: then_0 and then_1)
+		int32 ExtraPins = NodeData.SequenceOutputCount - 2;
+		for (int32 i = 0; i < ExtraPins; i++)
+		{
+			SeqNode->AddInputPin();
+		}
+
 		Node = SeqNode;
 		break;
 	}
@@ -338,47 +348,11 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	}
 
 	case EBlueprintNodeType::Flow_ForLoop:
-	{
-		// ForLoop is a macro in the standard library
-		UFunction* ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.ForLoop"));
-		if (!ForLoopFunc)
-		{
-			// Try alternative path
-			ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetMathLibrary.ForLoop"));
-		}
-		if (ForLoopFunc)
-		{
-			UK2Node_CallFunction* ForLoopNode = CreateNode<UK2Node_CallFunction>(Graph);
-			ForLoopNode->SetFromFunction(ForLoopFunc);
-			ForLoopNode->AllocateDefaultPins();
-			Node = ForLoopNode;
-		}
-		else
-		{
-			Result.ErrorMessage = TEXT("ForLoop function not found - use ForLoopWithBreak macro instead");
-			return Result;
-		}
-		break;
-	}
-
+	case EBlueprintNodeType::Flow_ForLoopWithBreak:
+	case EBlueprintNodeType::Flow_ForEachLoop:
 	case EBlueprintNodeType::Flow_WhileLoop:
-	{
-		// WhileLoop is typically implemented as a macro
-		UFunction* WhileFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"));
-		if (WhileFunc)
-		{
-			UK2Node_CallFunction* WhileNode = CreateNode<UK2Node_CallFunction>(Graph);
-			WhileNode->SetFromFunction(WhileFunc);
-			WhileNode->AllocateDefaultPins();
-			Node = WhileNode;
-		}
-		else
-		{
-			Result.ErrorMessage = TEXT("WhileLoop not directly available - implement using Branch in a loop");
-			return Result;
-		}
-		break;
-	}
+		// These are macros, delegate to SpawnMacroNode
+		return SpawnMacroNode(Graph, NodeData, Blueprint);
 
 	default:
 		Result.ErrorMessage = TEXT("Flow control node type not yet implemented");
@@ -851,4 +825,108 @@ FNodeSpawnResult UNodeSpawner::SpawnReturnNode(UEdGraph* Graph, const FBlueprint
 	Result.Node = ResultNode;
 
 	return Result;
+}
+
+FNodeSpawnResult UNodeSpawner::SpawnMacroNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
+{
+	FNodeSpawnResult Result;
+
+	FString MacroName;
+
+	switch (NodeData.NodeType)
+	{
+	case EBlueprintNodeType::Flow_ForLoop:
+		MacroName = TEXT("ForLoop");
+		break;
+	case EBlueprintNodeType::Flow_ForLoopWithBreak:
+		MacroName = TEXT("ForLoopWithBreak");
+		break;
+	case EBlueprintNodeType::Flow_ForEachLoop:
+		MacroName = TEXT("ForEachLoop");
+		break;
+	case EBlueprintNodeType::Flow_WhileLoop:
+		MacroName = TEXT("WhileLoop");
+		break;
+	default:
+		Result.ErrorMessage = TEXT("Unknown macro type");
+		return Result;
+	}
+
+	// Find the macro graph
+	UEdGraph* MacroGraph = FindMacroGraph(MacroName);
+	if (!MacroGraph)
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Macro not found: %s"), *MacroName);
+		return Result;
+	}
+
+	// Create macro instance node
+	UK2Node_MacroInstance* MacroNode = CreateNode<UK2Node_MacroInstance>(Graph);
+	MacroNode->SetMacroGraph(MacroGraph);
+	MacroNode->AllocateDefaultPins();
+
+	SetNodePosition(MacroNode, NodeData.Position);
+
+	Result.bSuccess = true;
+	Result.Node = MacroNode;
+
+	UE_LOG(LogNodeSpawner, Log, TEXT("Created macro node: %s"), *MacroName);
+
+	return Result;
+}
+
+UEdGraph* UNodeSpawner::FindMacroGraph(const FString& MacroName)
+{
+	// Standard macros are in /Engine/Content/StandardMacros.StandardMacros
+	static const FString StandardMacrosPath = TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros");
+
+	// Try to load the StandardMacros blueprint
+	UBlueprint* StandardMacros = LoadObject<UBlueprint>(nullptr, *StandardMacrosPath);
+
+	if (!StandardMacros)
+	{
+		// Try alternative paths
+		TArray<FString> AlternativePaths = {
+			TEXT("/Engine/EditorBlueprintResources/StandardMacros"),
+			TEXT("/Script/Engine.StandardMacros"),
+		};
+
+		for (const FString& Path : AlternativePaths)
+		{
+			StandardMacros = LoadObject<UBlueprint>(nullptr, *Path);
+			if (StandardMacros)
+			{
+				UE_LOG(LogNodeSpawner, Log, TEXT("Found StandardMacros at: %s"), *Path);
+				break;
+			}
+		}
+	}
+
+	if (!StandardMacros)
+	{
+		UE_LOG(LogNodeSpawner, Warning, TEXT("Could not find StandardMacros blueprint"));
+		return nullptr;
+	}
+
+	// Find the macro graph by name
+	for (UEdGraph* Graph : StandardMacros->MacroGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(*MacroName))
+		{
+			UE_LOG(LogNodeSpawner, Log, TEXT("Found macro graph: %s"), *MacroName);
+			return Graph;
+		}
+	}
+
+	// Log available macros for debugging
+	UE_LOG(LogNodeSpawner, Warning, TEXT("Macro '%s' not found. Available macros:"), *MacroName);
+	for (UEdGraph* Graph : StandardMacros->MacroGraphs)
+	{
+		if (Graph)
+		{
+			UE_LOG(LogNodeSpawner, Warning, TEXT("  - %s"), *Graph->GetName());
+		}
+	}
+
+	return nullptr;
 }

@@ -99,6 +99,9 @@ private:
 	/** Add warning */
 	void Warning(const FString& Message);
 
+	/** Check if statements contain a break statement (recursively) */
+	static bool ContainsBreakStatement(const TArray<TSharedPtr<FStatement>>& Statements);
+
 private:
 	int32 NodeCounter = 0;
 	TArray<FString> Errors;
@@ -114,6 +117,14 @@ private:
 
 	/** Check if a name is a function output parameter */
 	bool IsFunctionOutputParameter(const FString& Name) const;
+
+	// Loop context for break/continue support
+	struct FLoopContext
+	{
+		FString LoopNodeId;      // ID of the loop node (ForLoop, WhileLoop, etc.)
+		bool bHasBreak = false;  // Whether this loop uses break (ForLoopWithBreak)
+	};
+	TArray<FLoopContext> LoopContextStack;
 };
 
 } // namespace BSL

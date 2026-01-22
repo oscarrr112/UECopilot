@@ -21,6 +21,7 @@ enum class EBlueprintNodeType : uint8
 	Flow_Branch				UMETA(DisplayName = "Branch"),
 	Flow_Sequence			UMETA(DisplayName = "Sequence"),
 	Flow_ForLoop			UMETA(DisplayName = "For Loop"),
+	Flow_ForLoopWithBreak	UMETA(DisplayName = "For Loop With Break"),
 	Flow_ForEachLoop		UMETA(DisplayName = "For Each Loop"),
 	Flow_WhileLoop			UMETA(DisplayName = "While Loop"),
 	Flow_Switch				UMETA(DisplayName = "Switch"),
@@ -227,6 +228,10 @@ struct UECOPILOT_API FBlueprintNodeData
 	/** For math/comparison nodes: operand type suffix (e.g., "IntInt", "FloatFloat", "DoubleDouble") */
 	UPROPERTY(BlueprintReadWrite, Category = "Node")
 	FString OperandType;
+
+	/** For Sequence nodes: number of output pins (default 2) */
+	UPROPERTY(BlueprintReadWrite, Category = "Node")
+	int32 SequenceOutputCount = 2;
 
 	/** Node comment */
 	UPROPERTY(BlueprintReadWrite, Category = "Node")

@@ -452,6 +452,11 @@ void ULayoutEngine::AutoLayoutNodes(TArray<UK2Node*>& Nodes, const FLayoutSettin
 			DataNode->NodePosX = static_cast<int32>(Settings.StartX + FloatLayer * Settings.HorizontalSpacing);
 		}
 	}
+
+	// Step 7: Enforce exec pin order constraint
+	// For nodes with multiple output exec pins (Sequence, ForLoop, etc.),
+	// ensure successor nodes' Y positions match pin order
+	EnforceExecPinOrder(ExecNodes, Settings);
 }
 
 TMap<FString, FNodePosition> ULayoutEngine::CalculateLayout(
@@ -713,7 +718,26 @@ void ULayoutEngine::AssignLayers(TMap<UK2Node*, FNodeLayerInfo>& NodeInfo)
 		if (!Processed.Contains(Pair.Key))
 		{
 			Pair.Value.Layer = 0;
+			UE_LOG(LogTemp, Warning, TEXT("Unprocessed node (cycle?): %s -> Layer 0"),
+				*Pair.Key->GetNodeTitle(ENodeTitleType::ListView).ToString());
 		}
+	}
+
+	// Debug: Log final layer assignments
+	for (auto& Pair : NodeInfo)
+	{
+		FString PredNames;
+		for (UK2Node* Pred : Pair.Value.Predecessors)
+		{
+			if (Pred)
+			{
+				PredNames += Pred->GetNodeTitle(ENodeTitleType::ListView).ToString() + TEXT(", ");
+			}
+		}
+		UE_LOG(LogTemp, Log, TEXT("Layer Assignment: %s -> Layer %d (Preds: %s)"),
+			*Pair.Key->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+			Pair.Value.Layer,
+			PredNames.IsEmpty() ? TEXT("none") : *PredNames);
 	}
 }
 
@@ -857,6 +881,14 @@ TArray<UK2Node*> ULayoutEngine::GetExecSuccessors(UK2Node* Node)
 			{
 				if (LinkedPin && LinkedPin->GetOwningNode())
 				{
+					// Skip connections to "Break" pin - it's a back-edge to loop node
+					// This keeps Successors/Predecessors symmetric
+					FString LinkedPinName = LinkedPin->PinName.ToString();
+					if (LinkedPinName.Equals(TEXT("Break"), ESearchCase::IgnoreCase))
+					{
+						continue;
+					}
+
 					if (UK2Node* LinkedNode = Cast<UK2Node>(LinkedPin->GetOwningNode()))
 					{
 						if (!Result.Contains(LinkedNode))
@@ -885,6 +917,14 @@ TArray<UK2Node*> ULayoutEngine::GetExecPredecessors(UK2Node* Node)
 	{
 		if (Pin && Pin->Direction == EGPD_Input && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
 		{
+			// Skip "Break" pin - it's a back-edge from loop body, not a true predecessor
+			// This prevents cycles in the layout graph for ForLoopWithBreak
+			FString PinName = Pin->PinName.ToString();
+			if (PinName.Equals(TEXT("Break"), ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
 				if (LinkedPin && LinkedPin->GetOwningNode())
@@ -1376,5 +1416,184 @@ void ULayoutEngine::CalculateBoundingBox(const TArray<UK2Node*>& Nodes, float& O
 		OutMaxX = FMath::Max(OutMaxX, static_cast<float>(Node->NodePosX) + NodeWidth);
 		OutMinY = FMath::Min(OutMinY, static_cast<float>(Node->NodePosY));
 		OutMaxY = FMath::Max(OutMaxY, static_cast<float>(Node->NodePosY) + NodeHeight);
+	}
+}
+
+TArray<TPair<int32, UK2Node*>> ULayoutEngine::GetOrderedExecSuccessors(UK2Node* Node)
+{
+	TArray<TPair<int32, UK2Node*>> Result;
+
+	if (!Node)
+	{
+		return Result;
+	}
+
+	// Collect output exec pins with their indices
+	int32 PinIndex = 0;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+		{
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (LinkedPin && LinkedPin->GetOwningNode())
+				{
+					if (UK2Node* LinkedNode = Cast<UK2Node>(LinkedPin->GetOwningNode()))
+					{
+						// Use the pin's visual index (order in Pins array for output exec pins)
+						Result.Add(TPair<int32, UK2Node*>(PinIndex, LinkedNode));
+					}
+				}
+			}
+			PinIndex++;
+		}
+	}
+
+	// Sort by pin index (lower index = higher pin = should have lower Y)
+	Result.Sort([](const TPair<int32, UK2Node*>& A, const TPair<int32, UK2Node*>& B)
+	{
+		return A.Key < B.Key;
+	});
+
+	return Result;
+}
+
+void ULayoutEngine::EnforceExecPinOrder(TArray<UK2Node*>& Nodes, const FLayoutSettings& Settings)
+{
+	TSet<UK2Node*> NodeSet(Nodes);
+
+	// For each node with multiple output exec pins, enforce order constraint
+	for (UK2Node* Node : Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		// Get ordered successors (by pin index)
+		TArray<TPair<int32, UK2Node*>> OrderedSuccessors = GetOrderedExecSuccessors(Node);
+
+		// Only process if there are multiple successors in our node set
+		TArray<UK2Node*> ValidSuccessors;
+		for (const auto& Pair : OrderedSuccessors)
+		{
+			if (NodeSet.Contains(Pair.Value) && !ValidSuccessors.Contains(Pair.Value))
+			{
+				ValidSuccessors.Add(Pair.Value);
+			}
+		}
+
+		if (ValidSuccessors.Num() < 2)
+		{
+			continue;
+		}
+
+		// Check if successors are in correct Y order (lower pin index -> lower Y)
+		// If not, swap their Y positions
+		for (int32 i = 0; i < ValidSuccessors.Num() - 1; i++)
+		{
+			UK2Node* Upper = ValidSuccessors[i];
+			UK2Node* Lower = ValidSuccessors[i + 1];
+
+			// Upper pin should have lower or equal Y
+			if (Upper->NodePosY > Lower->NodePosY)
+			{
+				// Swap Y positions
+				int32 TempY = Upper->NodePosY;
+				Upper->NodePosY = Lower->NodePosY;
+				Lower->NodePosY = TempY;
+			}
+		}
+	}
+
+	// Second pass: propagate position changes to subgraphs
+	// For nodes that were swapped, recursively adjust their successors
+	// This is a simplified propagation that moves entire subgraphs
+	for (UK2Node* Node : Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		TArray<TPair<int32, UK2Node*>> OrderedSuccessors = GetOrderedExecSuccessors(Node);
+
+		if (OrderedSuccessors.Num() < 2)
+		{
+			continue;
+		}
+
+		// For each pair of consecutive branches, ensure minimum spacing
+		for (int32 i = 0; i < OrderedSuccessors.Num() - 1; i++)
+		{
+			UK2Node* CurrentBranchRoot = nullptr;
+			UK2Node* NextBranchRoot = nullptr;
+
+			for (const auto& Pair : OrderedSuccessors)
+			{
+				if (Pair.Key == i && NodeSet.Contains(Pair.Value))
+				{
+					CurrentBranchRoot = Pair.Value;
+				}
+				if (Pair.Key == i + 1 && NodeSet.Contains(Pair.Value))
+				{
+					NextBranchRoot = Pair.Value;
+				}
+			}
+
+			if (!CurrentBranchRoot || !NextBranchRoot)
+			{
+				continue;
+			}
+
+			// Find all nodes reachable from CurrentBranchRoot (in same layer or later)
+			// and ensure they don't overlap with NextBranchRoot's subgraph
+			// This is a simplified check - just ensure minimum gap between branch roots
+			float MinGap = Settings.VerticalSpacing * 0.5f;
+			float CurrentBottom = CurrentBranchRoot->NodePosY + 100.0f; // Approximate height
+			float NextTop = NextBranchRoot->NodePosY;
+
+			if (NextTop < CurrentBottom + MinGap)
+			{
+				// Push down the next branch
+				float Offset = (CurrentBottom + MinGap) - NextTop;
+				NextBranchRoot->NodePosY += static_cast<int32>(Offset);
+
+				// Also push down all nodes that are successors of NextBranchRoot
+				TSet<UK2Node*> Visited;
+				TArray<UK2Node*> Queue;
+				Queue.Add(NextBranchRoot);
+
+				while (Queue.Num() > 0)
+				{
+					UK2Node* Current = Queue[0];
+					Queue.RemoveAt(0);
+
+					if (Visited.Contains(Current) || Current == NextBranchRoot)
+					{
+						if (Current != NextBranchRoot)
+						{
+							continue;
+						}
+						Visited.Add(Current);
+					}
+					else
+					{
+						Visited.Add(Current);
+						Current->NodePosY += static_cast<int32>(Offset);
+					}
+
+					// Add exec successors to queue
+					TArray<UK2Node*> Successors = GetExecSuccessors(Current);
+					for (UK2Node* Succ : Successors)
+					{
+						if (NodeSet.Contains(Succ) && !Visited.Contains(Succ))
+						{
+							Queue.Add(Succ);
+						}
+					}
+				}
+			}
+		}
 	}
 }

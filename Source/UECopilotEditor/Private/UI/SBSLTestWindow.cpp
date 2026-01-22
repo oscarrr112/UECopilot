@@ -178,6 +178,26 @@ TSharedRef<SWidget> SBSLTestWindow::BuildTestCaseButtons()
 			.Text(LOCTEXT("WholeTest", "Whole"))
 			.OnClicked(this, &SBSLTestWindow::OnWholeTestClicked)
 			.ToolTipText(LOCTEXT("WholeTestTooltip", "All syntax features combined"))
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(4.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("LoopTest", "Loop"))
+			.OnClicked(this, &SBSLTestWindow::OnLoopTestClicked)
+			.ToolTipText(LOCTEXT("LoopTestTooltip", "For and While loops"))
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(4.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("BreakContinueTest", "Break/Continue"))
+			.OnClicked(this, &SBSLTestWindow::OnBreakContinueTestClicked)
+			.ToolTipText(LOCTEXT("BreakContinueTestTooltip", "Break and Continue statements"))
 		];
 }
 
@@ -237,6 +257,22 @@ FReply SBSLTestWindow::OnWholeTestClicked()
 	SetBSLCode(GetWholeTestCode());
 	ClearOutput();
 	AppendOutput(TEXT("Loaded: Whole Test (All syntax features combined)\n"));
+	return FReply::Handled();
+}
+
+FReply SBSLTestWindow::OnLoopTestClicked()
+{
+	SetBSLCode(GetLoopTestCode());
+	ClearOutput();
+	AppendOutput(TEXT("Loaded: Loop Test (For and While loops)\n"));
+	return FReply::Handled();
+}
+
+FReply SBSLTestWindow::OnBreakContinueTestClicked()
+{
+	SetBSLCode(GetBreakContinueTestCode());
+	ClearOutput();
+	AppendOutput(TEXT("Loaded: Break/Continue Test (Break and Continue statements)\n"));
 	return FReply::Handled();
 }
 
@@ -480,6 +516,72 @@ FString SBSLTestWindow::GetWholeTestCode()
   // Pure calculation function
   function AddNumbers(A: float, B: float) -> (Sum: float) {
     Sum = A + B
+  }
+})");
+}
+
+FString SBSLTestWindow::GetLoopTestCode()
+{
+	return TEXT(R"(blueprint BP_LoopTest extends Actor {
+  var Counter: int = 0
+  var Total: int = 0
+  var IsRunning: bool = true
+
+  event BeginPlay {
+    PrintString("Loop Test Started")
+
+    // For loop example - count from 0 to 9
+    for i in 0..9 {
+      Counter = Counter + 1
+      PrintString("For loop iteration")
+    }
+
+    // While loop example - accumulate until condition is false
+    while (IsRunning) {
+      Total = Total + 1
+      if (Total >= 5) {
+        IsRunning = false
+      }
+    }
+
+    PrintString("Loop Test Completed")
+  }
+})");
+}
+
+FString SBSLTestWindow::GetBreakContinueTestCode()
+{
+	return TEXT(R"(blueprint BP_BreakContinueTest extends Actor {
+  var Found: int = 0
+  var SkipCount: int = 0
+
+  event BeginPlay {
+    PrintString("Break/Continue Test Started")
+
+    // Break example - find first number divisible by 7
+    for i in 1..100 {
+      if (i == 7) {
+        Found = i
+        PrintString("Found number, breaking")
+        break
+      }
+      PrintString("Searching...")
+    }
+
+    // Continue example - skip even numbers
+    for j in 0..9 {
+      if (j == 2) {
+        SkipCount = SkipCount + 1
+        continue
+      }
+      if (j == 4) {
+        SkipCount = SkipCount + 1
+        continue
+      }
+      PrintString("Processing odd number")
+    }
+
+    PrintString("Break/Continue Test Completed")
   }
 })");
 }

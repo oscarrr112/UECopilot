@@ -31,6 +31,8 @@ private:
 	FReply OnMediumTestClicked();
 	FReply OnComplexTestClicked();
 	FReply OnWholeTestClicked();
+	FReply OnLoopTestClicked();
+	FReply OnBreakContinueTestClicked();
 	FReply OnCompileClicked();
 	FReply OnApplyClicked();
 	FReply OnClearClicked();
@@ -46,6 +48,8 @@ private:
 	static FString GetMediumTestCode();
 	static FString GetComplexTestCode();
 	static FString GetWholeTestCode();
+	static FString GetLoopTestCode();
+	static FString GetBreakContinueTestCode();
 
 private:
 	TSharedPtr<SMultiLineEditableTextBox> CodeInputBox;

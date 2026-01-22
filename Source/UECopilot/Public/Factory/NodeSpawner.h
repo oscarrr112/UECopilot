@@ -99,6 +99,11 @@ public:
 	static FNodeSpawnResult SpawnReturnNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
 
 	/**
+	 * Spawn a macro instance node (for loops like ForLoop, WhileLoop)
+	 */
+	static FNodeSpawnResult SpawnMacroNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
+
+	/**
 	 * Find a function by path
 	 * @param FunctionPath - Fully qualified function path (e.g., "/Script/Engine.Actor.GetActorLocation")
 	 * @return The function if found, nullptr otherwise
@@ -111,6 +116,13 @@ public:
 	 * @return The class if found, nullptr otherwise
 	 */
 	static UClass* FindClassByPath(const FString& ClassPath);
+
+	/**
+	 * Find a macro graph by name from the standard macros blueprint
+	 * @param MacroName - Name of the macro (e.g., "ForLoop", "WhileLoop")
+	 * @return The macro graph if found, nullptr otherwise
+	 */
+	static UEdGraph* FindMacroGraph(const FString& MacroName);
 
 private:
 	/** Helper to set node position */

@@ -227,19 +227,11 @@ bool FCompiler::CompileFunction(const FFunction& Func, FBlueprintGraphData& OutG
 				ValuePin.Name = Output.Name;
 				ValuePin.Direction = EBlueprintPinDirection::Input;
 
-				if (ValueInfo->Key == TEXT("__literal__"))
-				{
-					// Literal value - set as default
-					ValuePin.DefaultValue = ValueInfo->Value;
-				}
-				else
-				{
-					// Connection to another node
-					FBlueprintPinConnection Conn;
-					Conn.SourceNodeId = ValueInfo->Key;
-					Conn.SourcePinName = ValueInfo->Value;
-					ValuePin.Connections.Add(Conn);
-				}
+				// Connection to another node (including MakeLiteral nodes for literal values)
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ValueInfo->Key;
+				Conn.SourcePinName = ValueInfo->Value;
+				ValuePin.Connections.Add(Conn);
 				ResultNode.Pins.Add(ValuePin);
 			}
 		}
@@ -259,49 +251,73 @@ bool FCompiler::CompileStatements(
 	FString LastNodeId = EntryNodeId;
 	FString LastPinName = EntryPinName;
 
+	// First pass: count how many If statements need Sequence branches
+	// An If needs a branch if there are more statements after it
+	int32 SequenceBranchCount = 0;
+	for (int32 i = 0; i < Statements.Num(); i++)
+	{
+		const TSharedPtr<FStatement>& Stmt = Statements[i];
+		if (Stmt && Stmt->Type == EStatementType::If && (i + 1 < Statements.Num()))
+		{
+			SequenceBranchCount++;
+		}
+	}
+
+	// If we need a Sequence, create one with enough branches
+	FString SeqNodeId;
+	int32 CurrentSeqBranch = 0;
+
+	if (SequenceBranchCount > 0)
+	{
+		// Create Sequence node with (SequenceBranchCount + 1) outputs
+		// Each If gets one branch, plus one final branch for remaining statements
+		FBlueprintNodeData SeqNode;
+		SeqNode.NodeId = GenerateNodeId(TEXT("seq"));
+		SeqNode.NodeType = EBlueprintNodeType::Flow_Sequence;
+		SeqNode.Position = {350.0f, 0.0f};
+		SeqNode.SequenceOutputCount = SequenceBranchCount + 1;  // +1 for final statements
+
+		// Connect execute from previous node
+		if (!LastNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = LastNodeId;
+			Conn.SourcePinName = LastPinName;
+			ExecPin.Connections.Add(Conn);
+			SeqNode.Pins.Add(ExecPin);
+		}
+
+		OutNodes.Add(SeqNode);
+		SeqNodeId = SeqNode.NodeId;
+	}
+
+	// Second pass: compile statements
 	for (int32 i = 0; i < Statements.Num(); i++)
 	{
 		const TSharedPtr<FStatement>& Stmt = Statements[i];
 		if (!Stmt) continue;
 
 		// Check if this is an if statement with more statements after it
-		// If so, we need a Sequence node to ensure subsequent code runs
-		bool bNeedSequence = (Stmt->Type == EStatementType::If) && (i + 1 < Statements.Num());
+		bool bNeedSequenceBranch = (Stmt->Type == EStatementType::If) && (i + 1 < Statements.Num());
 
-		if (bNeedSequence)
+		if (bNeedSequenceBranch)
 		{
-			// Create Sequence node
-			FBlueprintNodeData SeqNode;
-			SeqNode.NodeId = GenerateNodeId(TEXT("seq"));
-			SeqNode.NodeType = EBlueprintNodeType::Flow_Sequence;
-			SeqNode.Position = {350.0f, 0.0f};
+			// Compile the if statement from Sequence's then_X output
+			FString IfEntryNodeId = SeqNodeId;
+			FString IfEntryPinName = FString::Printf(TEXT("then_%d"), CurrentSeqBranch);
+			CurrentSeqBranch++;
 
-			// Connect execute from previous node
-			if (!LastNodeId.IsEmpty())
-			{
-				FBlueprintPinData ExecPin;
-				ExecPin.Name = TEXT("execute");
-				ExecPin.Direction = EBlueprintPinDirection::Input;
-				FBlueprintPinConnection Conn;
-				Conn.SourceNodeId = LastNodeId;
-				Conn.SourcePinName = LastPinName;
-				ExecPin.Connections.Add(Conn);
-				SeqNode.Pins.Add(ExecPin);
-			}
-
-			OutNodes.Add(SeqNode);
-
-			// Compile the if statement from Sequence's then_0 output
-			FString IfEntryNodeId = SeqNode.NodeId;
-			FString IfEntryPinName = TEXT("then_0");
 			if (!CompileStatement(*Stmt, OutNodes, IfEntryNodeId, IfEntryPinName))
 			{
 				return false;
 			}
 
-			// Continue subsequent statements from Sequence's then_1 output
-			LastNodeId = SeqNode.NodeId;
-			LastPinName = TEXT("then_1");
+			// Update last node/pin to continue from next Sequence branch
+			LastNodeId = SeqNodeId;
+			LastPinName = FString::Printf(TEXT("then_%d"), CurrentSeqBranch);
 		}
 		else
 		{
@@ -351,29 +367,51 @@ bool FCompiler::CompileStatement(
 				}
 				else
 				{
-					// For literals, store a special marker with the literal value
-					// Format: ("__literal__", "value")
+					// For literals, create a MakeLiteral node so the value can be read later
+					// This is needed when the output parameter is used in expressions (e.g., Sum = Sum + i)
 					FString LiteralValue;
+					FString MakeLiteralFunc;
 					switch (Stmt.AssignValue->Type)
 					{
 					case EExpressionType::Literal_Bool:
 						LiteralValue = Stmt.AssignValue->BoolValue ? TEXT("true") : TEXT("false");
+						MakeLiteralFunc = TEXT("MakeLiteralBool");
 						break;
 					case EExpressionType::Literal_Int:
 						LiteralValue = FString::FromInt(Stmt.AssignValue->IntValue);
+						MakeLiteralFunc = TEXT("MakeLiteralInt");
 						break;
 					case EExpressionType::Literal_Float:
 						LiteralValue = FString::SanitizeFloat(Stmt.AssignValue->FloatValue);
+						MakeLiteralFunc = TEXT("MakeLiteralDouble");
 						break;
 					case EExpressionType::Literal_String:
 						LiteralValue = Stmt.AssignValue->StringValue;
+						MakeLiteralFunc = TEXT("MakeLiteralString");
 						break;
 					default:
 						break;
 					}
 					if (!LiteralValue.IsEmpty())
 					{
-						OutputValueMap.Add(Stmt.AssignTarget, TPair<FString, FString>(TEXT("__literal__"), LiteralValue));
+						// Create a MakeLiteral node
+						FBlueprintNodeData LiteralNode;
+						LiteralNode.NodeId = GenerateNodeId(TEXT("literal"));
+						LiteralNode.NodeType = EBlueprintNodeType::PureFunction;
+						LiteralNode.FunctionReference = MakeLiteralFunc;
+						LiteralNode.Position = {200.0f, 0.0f};
+
+						// Set the value as default on the input pin
+						FBlueprintPinData ValuePin;
+						ValuePin.Name = TEXT("Value");
+						ValuePin.Direction = EBlueprintPinDirection::Input;
+						ValuePin.DefaultValue = LiteralValue;
+						LiteralNode.Pins.Add(ValuePin);
+
+						OutNodes.Add(LiteralNode);
+
+						// Store the literal node as the value source
+						OutputValueMap.Add(Stmt.AssignTarget, TPair<FString, FString>(LiteralNode.NodeId, TEXT("ReturnValue")));
 					}
 				}
 			}
@@ -640,6 +678,250 @@ bool FCompiler::CompileStatement(
 		return true;
 	}
 
+	case EStatementType::For:
+	{
+		// For loop: for i in start..end { body }
+		// Check if loop body contains break statement to determine which macro to use
+		bool bHasBreak = ContainsBreakStatement(Stmt.LoopBody);
+
+		FBlueprintNodeData ForNode;
+		ForNode.NodeId = GenerateNodeId(TEXT("for"));
+		ForNode.NodeType = bHasBreak ? EBlueprintNodeType::Flow_ForLoopWithBreak : EBlueprintNodeType::Flow_ForLoop;
+		ForNode.Position = {400.0f, 0.0f};
+
+		// Connect execute from previous node
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection ExecConn;
+			ExecConn.SourceNodeId = InOutLastExecNodeId;
+			ExecConn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(ExecConn);
+			ForNode.Pins.Add(ExecPin);
+		}
+
+		// Compile start (FirstIndex) expression
+		if (Stmt.LoopStart.IsValid())
+		{
+			FString StartNodeId;
+			FString StartPinName = CompileExpression(*Stmt.LoopStart, OutNodes, StartNodeId);
+
+			FBlueprintPinData FirstIndexPin;
+			FirstIndexPin.Name = TEXT("FirstIndex");
+			FirstIndexPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!StartNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = StartNodeId;
+				Conn.SourcePinName = StartPinName;
+				FirstIndexPin.Connections.Add(Conn);
+			}
+			else if (Stmt.LoopStart->Type == EExpressionType::Literal_Int)
+			{
+				FirstIndexPin.DefaultValue = FString::FromInt(Stmt.LoopStart->IntValue);
+			}
+			ForNode.Pins.Add(FirstIndexPin);
+		}
+
+		// Compile end (LastIndex) expression
+		if (Stmt.LoopEnd.IsValid())
+		{
+			FString EndNodeId;
+			FString EndPinName = CompileExpression(*Stmt.LoopEnd, OutNodes, EndNodeId);
+
+			FBlueprintPinData LastIndexPin;
+			LastIndexPin.Name = TEXT("LastIndex");
+			LastIndexPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!EndNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = EndNodeId;
+				Conn.SourcePinName = EndPinName;
+				LastIndexPin.Connections.Add(Conn);
+			}
+			else if (Stmt.LoopEnd->Type == EExpressionType::Literal_Int)
+			{
+				LastIndexPin.DefaultValue = FString::FromInt(Stmt.LoopEnd->IntValue);
+			}
+			ForNode.Pins.Add(LastIndexPin);
+		}
+
+		OutNodes.Add(ForNode);
+
+		// Map the loop variable to the ForLoop's Index output pin
+		// When the loop body references 'i', it should connect to ForNode.Index
+		FString LoopVarName = Stmt.LoopVariable;
+		VariableNodeMap.Add(LoopVarName, ForNode.NodeId);
+		VariableTypeMap.Add(LoopVarName, EType::Int);
+
+		// Push loop context for break/continue support
+		FLoopContext LoopCtx;
+		LoopCtx.LoopNodeId = ForNode.NodeId;
+		LoopCtx.bHasBreak = bHasBreak;
+		LoopContextStack.Push(LoopCtx);
+
+		// Compile the loop body from the LoopBody pin
+		FString BodyLastNodeId = ForNode.NodeId;
+		FString BodyLastPinName = TEXT("LoopBody");
+		CompileStatements(Stmt.LoopBody, OutNodes, BodyLastNodeId, BodyLastPinName);
+
+		// Pop loop context
+		LoopContextStack.Pop();
+
+		// After loop completes, execution continues from Completed pin
+		InOutLastExecNodeId = ForNode.NodeId;
+		InOutLastExecPinName = TEXT("Completed");
+
+		// Remove the loop variable from the map (it's only valid inside the loop)
+		VariableNodeMap.Remove(LoopVarName);
+		VariableTypeMap.Remove(LoopVarName);
+
+		return true;
+	}
+
+	case EStatementType::While:
+	{
+		// While loop: while (condition) { body }
+		// UE's WhileLoop macro expects condition to be checked inside the loop
+		// Pin layout: execute -> LoopBody (exec out), Condition (bool in) -> Completed (exec out)
+		FBlueprintNodeData WhileNode;
+		WhileNode.NodeId = GenerateNodeId(TEXT("while"));
+		WhileNode.NodeType = EBlueprintNodeType::Flow_WhileLoop;
+		WhileNode.Position = {400.0f, 0.0f};
+
+		// Connect execute from previous node
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection ExecConn;
+			ExecConn.SourceNodeId = InOutLastExecNodeId;
+			ExecConn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(ExecConn);
+			WhileNode.Pins.Add(ExecPin);
+		}
+
+		// Compile condition expression
+		if (Stmt.Condition.IsValid())
+		{
+			FString CondNodeId;
+			FString CondPinName = CompileExpression(*Stmt.Condition, OutNodes, CondNodeId);
+
+			FBlueprintPinData CondPin;
+			CondPin.Name = TEXT("Condition");
+			CondPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!CondNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = CondNodeId;
+				Conn.SourcePinName = CondPinName;
+				CondPin.Connections.Add(Conn);
+			}
+			else if (Stmt.Condition->Type == EExpressionType::Literal_Bool)
+			{
+				CondPin.DefaultValue = Stmt.Condition->BoolValue ? TEXT("true") : TEXT("false");
+			}
+			WhileNode.Pins.Add(CondPin);
+		}
+
+		OutNodes.Add(WhileNode);
+
+		// Push loop context for break/continue support
+		// Note: WhileLoop macro doesn't have a Break pin, so we use a different approach
+		FLoopContext LoopCtx;
+		LoopCtx.LoopNodeId = WhileNode.NodeId;
+		LoopCtx.bHasBreak = false;  // WhileLoop doesn't support break pin directly
+		LoopContextStack.Push(LoopCtx);
+
+		// Compile the loop body from the LoopBody pin
+		FString BodyLastNodeId = WhileNode.NodeId;
+		FString BodyLastPinName = TEXT("LoopBody");
+		CompileStatements(Stmt.LoopBody, OutNodes, BodyLastNodeId, BodyLastPinName);
+
+		// Pop loop context
+		LoopContextStack.Pop();
+
+		// After loop completes, execution continues from Completed pin
+		InOutLastExecNodeId = WhileNode.NodeId;
+		InOutLastExecPinName = TEXT("Completed");
+
+		return true;
+	}
+
+	case EStatementType::Break:
+	{
+		// Break statement - connects to the enclosing loop's Break pin
+		if (LoopContextStack.Num() == 0)
+		{
+			Error(TEXT("Break statement outside of loop"));
+			return false;
+		}
+
+		const FLoopContext& CurrentLoop = LoopContextStack.Last();
+
+		if (!CurrentLoop.bHasBreak)
+		{
+			// WhileLoop doesn't have a Break pin, warn and skip
+			Warning(TEXT("Break in while loop - not supported (use a condition variable instead)"));
+			// End execution flow, nothing after break executes
+			InOutLastExecNodeId.Empty();
+			InOutLastExecPinName.Empty();
+			return true;
+		}
+
+		// For ForLoopWithBreak, we need to connect to its Break pin
+		// Find the loop node in OutNodes and add the Break pin connection
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			// Find the loop node and add Break pin connection
+			for (FBlueprintNodeData& Node : OutNodes)
+			{
+				if (Node.NodeId == CurrentLoop.LoopNodeId)
+				{
+					FBlueprintPinData BreakPin;
+					BreakPin.Name = TEXT("Break");
+					BreakPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = InOutLastExecNodeId;
+					Conn.SourcePinName = InOutLastExecPinName;
+					BreakPin.Connections.Add(Conn);
+					Node.Pins.Add(BreakPin);
+					break;
+				}
+			}
+		}
+
+		// After break, no more statements should execute in this branch
+		InOutLastExecNodeId.Empty();
+		InOutLastExecPinName.Empty();
+		return true;
+	}
+
+	case EStatementType::Continue:
+	{
+		// Continue statement - skip the rest of the loop body and go to next iteration
+		// In UE blueprints, this is done by simply not connecting to subsequent nodes
+		// The loop body ends, and the loop macro handles the next iteration
+
+		if (LoopContextStack.Num() == 0)
+		{
+			Error(TEXT("Continue statement outside of loop"));
+			return false;
+		}
+
+		// After continue, no more statements should execute in this branch
+		// The loop macro will automatically go to the next iteration
+		InOutLastExecNodeId.Empty();
+		InOutLastExecPinName.Empty();
+		return true;
+	}
+
 	default:
 		Warning(FString::Printf(TEXT("Unsupported statement type: %d"), static_cast<int32>(Stmt.Type)));
 		return true;
@@ -669,20 +951,13 @@ FString FCompiler::CompileExpression(
 		{
 			if (TPair<FString, FString>* ValueInfo = OutputValueMap.Find(Expr.Name))
 			{
-				if (ValueInfo->Key != TEXT("__literal__"))
-				{
-					// Return the stored expression result
-					OutNodeId = ValueInfo->Key;
-					return ValueInfo->Value;
-				}
-				// For literals, we can't return a node reference
-				// This would require creating a make literal node, which is complex
-				// For now, warn about this limitation
-				Warning(FString::Printf(TEXT("Cannot read literal output parameter '%s' - use a local variable instead"), *Expr.Name));
+				// Return the stored expression result (either a computed node or a MakeLiteral node)
+				OutNodeId = ValueInfo->Key;
+				return ValueInfo->Value;
 			}
 		}
 
-		// Check if this is a function input parameter (mapped to fn_entry)
+		// Check if this variable is mapped to a special node (function entry or loop index)
 		if (FString* MappedNodeId = VariableNodeMap.Find(Expr.Name))
 		{
 			if (*MappedNodeId == TEXT("fn_entry"))
@@ -690,6 +965,12 @@ FString FCompiler::CompileExpression(
 				// Function parameter - reference from fn_entry node
 				OutNodeId = *MappedNodeId;
 				return Expr.Name;
+			}
+			else if (MappedNodeId->StartsWith(TEXT("for_")))
+			{
+				// Loop variable - reference from ForLoop node's Index pin
+				OutNodeId = *MappedNodeId;
+				return TEXT("Index");
 			}
 		}
 
@@ -1131,6 +1412,40 @@ bool FCompiler::IsFunctionOutputParameter(const FString& Name) const
 		{
 			return true;
 		}
+	}
+
+	return false;
+}
+
+bool FCompiler::ContainsBreakStatement(const TArray<TSharedPtr<FStatement>>& Statements)
+{
+	for (const TSharedPtr<FStatement>& Stmt : Statements)
+	{
+		if (!Stmt.IsValid())
+		{
+			continue;
+		}
+
+		if (Stmt->Type == EStatementType::Break)
+		{
+			return true;
+		}
+
+		// Recursively check nested statements (if/else blocks)
+		if (Stmt->Type == EStatementType::If)
+		{
+			if (ContainsBreakStatement(Stmt->ThenBody))
+			{
+				return true;
+			}
+			if (ContainsBreakStatement(Stmt->ElseBody))
+			{
+				return true;
+			}
+		}
+
+		// Note: We don't recurse into nested loops because break in a nested loop
+		// only breaks the inner loop, not the outer one
 	}
 
 	return false;
