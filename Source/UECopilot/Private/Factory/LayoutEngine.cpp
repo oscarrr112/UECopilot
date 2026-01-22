@@ -718,26 +718,7 @@ void ULayoutEngine::AssignLayers(TMap<UK2Node*, FNodeLayerInfo>& NodeInfo)
 		if (!Processed.Contains(Pair.Key))
 		{
 			Pair.Value.Layer = 0;
-			UE_LOG(LogTemp, Warning, TEXT("Unprocessed node (cycle?): %s -> Layer 0"),
-				*Pair.Key->GetNodeTitle(ENodeTitleType::ListView).ToString());
 		}
-	}
-
-	// Debug: Log final layer assignments
-	for (auto& Pair : NodeInfo)
-	{
-		FString PredNames;
-		for (UK2Node* Pred : Pair.Value.Predecessors)
-		{
-			if (Pred)
-			{
-				PredNames += Pred->GetNodeTitle(ENodeTitleType::ListView).ToString() + TEXT(", ");
-			}
-		}
-		UE_LOG(LogTemp, Log, TEXT("Layer Assignment: %s -> Layer %d (Preds: %s)"),
-			*Pair.Key->GetNodeTitle(ENodeTitleType::ListView).ToString(),
-			Pair.Value.Layer,
-			PredNames.IsEmpty() ? TEXT("none") : *PredNames);
 	}
 }
 
