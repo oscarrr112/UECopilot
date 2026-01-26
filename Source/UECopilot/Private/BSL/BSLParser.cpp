@@ -355,7 +355,7 @@ TSharedPtr<FStatement> FParser::ParseAssignment()
 		return Stmt;
 	}
 
-	// Parse left-hand side (could be just an identifier or a member access)
+	// Parse left-hand side (could be just an identifier or a member access or array access)
 	TSharedPtr<FExpression> LHS = ParsePostfix();
 
 	if (Match(ETokenType::Equal))
@@ -373,6 +373,22 @@ TSharedPtr<FStatement> FParser::ParseAssignment()
 			// For now, store the full expression for member access
 			Stmt->Expression = LHS;  // Store LHS expression
 			Stmt->AssignTarget = LHS->MemberName;
+		}
+		else if (LHS->Type == EExpressionType::ArrayAccess)
+		{
+			// Array index assignment: arr[index] = value
+			// LHS->Left is the array expression, LHS->Right is the index expression
+			if (LHS->Left.IsValid() && LHS->Left->Type == EExpressionType::Variable)
+			{
+				Stmt->AssignTarget = LHS->Left->Name;
+				Stmt->ArrayIndexExpr = LHS->Right;
+				Stmt->Expression = LHS->Left;  // Store the array expression
+			}
+			else
+			{
+				Error(TEXT("Array index assignment only supports direct variable access"));
+				return nullptr;
+			}
 		}
 		else
 		{
@@ -653,13 +669,31 @@ TSharedPtr<FExpression> FParser::ParsePostfix()
 		}
 		else if (Match(ETokenType::Dot))
 		{
-			// Member access
+			// Member access or method call
 			FToken MemberToken = Consume(ETokenType::Identifier, TEXT("Expected member name"));
 
-			TSharedPtr<FExpression> Member = MakeShared<FExpression>(EExpressionType::MemberAccess);
-			Member->Object = Expr;
-			Member->MemberName = MemberToken.Value;
-			Expr = Member;
+			// Check if this is a method call (followed by '(')
+			if (Check(ETokenType::LeftParen))
+			{
+				// Method call: obj.method(args)
+				Advance(); // consume '('
+				TArray<TSharedPtr<FExpression>> Args = ParseArguments();
+				Consume(ETokenType::RightParen, TEXT("Expected ')'"));
+
+				TSharedPtr<FExpression> MethodCall = MakeShared<FExpression>(EExpressionType::MethodCall);
+				MethodCall->Object = Expr;
+				MethodCall->MemberName = MemberToken.Value;
+				MethodCall->Arguments = Args;
+				Expr = MethodCall;
+			}
+			else
+			{
+				// Simple member access: obj.member
+				TSharedPtr<FExpression> Member = MakeShared<FExpression>(EExpressionType::MemberAccess);
+				Member->Object = Expr;
+				Member->MemberName = MemberToken.Value;
+				Expr = Member;
+			}
 		}
 		else if (Match(ETokenType::LeftBracket))
 		{
@@ -718,6 +752,26 @@ TSharedPtr<FExpression> FParser::ParsePrimary()
 		TSharedPtr<FExpression> Expr = ParseExpression();
 		Consume(ETokenType::RightParen, TEXT("Expected ')'"));
 		return Expr;
+	}
+
+	// Array literal: [expr, expr, ...]
+	if (Match(ETokenType::LeftBracket))
+	{
+		TSharedPtr<FExpression> ArrayExpr = MakeShared<FExpression>(EExpressionType::ArrayLiteral);
+		ArrayExpr->Line = Previous().Line;
+		ArrayExpr->Column = Previous().Column;
+
+		// Parse elements
+		if (!Check(ETokenType::RightBracket))
+		{
+			do
+			{
+				ArrayExpr->ArrayElements.Add(ParseExpression());
+			} while (Match(ETokenType::Comma));
+		}
+
+		Consume(ETokenType::RightBracket, TEXT("Expected ']' after array elements"));
+		return ArrayExpr;
 	}
 
 	// Identifier

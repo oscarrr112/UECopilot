@@ -198,6 +198,16 @@ TSharedRef<SWidget> SBSLTestWindow::BuildTestCaseButtons()
 			.Text(LOCTEXT("BreakContinueTest", "Break/Continue"))
 			.OnClicked(this, &SBSLTestWindow::OnBreakContinueTestClicked)
 			.ToolTipText(LOCTEXT("BreakContinueTestTooltip", "Break and Continue statements"))
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(4.0f, 0.0f)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("ArrayTest", "Array"))
+			.OnClicked(this, &SBSLTestWindow::OnArrayTestClicked)
+			.ToolTipText(LOCTEXT("ArrayTestTooltip", "Array operations"))
 		];
 }
 
@@ -273,6 +283,14 @@ FReply SBSLTestWindow::OnBreakContinueTestClicked()
 	SetBSLCode(GetBreakContinueTestCode());
 	ClearOutput();
 	AppendOutput(TEXT("Loaded: Break/Continue Test (Break and Continue statements)\n"));
+	return FReply::Handled();
+}
+
+FReply SBSLTestWindow::OnArrayTestClicked()
+{
+	SetBSLCode(GetArrayTestCode());
+	ClearOutput();
+	AppendOutput(TEXT("Loaded: Array Test (Array operations)\n"));
 	return FReply::Handled();
 }
 
@@ -582,6 +600,47 @@ FString SBSLTestWindow::GetBreakContinueTestCode()
     }
 
     PrintString("Break/Continue Test Completed")
+  }
+})");
+}
+
+FString SBSLTestWindow::GetArrayTestCode()
+{
+	return TEXT(R"(blueprint BP_ArrayTest extends Actor {
+  var Numbers: Array<int> = []
+  var Names: Array<string> = []
+  var Count: int = 0
+
+  event BeginPlay {
+    PrintString("Array Test Started")
+
+    // Add elements to array
+    Numbers.Add(10)
+    Numbers.Add(20)
+    Numbers.Add(30)
+
+    // Get array length
+    Count = Numbers.Length()
+
+    // Access array elements
+    if (Count > 0) {
+      PrintString("First element accessed")
+    }
+
+    // Set array element
+    Numbers[0] = 100
+
+    // Remove element from array
+    Numbers.Remove(20)
+
+    // Clear array
+    Names.Clear()
+
+    PrintString("Array Test Completed")
+  }
+
+  function GetArrayCount(Items: Array<int>) -> (Total: int) {
+    Total = Items.Length()
   }
 })");
 }

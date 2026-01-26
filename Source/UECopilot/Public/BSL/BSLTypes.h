@@ -94,12 +94,14 @@ enum class EExpressionType : uint8
 	Literal_String,
 	Literal_Vector,
 	Literal_Rotator,
+	ArrayLiteral,		// [1, 2, 3]
 
 	// References
 	Variable,			// Variable reference
 	FunctionCall,		// Function call with arguments
 	MemberAccess,		// obj.member
 	ArrayAccess,		// arr[index]
+	MethodCall,			// obj.method(args) - method call on object
 
 	// Operators
 	BinaryOp,			// a + b, a && b, etc.
@@ -169,9 +171,12 @@ struct FExpression
 	TSharedPtr<FExpression> Left;
 	TSharedPtr<FExpression> Right;	// nullptr for unary
 
-	// Member access
+	// Member access / Method call
 	TSharedPtr<FExpression> Object;
 	FString MemberName;
+
+	// Array literal elements
+	TArray<TSharedPtr<FExpression>> ArrayElements;
 
 	// Cast
 	FTypeInfo CastType;
@@ -232,6 +237,9 @@ struct FStatement
 	FString AssignTarget;
 	TArray<FString> MultiAssignTargets;
 	TSharedPtr<FExpression> AssignValue;
+
+	// Array index assignment (arr[index] = value)
+	TSharedPtr<FExpression> ArrayIndexExpr;  // The index expression for arr[index] = value
 
 	// If statement
 	TSharedPtr<FExpression> Condition;

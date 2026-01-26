@@ -350,6 +350,118 @@ bool FCompiler::CompileStatement(
 
 	case EStatementType::Assignment:
 	{
+		// Check if this is an array index assignment (arr[index] = value)
+		if (Stmt.ArrayIndexExpr.IsValid())
+		{
+			// Create Array_Set node
+			FBlueprintNodeData SetNode;
+			SetNode.NodeId = GenerateNodeId(TEXT("arr_set"));
+			SetNode.NodeType = EBlueprintNodeType::Array_Set;
+			SetNode.Position = {400.0f, 0.0f};
+
+			// Connect execute from previous node
+			if (!InOutLastExecNodeId.IsEmpty())
+			{
+				FBlueprintPinData ExecPin;
+				ExecPin.Name = TEXT("execute");
+				ExecPin.Direction = EBlueprintPinDirection::Input;
+
+				FBlueprintPinConnection ExecConn;
+				ExecConn.SourceNodeId = InOutLastExecNodeId;
+				ExecConn.SourcePinName = InOutLastExecPinName;
+				ExecPin.Connections.Add(ExecConn);
+				SetNode.Pins.Add(ExecPin);
+			}
+
+			// Connect array (TargetArray pin) - using the stored expression
+			if (Stmt.Expression.IsValid())
+			{
+				FString ArrayNodeId;
+				FString ArrayPinName = CompileExpression(*Stmt.Expression, OutNodes, ArrayNodeId);
+
+				if (!ArrayNodeId.IsEmpty())
+				{
+					FBlueprintPinData ArrayPin;
+					ArrayPin.Name = TEXT("TargetArray");
+					ArrayPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = ArrayNodeId;
+					Conn.SourcePinName = ArrayPinName;
+					ArrayPin.Connections.Add(Conn);
+					SetNode.Pins.Add(ArrayPin);
+				}
+			}
+
+			// Connect index
+			{
+				FString IndexNodeId;
+				FString IndexPinName = CompileExpression(*Stmt.ArrayIndexExpr, OutNodes, IndexNodeId);
+
+				FBlueprintPinData IndexPin;
+				IndexPin.Name = TEXT("Index");
+				IndexPin.Direction = EBlueprintPinDirection::Input;
+
+				if (!IndexNodeId.IsEmpty())
+				{
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = IndexNodeId;
+					Conn.SourcePinName = IndexPinName;
+					IndexPin.Connections.Add(Conn);
+				}
+				else if (Stmt.ArrayIndexExpr->Type == EExpressionType::Literal_Int)
+				{
+					IndexPin.DefaultValue = FString::FromInt(Stmt.ArrayIndexExpr->IntValue);
+				}
+				SetNode.Pins.Add(IndexPin);
+			}
+
+			// Connect value
+			if (Stmt.AssignValue.IsValid())
+			{
+				FString ValueNodeId;
+				FString ValuePinName = CompileExpression(*Stmt.AssignValue, OutNodes, ValueNodeId);
+
+				FBlueprintPinData ValuePin;
+				ValuePin.Name = TEXT("Item");
+				ValuePin.Direction = EBlueprintPinDirection::Input;
+
+				if (!ValueNodeId.IsEmpty())
+				{
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = ValueNodeId;
+					Conn.SourcePinName = ValuePinName;
+					ValuePin.Connections.Add(Conn);
+				}
+				else
+				{
+					// Handle literal values
+					switch (Stmt.AssignValue->Type)
+					{
+					case EExpressionType::Literal_Bool:
+						ValuePin.DefaultValue = Stmt.AssignValue->BoolValue ? TEXT("true") : TEXT("false");
+						break;
+					case EExpressionType::Literal_Int:
+						ValuePin.DefaultValue = FString::FromInt(Stmt.AssignValue->IntValue);
+						break;
+					case EExpressionType::Literal_Float:
+						ValuePin.DefaultValue = FString::SanitizeFloat(Stmt.AssignValue->FloatValue);
+						break;
+					case EExpressionType::Literal_String:
+						ValuePin.DefaultValue = Stmt.AssignValue->StringValue;
+						break;
+					default:
+						break;
+					}
+				}
+				SetNode.Pins.Add(ValuePin);
+			}
+
+			OutNodes.Add(SetNode);
+			InOutLastExecNodeId = SetNode.NodeId;
+			InOutLastExecPinName = TEXT("then");
+			return true;
+		}
+
 		// Check if this is an assignment to a function output parameter
 		if (IsFunctionOutputParameter(Stmt.AssignTarget))
 		{
@@ -492,66 +604,175 @@ bool FCompiler::CompileStatement(
 
 	case EStatementType::ExpressionStmt:
 	{
-		// Expression as statement - likely a function call
-		if (Stmt.Expression.IsValid() && Stmt.Expression->Type == EExpressionType::FunctionCall)
+		// Expression as statement - could be function call or method call
+		if (Stmt.Expression.IsValid())
 		{
-			FBlueprintNodeData CallNode;
-			CallNode.NodeId = GenerateNodeId(TEXT("call"));
-			CallNode.NodeType = EBlueprintNodeType::CallFunction;
-			CallNode.FunctionReference = Stmt.Expression->Name;
-			CallNode.Position = {400.0f, 0.0f};
-
-			// Connect execute
-			if (!InOutLastExecNodeId.IsEmpty())
+			if (Stmt.Expression->Type == EExpressionType::FunctionCall)
 			{
-				FBlueprintPinData ExecPin;
-				ExecPin.Name = TEXT("execute");
-				ExecPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintNodeData CallNode;
+				CallNode.NodeId = GenerateNodeId(TEXT("call"));
+				CallNode.NodeType = EBlueprintNodeType::CallFunction;
+				CallNode.FunctionReference = Stmt.Expression->Name;
+				CallNode.Position = {400.0f, 0.0f};
 
-				FBlueprintPinConnection ExecConn;
-				ExecConn.SourceNodeId = InOutLastExecNodeId;
-				ExecConn.SourcePinName = InOutLastExecPinName;
-				ExecPin.Connections.Add(ExecConn);
-				CallNode.Pins.Add(ExecPin);
-			}
-
-			// Compile arguments
-			int32 ArgIndex = 0;
-			for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
-			{
-				if (!Arg) continue;
-
-				FString ArgNodeId;
-				FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
-
-				// For string literal arguments, use default value instead of connection
-				if (Arg->Type == EExpressionType::Literal_String)
+				// Connect execute
+				if (!InOutLastExecNodeId.IsEmpty())
 				{
-					FBlueprintPinData ArgPin;
-					ArgPin.Name = TEXT("InString");  // Common name for PrintString
-					ArgPin.Direction = EBlueprintPinDirection::Input;
-					ArgPin.DefaultValue = Arg->StringValue;
-					CallNode.Pins.Add(ArgPin);
-				}
-				else if (!ArgNodeId.IsEmpty())
-				{
-					FBlueprintPinData ArgPin;
-					ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
-					ArgPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinData ExecPin;
+					ExecPin.Name = TEXT("execute");
+					ExecPin.Direction = EBlueprintPinDirection::Input;
 
-					FBlueprintPinConnection ArgConn;
-					ArgConn.SourceNodeId = ArgNodeId;
-					ArgConn.SourcePinName = ArgPinName;
-					ArgPin.Connections.Add(ArgConn);
-					CallNode.Pins.Add(ArgPin);
+					FBlueprintPinConnection ExecConn;
+					ExecConn.SourceNodeId = InOutLastExecNodeId;
+					ExecConn.SourcePinName = InOutLastExecPinName;
+					ExecPin.Connections.Add(ExecConn);
+					CallNode.Pins.Add(ExecPin);
 				}
 
-				ArgIndex++;
-			}
+				// Compile arguments
+				int32 ArgIndex = 0;
+				for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
+				{
+					if (!Arg) continue;
 
-			OutNodes.Add(CallNode);
-			InOutLastExecNodeId = CallNode.NodeId;
-			InOutLastExecPinName = TEXT("then");
+					FString ArgNodeId;
+					FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+
+					// For string literal arguments, use default value instead of connection
+					if (Arg->Type == EExpressionType::Literal_String)
+					{
+						FBlueprintPinData ArgPin;
+						ArgPin.Name = TEXT("InString");  // Common name for PrintString
+						ArgPin.Direction = EBlueprintPinDirection::Input;
+						ArgPin.DefaultValue = Arg->StringValue;
+						CallNode.Pins.Add(ArgPin);
+					}
+					else if (!ArgNodeId.IsEmpty())
+					{
+						FBlueprintPinData ArgPin;
+						ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
+						ArgPin.Direction = EBlueprintPinDirection::Input;
+
+						FBlueprintPinConnection ArgConn;
+						ArgConn.SourceNodeId = ArgNodeId;
+						ArgConn.SourcePinName = ArgPinName;
+						ArgPin.Connections.Add(ArgConn);
+						CallNode.Pins.Add(ArgPin);
+					}
+
+					ArgIndex++;
+				}
+
+				OutNodes.Add(CallNode);
+				InOutLastExecNodeId = CallNode.NodeId;
+				InOutLastExecPinName = TEXT("then");
+			}
+			else if (Stmt.Expression->Type == EExpressionType::MethodCall)
+			{
+				// Handle array method calls: arr.Add(x), arr.Remove(x), arr.Clear()
+				FString MethodName = Stmt.Expression->MemberName;
+
+				EBlueprintNodeType NodeType = EBlueprintNodeType::CallFunction;
+				if (MethodName == TEXT("Add"))
+				{
+					NodeType = EBlueprintNodeType::Array_Add;
+				}
+				else if (MethodName == TEXT("Remove"))
+				{
+					NodeType = EBlueprintNodeType::Array_Remove;
+				}
+				else if (MethodName == TEXT("Clear"))
+				{
+					NodeType = EBlueprintNodeType::Array_Clear;
+				}
+
+				FBlueprintNodeData MethodNode;
+				MethodNode.NodeId = GenerateNodeId(TEXT("arr_method"));
+				MethodNode.NodeType = NodeType;
+				MethodNode.Position = {400.0f, 0.0f};
+
+				// Connect execute
+				if (!InOutLastExecNodeId.IsEmpty())
+				{
+					FBlueprintPinData ExecPin;
+					ExecPin.Name = TEXT("execute");
+					ExecPin.Direction = EBlueprintPinDirection::Input;
+
+					FBlueprintPinConnection ExecConn;
+					ExecConn.SourceNodeId = InOutLastExecNodeId;
+					ExecConn.SourcePinName = InOutLastExecPinName;
+					ExecPin.Connections.Add(ExecConn);
+					MethodNode.Pins.Add(ExecPin);
+				}
+
+				// Connect array (TargetArray pin)
+				if (Stmt.Expression->Object.IsValid())
+				{
+					FString ArrayNodeId;
+					FString ArrayPinName = CompileExpression(*Stmt.Expression->Object, OutNodes, ArrayNodeId);
+
+					if (!ArrayNodeId.IsEmpty())
+					{
+						FBlueprintPinData ArrayPin;
+						ArrayPin.Name = TEXT("TargetArray");
+						ArrayPin.Direction = EBlueprintPinDirection::Input;
+						FBlueprintPinConnection Conn;
+						Conn.SourceNodeId = ArrayNodeId;
+						Conn.SourcePinName = ArrayPinName;
+						ArrayPin.Connections.Add(Conn);
+						MethodNode.Pins.Add(ArrayPin);
+					}
+				}
+
+				// Connect arguments (for Add and Remove)
+				if (MethodName == TEXT("Add") || MethodName == TEXT("Remove"))
+				{
+					if (Stmt.Expression->Arguments.Num() > 0 && Stmt.Expression->Arguments[0].IsValid())
+					{
+						FString ArgNodeId;
+						FString ArgPinName = CompileExpression(*Stmt.Expression->Arguments[0], OutNodes, ArgNodeId);
+
+						FBlueprintPinData ArgPin;
+						ArgPin.Name = MethodName == TEXT("Add") ? TEXT("NewItem") : TEXT("Item");
+						ArgPin.Direction = EBlueprintPinDirection::Input;
+
+						if (!ArgNodeId.IsEmpty())
+						{
+							FBlueprintPinConnection Conn;
+							Conn.SourceNodeId = ArgNodeId;
+							Conn.SourcePinName = ArgPinName;
+							ArgPin.Connections.Add(Conn);
+						}
+						else
+						{
+							// Handle literal values
+							const FExpression& Arg = *Stmt.Expression->Arguments[0];
+							switch (Arg.Type)
+							{
+							case EExpressionType::Literal_Int:
+								ArgPin.DefaultValue = FString::FromInt(Arg.IntValue);
+								break;
+							case EExpressionType::Literal_Float:
+								ArgPin.DefaultValue = FString::SanitizeFloat(Arg.FloatValue);
+								break;
+							case EExpressionType::Literal_String:
+								ArgPin.DefaultValue = Arg.StringValue;
+								break;
+							case EExpressionType::Literal_Bool:
+								ArgPin.DefaultValue = Arg.BoolValue ? TEXT("true") : TEXT("false");
+								break;
+							default:
+								break;
+							}
+						}
+						MethodNode.Pins.Add(ArgPin);
+					}
+				}
+
+				OutNodes.Add(MethodNode);
+				InOutLastExecNodeId = MethodNode.NodeId;
+				InOutLastExecPinName = TEXT("then");
+			}
 		}
 		return true;
 	}
@@ -1242,6 +1463,176 @@ FString FCompiler::CompileExpression(
 		OutNodes.Add(GetNode);
 		OutNodeId = GetNode.NodeId;
 		return TEXT("ReturnValue");
+	}
+
+	case EExpressionType::ArrayLiteral:
+	{
+		// Array literal: [1, 2, 3] - for now, we'll create empty array if no elements
+		// or warn that array literals with initializers need MakeArray node
+		if (Expr.ArrayElements.Num() == 0)
+		{
+			// Empty array - this will be handled by the variable type
+			OutNodeId.Empty();
+			return TEXT("");
+		}
+		else
+		{
+			// Non-empty array literal - would need MakeArray node
+			// For now, warn and return empty
+			Warning(TEXT("Array literals with elements are not yet fully supported"));
+			OutNodeId.Empty();
+			return TEXT("");
+		}
+	}
+
+	case EExpressionType::ArrayAccess:
+	{
+		// arr[index] - create Array_Get node
+		FBlueprintNodeData GetNode;
+		GetNode.NodeId = GenerateNodeId(TEXT("arr_get"));
+		GetNode.NodeType = EBlueprintNodeType::Array_Get;
+		GetNode.Position = {300.0f, 100.0f};
+
+		// Connect array (TargetArray pin)
+		if (Expr.Left.IsValid())
+		{
+			FString ArrayNodeId;
+			FString ArrayPinName = CompileExpression(*Expr.Left, OutNodes, ArrayNodeId);
+
+			if (!ArrayNodeId.IsEmpty())
+			{
+				FBlueprintPinData ArrayPin;
+				ArrayPin.Name = TEXT("TargetArray");
+				ArrayPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ArrayNodeId;
+				Conn.SourcePinName = ArrayPinName;
+				ArrayPin.Connections.Add(Conn);
+				GetNode.Pins.Add(ArrayPin);
+			}
+		}
+
+		// Connect index
+		if (Expr.Right.IsValid())
+		{
+			FString IndexNodeId;
+			FString IndexPinName = CompileExpression(*Expr.Right, OutNodes, IndexNodeId);
+
+			FBlueprintPinData IndexPin;
+			IndexPin.Name = TEXT("Index");
+			IndexPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!IndexNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = IndexNodeId;
+				Conn.SourcePinName = IndexPinName;
+				IndexPin.Connections.Add(Conn);
+			}
+			else if (Expr.Right->Type == EExpressionType::Literal_Int)
+			{
+				IndexPin.DefaultValue = FString::FromInt(Expr.Right->IntValue);
+			}
+			GetNode.Pins.Add(IndexPin);
+		}
+
+		OutNodes.Add(GetNode);
+		OutNodeId = GetNode.NodeId;
+		return TEXT("Item");  // Array_Get returns on "Item" pin
+	}
+
+	case EExpressionType::MethodCall:
+	{
+		// obj.method(args) - handle array methods
+		FString MethodName = Expr.MemberName;
+
+		// Check if this is an array method
+		if (MethodName == TEXT("Length"))
+		{
+			// Array.Length() -> Array_Length node
+			FBlueprintNodeData LengthNode;
+			LengthNode.NodeId = GenerateNodeId(TEXT("arr_len"));
+			LengthNode.NodeType = EBlueprintNodeType::Array_Length;
+			LengthNode.Position = {300.0f, 100.0f};
+
+			if (Expr.Object.IsValid())
+			{
+				FString ArrayNodeId;
+				FString ArrayPinName = CompileExpression(*Expr.Object, OutNodes, ArrayNodeId);
+
+				if (!ArrayNodeId.IsEmpty())
+				{
+					FBlueprintPinData ArrayPin;
+					ArrayPin.Name = TEXT("TargetArray");
+					ArrayPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = ArrayNodeId;
+					Conn.SourcePinName = ArrayPinName;
+					ArrayPin.Connections.Add(Conn);
+					LengthNode.Pins.Add(ArrayPin);
+				}
+			}
+
+			OutNodes.Add(LengthNode);
+			OutNodeId = LengthNode.NodeId;
+			return TEXT("ReturnValue");
+		}
+		else
+		{
+			// Generic method call - treat as pure function
+			FBlueprintNodeData CallNode;
+			CallNode.NodeId = GenerateNodeId(TEXT("method"));
+			CallNode.NodeType = EBlueprintNodeType::PureFunction;
+			CallNode.FunctionReference = MethodName;
+			CallNode.Position = {300.0f, 100.0f};
+
+			// Connect object as target
+			if (Expr.Object.IsValid())
+			{
+				FString ObjNodeId;
+				FString ObjPinName = CompileExpression(*Expr.Object, OutNodes, ObjNodeId);
+
+				if (!ObjNodeId.IsEmpty())
+				{
+					FBlueprintPinData Pin;
+					Pin.Name = TEXT("Target");
+					Pin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = ObjNodeId;
+					Conn.SourcePinName = ObjPinName;
+					Pin.Connections.Add(Conn);
+					CallNode.Pins.Add(Pin);
+				}
+			}
+
+			// Add arguments
+			int32 ArgIndex = 0;
+			for (const TSharedPtr<FExpression>& Arg : Expr.Arguments)
+			{
+				if (!Arg) continue;
+
+				FString ArgNodeId;
+				FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+
+				FBlueprintPinData ArgPin;
+				ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
+				ArgPin.Direction = EBlueprintPinDirection::Input;
+
+				if (!ArgNodeId.IsEmpty())
+				{
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = ArgNodeId;
+					Conn.SourcePinName = ArgPinName;
+					ArgPin.Connections.Add(Conn);
+				}
+				CallNode.Pins.Add(ArgPin);
+				ArgIndex++;
+			}
+
+			OutNodes.Add(CallNode);
+			OutNodeId = CallNode.NodeId;
+			return TEXT("ReturnValue");
+		}
 	}
 
 	default:
