@@ -1,0 +1,86 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_BasicTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "Button",
+            "Name": "TestButton",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.5], "Max": [0.5, 0.5] },
+              "Offsets": { "Left": -100, "Top": -25, "Right": 100, "Bottom": 25 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "ButtonText",
+                "Properties": {
+                  "Text": "Click Me",
+                  "Justification": "Center"
+                },
+                "Style": {
+                  "Color": "#FFFFFF",
+                  "Font": { "Size": 18 }
+                }
+              }
+            ]
+          },
+          {
+            "Type": "TextBlock",
+            "Name": "TitleText",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.1], "Max": [0.5, 0.1] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": {
+              "Text": "Basic Widget Test",
+              "Justification": "Center"
+            },
+            "Style": {
+              "Color": "#00FFFF",
+              "Font": { "Size": 32 }
+            }
+          },
+          {
+            "Type": "Image",
+            "Name": "TestImage",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.5], "Max": [0.1, 0.5] },
+              "Offsets": { "Left": 0, "Top": -50, "Right": 100, "Bottom": 50 },
+              "Alignment": [0.0, 0.5]
+            },
+            "Style": {
+              "Color": "#FF5500"
+            }
+          },
+          {
+            "Type": "Border",
+            "Name": "TestBorder",
+            "Slot": {
+              "Anchors": { "Min": [0.9, 0.5], "Max": [0.9, 0.5] },
+              "Offsets": { "Left": -100, "Top": -50, "Right": 0, "Bottom": 50 },
+              "Alignment": [1.0, 0.5]
+            },
+            "Style": {
+              "Color": "#333333"
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Properties": { "Text": "Inside Border" }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

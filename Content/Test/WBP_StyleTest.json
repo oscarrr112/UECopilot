@@ -1,0 +1,127 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_StyleTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "TextBlock",
+            "Name": "StyledTitle",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.05], "Max": [0.5, 0.05] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": {
+              "Text": "Style Test Widget",
+              "Justification": "Center"
+            },
+            "Style": {
+              "Color": "#FFD700",
+              "Font": { "Size": 36 }
+            }
+          },
+          {
+            "Type": "TextBlock",
+            "Name": "HexColorText",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.2], "Max": [0.1, 0.2] },
+              "Alignment": [0.0, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "Hex Color #FF5500" },
+            "Style": { "Color": "#FF5500", "Font": { "Size": 18 } }
+          },
+          {
+            "Type": "TextBlock",
+            "Name": "NamedColorText",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.3], "Max": [0.1, 0.3] },
+              "Alignment": [0.0, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "Named Color: Red" },
+            "Style": { "Color": "Red", "Font": { "Size": 18 } }
+          },
+          {
+            "Type": "TextBlock",
+            "Name": "RGBAColorText",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.4], "Max": [0.1, 0.4] },
+              "Alignment": [0.0, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "RGBA Color Object" },
+            "Style": {
+              "Color": { "R": 0.2, "G": 0.8, "B": 0.4, "A": 1.0 },
+              "Font": { "Size": 18 }
+            }
+          },
+          {
+            "Type": "Image",
+            "Name": "TintedImage",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.3], "Max": [0.5, 0.3] },
+              "Offsets": { "Left": -75, "Top": -75, "Right": 75, "Bottom": 75 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Style": {
+              "Color": "#00AAFF"
+            }
+          },
+          {
+            "Type": "Border",
+            "Name": "StyledBorder",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.6], "Max": [0.45, 0.9] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Style": {
+              "Color": "#334455"
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "BorderContent",
+                "Properties": { "Text": "Content inside styled border", "Justification": "Center" },
+                "Style": { "Color": "White", "Font": { "Size": 16 } }
+              }
+            ]
+          },
+          {
+            "Type": "VerticalBox",
+            "Name": "FontSizeDemo",
+            "Slot": {
+              "Anchors": { "Min": [0.55, 0.6], "Max": [0.9, 0.9] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Slot": { "HAlign": "Left" },
+                "Properties": { "Text": "Font Size 12" },
+                "Style": { "Color": "White", "Font": { "Size": 12 } }
+              },
+              {
+                "Type": "TextBlock",
+                "Slot": { "HAlign": "Left" },
+                "Properties": { "Text": "Font Size 16" },
+                "Style": { "Color": "White", "Font": { "Size": 16 } }
+              },
+              {
+                "Type": "TextBlock",
+                "Slot": { "HAlign": "Left" },
+                "Properties": { "Text": "Font Size 24" },
+                "Style": { "Color": "White", "Font": { "Size": 24 } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

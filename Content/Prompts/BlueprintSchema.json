@@ -1,0 +1,220 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UE Copilot Blueprint Schema",
+  "description": "JSON schema for AI-generated Unreal Engine Blueprints",
+  "type": "object",
+  "required": ["blueprint"],
+  "properties": {
+    "blueprint": {
+      "type": "object",
+      "required": ["name", "parent_class"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Blueprint class name",
+          "pattern": "^BP_[A-Za-z0-9_]+$"
+        },
+        "parent_class": {
+          "type": "string",
+          "description": "Parent class path (e.g., /Script/Engine.Actor)"
+        },
+        "variables": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/variable" }
+        },
+        "functions": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/graph" }
+        },
+        "event_graphs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/graph" }
+        },
+        "macros": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/graph" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "variable": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Variable name"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["boolean", "integer", "float", "string", "name", "text", "vector", "rotator", "transform", "object", "class", "struct", "enum", "array", "set", "map"]
+        },
+        "type_class": {
+          "type": "string",
+          "description": "Class path for object/class types"
+        },
+        "default_value": {
+          "type": "string",
+          "description": "Default value as string"
+        },
+        "category": {
+          "type": "string",
+          "description": "Variable category for organization"
+        },
+        "instance_editable": {
+          "type": "boolean",
+          "default": false
+        },
+        "expose_on_spawn": {
+          "type": "boolean",
+          "default": false
+        },
+        "private": {
+          "type": "boolean",
+          "default": false
+        },
+        "tooltip": {
+          "type": "string"
+        }
+      }
+    },
+    "graph": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Graph name"
+        },
+        "is_pure": {
+          "type": "boolean",
+          "default": false,
+          "description": "For functions: no exec pins"
+        },
+        "is_const": {
+          "type": "boolean",
+          "default": false,
+          "description": "For functions: doesn't modify state"
+        },
+        "description": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/pin" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/pin" }
+        },
+        "local_variables": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/variable" }
+        },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/node" }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique node identifier",
+          "pattern": "^node_[0-9]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Node type",
+          "enum": [
+            "BeginPlay", "Tick", "CustomEvent", "InputEvent",
+            "Branch", "Sequence", "ForLoop", "ForEachLoop", "WhileLoop", "Delay", "DoOnce", "Gate",
+            "CallFunction", "PureFunction",
+            "Get", "Set",
+            "Add", "Subtract", "Multiply", "Divide",
+            "Equal", "NotEqual", "Greater", "Less", "GreaterEqual", "LessEqual",
+            "And", "Or", "Not",
+            "Cast", "MakeStruct", "BreakStruct",
+            "ArrayAdd", "ArrayRemove", "ArrayGet", "ArraySet", "ArrayLength", "ArrayClear",
+            "Literal", "Comment", "Reroute", "Return"
+          ]
+        },
+        "function": {
+          "type": "string",
+          "description": "Function path for CallFunction/PureFunction nodes"
+        },
+        "event_name": {
+          "type": "string",
+          "description": "Event name for CustomEvent nodes"
+        },
+        "variable": {
+          "type": "string",
+          "description": "Variable name for Get/Set nodes"
+        },
+        "target_class": {
+          "type": "string",
+          "description": "Target class for Cast nodes"
+        },
+        "value": {
+          "type": "string",
+          "description": "Value for Literal nodes"
+        },
+        "comment": {
+          "type": "string",
+          "description": "Node comment text"
+        },
+        "position": {
+          "$ref": "#/definitions/position"
+        },
+        "pins": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/pin_connection"
+          }
+        }
+      }
+    },
+    "position": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "number", "default": 0 },
+        "y": { "type": "number", "default": 0 }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "default_value": { "type": "string" }
+      }
+    },
+    "pin_connection": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": "string",
+          "description": "Connection format: node_id.pin_name",
+          "pattern": "^node_[0-9]+\\.[a-zA-Z0-9_]+$"
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^node_[0-9]+\\.[a-zA-Z0-9_]+$"
+          },
+          "description": "Multiple connections (for pins that allow it)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Default value if not connected"
+        }
+      }
+    }
+  }
+}

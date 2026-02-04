@@ -1,0 +1,134 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_ExtendedTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "TextBlock",
+            "Name": "Title",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.02], "Max": [0.5, 0.02] },
+              "Alignment": [0.5, 0.0],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "Extended Controls Test", "Justification": "Center" },
+            "Style": { "Color": "#00FFFF", "Font": { "Size": 28 } }
+          },
+          {
+            "Type": "ScrollBox",
+            "Name": "MainScrollBox",
+            "Slot": {
+              "Anchors": { "Min": [0.05, 0.1], "Max": [0.45, 0.9] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Properties": {
+              "Orientation": "Vertical"
+            },
+            "Children": [
+              {
+                "Type": "EditableTextBox",
+                "Name": "TextInput1",
+                "Slot": { "Padding": [5, 5, 5, 5] },
+                "Properties": { "HintText": "Enter text here..." }
+              },
+              {
+                "Type": "CheckBox",
+                "Name": "EnableOption",
+                "Slot": { "Padding": [5, 10, 5, 5] },
+                "Properties": { "IsChecked": true }
+              },
+              {
+                "Type": "Slider",
+                "Name": "VolumeSlider",
+                "Slot": { "Padding": [5, 10, 5, 5] },
+                "Properties": {
+                  "MinValue": 0.0,
+                  "MaxValue": 100.0,
+                  "Value": 75.0
+                }
+              },
+              {
+                "Type": "ProgressBar",
+                "Name": "LoadingBar",
+                "Slot": { "Padding": [5, 10, 5, 5] },
+                "Properties": { "Percent": 0.65 }
+              },
+              {
+                "Type": "ComboBoxString",
+                "Name": "DifficultySelect",
+                "Slot": { "Padding": [5, 10, 5, 5] },
+                "Properties": {
+                  "Options": ["Easy", "Normal", "Hard", "Expert"],
+                  "SelectedIndex": 1
+                }
+              }
+            ]
+          },
+          {
+            "Type": "VerticalBox",
+            "Name": "RightPanel",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.1], "Max": [0.95, 0.9] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "SizeBox",
+                "Name": "FixedSizeContainer",
+                "Slot": { "Padding": 5, "HAlign": "Fill" },
+                "Properties": {
+                  "WidthOverride": 400,
+                  "HeightOverride": 100
+                },
+                "Children": [
+                  {
+                    "Type": "Border",
+                    "Style": { "Color": "#445566" },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Fixed Size Box (400x100)", "Justification": "Center" },
+                        "Style": { "Color": "White", "Font": { "Size": 16 } }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Type": "WidgetSwitcher",
+                "Name": "ContentSwitcher",
+                "Slot": { "Padding": 5, "HAlign": "Fill" },
+                "Properties": {
+                  "ActiveIndex": 0
+                },
+                "Children": [
+                  {
+                    "Type": "TextBlock",
+                    "Properties": { "Text": "Page 1 - First View", "Justification": "Center" },
+                    "Style": { "Color": "#FF8800", "Font": { "Size": 18 } }
+                  },
+                  {
+                    "Type": "TextBlock",
+                    "Properties": { "Text": "Page 2 - Second View", "Justification": "Center" },
+                    "Style": { "Color": "#00FF88", "Font": { "Size": 18 } }
+                  }
+                ]
+              },
+              {
+                "Type": "Spacer",
+                "Name": "BottomSpacer",
+                "Slot": { "Size": "Fill" },
+                "Properties": { "Size": [0, 50] }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

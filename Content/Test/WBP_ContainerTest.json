@@ -1,0 +1,94 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_ContainerTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "VerticalBox",
+            "Name": "LeftColumn",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.2], "Max": [0.4, 0.8] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "Button",
+                "Name": "VButton1",
+                "Slot": { "Padding": [10, 5, 10, 5], "HAlign": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "VBox Button 1" } }]
+              },
+              {
+                "Type": "Button",
+                "Name": "VButton2",
+                "Slot": { "Padding": [10, 5, 10, 5], "HAlign": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "VBox Button 2" } }]
+              },
+              {
+                "Type": "Button",
+                "Name": "VButton3",
+                "Slot": { "Padding": [10, 5, 10, 5], "HAlign": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "VBox Button 3" } }]
+              }
+            ]
+          },
+          {
+            "Type": "HorizontalBox",
+            "Name": "TopRow",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.1], "Max": [0.9, 0.15] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "Button",
+                "Name": "HButton1",
+                "Slot": { "Padding": 5, "Size": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "H1" } }]
+              },
+              {
+                "Type": "Button",
+                "Name": "HButton2",
+                "Slot": { "Padding": 5, "Size": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "H2" } }]
+              },
+              {
+                "Type": "Button",
+                "Name": "HButton3",
+                "Slot": { "Padding": 5, "Size": "Fill" },
+                "Children": [{ "Type": "TextBlock", "Properties": { "Text": "H3" } }]
+              }
+            ]
+          },
+          {
+            "Type": "Overlay",
+            "Name": "CenterOverlay",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.5], "Max": [0.9, 0.8] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "Image",
+                "Name": "OverlayBG",
+                "Slot": { "HAlign": "Fill", "VAlign": "Fill" },
+                "Style": { "Color": "#222244" }
+              },
+              {
+                "Type": "TextBlock",
+                "Name": "OverlayText",
+                "Slot": { "HAlign": "Center", "VAlign": "Center" },
+                "Properties": { "Text": "Overlay Content", "Justification": "Center" },
+                "Style": { "Color": "White", "Font": { "Size": 24 } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

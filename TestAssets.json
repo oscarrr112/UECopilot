@@ -1,0 +1,133 @@
+{
+  "Assets": [
+    {
+      "AssetType": "InputAction",
+      "Name": "IA_TestMove",
+      "Path": "/Game/Test/Input",
+      "Action": "CreateOrUpdate",
+      "ValueType": "Axis2D",
+      "Triggers": ["Down"],
+      "Modifiers": ["DeadZone", "Swizzle"]
+    },
+    {
+      "AssetType": "InputAction",
+      "Name": "IA_TestJump",
+      "Path": "/Game/Test/Input",
+      "Action": "CreateOrUpdate",
+      "ValueType": "Boolean",
+      "Triggers": ["Pressed"]
+    },
+    {
+      "AssetType": "InputMappingContext",
+      "Name": "IMC_TestDefault",
+      "Path": "/Game/Test/Input",
+      "Action": "CreateOrUpdate",
+      "Mappings": [
+        {
+          "Action": "/Game/Test/Input/IA_TestMove.IA_TestMove",
+          "Key": "W",
+          "Modifiers": ["Swizzle"]
+        },
+        {
+          "Action": "/Game/Test/Input/IA_TestMove.IA_TestMove",
+          "Key": "S",
+          "Modifiers": ["Negate", "Swizzle"]
+        },
+        {
+          "Action": "/Game/Test/Input/IA_TestMove.IA_TestMove",
+          "Key": "A",
+          "Modifiers": ["Negate"]
+        },
+        {
+          "Action": "/Game/Test/Input/IA_TestMove.IA_TestMove",
+          "Key": "D"
+        },
+        {
+          "Action": "/Game/Test/Input/IA_TestJump.IA_TestJump",
+          "Key": "Space"
+        }
+      ]
+    },
+    {
+      "AssetType": "CurveFloat",
+      "Name": "Curve_TestDamage",
+      "Path": "/Game/Test/Curves",
+      "Action": "CreateOrUpdate",
+      "Keys": [
+        { "Time": 0.0, "Value": 0.0, "InterpMode": "Cubic" },
+        { "Time": 0.5, "Value": 1.0, "InterpMode": "Cubic" },
+        { "Time": 1.0, "Value": 0.5, "InterpMode": "Linear" }
+      ]
+    },
+    {
+      "AssetType": "CurveVector",
+      "Name": "Curve_TestPosition",
+      "Path": "/Game/Test/Curves",
+      "Action": "CreateOrUpdate",
+      "Keys": [
+        { "Time": 0.0, "Value": [0, 0, 0], "InterpMode": "Cubic" },
+        { "Time": 1.0, "Value": [100, 200, 50], "InterpMode": "Cubic" },
+        { "Time": 2.0, "Value": [200, 0, 100], "InterpMode": "Linear" }
+      ]
+    },
+    {
+      "AssetType": "DataAsset",
+      "Name": "DA_Test",
+      "Path": "/Game/Test/Data",
+      "Action": "CreateOrUpdate",
+      "ClassName": "TestDataAsset",
+      "Properties": {
+        "TestString": "Hello AssetFactory",
+        "TestInt": 42,
+        "TestFloat": 3.14,
+        "bTestBool": true,
+        "TestName": "TestNameValue",
+        "TestText": "This is test text"
+      }
+    },
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_TestActor",
+      "Path": "/Game/Test/Blueprints",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "Actor"
+    },
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_TestCharacter",
+      "Path": "/Game/Test/Blueprints",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "Character"
+    },
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_TestEnemy",
+      "Path": "/Game/Test/Blueprints",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "TestActorBase",
+      "DefaultProperties": {
+        "MaxHealth": 500.0,
+        "BaseDamage": 25.0,
+        "MoveSpeed": 400.0,
+        "DisplayName": "Test Enemy",
+        "bIsEnabled": true,
+        "Level": 5
+      }
+    },
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_TestBoss",
+      "Path": "/Game/Test/Blueprints",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "TestActorBase",
+      "DefaultProperties": {
+        "MaxHealth": 2000.0,
+        "BaseDamage": 100.0,
+        "MoveSpeed": 300.0,
+        "DisplayName": "Test Boss",
+        "bIsEnabled": true,
+        "Level": 10
+      }
+    }
+  ]
+}

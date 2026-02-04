@@ -1,0 +1,109 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_CustomTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "TextBlock",
+            "Name": "Title",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.05], "Max": [0.5, 0.05] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "Custom Widget Test", "Justification": "Center" },
+            "Style": { "Color": "#FF00FF", "Font": { "Size": 28 } }
+          },
+          {
+            "Type": "/Script/AssetFactory.TestCustomWidget",
+            "Name": "CustomWidget1",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.2], "Max": [0.45, 0.45] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Properties": {
+              "CustomText": "First Custom Widget",
+              "CustomValue": 42,
+              "bCustomEnabled": true
+            }
+          },
+          {
+            "Type": "/Script/AssetFactory.TestCustomWidget",
+            "Name": "CustomWidget2",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.55, 0.2], "Max": [0.9, 0.45] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Properties": {
+              "CustomText": "Second Custom Widget",
+              "CustomValue": 100,
+              "bCustomEnabled": false
+            }
+          },
+          {
+            "Type": "VerticalBox",
+            "Name": "MixedContainer",
+            "Slot": {
+              "Anchors": { "Min": [0.1, 0.5], "Max": [0.9, 0.95] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "SectionTitle",
+                "Slot": { "Padding": [10, 10, 10, 5], "HAlign": "Center" },
+                "Properties": { "Text": "Mixed Standard and Custom Widgets", "Justification": "Center" },
+                "Style": { "Color": "#AAAAAA", "Font": { "Size": 16 } }
+              },
+              {
+                "Type": "HorizontalBox",
+                "Name": "ButtonRow",
+                "Slot": { "Padding": 5, "HAlign": "Center" },
+                "Children": [
+                  {
+                    "Type": "Button",
+                    "Name": "StandardButton",
+                    "Slot": { "Padding": 5 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Standard" },
+                        "Style": { "Color": "White", "Font": { "Size": 14 } }
+                      }
+                    ]
+                  },
+                  {
+                    "Type": "Button",
+                    "Name": "AnotherButton",
+                    "Slot": { "Padding": 5 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Another" },
+                        "Style": { "Color": "White", "Font": { "Size": 14 } }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Type": "TextBlock",
+                "Name": "FooterNote",
+                "Slot": { "Padding": 10, "HAlign": "Center" },
+                "Properties": { "Text": "Custom widgets loaded via /Script/ModuleName.ClassName path" },
+                "Style": { "Color": "#666666", "Font": { "Size": 12 } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

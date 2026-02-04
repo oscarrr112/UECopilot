@@ -1,0 +1,90 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_VariableTest",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "TextBlock",
+            "Name": "TitleLabel",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.05], "Max": [0.5, 0.05] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "Text": "Variable Exposure Test", "Justification": "Center" },
+            "Style": { "Color": "#FFFF00", "Font": { "Size": 32 } }
+          },
+          {
+            "Type": "Button",
+            "Name": "ActionButton",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.2], "Max": [0.5, 0.2] },
+              "Offsets": { "Left": -100, "Top": -25, "Right": 100, "Bottom": 25 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "ButtonText",
+                "IsVariable": true,
+                "Properties": { "Text": "Click Me", "Justification": "Center" },
+                "Style": { "Color": "White", "Font": { "Size": 18 } }
+              }
+            ]
+          },
+          {
+            "Type": "Image",
+            "Name": "IconImage",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.35], "Max": [0.5, 0.35] },
+              "Offsets": { "Left": -50, "Top": -50, "Right": 50, "Bottom": 50 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Style": { "Color": "#00AAFF" }
+          },
+          {
+            "Type": "ProgressBar",
+            "Name": "HealthBar",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.2, 0.55], "Max": [0.8, 0.55] },
+              "Offsets": { "Left": 0, "Top": -15, "Right": 0, "Bottom": 15 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Properties": { "Percent": 0.75 }
+          },
+          {
+            "Type": "Slider",
+            "Name": "VolumeControl",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.2, 0.7], "Max": [0.8, 0.7] },
+              "Offsets": { "Left": 0, "Top": -10, "Right": 0, "Bottom": 10 },
+              "Alignment": [0.5, 0.5]
+            },
+            "Properties": { "MinValue": 0, "MaxValue": 100, "Value": 50 }
+          },
+          {
+            "Type": "CheckBox",
+            "Name": "MuteToggle",
+            "IsVariable": true,
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.85], "Max": [0.5, 0.85] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Properties": { "IsChecked": false }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "Assets": [
+    {
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_MenuExample",
+      "Path": "/Game/Test/WidgetBlueprint",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "Image",
+            "Name": "BackgroundImage",
+            "Slot": {
+              "Anchors": { "Min": [0, 0], "Max": [1, 1] },
+              "Offsets": { "Left": 0, "Top": 0, "Right": 0, "Bottom": 0 }
+            },
+            "Style": { "Color": "#1a1a2e" }
+          },
+          {
+            "Type": "VerticalBox",
+            "Name": "HeaderSection",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.05], "Max": [0.5, 0.05] },
+              "Alignment": [0.5, 0.0],
+              "SizeToContent": true
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "GameTitle",
+                "IsVariable": true,
+                "Slot": { "HAlign": "Center", "Padding": [0, 0, 0, 10] },
+                "Properties": { "Text": "PROJECT RPG", "Justification": "Center" },
+                "Style": { "Color": "#FFD700", "Font": { "Size": 48 } }
+              },
+              {
+                "Type": "TextBlock",
+                "Name": "Subtitle",
+                "Slot": { "HAlign": "Center" },
+                "Properties": { "Text": "Main Menu", "Justification": "Center" },
+                "Style": { "Color": "#AAAAAA", "Font": { "Size": 18 } }
+              }
+            ]
+          },
+          {
+            "Type": "VerticalBox",
+            "Name": "MenuButtonsContainer",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.4], "Max": [0.5, 0.4] },
+              "Alignment": [0.5, 0.0],
+              "SizeToContent": true
+            },
+            "Children": [
+              {
+                "Type": "Button",
+                "Name": "NewGameButton",
+                "IsVariable": true,
+                "Slot": { "Padding": [0, 5, 0, 5], "HAlign": "Fill" },
+                "Children": [
+                  {
+                    "Type": "SizeBox",
+                    "Properties": { "WidthOverride": 250, "HeightOverride": 50 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "New Game", "Justification": "Center" },
+                        "Style": { "Color": "White", "Font": { "Size": 20 } }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Type": "Button",
+                "Name": "ContinueButton",
+                "IsVariable": true,
+                "Slot": { "Padding": [0, 5, 0, 5], "HAlign": "Fill" },
+                "Children": [
+                  {
+                    "Type": "SizeBox",
+                    "Properties": { "WidthOverride": 250, "HeightOverride": 50 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Continue", "Justification": "Center" },
+                        "Style": { "Color": "White", "Font": { "Size": 20 } }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Type": "Button",
+                "Name": "OptionsButton",
+                "IsVariable": true,
+                "Slot": { "Padding": [0, 5, 0, 5], "HAlign": "Fill" },
+                "Children": [
+                  {
+                    "Type": "SizeBox",
+                    "Properties": { "WidthOverride": 250, "HeightOverride": 50 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Options", "Justification": "Center" },
+                        "Style": { "Color": "White", "Font": { "Size": 20 } }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "Type": "Button",
+                "Name": "QuitButton",
+                "IsVariable": true,
+                "Slot": { "Padding": [0, 5, 0, 5], "HAlign": "Fill" },
+                "Children": [
+                  {
+                    "Type": "SizeBox",
+                    "Properties": { "WidthOverride": 250, "HeightOverride": 50 },
+                    "Children": [
+                      {
+                        "Type": "TextBlock",
+                        "Properties": { "Text": "Quit", "Justification": "Center" },
+                        "Style": { "Color": "#FF6666", "Font": { "Size": 20 } }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "Type": "HorizontalBox",
+            "Name": "FooterSection",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.95], "Max": [0.5, 0.95] },
+              "Alignment": [0.5, 1.0],
+              "SizeToContent": true
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "VersionText",
+                "Slot": { "Padding": [10, 0, 10, 0], "VAlign": "Center" },
+                "Properties": { "Text": "v0.1.0" },
+                "Style": { "Color": "#666666", "Font": { "Size": 12 } }
+              },
+              {
+                "Type": "TextBlock",
+                "Name": "CopyrightText",
+                "Slot": { "Padding": [10, 0, 10, 0], "VAlign": "Center" },
+                "Properties": { "Text": "© 2024 ProjectRPG" },
+                "Style": { "Color": "#666666", "Font": { "Size": 12 } }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
