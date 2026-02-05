@@ -2,11 +2,11 @@
 
 #include "Generators/DataAssetGenerator.h"
 #include "AssetFactoryModule.h"
+#include "Utils/ClassFinderUtils.h"
+#include "Utils/PropertySetterUtils.h"
 #include "Engine/DataAsset.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
-#include "JsonObjectConverter.h"
-#include "TestDataAsset.h"
 
 FGenerationResult FDataAssetGenerator::Generate(
 	const FString& Name,
@@ -35,8 +35,8 @@ FGenerationResult FDataAssetGenerator::Generate(
 			TEXT("DataAsset requires 'ClassName' field specifying a UDataAsset subclass"));
 	}
 
-	// Find class
-	UClass* DataAssetClass = FindDataAssetClass(ClassName);
+	// Find class using utility
+	UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
 	if (!DataAssetClass)
 	{
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
@@ -85,11 +85,11 @@ FGenerationResult FDataAssetGenerator::Generate(
 		FAssetRegistryModule::AssetCreated(Asset);
 	}
 
-	// Set properties
+	// Set properties using utility class
 	TSharedPtr<FJsonObject> Properties = GetObjectField(Config, TEXT("Properties"));
 	if (Properties.IsValid())
 	{
-		SetProperties(Asset, Properties);
+		FPropertySetterUtils::SetPropertiesFromJson(Asset, Properties);
 	}
 
 	// Mark dirty and save
@@ -109,170 +109,28 @@ FGenerationResult FDataAssetGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, Asset);
 }
 
-UClass* FDataAssetGenerator::FindDataAssetClass(const FString& ClassName)
+TOptional<FString> FDataAssetGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
 {
-	// Try direct load
-	FString FullClassName = ClassName;
-	if (!FullClassName.StartsWith(TEXT("U")))
+	if (!Config.IsValid())
 	{
-		FullClassName = TEXT("U") + FullClassName;
+		return FString(TEXT("Invalid configuration object"));
 	}
 
-	// Normalize: remove U prefix if present (UE class paths don't include prefix)
-	FString SearchName = ClassName;
-	if (SearchName.StartsWith(TEXT("U")))
+	if (!Config->HasField(TEXT("ClassName")))
 	{
-		SearchName = SearchName.Mid(1);
+		return FString(TEXT("Missing required field 'ClassName'"));
 	}
 
-	// Search in multiple modules using StaticLoadClass for reliability
-	const FString ModulesToSearch[] = {
-		TEXT("/Script/AssetFactory"),                                    // This plugin
-		FString::Printf(TEXT("/Script/%s"), FApp::GetProjectName()),     // Main project (dynamic)
-		TEXT("/Script/Engine"),                                          // Engine
-	};
-
-	UClass* FoundClass = nullptr;
-
-	for (const FString& ModulePath : ModulesToSearch)
+	FString ClassName;
+	if (!Config->TryGetStringField(TEXT("ClassName"), ClassName) || ClassName.IsEmpty())
 	{
-		FString ClassPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *SearchName);
-		FoundClass = StaticLoadClass(UDataAsset::StaticClass(), nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
-		if (FoundClass)
-		{
-			return FoundClass;
-		}
+		return FString(TEXT("'ClassName' field must be a non-empty string"));
 	}
 
-	// Try loading Blueprint class
-	FString BlueprintPath = FString::Printf(TEXT("/Game/Blueprints/%s.%s_C"), *ClassName, *ClassName);
-	FoundClass = LoadClass<UDataAsset>(nullptr, *BlueprintPath);
-	if (FoundClass)
-	{
-		return FoundClass;
-	}
-
-	// Return base class only if explicitly requested (will be rejected by Generate())
-	if (ClassName.Equals(TEXT("DataAsset"), ESearchCase::IgnoreCase) ||
-		ClassName.Equals(TEXT("UDataAsset"), ESearchCase::IgnoreCase))
-	{
-		return UDataAsset::StaticClass();
-	}
-
-	UE_LOG(LogAssetFactory, Warning, TEXT("Could not find DataAsset subclass '%s'"), *ClassName);
-	return nullptr;
+	return TOptional<FString>();
 }
 
-void FDataAssetGenerator::SetProperties(UDataAsset* Asset, TSharedPtr<FJsonObject> Properties)
+TArray<FString> FDataAssetGenerator::GetRequiredFields() const
 {
-	if (!Asset || !Properties.IsValid())
-	{
-		return;
-	}
-
-	UClass* Class = Asset->GetClass();
-
-	for (const auto& Pair : Properties->Values)
-	{
-		const FString& PropertyName = Pair.Key;
-		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
-
-		FProperty* Property = Class->FindPropertyByName(*PropertyName);
-		if (!Property)
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Property '%s' not found on class '%s'"),
-				*PropertyName, *Class->GetName());
-			continue;
-		}
-
-		if (!SetPropertyFromJson(Asset, Property, JsonValue))
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set property '%s'"), *PropertyName);
-		}
-	}
-}
-
-bool FDataAssetGenerator::SetPropertyFromJson(UObject* Object, FProperty* Property, const TSharedPtr<FJsonValue>& JsonValue)
-{
-	if (!Object || !Property || !JsonValue.IsValid())
-	{
-		return false;
-	}
-
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
-
-	// Handle numeric properties
-	if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
-	{
-		if (NumericProp->IsFloatingPoint())
-		{
-			double Value = 0.0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				NumericProp->SetFloatingPointPropertyValue(ValuePtr, Value);
-				return true;
-			}
-		}
-		else if (NumericProp->IsInteger())
-		{
-			int64 Value = 0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				NumericProp->SetIntPropertyValue(ValuePtr, Value);
-				return true;
-			}
-		}
-	}
-
-	// Handle bool
-	if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-	{
-		bool Value = false;
-		if (JsonValue->TryGetBool(Value))
-		{
-			BoolProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-
-	// Handle string
-	if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			StrProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-
-	// Handle FName
-	if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			NameProp->SetPropertyValue(ValuePtr, FName(*Value));
-			return true;
-		}
-	}
-
-	// Handle FText
-	if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			TextProp->SetPropertyValue(ValuePtr, FText::FromString(Value));
-			return true;
-		}
-	}
-
-	// For complex types, try FJsonObjectConverter
-	if (const TSharedPtr<FJsonObject>* ObjectValue = nullptr; JsonValue->TryGetObject(ObjectValue))
-	{
-		return FJsonObjectConverter::JsonObjectToUStruct(ObjectValue->ToSharedRef(), Property->GetOwnerStruct(), ValuePtr);
-	}
-
-	return false;
+	return { TEXT("ClassName") };
 }

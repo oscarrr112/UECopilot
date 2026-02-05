@@ -45,6 +45,9 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TArray<FString> GetRequiredFields() const override;
+
 protected:
 	// Template builders (work on existing material, can be used for create or update)
 	bool BuildCircularProgressMaterial(UMaterial* Material, TSharedPtr<FJsonObject> Params);

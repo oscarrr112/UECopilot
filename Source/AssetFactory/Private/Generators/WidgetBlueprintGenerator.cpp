@@ -2,6 +2,8 @@
 
 #include "Generators/WidgetBlueprintGenerator.h"
 #include "AssetFactoryModule.h"
+#include "Utils/ClassFinderUtils.h"
+#include "Utils/PropertySetterUtils.h"
 
 // Blueprint creation
 #include "Kismet2/KismetEditorUtilities.h"
@@ -399,48 +401,14 @@ UClass* FWidgetBlueprintGenerator::FindWidgetClass(const FString& TypeString) co
 {
 	InitializeShorthandMap();
 
-	// First check shorthand map
+	// First check shorthand map for common widget types
 	if (UClass* const* Found = ShorthandClassMap.Find(TypeString))
 	{
 		return *Found;
 	}
 
-	// Try to load as class path
-	if (TypeString.StartsWith(TEXT("/Script/")))
-	{
-		UClass* LoadedClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *TypeString);
-		if (LoadedClass)
-		{
-			return LoadedClass;
-		}
-	}
-
-	// Try common module paths
-	const FString ModulesToSearch[] = {
-		TEXT("/Script/UMG"),
-		FString::Printf(TEXT("/Script/%s"), FApp::GetProjectName()),
-		TEXT("/Script/Engine"),
-	};
-
-	for (const FString& ModulePath : ModulesToSearch)
-	{
-		FString FullPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *TypeString);
-		UClass* FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
-		if (FoundClass)
-		{
-			return FoundClass;
-		}
-
-		// Try without U prefix
-		FullPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *TypeString);
-		FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
-		if (FoundClass)
-		{
-			return FoundClass;
-		}
-	}
-
-	return nullptr;
+	// Use ClassFinderUtils for dynamic lookup
+	return FClassFinderUtils::FindWidgetClass(TypeString);
 }
 
 UWidget* FWidgetBlueprintGenerator::CreateWidget(
@@ -1359,7 +1327,8 @@ void FWidgetBlueprintGenerator::SetPropertiesViaReflection(UWidget* Widget, TSha
 		return;
 	}
 
-	SetObjectPropertiesViaReflection(Widget, Properties);
+	// Use the shared utility class for property setting
+	FPropertySetterUtils::SetPropertiesFromJson(Widget, Properties);
 }
 
 void FWidgetBlueprintGenerator::SetObjectPropertiesViaReflection(UObject* Object, TSharedPtr<FJsonObject> Properties)
@@ -1369,192 +1338,22 @@ void FWidgetBlueprintGenerator::SetObjectPropertiesViaReflection(UObject* Object
 		return;
 	}
 
-	UClass* ObjectClass = Object->GetClass();
-
-	for (const auto& Pair : Properties->Values)
-	{
-		const FString& PropertyName = Pair.Key;
-		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
-
-		FProperty* Property = ObjectClass->FindPropertyByName(*PropertyName);
-		if (!Property)
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Property '%s' not found on class '%s'"), *PropertyName, *ObjectClass->GetName());
-			continue;
-		}
-
-		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
-		SetPropertyValueFromJson(Object, Property, ValuePtr, JsonValue);
-	}
+	// Use the shared utility class for property setting
+	FPropertySetterUtils::SetPropertiesFromJson(Object, Properties);
 }
 
 bool FWidgetBlueprintGenerator::SetPropertyValueFromJson(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
 {
-	if (!Property || !ValuePtr || !JsonValue.IsValid())
+	// Delegate to the shared utility class
+	if (Object)
 	{
-		return false;
+		return FPropertySetterUtils::SetPropertyFromJson(Object, Property, JsonValue);
 	}
 
-	// Handle numeric types (int, float, double, etc.)
-	if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
+	// For struct fields without a containing object, handle struct property directly
+	if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
-		double Value = 0.0;
-		if (JsonValue->TryGetNumber(Value))
-		{
-			if (NumericProp->IsFloatingPoint())
-			{
-				NumericProp->SetFloatingPointPropertyValue(ValuePtr, Value);
-			}
-			else
-			{
-				NumericProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-			}
-			return true;
-		}
-	}
-	// Handle bool
-	else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-	{
-		bool Value = false;
-		if (JsonValue->TryGetBool(Value))
-		{
-			BoolProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-	// Handle FString
-	else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			StrProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-	// Handle FName
-	else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			NameProp->SetPropertyValue(ValuePtr, FName(*Value));
-			return true;
-		}
-	}
-	// Handle FText
-	else if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			TextProp->SetPropertyValue(ValuePtr, FText::FromString(Value));
-			return true;
-		}
-	}
-	// Handle Enum (both FEnumProperty and FByteProperty with enum)
-	else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
-	{
-		FString EnumValueStr;
-		if (JsonValue->TryGetString(EnumValueStr))
-		{
-			UEnum* Enum = EnumProp->GetEnum();
-			int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
-			if (EnumValue == INDEX_NONE)
-			{
-				// Try with enum prefix
-				EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
-			}
-			if (EnumValue != INDEX_NONE)
-			{
-				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, EnumValue);
-				return true;
-			}
-			else
-			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("Invalid enum value '%s' for property '%s'"), *EnumValueStr, *Property->GetName());
-			}
-		}
-	}
-	else if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
-	{
-		if (UEnum* Enum = ByteProp->Enum)
-		{
-			FString EnumValueStr;
-			if (JsonValue->TryGetString(EnumValueStr))
-			{
-				int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
-				if (EnumValue == INDEX_NONE)
-				{
-					EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
-				}
-				if (EnumValue != INDEX_NONE)
-				{
-					ByteProp->SetIntPropertyValue(ValuePtr, EnumValue);
-					return true;
-				}
-			}
-		}
-		else
-		{
-			// Plain byte, treat as number
-			double Value = 0.0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-				return true;
-			}
-		}
-	}
-	// Handle Struct types
-	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
-	{
-		return SetStructPropertyFromJson(StructProp, ValuePtr, JsonValue);
-	}
-	// Handle Object references (UObject*, TSoftObjectPtr, TSubclassOf)
-	else if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
-	{
-		FString ObjectPath;
-		if (JsonValue->TryGetString(ObjectPath))
-		{
-			return SetObjectReferenceFromPath(ObjProp, ValuePtr, ObjectPath);
-		}
-	}
-	// Handle Soft Object Ptr
-	else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
-	{
-		FString ObjectPath;
-		if (JsonValue->TryGetString(ObjectPath))
-		{
-			return SetSoftObjectProperty(Object, SoftObjProp, ObjectPath);
-		}
-	}
-	// Handle TSubclassOf
-	else if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
-	{
-		FString ClassPath;
-		if (JsonValue->TryGetString(ClassPath))
-		{
-			return SetClassProperty(Object, ClassProp, ClassPath);
-		}
-	}
-	// Handle TArray
-	else if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* ArrayValues;
-		if (JsonValue->TryGetArray(ArrayValues))
-		{
-			return SetArrayProperty(Object, ArrayProp, *ArrayValues);
-		}
-	}
-	// Handle TMap
-	else if (FMapProperty* MapProp = CastField<FMapProperty>(Property))
-	{
-		const TSharedPtr<FJsonObject>* MapObject;
-		if (JsonValue->TryGetObject(MapObject))
-		{
-			return SetMapProperty(Object, MapProp, *MapObject);
-		}
+		return FPropertySetterUtils::SetStructPropertyFromJson(StructProp, ValuePtr, JsonValue);
 	}
 
 	return false;
@@ -1562,128 +1361,14 @@ bool FWidgetBlueprintGenerator::SetPropertyValueFromJson(UObject* Object, FPrope
 
 bool FWidgetBlueprintGenerator::SetStructPropertyFromJson(FStructProperty* StructProp, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
 {
-	UScriptStruct* Struct = StructProp->Struct;
-
-	// FLinearColor - [R, G, B, A] array or {R, G, B, A} object
-	if (Struct == TBaseStructure<FLinearColor>::Get())
-	{
-		FLinearColor Color = ParseColor(JsonValue);
-		*static_cast<FLinearColor*>(ValuePtr) = Color;
-		return true;
-	}
-	// FColor
-	else if (Struct == TBaseStructure<FColor>::Get())
-	{
-		FLinearColor Color = ParseColor(JsonValue);
-		*static_cast<FColor*>(ValuePtr) = Color.ToFColor(true);
-		return true;
-	}
-	// FVector2D - [X, Y] array
-	else if (Struct == TBaseStructure<FVector2D>::Get())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Array;
-		if (JsonValue->TryGetArray(Array) && Array->Num() >= 2)
-		{
-			*static_cast<FVector2D*>(ValuePtr) = ParseVector2D(*Array);
-			return true;
-		}
-	}
-	// FVector - [X, Y, Z] array
-	else if (Struct == TBaseStructure<FVector>::Get())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Array;
-		if (JsonValue->TryGetArray(Array) && Array->Num() >= 3)
-		{
-			FVector& Vec = *static_cast<FVector*>(ValuePtr);
-			Vec.X = (*Array)[0]->AsNumber();
-			Vec.Y = (*Array)[1]->AsNumber();
-			Vec.Z = (*Array)[2]->AsNumber();
-			return true;
-		}
-	}
-	// FMargin - number, [H, V], [L, T, R, B], or {Left, Top, Right, Bottom}
-	else if (Struct == TBaseStructure<FMargin>::Get())
-	{
-		*static_cast<FMargin*>(ValuePtr) = ParseMargins(JsonValue);
-		return true;
-	}
-	// FSlateColor
-	else if (Struct->GetFName() == TEXT("SlateColor"))
-	{
-		FLinearColor Color = ParseColor(JsonValue);
-		FSlateColor* SlateColor = static_cast<FSlateColor*>(ValuePtr);
-		*SlateColor = FSlateColor(Color);
-		return true;
-	}
-	// FSlateFontInfo
-	else if (Struct->GetFName() == TEXT("SlateFontInfo"))
-	{
-		const TSharedPtr<FJsonObject>* FontObj;
-		if (JsonValue->TryGetObject(FontObj))
-		{
-			*static_cast<FSlateFontInfo*>(ValuePtr) = ParseFont(*FontObj);
-			return true;
-		}
-	}
-	// FSlateBrush
-	else if (Struct->GetFName() == TEXT("SlateBrush"))
-	{
-		const TSharedPtr<FJsonObject>* BrushObj;
-		if (JsonValue->TryGetObject(BrushObj))
-		{
-			*static_cast<FSlateBrush*>(ValuePtr) = ParseBrush(*BrushObj);
-			return true;
-		}
-	}
-	// FAnchors
-	else if (Struct->GetFName() == TEXT("Anchors"))
-	{
-		const TSharedPtr<FJsonObject>* AnchorsObj;
-		if (JsonValue->TryGetObject(AnchorsObj))
-		{
-			*static_cast<FAnchors*>(ValuePtr) = ParseAnchors(*AnchorsObj);
-			return true;
-		}
-	}
-	// Generic struct - try to set fields recursively
-	else
-	{
-		const TSharedPtr<FJsonObject>* StructObj;
-		if (JsonValue->TryGetObject(StructObj))
-		{
-			for (const auto& Pair : (*StructObj)->Values)
-			{
-				FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key);
-				if (FieldProp)
-				{
-					void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-					SetPropertyValueFromJson(nullptr, FieldProp, FieldPtr, Pair.Value);
-				}
-			}
-			return true;
-		}
-	}
-
-	return false;
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetStructPropertyFromJson(StructProp, ValuePtr, JsonValue);
 }
 
 bool FWidgetBlueprintGenerator::SetObjectReferenceFromPath(FObjectPropertyBase* ObjProp, void* ValuePtr, const FString& ObjectPath)
 {
-	if (ObjectPath.IsEmpty())
-	{
-		ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
-		return true;
-	}
-
-	UObject* LoadedObject = StaticLoadObject(ObjProp->PropertyClass, nullptr, *ObjectPath);
-	if (LoadedObject)
-	{
-		ObjProp->SetObjectPropertyValue(ValuePtr, LoadedObject);
-		return true;
-	}
-
-	UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load object: %s"), *ObjectPath);
-	return false;
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetObjectReferenceFromPath(ObjProp, ValuePtr, ObjectPath);
 }
 
 //~ Variable Exposure
@@ -2256,296 +1941,55 @@ bool FWidgetBlueprintGenerator::SetCDOProperty(UObject* CDO, FProperty* Property
 
 bool FWidgetBlueprintGenerator::SetSoftObjectProperty(UObject* CDO, FSoftObjectProperty* Property, const FString& AssetPath)
 {
-	if (!CDO || !Property || AssetPath.IsEmpty())
-	{
-		return false;
-	}
-
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
-
-	// Normalize the asset path
-	FString NormalizedPath = AssetPath;
-	if (!NormalizedPath.Contains(TEXT(".")))
-	{
-		// Add asset name if not present (e.g., "/Game/UI/Mat" -> "/Game/UI/Mat.Mat")
-		FString AssetName = FPaths::GetBaseFilename(NormalizedPath);
-		NormalizedPath = NormalizedPath + TEXT(".") + AssetName;
-	}
-
-	// Set the soft object path via FSoftObjectPtr
-	FSoftObjectPath SoftPath(NormalizedPath);
-	FSoftObjectPtr SoftPtr(SoftPath);
-	Property->SetPropertyValue(ValuePtr, SoftPtr);
-
-	UE_LOG(LogAssetFactory, Log, TEXT("Set TSoftObjectPtr: %s = %s"), *Property->GetName(), *NormalizedPath);
-	return true;
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetSoftObjectProperty(CDO, Property, AssetPath);
 }
 
 bool FWidgetBlueprintGenerator::SetClassProperty(UObject* CDO, FClassProperty* Property, const FString& ClassPath)
 {
-	if (!CDO || !Property || ClassPath.IsEmpty())
-	{
-		return false;
-	}
-
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
-
-	// Try to load the class
-	FString FullClassPath = ClassPath;
-
-	// If it's a Widget Blueprint path, try to load the generated class
-	if (!FullClassPath.EndsWith(TEXT("_C")))
-	{
-		FullClassPath += TEXT("_C");
-	}
-
-	UClass* LoadedClass = LoadClass<UObject>(nullptr, *FullClassPath);
-	if (!LoadedClass)
-	{
-		// Try without _C suffix (native classes)
-		LoadedClass = LoadClass<UObject>(nullptr, *ClassPath);
-	}
-
-	if (LoadedClass)
-	{
-		// Verify the class is compatible with the property's meta class
-		UClass* MetaClass = Property->MetaClass;
-		if (MetaClass && !LoadedClass->IsChildOf(MetaClass))
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Class '%s' is not a subclass of '%s'"), *LoadedClass->GetName(), *MetaClass->GetName());
-			return false;
-		}
-
-		Property->SetPropertyValue(ValuePtr, LoadedClass);
-		UE_LOG(LogAssetFactory, Log, TEXT("Set TSubclassOf: %s = %s"), *Property->GetName(), *LoadedClass->GetName());
-		return true;
-	}
-
-	UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load class: %s"), *ClassPath);
-	return false;
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetClassProperty(CDO, Property, ClassPath);
 }
 
 bool FWidgetBlueprintGenerator::SetMapProperty(UObject* CDO, FMapProperty* Property, TSharedPtr<FJsonObject> MapConfig)
 {
-	if (!CDO || !Property || !MapConfig.IsValid())
-	{
-		return false;
-	}
-
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
-	FScriptMapHelper MapHelper(Property, ValuePtr);
-
-	// Get key and value property types
-	FProperty* KeyProp = Property->KeyProp;
-	FProperty* ValueProp = Property->ValueProp;
-
-	// Clear existing entries
-	MapHelper.EmptyValues();
-
-	for (const auto& Pair : MapConfig->Values)
-	{
-		const FString& KeyStr = Pair.Key;
-		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
-
-		// Add a new entry
-		int32 Index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
-
-		// Set the key
-		void* KeyPtr = MapHelper.GetKeyPtr(Index);
-
-		// Handle enum keys (like ERPGElementType)
-		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(KeyProp))
-		{
-			UEnum* Enum = EnumProp->GetEnum();
-			int64 EnumValue = Enum->GetValueByNameString(KeyStr);
-			if (EnumValue == INDEX_NONE)
-			{
-				// Try with enum prefix
-				FString FullName = Enum->GetName() + TEXT("::") + KeyStr;
-				EnumValue = Enum->GetValueByNameString(FullName);
-			}
-			if (EnumValue != INDEX_NONE)
-			{
-				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(KeyPtr, EnumValue);
-			}
-			else
-			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("Unknown enum value '%s' for enum '%s'"), *KeyStr, *Enum->GetName());
-				MapHelper.RemoveAt(Index);
-				continue;
-			}
-		}
-		else if (FByteProperty* ByteProp = CastField<FByteProperty>(KeyProp))
-		{
-			// Byte enum
-			if (UEnum* Enum = ByteProp->Enum)
-			{
-				int64 EnumValue = Enum->GetValueByNameString(KeyStr);
-				if (EnumValue != INDEX_NONE)
-				{
-					ByteProp->SetIntPropertyValue(KeyPtr, EnumValue);
-				}
-				else
-				{
-					MapHelper.RemoveAt(Index);
-					continue;
-				}
-			}
-			else
-			{
-				ByteProp->SetIntPropertyValue(KeyPtr, static_cast<int64>(FCString::Atoi(*KeyStr)));
-			}
-		}
-		else if (FStrProperty* StrProp = CastField<FStrProperty>(KeyProp))
-		{
-			StrProp->SetPropertyValue(KeyPtr, KeyStr);
-		}
-		else if (FNameProperty* NameProp = CastField<FNameProperty>(KeyProp))
-		{
-			NameProp->SetPropertyValue(KeyPtr, FName(*KeyStr));
-		}
-		else
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Unsupported map key type: %s"), *KeyProp->GetClass()->GetName());
-			MapHelper.RemoveAt(Index);
-			continue;
-		}
-
-		// Set the value
-		void* ValPtr = MapHelper.GetValuePtr(Index);
-
-		// Handle TSoftObjectPtr values
-		if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(ValueProp))
-		{
-			FString AssetPath;
-			if (JsonValue->TryGetString(AssetPath))
-			{
-				// Normalize path
-				if (!AssetPath.Contains(TEXT(".")))
-				{
-					FString AssetName = FPaths::GetBaseFilename(AssetPath);
-					AssetPath = AssetPath + TEXT(".") + AssetName;
-				}
-				FSoftObjectPath SoftPath(AssetPath);
-				FSoftObjectPtr SoftPtr(SoftPath);
-				SoftObjProp->SetPropertyValue(ValPtr, SoftPtr);
-			}
-		}
-		// Handle FLinearColor values
-		else if (FStructProperty* StructProp = CastField<FStructProperty>(ValueProp))
-		{
-			if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
-			{
-				FLinearColor Color = ParseColor(JsonValue);
-				*static_cast<FLinearColor*>(ValPtr) = Color;
-			}
-		}
-		// Handle other types
-		else
-		{
-			// Try to use generic property setting
-			FString ValueStr;
-			double ValueNum = 0;
-			if (JsonValue->TryGetString(ValueStr))
-			{
-				if (FStrProperty* StrValProp = CastField<FStrProperty>(ValueProp))
-				{
-					StrValProp->SetPropertyValue(ValPtr, ValueStr);
-				}
-			}
-			else if (JsonValue->TryGetNumber(ValueNum))
-			{
-				if (FNumericProperty* NumProp = CastField<FNumericProperty>(ValueProp))
-				{
-					if (NumProp->IsFloatingPoint())
-					{
-						NumProp->SetFloatingPointPropertyValue(ValPtr, ValueNum);
-					}
-					else
-					{
-						NumProp->SetIntPropertyValue(ValPtr, static_cast<int64>(ValueNum));
-					}
-				}
-			}
-		}
-	}
-
-	MapHelper.Rehash();
-
-	UE_LOG(LogAssetFactory, Log, TEXT("Set TMap: %s with %d entries"), *Property->GetName(), MapHelper.Num());
-	return true;
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetMapProperty(CDO, Property, MapConfig);
 }
 
 bool FWidgetBlueprintGenerator::SetArrayProperty(UObject* CDO, FArrayProperty* Property, const TArray<TSharedPtr<FJsonValue>>& ArrayValues)
 {
-	if (!CDO || !Property)
+	// Delegate to the shared utility class
+	return FPropertySetterUtils::SetArrayProperty(CDO, Property, ArrayValues);
+}
+
+TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+{
+	if (!Config.IsValid())
 	{
-		return false;
+		return FString(TEXT("Invalid configuration object"));
 	}
 
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
-	FScriptArrayHelper ArrayHelper(Property, ValuePtr);
-
-	FProperty* InnerProp = Property->Inner;
-
-	// Clear existing entries
-	ArrayHelper.EmptyValues();
-
-	for (int32 i = 0; i < ArrayValues.Num(); ++i)
+	if (!Config->HasField(TEXT("RootWidget")))
 	{
-		const TSharedPtr<FJsonValue>& JsonValue = ArrayValues[i];
-
-		int32 Index = ArrayHelper.AddValue();
-		void* ElementPtr = ArrayHelper.GetRawPtr(Index);
-
-		// Handle different inner property types
-		if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(InnerProp))
-		{
-			FString AssetPath;
-			if (JsonValue->TryGetString(AssetPath))
-			{
-				if (!AssetPath.Contains(TEXT(".")))
-				{
-					FString AssetName = FPaths::GetBaseFilename(AssetPath);
-					AssetPath = AssetPath + TEXT(".") + AssetName;
-				}
-				FSoftObjectPath SoftPath(AssetPath);
-				FSoftObjectPtr SoftPtr(SoftPath);
-				SoftObjProp->SetPropertyValue(ElementPtr, SoftPtr);
-			}
-		}
-		else if (FStrProperty* StrProp = CastField<FStrProperty>(InnerProp))
-		{
-			FString Value;
-			if (JsonValue->TryGetString(Value))
-			{
-				StrProp->SetPropertyValue(ElementPtr, Value);
-			}
-		}
-		else if (FNumericProperty* NumProp = CastField<FNumericProperty>(InnerProp))
-		{
-			double Value = 0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				if (NumProp->IsFloatingPoint())
-				{
-					NumProp->SetFloatingPointPropertyValue(ElementPtr, Value);
-				}
-				else
-				{
-					NumProp->SetIntPropertyValue(ElementPtr, static_cast<int64>(Value));
-				}
-			}
-		}
-		else if (FStructProperty* StructProp = CastField<FStructProperty>(InnerProp))
-		{
-			if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
-			{
-				*static_cast<FLinearColor*>(ElementPtr) = ParseColor(JsonValue);
-			}
-		}
+		return FString(TEXT("Missing required field 'RootWidget'"));
 	}
 
-	UE_LOG(LogAssetFactory, Log, TEXT("Set TArray: %s with %d elements"), *Property->GetName(), ArrayHelper.Num());
-	return true;
+	TSharedPtr<FJsonObject> RootWidget = Config->GetObjectField(TEXT("RootWidget"));
+	if (!RootWidget.IsValid())
+	{
+		return FString(TEXT("'RootWidget' must be a valid object"));
+	}
+
+	if (!RootWidget->HasField(TEXT("Type")))
+	{
+		return FString(TEXT("RootWidget must have a 'Type' field"));
+	}
+
+	return TOptional<FString>();
+}
+
+TArray<FString> FWidgetBlueprintGenerator::GetRequiredFields() const
+{
+	return { TEXT("RootWidget") };
 }

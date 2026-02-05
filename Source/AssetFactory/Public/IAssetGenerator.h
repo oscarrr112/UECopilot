@@ -49,6 +49,27 @@ public:
 		return Config.IsValid();
 	}
 
+	/**
+	 * Validate the configuration before generation.
+	 * Called by AssetFactorySubsystem before Generate().
+	 * @param Config - JSON configuration to validate
+	 * @return Empty optional if valid, error message string if invalid
+	 */
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const
+	{
+		return TOptional<FString>();  // Default: no validation, always passes
+	}
+
+	/**
+	 * Get the list of required fields for this generator.
+	 * Used for documentation generation and validation hints.
+	 * @return Array of required field names
+	 */
+	virtual TArray<FString> GetRequiredFields() const
+	{
+		return {};
+	}
+
 protected:
 	/**
 	 * Helper: Check if asset already exists

@@ -1,0 +1,51 @@
+{
+  "Description": "Test file for validating schema validation failure cases - these assets SHOULD fail with clear error messages",
+  "Assets": [
+    {
+      "_Comment": "Test 1: DataAsset WITHOUT ClassName - should fail with 'Missing required field ClassName'",
+      "AssetType": "DataAsset",
+      "Name": "DA_MissingClassName",
+      "Path": "/Game/Test/ValidationFailure",
+      "Action": "CreateOrUpdate",
+      "Properties": {
+        "TestValue": 42
+      }
+    },
+    {
+      "_Comment": "Test 2: DataAsset with empty ClassName - should fail with 'ClassName must be non-empty'",
+      "AssetType": "DataAsset",
+      "Name": "DA_EmptyClassName",
+      "Path": "/Game/Test/ValidationFailure",
+      "Action": "CreateOrUpdate",
+      "ClassName": "",
+      "Properties": {
+        "TestValue": 42
+      }
+    },
+    {
+      "_Comment": "Test 3: Material with invalid Template - should fail with 'Invalid template'",
+      "AssetType": "Material",
+      "Name": "M_InvalidTemplate",
+      "Path": "/Game/Test/ValidationFailure",
+      "Action": "CreateOrUpdate",
+      "Template": "InvalidTemplateName",
+      "Domain": "UI"
+    },
+    {
+      "_Comment": "Test 4: Material WITHOUT Template - should fail with 'Missing required field Template'",
+      "AssetType": "Material",
+      "Name": "M_MissingTemplate",
+      "Path": "/Game/Test/ValidationFailure",
+      "Action": "CreateOrUpdate",
+      "Domain": "UI"
+    },
+    {
+      "_Comment": "Test 5: WidgetBlueprint WITHOUT RootWidget - should fail with 'Missing required field RootWidget'",
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_MissingRootWidget",
+      "Path": "/Game/Test/ValidationFailure",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "UserWidget"
+    }
+  ]
+}

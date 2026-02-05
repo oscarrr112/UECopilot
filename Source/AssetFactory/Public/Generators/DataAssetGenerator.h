@@ -34,13 +34,6 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
-private:
-	/** Find UClass by name */
-	UClass* FindDataAssetClass(const FString& ClassName);
-
-	/** Set properties on data asset using reflection */
-	void SetProperties(UDataAsset* Asset, TSharedPtr<FJsonObject> Properties);
-
-	/** Set a single property from JSON value */
-	bool SetPropertyFromJson(UObject* Object, FProperty* Property, const TSharedPtr<FJsonValue>& JsonValue);
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TArray<FString> GetRequiredFields() const override;
 };

@@ -794,3 +794,42 @@ EBlendMode FMaterialGenerator::ParseBlendMode(const FString& BlendString) const
 		return BLEND_Additive;
 	return BLEND_Translucent;
 }
+
+TOptional<FString> FMaterialGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+{
+	if (!Config.IsValid())
+	{
+		return FString(TEXT("Invalid configuration object"));
+	}
+
+	if (!Config->HasField(TEXT("Template")))
+	{
+		return FString(TEXT("Missing required field 'Template'"));
+	}
+
+	FString Template;
+	if (!Config->TryGetStringField(TEXT("Template"), Template) || Template.IsEmpty())
+	{
+		return FString(TEXT("'Template' field must be a non-empty string"));
+	}
+
+	// Validate template is one of the supported types
+	static TSet<FString> ValidTemplates = {
+		TEXT("CircularProgress"),
+		TEXT("CooldownSweep"),
+		TEXT("GradientFill"),
+		TEXT("HealthBarFill")
+	};
+
+	if (!ValidTemplates.Contains(Template))
+	{
+		return FString::Printf(TEXT("Invalid template '%s'. Valid templates: CircularProgress, CooldownSweep, GradientFill, HealthBarFill"), *Template);
+	}
+
+	return TOptional<FString>();
+}
+
+TArray<FString> FMaterialGenerator::GetRequiredFields() const
+{
+	return { TEXT("Template") };
+}

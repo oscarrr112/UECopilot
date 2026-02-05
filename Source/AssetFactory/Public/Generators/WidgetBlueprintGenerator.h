@@ -120,6 +120,9 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TArray<FString> GetRequiredFields() const override;
+
 protected:
 	//~ Widget Tree Building
 	/** Recursively build widget tree from JSON */

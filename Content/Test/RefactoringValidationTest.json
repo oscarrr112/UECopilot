@@ -1,0 +1,117 @@
+{
+  "Description": "Test file for validating AssetFactory refactoring (PropertySetterUtils, ClassFinderUtils, ValidateConfig)",
+  "Assets": [
+    {
+      "_Comment": "Test 1: DataAsset with PropertySetterUtils - various property types",
+      "AssetType": "DataAsset",
+      "Name": "DA_RefactoringTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "ClassName": "TestDataAsset",
+      "Properties": {
+        "TestInt": 42,
+        "TestFloat": 3.14159,
+        "bTestBool": true,
+        "TestString": "Hello from PropertySetterUtils",
+        "TestName": "TestNameValue"
+      }
+    },
+    {
+      "_Comment": "Test 2: Blueprint with ClassFinderUtils - ParentClass lookup",
+      "AssetType": "Blueprint",
+      "Name": "BP_RefactoringTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "Actor"
+    },
+    {
+      "_Comment": "Test 3: Blueprint with different parent class format (with A prefix)",
+      "AssetType": "Blueprint",
+      "Name": "BP_PawnTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "Pawn"
+    },
+    {
+      "_Comment": "Test 4: Material with ValidateConfig - valid template",
+      "AssetType": "Material",
+      "Name": "M_RefactoringTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "Template": "CircularProgress",
+      "Domain": "UI",
+      "BlendMode": "Translucent",
+      "Parameters": {
+        "Progress": 0.75,
+        "Color": [0.2, 0.8, 0.2, 1.0],
+        "BackgroundColor": [0.1, 0.1, 0.1, 0.5]
+      }
+    },
+    {
+      "_Comment": "Test 5: WidgetBlueprint with ClassFinderUtils for widget types",
+      "AssetType": "WidgetBlueprint",
+      "Name": "WBP_RefactoringTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "RootWidget": {
+        "Type": "CanvasPanel",
+        "Name": "RootCanvas",
+        "Children": [
+          {
+            "Type": "VerticalBox",
+            "Name": "MainVBox",
+            "Slot": {
+              "Anchors": { "Min": [0.5, 0.5], "Max": [0.5, 0.5] },
+              "Alignment": [0.5, 0.5],
+              "SizeToContent": true
+            },
+            "Children": [
+              {
+                "Type": "TextBlock",
+                "Name": "TitleText",
+                "Properties": {
+                  "Text": "Refactoring Validation Test"
+                },
+                "Style": {
+                  "Color": "#00FF00",
+                  "Font": { "Size": 24 }
+                }
+              },
+              {
+                "Type": "ProgressBar",
+                "Name": "TestProgressBar",
+                "IsVariable": true,
+                "Properties": {
+                  "Percent": 0.5
+                }
+              },
+              {
+                "Type": "Button",
+                "Name": "TestButton",
+                "IsVariable": true,
+                "Children": [
+                  {
+                    "Type": "TextBlock",
+                    "Properties": { "Text": "Test Button" }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "_Comment": "Test 6: CurveFloat - simple asset without complex validation",
+      "AssetType": "CurveFloat",
+      "Name": "Curve_RefactoringTest",
+      "Path": "/Game/Test/Refactoring",
+      "Action": "CreateOrUpdate",
+      "Keys": [
+        { "Time": 0.0, "Value": 0.0, "InterpMode": "Cubic" },
+        { "Time": 0.5, "Value": 1.0, "InterpMode": "Cubic" },
+        { "Time": 1.0, "Value": 0.0, "InterpMode": "Linear" }
+      ]
+    }
+  ]
+}

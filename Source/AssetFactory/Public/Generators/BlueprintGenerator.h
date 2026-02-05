@@ -33,13 +33,10 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TArray<FString> GetRequiredFields() const override;
+
 protected:
-	/** Find parent class by name */
-	UClass* FindParentClass(const FString& ClassName) const;
-
-	/** Find interface class by name */
-	UClass* FindInterfaceClass(const FString& InterfaceName) const;
-
-	/** Set default property on CDO */
+	/** Set default properties on CDO using utility class */
 	void SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr<FJsonObject> Properties);
 };

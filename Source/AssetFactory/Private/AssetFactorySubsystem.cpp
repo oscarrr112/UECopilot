@@ -178,6 +178,13 @@ FGenerationResult UAssetFactorySubsystem::ProcessAssetConfig(TSharedPtr<FJsonObj
 		}
 	}
 
+	// Validate configuration before generation
+	TOptional<FString> ValidationError = Generator->ValidateConfig(AssetConfig);
+	if (ValidationError.IsSet())
+	{
+		return FGenerationResult::MakeFailed(AssetType, Name, Path, ValidationError.GetValue());
+	}
+
 	// Generate asset
 	return Generator->Generate(Name, Path, Action, AssetConfig);
 }
