@@ -51,6 +51,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AssetFactory")
 	TArray<FString> GetSupportedAssetTypes() const;
 
+	/**
+	 * Extract asset configuration as JSON (reverse of Generate)
+	 * @param AssetPath - Full path to the asset (e.g., "/Game/Test/BP_MyActor")
+	 * @param bDiffOnly - If true, only extract values different from defaults
+	 * @return JSON configuration that can be used with Generate(), or nullptr if extraction failed
+	 */
+	TSharedPtr<FJsonObject> ExtractAsset(const FString& AssetPath, bool bDiffOnly = false);
+
 private:
 	/**
 	 * Process a single asset configuration

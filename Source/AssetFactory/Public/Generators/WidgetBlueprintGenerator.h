@@ -14,6 +14,7 @@
 class UWidgetBlueprint;
 class UWidget;
 class UPanelWidget;
+class UPanelSlot;
 class UWidgetTree;
 
 /**
@@ -123,64 +124,34 @@ public:
 	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
 	virtual TArray<FString> GetRequiredFields() const override;
 
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
 protected:
 	//~ Widget Tree Building
 	/** Recursively build widget tree from JSON */
 	UWidget* BuildWidgetTree(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> WidgetNode, UPanelWidget* Parent, const FString& JsonPath);
 
-	/** Create a widget instance based on type */
+	/** Create a widget instance based on type - uses dynamic class lookup */
 	UWidget* CreateWidget(UWidgetBlueprint* Blueprint, const FString& WidgetType, const FString& WidgetName, TSharedPtr<FJsonObject> Config);
 
-	/** Find widget class from shorthand or class path */
+	/** Find widget class dynamically by name (e.g., "TextBlock", "Button", "UTextBlock", or full path) */
 	UClass* FindWidgetClass(const FString& TypeString) const;
 
-	//~ Container Widget Creators
-	UWidget* CreateCanvasPanel(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateVerticalBox(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateHorizontalBox(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateOverlay(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateScrollBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateSizeBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateScaleBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateWidgetSwitcher(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateGridPanel(UWidgetBlueprint* Blueprint, const FString& Name);
-
-	//~ Basic Widget Creators
-	UWidget* CreateTextBlock(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateRichTextBlock(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateImage(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateButton(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateBorder(UWidgetBlueprint* Blueprint, const FString& Name);
-	UWidget* CreateSpacer(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-
-	//~ Input Widget Creators
-	UWidget* CreateEditableTextBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateCheckBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateSlider(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateProgressBar(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-	UWidget* CreateComboBoxString(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties);
-
-	//~ Widget Blueprint Instance Creator
 	/** Create a widget by loading and instantiating another Widget Blueprint */
 	UWidget* CreateWidgetFromBlueprint(UWidgetBlueprint* Blueprint, const FString& WidgetBlueprintPath, const FString& Name, TSharedPtr<FJsonObject> Properties);
 
-	//~ Custom Widget Creator
-	UWidget* CreateCustomWidget(UWidgetBlueprint* Blueprint, UClass* WidgetClass, const FString& Name, TSharedPtr<FJsonObject> Properties);
-
-	//~ Slot Configuration
+	//~ Slot Configuration (Dynamic via reflection)
+	/** Configure slot properties dynamically using reflection */
 	void ConfigureSlot(UWidget* Widget, UPanelWidget* Parent, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureCanvasSlot(class UCanvasPanelSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureVerticalBoxSlot(class UVerticalBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureHorizontalBoxSlot(class UHorizontalBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureOverlaySlot(class UOverlaySlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureScrollBoxSlot(class UScrollBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
-	void ConfigureGridSlot(class UGridSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
 
-	//~ Style Application
+	/** Configure common slot properties that exist on most slot types */
+	void ConfigureCommonSlotProperties(UPanelSlot* Slot, TSharedPtr<FJsonObject> SlotConfig);
+
+	//~ Style Application (Dynamic via reflection)
+	/** Apply style properties dynamically using reflection */
 	void ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObject> StyleConfig);
-	void ApplyTextBlockStyle(class UTextBlock* TextBlock, TSharedPtr<FJsonObject> StyleConfig);
-	void ApplyImageStyle(class UImage* Image, TSharedPtr<FJsonObject> StyleConfig);
-	void ApplyBorderStyle(class UBorder* Border, TSharedPtr<FJsonObject> StyleConfig);
 
 	//~ Reflection-based Property Setting (Universal)
 	/** Set properties on a widget via reflection - handles all property types */
@@ -240,12 +211,30 @@ protected:
 	FString GenerateWidgetName(const FString& Prefix) const;
 	bool IsPanelWidget(UClass* WidgetClass) const;
 
+	//~ Extract Helpers
+	/** Extract widget tree recursively */
+	TSharedPtr<FJsonObject> ExtractWidgetTree(UWidget* Widget) const;
+
+	/** Extract slot configuration */
+	TSharedPtr<FJsonObject> ExtractSlotConfig(UPanelSlot* Slot) const;
+
+	/** Extract widget properties via reflection */
+	TSharedPtr<FJsonObject> ExtractWidgetProperties(UWidget* Widget, bool bDiffOnly) const;
+
+	/** Convert alignment enum to string */
+	FString HorizontalAlignmentToString(EHorizontalAlignment Alignment) const;
+	FString VerticalAlignmentToString(EVerticalAlignment Alignment) const;
+
+	/** Convert FLinearColor to JSON array */
+	TSharedPtr<FJsonValue> ColorToJson(const FLinearColor& Color) const;
+
+	/** Convert FVector2D to JSON array */
+	TSharedPtr<FJsonValue> Vector2DToJson(const FVector2D& Vector) const;
+
+	/** Convert FMargin to JSON array */
+	TSharedPtr<FJsonValue> MarginToJson(const FMargin& Margin) const;
+
 private:
 	/** Counter for generating unique widget names */
 	mutable int32 WidgetNameCounter = 0;
-
-	/** Shorthand to class mapping */
-	static TMap<FString, UClass*> ShorthandClassMap;
-	static bool bShorthandMapInitialized;
-	void InitializeShorthandMap() const;
 };

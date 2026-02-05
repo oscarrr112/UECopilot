@@ -36,4 +36,12 @@ public:
 
 	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
 	virtual TArray<FString> GetRequiredFields() const override;
+
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
+protected:
+	/** Extract all properties from a DataAsset via reflection */
+	TSharedPtr<FJsonObject> ExtractProperties(UDataAsset* DataAsset, bool bDiffOnly) const;
 };

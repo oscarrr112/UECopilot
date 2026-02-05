@@ -290,3 +290,110 @@ UInputModifier* FInputMappingContextGenerator::CreateModifier(UObject* Outer, co
 	UE_LOG(LogAssetFactory, Warning, TEXT("Unknown modifier type: %s"), *ModifierName);
 	return nullptr;
 }
+
+FString FInputMappingContextGenerator::TriggerToString(UInputTrigger* Trigger) const
+{
+	if (!Trigger) return TEXT("");
+
+	if (Trigger->IsA<UInputTriggerDown>()) return TEXT("Down");
+	if (Trigger->IsA<UInputTriggerPressed>()) return TEXT("Pressed");
+	if (Trigger->IsA<UInputTriggerReleased>()) return TEXT("Released");
+	if (Trigger->IsA<UInputTriggerHold>()) return TEXT("Hold");
+	if (Trigger->IsA<UInputTriggerTap>()) return TEXT("Tap");
+	if (Trigger->IsA<UInputTriggerPulse>()) return TEXT("Pulse");
+
+	return Trigger->GetClass()->GetName();
+}
+
+FString FInputMappingContextGenerator::ModifierToString(UInputModifier* Modifier) const
+{
+	if (!Modifier) return TEXT("");
+
+	if (Modifier->IsA<UInputModifierNegate>()) return TEXT("Negate");
+	if (Modifier->IsA<UInputModifierSwizzleAxis>()) return TEXT("Swizzle");
+	if (Modifier->IsA<UInputModifierScalar>()) return TEXT("Scalar");
+	if (Modifier->IsA<UInputModifierDeadZone>()) return TEXT("DeadZone");
+	if (Modifier->IsA<UInputModifierSmooth>()) return TEXT("Smooth");
+
+	return Modifier->GetClass()->GetName();
+}
+
+//~ Extract Implementation
+
+bool FInputMappingContextGenerator::CanExtract(UObject* Asset) const
+{
+	return Asset && Asset->IsA<UInputMappingContext>();
+}
+
+TSharedPtr<FJsonObject> FInputMappingContextGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UInputMappingContext* IMC = Cast<UInputMappingContext>(Asset);
+	if (!IMC)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// Extract mappings
+	const TArray<FEnhancedActionKeyMapping>& Mappings = IMC->GetMappings();
+	if (Mappings.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> MappingsArray;
+		for (const FEnhancedActionKeyMapping& Mapping : Mappings)
+		{
+			TSharedPtr<FJsonObject> MappingObj = MakeShared<FJsonObject>();
+
+			// Action path
+			if (Mapping.Action)
+			{
+				MappingObj->SetStringField(TEXT("Action"), Mapping.Action->GetPathName());
+			}
+
+			// Key
+			MappingObj->SetStringField(TEXT("Key"), Mapping.Key.GetFName().ToString());
+
+			// Triggers
+			if (Mapping.Triggers.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> TriggersArray;
+				for (UInputTrigger* Trigger : Mapping.Triggers)
+				{
+					FString TriggerName = TriggerToString(Trigger);
+					if (!TriggerName.IsEmpty())
+					{
+						TriggersArray.Add(MakeShared<FJsonValueString>(TriggerName));
+					}
+				}
+				if (TriggersArray.Num() > 0)
+				{
+					MappingObj->SetArrayField(TEXT("Triggers"), TriggersArray);
+				}
+			}
+
+			// Modifiers
+			if (Mapping.Modifiers.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+				for (UInputModifier* Modifier : Mapping.Modifiers)
+				{
+					FString ModifierName = ModifierToString(Modifier);
+					if (!ModifierName.IsEmpty())
+					{
+						ModifiersArray.Add(MakeShared<FJsonValueString>(ModifierName));
+					}
+				}
+				if (ModifiersArray.Num() > 0)
+				{
+					MappingObj->SetArrayField(TEXT("Modifiers"), ModifiersArray);
+				}
+			}
+
+			MappingsArray.Add(MakeShared<FJsonValueObject>(MappingObj));
+		}
+
+		Config->SetArrayField(TEXT("Mappings"), MappingsArray);
+	}
+
+	return Config;
+}

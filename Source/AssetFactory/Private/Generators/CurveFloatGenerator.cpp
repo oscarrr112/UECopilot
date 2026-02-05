@@ -110,3 +110,53 @@ ERichCurveInterpMode FCurveFloatGenerator::ParseInterpMode(const FString& ModeSt
 	}
 	return ERichCurveInterpMode::RCIM_Linear;
 }
+
+FString FCurveFloatGenerator::InterpModeToString(ERichCurveInterpMode Mode) const
+{
+	switch (Mode)
+	{
+	case ERichCurveInterpMode::RCIM_Constant: return TEXT("Constant");
+	case ERichCurveInterpMode::RCIM_Cubic: return TEXT("Cubic");
+	case ERichCurveInterpMode::RCIM_Linear:
+	default: return TEXT("Linear");
+	}
+}
+
+//~ Extract Implementation
+
+bool FCurveFloatGenerator::CanExtract(UObject* Asset) const
+{
+	return Asset && Asset->IsA<UCurveFloat>();
+}
+
+TSharedPtr<FJsonObject> FCurveFloatGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UCurveFloat* Curve = Cast<UCurveFloat>(Asset);
+	if (!Curve)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// Extract keys
+	TArray<TSharedPtr<FJsonValue>> KeysArray;
+	for (auto It = Curve->FloatCurve.GetKeyIterator(); It; ++It)
+	{
+		const FRichCurveKey& Key = *It;
+
+		TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+		KeyObj->SetNumberField(TEXT("Time"), Key.Time);
+		KeyObj->SetNumberField(TEXT("Value"), Key.Value);
+		KeyObj->SetStringField(TEXT("InterpMode"), InterpModeToString(Key.InterpMode));
+
+		KeysArray.Add(MakeShared<FJsonValueObject>(KeyObj));
+	}
+
+	if (KeysArray.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("Keys"), KeysArray);
+	}
+
+	return Config;
+}

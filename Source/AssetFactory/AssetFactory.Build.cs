@@ -37,7 +37,9 @@ public class AssetFactory : ModuleRules
 			"RenderCore",
 			"MaterialEditor",
 			// HTTP Server
-			"HTTPServer"
+			"HTTPServer",
+			// Settings
+			"DeveloperSettings"
 		});
 	}
 }

@@ -32,7 +32,12 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
 protected:
 	ERichCurveInterpMode ParseInterpMode(const FString& ModeString) const;
+	FString InterpModeToString(ERichCurveInterpMode Mode) const;
 	FVector ParseVector(const TSharedPtr<FJsonValue>& JsonValue) const;
 };

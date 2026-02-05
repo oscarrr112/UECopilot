@@ -8,7 +8,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SBorder.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "SAIBlueprintPreview"
 

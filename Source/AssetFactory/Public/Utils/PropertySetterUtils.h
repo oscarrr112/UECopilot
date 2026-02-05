@@ -12,6 +12,45 @@
 #include "Widgets/Layout/Anchors.h"
 
 /**
+ * Parsed type information from type string like "Object:UStaticMesh" or "Array:Float"
+ */
+struct ASSETFACTORY_API FParsedTypeInfo
+{
+	/** Base type category: Bool, Int, Float, String, FVector, Object, Array, Map, Enum, Struct, etc. */
+	FString BaseType;
+
+	/** Sub type for Object/SoftObject/Class/Enum/Struct (e.g., "UStaticMesh", "ECollisionChannel", "FMyStruct") */
+	FString SubType;
+
+	/** Element type for Array (e.g., "Float", "Object:UStaticMesh") */
+	FString ElementType;
+
+	/** Key type for Map */
+	FString KeyType;
+
+	/** Value type for Map */
+	FString ValueType;
+
+	/** Whether parsing was successful */
+	bool bIsValid = false;
+
+	/** Error message if parsing failed */
+	FString ErrorMessage;
+};
+
+/**
+ * Result of property validation
+ */
+struct ASSETFACTORY_API FPropertyValidationResult
+{
+	bool bIsValid = false;
+	FString ErrorMessage;
+
+	static FPropertyValidationResult Success() { return { true, TEXT("") }; }
+	static FPropertyValidationResult Failure(const FString& Error) { return { false, Error }; }
+};
+
+/**
  * Utility class for setting UObject properties from JSON values.
  * Consolidates property setting logic from DataAssetGenerator, BlueprintGenerator,
  * and WidgetBlueprintGenerator.
@@ -28,6 +67,58 @@
 class ASSETFACTORY_API FPropertySetterUtils
 {
 public:
+	//~ New Typed Property System (with explicit { "type": "...", "value": ... } format)
+
+	/**
+	 * Parse a type string into structured type info
+	 * Examples: "Float", "FVector", "Object:UStaticMesh", "Array:Float", "Map:String:Int", "Enum:ECollisionChannel"
+	 */
+	static FParsedTypeInfo ParseTypeString(const FString& TypeString);
+
+	/**
+	 * Validate that a JSON value matches the expected type
+	 * @param TypeInfo - Parsed type information
+	 * @param Value - The JSON value to validate
+	 * @return Validation result with success/failure and error message
+	 */
+	static FPropertyValidationResult ValidateTypedValue(const FParsedTypeInfo& TypeInfo, TSharedPtr<FJsonValue> Value);
+
+	/**
+	 * Validate all properties in a typed properties JSON object
+	 * Each property should be { "type": "...", "value": ... }
+	 * @param Properties - JSON object containing typed property definitions
+	 * @param OutErrors - Array to collect validation errors
+	 * @return true if all properties are valid
+	 */
+	static bool ValidateTypedProperties(TSharedPtr<FJsonObject> Properties, TArray<FString>& OutErrors);
+
+	/**
+	 * Set a single property using typed format { "type": "...", "value": ... }
+	 * @param Object - The UObject containing the property
+	 * @param PropertyName - Name of the property to set
+	 * @param TypedValue - JSON object with "type" and "value" fields
+	 * @return true if the property was set successfully
+	 */
+	static bool SetTypedPropertyFromJson(UObject* Object, const FString& PropertyName, TSharedPtr<FJsonObject> TypedValue);
+
+	/**
+	 * Set multiple properties using typed format
+	 * @param Object - The UObject to set properties on
+	 * @param Properties - JSON object where each value is { "type": "...", "value": ... }
+	 */
+	static void SetTypedPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties);
+
+	/**
+	 * Set a value directly using parsed type info (for nested/recursive calls)
+	 * @param ValuePtr - Pointer to the memory location to set
+	 * @param TypeInfo - Parsed type information
+	 * @param JsonValue - The JSON value containing the data
+	 * @return true if successful
+	 */
+	static bool SetValueFromTypedJson(void* ValuePtr, const FParsedTypeInfo& TypeInfo, TSharedPtr<FJsonValue> JsonValue);
+
+	//~ Legacy Property System (auto-detect types from property reflection)
+
 	/**
 	 * Set a single property from a JSON value
 	 * @param Object - The UObject containing the property
@@ -98,6 +189,49 @@ public:
 	 */
 	static bool SetClassProperty(UObject* Object, FClassProperty* Property, const FString& ClassPath);
 
+	//~ Extract Properties (Property → JSON, reverse of Set)
+
+	/**
+	 * Extract a single property value to JSON
+	 * @param Property - The property to extract
+	 * @param ValuePtr - Pointer to the property value
+	 * @return JSON value representing the property, or nullptr if unsupported
+	 */
+	static TSharedPtr<FJsonValue> ExtractPropertyToJson(FProperty* Property, const void* ValuePtr);
+
+	/**
+	 * Extract all editable properties from a UObject to JSON
+	 * @param Object - The UObject to extract properties from
+	 * @param bEditableOnly - If true, only extract properties with CPF_Edit flag
+	 * @param bSkipDefaults - If true, skip properties that match CDO defaults
+	 * @return JSON object containing property name/value pairs
+	 */
+	static TSharedPtr<FJsonObject> ExtractPropertiesToJson(UObject* Object, bool bEditableOnly = true, bool bSkipDefaults = false);
+
+	/**
+	 * Extract a struct value to JSON
+	 * @param StructProp - The struct property
+	 * @param ValuePtr - Pointer to the struct value
+	 * @return JSON value representing the struct
+	 */
+	static TSharedPtr<FJsonValue> ExtractStructToJson(FStructProperty* StructProp, const void* ValuePtr);
+
+	/**
+	 * Extract an array property to JSON
+	 * @param ArrayProp - The array property
+	 * @param ValuePtr - Pointer to the array value
+	 * @return JSON array value
+	 */
+	static TSharedPtr<FJsonValue> ExtractArrayToJson(FArrayProperty* ArrayProp, const void* ValuePtr);
+
+	/**
+	 * Extract a map property to JSON
+	 * @param MapProp - The map property
+	 * @param ValuePtr - Pointer to the map value
+	 * @return JSON object representing the map
+	 */
+	static TSharedPtr<FJsonValue> ExtractMapToJson(FMapProperty* MapProp, const void* ValuePtr);
+
 	//~ Parse Helpers
 
 	/**
@@ -142,4 +276,19 @@ private:
 	 * Internal property value setter with void* pointer
 	 */
 	static bool SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue);
+
+	/**
+	 * Find a UScriptStruct by name (e.g., "FVector", "FLinearColor", "FMyCustomStruct")
+	 */
+	static UScriptStruct* FindStructByName(const FString& StructName);
+
+	/**
+	 * Find a UEnum by name (e.g., "ECollisionChannel")
+	 */
+	static UEnum* FindEnumByName(const FString& EnumName);
+
+	/**
+	 * Set a struct value from typed JSON
+	 */
+	static bool SetStructValueFromTypedJson(void* ValuePtr, UScriptStruct* Struct, TSharedPtr<FJsonValue> JsonValue);
 };

@@ -224,3 +224,73 @@ TArray<FString> UAssetFactorySubsystem::GetSupportedAssetTypes() const
 {
 	return FAssetGeneratorRegistry::Get().GetRegisteredTypes();
 }
+
+TSharedPtr<FJsonObject> UAssetFactorySubsystem::ExtractAsset(const FString& AssetPath, bool bDiffOnly)
+{
+	// Try multiple ways to find/load the asset
+	UObject* Asset = nullptr;
+	FString AssetName = FPaths::GetBaseFilename(AssetPath);
+	FString FullPathWithSuffix = FString::Printf(TEXT("%s.%s"), *AssetPath, *AssetName);
+
+	// First, try with the full object path (e.g., /Game/Test/MyAsset.MyAsset)
+	// This is the correct way to reference the actual asset object, not the package
+	Asset = StaticFindObject(UObject::StaticClass(), nullptr, *FullPathWithSuffix);
+
+	// If not found in memory, try LoadObject with suffix
+	if (!Asset)
+	{
+		Asset = LoadObject<UObject>(nullptr, *FullPathWithSuffix);
+	}
+
+	// Fallback: try without suffix (might work for some asset types)
+	if (!Asset)
+	{
+		Asset = StaticFindObject(UObject::StaticClass(), nullptr, *AssetPath);
+		// If we got a package, try to find the actual asset inside it
+		if (Asset && Asset->IsA<UPackage>())
+		{
+			UPackage* Package = Cast<UPackage>(Asset);
+			Asset = StaticFindObject(UObject::StaticClass(), Package, *AssetName);
+		}
+	}
+
+	// Last resort: LoadObject without suffix
+	if (!Asset)
+	{
+		Asset = LoadObject<UObject>(nullptr, *AssetPath);
+	}
+
+	if (!Asset)
+	{
+		UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load asset: %s"), *AssetPath);
+		return nullptr;
+	}
+
+	// Find a generator that can extract this asset
+	TArray<FString> AssetTypes = FAssetGeneratorRegistry::Get().GetRegisteredTypes();
+	for (const FString& AssetType : AssetTypes)
+	{
+		IAssetGenerator* Generator = FAssetGeneratorRegistry::Get().FindGenerator(AssetType);
+		if (Generator && Generator->CanExtract(Asset))
+		{
+			TSharedPtr<FJsonObject> Config = Generator->Extract(Asset, bDiffOnly);
+			if (Config.IsValid())
+			{
+				// Add asset metadata
+				Config->SetStringField(TEXT("AssetType"), Generator->GetAssetType());
+
+				// Extract Name and Path from the asset path (AssetName already computed above)
+				FString AssetDir = FPaths::GetPath(AssetPath);
+				Config->SetStringField(TEXT("Name"), AssetName);
+				Config->SetStringField(TEXT("Path"), AssetDir);
+
+				UE_LOG(LogAssetFactory, Log, TEXT("Extracted asset: %s (type: %s)"), *AssetPath, *AssetType);
+				return Config;
+			}
+		}
+	}
+
+	UE_LOG(LogAssetFactory, Warning, TEXT("No generator can extract asset: %s (class: %s)"),
+		*AssetPath, *Asset->GetClass()->GetName());
+	return nullptr;
+}

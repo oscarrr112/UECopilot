@@ -195,3 +195,101 @@ UInputModifier* FInputActionGenerator::CreateModifier(UInputAction* Outer, const
 	UE_LOG(LogAssetFactory, Warning, TEXT("Unknown modifier type: %s"), *ModifierName);
 	return nullptr;
 }
+
+FString FInputActionGenerator::ValueTypeToString(EInputActionValueType ValueType) const
+{
+	switch (ValueType)
+	{
+	case EInputActionValueType::Boolean: return TEXT("Boolean");
+	case EInputActionValueType::Axis1D: return TEXT("Axis1D");
+	case EInputActionValueType::Axis2D: return TEXT("Axis2D");
+	case EInputActionValueType::Axis3D: return TEXT("Axis3D");
+	default: return TEXT("Boolean");
+	}
+}
+
+FString FInputActionGenerator::TriggerToString(UInputTrigger* Trigger) const
+{
+	if (!Trigger) return TEXT("");
+
+	if (Trigger->IsA<UInputTriggerDown>()) return TEXT("Down");
+	if (Trigger->IsA<UInputTriggerPressed>()) return TEXT("Pressed");
+	if (Trigger->IsA<UInputTriggerReleased>()) return TEXT("Released");
+	if (Trigger->IsA<UInputTriggerHold>()) return TEXT("Hold");
+	if (Trigger->IsA<UInputTriggerTap>()) return TEXT("Tap");
+	if (Trigger->IsA<UInputTriggerPulse>()) return TEXT("Pulse");
+
+	return Trigger->GetClass()->GetName();
+}
+
+FString FInputActionGenerator::ModifierToString(UInputModifier* Modifier) const
+{
+	if (!Modifier) return TEXT("");
+
+	if (Modifier->IsA<UInputModifierNegate>()) return TEXT("Negate");
+	if (Modifier->IsA<UInputModifierSwizzleAxis>()) return TEXT("Swizzle");
+	if (Modifier->IsA<UInputModifierScalar>()) return TEXT("Scalar");
+	if (Modifier->IsA<UInputModifierDeadZone>()) return TEXT("DeadZone");
+	if (Modifier->IsA<UInputModifierSmooth>()) return TEXT("Smooth");
+
+	return Modifier->GetClass()->GetName();
+}
+
+//~ Extract Implementation
+
+bool FInputActionGenerator::CanExtract(UObject* Asset) const
+{
+	return Asset && Asset->IsA<UInputAction>();
+}
+
+TSharedPtr<FJsonObject> FInputActionGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UInputAction* InputAction = Cast<UInputAction>(Asset);
+	if (!InputAction)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// ValueType
+	Config->SetStringField(TEXT("ValueType"), ValueTypeToString(InputAction->ValueType));
+
+	// Triggers
+	if (InputAction->Triggers.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> TriggersArray;
+		for (UInputTrigger* Trigger : InputAction->Triggers)
+		{
+			FString TriggerName = TriggerToString(Trigger);
+			if (!TriggerName.IsEmpty())
+			{
+				TriggersArray.Add(MakeShared<FJsonValueString>(TriggerName));
+			}
+		}
+		if (TriggersArray.Num() > 0)
+		{
+			Config->SetArrayField(TEXT("Triggers"), TriggersArray);
+		}
+	}
+
+	// Modifiers
+	if (InputAction->Modifiers.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ModifiersArray;
+		for (UInputModifier* Modifier : InputAction->Modifiers)
+		{
+			FString ModifierName = ModifierToString(Modifier);
+			if (!ModifierName.IsEmpty())
+			{
+				ModifiersArray.Add(MakeShared<FJsonValueString>(ModifierName));
+			}
+		}
+		if (ModifiersArray.Num() > 0)
+		{
+			Config->SetArrayField(TEXT("Modifiers"), ModifiersArray);
+		}
+	}
+
+	return Config;
+}

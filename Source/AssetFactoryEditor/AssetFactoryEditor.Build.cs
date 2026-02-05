@@ -25,7 +25,6 @@ public class AssetFactoryEditor : ModuleRules
 			{
 				"InputCore",
 				"UnrealEd",
-				"EditorStyle",
 				"EditorFramework",
 				"ToolMenus",
 				"LevelEditor",

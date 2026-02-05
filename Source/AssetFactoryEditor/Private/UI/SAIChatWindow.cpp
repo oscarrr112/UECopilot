@@ -16,7 +16,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateStyleMacros.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 #include "ISettingsModule.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"

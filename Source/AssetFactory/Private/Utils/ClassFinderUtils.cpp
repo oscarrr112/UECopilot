@@ -97,16 +97,16 @@ UClass* FClassFinderUtils::FindWidgetClass(const FString& WidgetTypeName)
 
 	for (const FString& ModulePath : ModulePaths)
 	{
-		// Try with U prefix
-		FString FullPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *SearchName);
+		// Try without U prefix first (StaticLoadClass uses class name without U/A prefix)
+		FString FullPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *SearchName);
 		UClass* FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
 		if (FoundClass)
 		{
 			return FoundClass;
 		}
 
-		// Try without U prefix
-		FullPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *SearchName);
+		// Try with U prefix as fallback
+		FullPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *SearchName);
 		FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
 		if (FoundClass)
 		{
@@ -142,13 +142,12 @@ UClass* FClassFinderUtils::FindDataAssetClass(const FString& ClassName)
 	// Normalize: remove U prefix if present
 	FString SearchName = NormalizeClassName(ClassName, TEXT('U'));
 
-	// Search in multiple modules
+	// Search in multiple modules (use TryLoadClassFromModule which tries U/A prefixes)
 	TArray<FString> ModulePaths = GetDefaultModulePaths();
 
 	for (const FString& ModulePath : ModulePaths)
 	{
-		FString ClassPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *SearchName);
-		UClass* FoundClass = StaticLoadClass(UDataAsset::StaticClass(), nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
+		UClass* FoundClass = TryLoadClassFromModule(ModulePath, SearchName, UDataAsset::StaticClass());
 		if (FoundClass)
 		{
 			return FoundClass;
@@ -209,8 +208,25 @@ UClass* FClassFinderUtils::TryLoadClassFromModule(
 	const FString& ClassName,
 	UClass* BaseClass)
 {
+	// Try without prefix first (StaticLoadClass uses class name without U/A prefix)
 	FString ClassPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *ClassName);
 	UClass* FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
+	if (FoundClass)
+	{
+		return FoundClass;
+	}
+
+	// Try with U prefix (in case the name was stripped incorrectly)
+	ClassPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *ClassName);
+	FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
+	if (FoundClass)
+	{
+		return FoundClass;
+	}
+
+	// Try with A prefix (for AActor-derived classes)
+	ClassPath = FString::Printf(TEXT("%s.A%s"), *ModulePath, *ClassName);
+	FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
 	return FoundClass;
 }
 

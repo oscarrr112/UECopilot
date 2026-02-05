@@ -70,6 +70,25 @@ public:
 		return {};
 	}
 
+	/**
+	 * Extract asset configuration as JSON (reverse of Generate)
+	 * @param Asset - The asset to extract configuration from
+	 * @param bDiffOnly - If true, only extract values different from defaults
+	 * @return JSON configuration that can be used with Generate(), or nullptr if extraction failed
+	 */
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const
+	{
+		return nullptr;  // Default: not implemented
+	}
+
+	/**
+	 * Check if this generator can extract from the given asset
+	 */
+	virtual bool CanExtract(UObject* Asset) const
+	{
+		return false;  // Default: not supported
+	}
+
 protected:
 	/**
 	 * Helper: Check if asset already exists

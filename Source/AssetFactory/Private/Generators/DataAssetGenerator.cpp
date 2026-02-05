@@ -89,7 +89,26 @@ FGenerationResult FDataAssetGenerator::Generate(
 	TSharedPtr<FJsonObject> Properties = GetObjectField(Config, TEXT("Properties"));
 	if (Properties.IsValid())
 	{
-		FPropertySetterUtils::SetPropertiesFromJson(Asset, Properties);
+		// Detect format: check if first property has "type" field (new typed format)
+		bool bUseTypedFormat = false;
+		for (const auto& Pair : Properties->Values)
+		{
+			const TSharedPtr<FJsonObject>* PropObj;
+			if (Pair.Value->TryGetObject(PropObj) && (*PropObj)->HasField(TEXT("type")))
+			{
+				bUseTypedFormat = true;
+			}
+			break; // Only check first property
+		}
+
+		if (bUseTypedFormat)
+		{
+			FPropertySetterUtils::SetTypedPropertiesFromJson(Asset, Properties);
+		}
+		else
+		{
+			FPropertySetterUtils::SetPropertiesFromJson(Asset, Properties);
+		}
 	}
 
 	// Mark dirty and save
@@ -133,4 +152,86 @@ TOptional<FString> FDataAssetGenerator::ValidateConfig(TSharedPtr<FJsonObject> C
 TArray<FString> FDataAssetGenerator::GetRequiredFields() const
 {
 	return { TEXT("ClassName") };
+}
+
+//~ Extract Implementation
+
+bool FDataAssetGenerator::CanExtract(UObject* Asset) const
+{
+	if (!Asset || !Asset->IsA<UDataAsset>())
+	{
+		return false;
+	}
+
+	// Exclude types that have their own specialized generators
+	static const TArray<FName> ExcludedClassNames = {
+		TEXT("InputAction"),
+		TEXT("InputMappingContext")
+	};
+
+	FName ClassName = Asset->GetClass()->GetFName();
+	return !ExcludedClassNames.Contains(ClassName);
+}
+
+TSharedPtr<FJsonObject> FDataAssetGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UDataAsset* DataAsset = Cast<UDataAsset>(Asset);
+	if (!DataAsset)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// ClassName
+	FString ClassName = DataAsset->GetClass()->GetName();
+	if (ClassName.StartsWith(TEXT("U")))
+	{
+		ClassName = ClassName.Mid(1);
+	}
+	Config->SetStringField(TEXT("ClassName"), ClassName);
+
+	// Properties
+	TSharedPtr<FJsonObject> PropertiesObj = ExtractProperties(DataAsset, bDiffOnly);
+	if (PropertiesObj.IsValid() && PropertiesObj->Values.Num() > 0)
+	{
+		Config->SetObjectField(TEXT("Properties"), PropertiesObj);
+	}
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> FDataAssetGenerator::ExtractProperties(UDataAsset* DataAsset, bool bDiffOnly) const
+{
+	if (!DataAsset)
+	{
+		return nullptr;
+	}
+
+	// Use the generic property extraction utility
+	TSharedPtr<FJsonObject> AllProperties = FPropertySetterUtils::ExtractPropertiesToJson(DataAsset, true, bDiffOnly);
+
+	if (!AllProperties.IsValid())
+	{
+		return nullptr;
+	}
+
+	// Filter out properties from base classes (UDataAsset, UObject)
+	TSharedPtr<FJsonObject> FilteredProperties = MakeShared<FJsonObject>();
+	UClass* AssetClass = DataAsset->GetClass();
+
+	for (const auto& Pair : AllProperties->Values)
+	{
+		FProperty* Property = AssetClass->FindPropertyByName(*Pair.Key);
+		if (Property)
+		{
+			UClass* OwnerClass = Property->GetOwnerClass();
+			if (OwnerClass != UDataAsset::StaticClass() && OwnerClass != UObject::StaticClass())
+			{
+				FilteredProperties->SetField(Pair.Key, Pair.Value);
+			}
+		}
+	}
+
+	return FilteredProperties;
 }

@@ -9,46 +9,16 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 
-// Widget Blueprint
+// Widget Blueprint - only base classes needed
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Components/Widget.h"
+#include "Components/PanelWidget.h"
+#include "Components/PanelSlot.h"
 
-// Container Widgets
-#include "Components/CanvasPanel.h"
-#include "Components/CanvasPanelSlot.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
-#include "Components/HorizontalBox.h"
-#include "Components/HorizontalBoxSlot.h"
-#include "Components/Overlay.h"
-#include "Components/OverlaySlot.h"
-#include "Components/ScrollBox.h"
-#include "Components/ScrollBoxSlot.h"
-#include "Components/SizeBox.h"
-#include "Components/ScaleBox.h"
-#include "Components/WidgetSwitcher.h"
-#include "Components/GridPanel.h"
-#include "Components/GridSlot.h"
-
-// Basic Widgets
-#include "Components/TextBlock.h"
-#include "Components/RichTextBlock.h"
-#include "Components/Image.h"
-#include "Components/Button.h"
-#include "Components/Border.h"
-#include "Components/Spacer.h"
-
-// Input Widgets
-#include "Components/EditableTextBox.h"
-#include "Components/CheckBox.h"
-#include "Components/Slider.h"
-#include "Components/ProgressBar.h"
-#include "Components/ComboBoxString.h"
-#include "Widgets/Notifications/SProgressBar.h"  // For EProgressBarFillType
-
-// Styling
+// Styling (needed for parse helpers)
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
 #include "Engine/Texture2D.h"
@@ -58,54 +28,14 @@
 #include "IAssetTools.h"
 #include "UObject/SavePackage.h"
 
-// For loading Widget Blueprints
-#include "Engine/Blueprint.h"
-
 // Reflection and property helpers
 #include "UObject/SoftObjectPath.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 
-// Static initialization
-TMap<FString, UClass*> FWidgetBlueprintGenerator::ShorthandClassMap;
-bool FWidgetBlueprintGenerator::bShorthandMapInitialized = false;
-
-void FWidgetBlueprintGenerator::InitializeShorthandMap() const
-{
-	if (bShorthandMapInitialized)
-	{
-		return;
-	}
-
-	// Container widgets
-	ShorthandClassMap.Add(TEXT("CanvasPanel"), UCanvasPanel::StaticClass());
-	ShorthandClassMap.Add(TEXT("VerticalBox"), UVerticalBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("HorizontalBox"), UHorizontalBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("Overlay"), UOverlay::StaticClass());
-	ShorthandClassMap.Add(TEXT("ScrollBox"), UScrollBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("SizeBox"), USizeBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("ScaleBox"), UScaleBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("WidgetSwitcher"), UWidgetSwitcher::StaticClass());
-	ShorthandClassMap.Add(TEXT("GridPanel"), UGridPanel::StaticClass());
-
-	// Basic widgets
-	ShorthandClassMap.Add(TEXT("TextBlock"), UTextBlock::StaticClass());
-	ShorthandClassMap.Add(TEXT("RichTextBlock"), URichTextBlock::StaticClass());
-	ShorthandClassMap.Add(TEXT("Image"), UImage::StaticClass());
-	ShorthandClassMap.Add(TEXT("Button"), UButton::StaticClass());
-	ShorthandClassMap.Add(TEXT("Border"), UBorder::StaticClass());
-	ShorthandClassMap.Add(TEXT("Spacer"), USpacer::StaticClass());
-
-	// Input widgets
-	ShorthandClassMap.Add(TEXT("EditableTextBox"), UEditableTextBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("CheckBox"), UCheckBox::StaticClass());
-	ShorthandClassMap.Add(TEXT("Slider"), USlider::StaticClass());
-	ShorthandClassMap.Add(TEXT("ProgressBar"), UProgressBar::StaticClass());
-	ShorthandClassMap.Add(TEXT("ComboBoxString"), UComboBoxString::StaticClass());
-
-	bShorthandMapInitialized = true;
-}
+// EdGraph for function validation
+#include "EdGraph/EdGraph.h"
 
 FGenerationResult FWidgetBlueprintGenerator::Generate(
 	const FString& Name,
@@ -138,8 +68,8 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 	}
 	else
 	{
-		// Try to find custom parent class
-		ParentClass = StaticLoadClass(UUserWidget::StaticClass(), nullptr, *ParentClassName);
+		// Try to find custom parent class using ClassFinderUtils (searches multiple modules)
+		ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UUserWidget::StaticClass(), true);
 		if (!ParentClass)
 		{
 			ParentClass = UUserWidget::StaticClass();
@@ -168,11 +98,58 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 			Blueprint->ParentClass = ParentClass;
 		}
 
-		// Clear existing widget tree for rebuild
+		// Clear existing widget tree for rebuild (following UE's DeleteWidgets pattern)
 		if (Blueprint->WidgetTree)
 		{
+			Blueprint->WidgetTree->Modify();
+			Blueprint->Modify();
+
+			TArray<UWidget*> AllWidgets;
+			Blueprint->WidgetTree->GetAllWidgets(AllWidgets);
 			Blueprint->WidgetTree->RootWidget = nullptr;
+
+			for (UWidget* Widget : AllWidgets)
+			{
+				if (Widget)
+				{
+					const FName WidgetName = Widget->GetFName();
+
+					// Remove associated bindings
+					for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
+					{
+						if (Blueprint->Bindings[i].ObjectName == Widget->GetName())
+						{
+							Blueprint->Bindings.RemoveAt(i);
+						}
+					}
+
+					// Remove from parent
+					if (UPanelWidget* Parent = Widget->GetParent())
+					{
+						Parent->Modify();
+					}
+					Widget->Modify();
+
+					// Remove from WidgetTree
+					Blueprint->WidgetTree->RemoveWidget(Widget);
+
+					// Remove variable nodes if it was a variable
+					if (Widget->bIsVariable)
+					{
+						FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetName);
+					}
+
+					// Rename to transient package
+					Widget->Rename(nullptr, GetTransientPackage());
+
+					// Notify Blueprint that variable was removed
+					Blueprint->OnVariableRemoved(WidgetName);
+				}
+			}
 		}
+
+		// Clear bindings as they reference old widgets
+		Blueprint->Bindings.Empty();
 	}
 	else
 	{
@@ -265,6 +242,93 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 		return nullptr;
 	}
 
+	// Check Action field (default: CreateOrUpdate)
+	FString ActionStr = GetStringField(WidgetNode, TEXT("Action"));
+
+	// Get widget name
+	FString WidgetName = GetStringField(WidgetNode, TEXT("Name"));
+
+	// Handle Remove action
+	if (ActionStr.Equals(TEXT("Remove"), ESearchCase::IgnoreCase))
+	{
+		if (WidgetName.IsEmpty())
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget missing 'Name' field for removal"), *JsonPath);
+			return nullptr;
+		}
+
+		// Find and remove the widget by name (following UE's DeleteWidgets pattern)
+		UWidget* WidgetToRemove = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+		if (WidgetToRemove)
+		{
+			Blueprint->WidgetTree->Modify();
+			Blueprint->Modify();
+
+			// Helper lambda to properly delete a widget and its children
+			TFunction<void(UWidget*)> DeleteWidgetRecursive = [&DeleteWidgetRecursive, &Blueprint](UWidget* Widget)
+			{
+				if (!Widget) return;
+
+				const FName WidgetFName = Widget->GetFName();
+
+				// Remove associated bindings
+				for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
+				{
+					if (Blueprint->Bindings[i].ObjectName == Widget->GetName())
+					{
+						Blueprint->Bindings.RemoveAt(i);
+					}
+				}
+
+				// Process children first if it's a panel
+				if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+				{
+					TArray<UWidget*> Children;
+					for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
+					{
+						Children.Add(Panel->GetChildAt(i));
+					}
+					for (UWidget* Child : Children)
+					{
+						DeleteWidgetRecursive(Child);
+					}
+				}
+
+				// Modify parent
+				if (UPanelWidget* Parent = Widget->GetParent())
+				{
+					Parent->Modify();
+				}
+				Widget->Modify();
+
+				// Remove from WidgetTree
+				Blueprint->WidgetTree->RemoveWidget(Widget);
+
+				// Remove variable nodes if it was a variable
+				if (Widget->bIsVariable)
+				{
+					FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetFName);
+				}
+
+				// Rename to transient package
+				Widget->Rename(nullptr, GetTransientPackage());
+
+				// Notify Blueprint that variable was removed
+				Blueprint->OnVariableRemoved(WidgetFName);
+			};
+
+			// Recursively delete
+			DeleteWidgetRecursive(WidgetToRemove);
+
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Removed widget '%s'"), *JsonPath, *WidgetName);
+		}
+		else
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget '%s' not found for removal"), *JsonPath, *WidgetName);
+		}
+		return nullptr;
+	}
+
 	// Get widget type
 	FString WidgetType = GetStringField(WidgetNode, TEXT("Type"));
 	if (WidgetType.IsEmpty())
@@ -273,8 +337,7 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 		return nullptr;
 	}
 
-	// Get widget name
-	FString WidgetName = GetStringField(WidgetNode, TEXT("Name"));
+	// Generate name if not provided
 	if (WidgetName.IsEmpty())
 	{
 		WidgetName = GenerateWidgetName(WidgetType);
@@ -313,7 +376,7 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 		// Widget must be a variable to have bindings
 		if (!bIsVariable)
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget '%s' has Bindings but IsVariable is false. Setting IsVariable to true."), *JsonPath, *WidgetName);
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Widget '%s' has Bindings, auto-setting IsVariable to true."), *JsonPath, *WidgetName);
 			ExposeAsVariable(Widget, WidgetName);
 		}
 		ConfigureBindings(Blueprint, Widget, WidgetName, BindingsConfig);
@@ -337,13 +400,16 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 	{
 		if (!PanelWidget)
 		{
-			// Special case: Button and Border can have a single child
-			UButton* ButtonWidget = Cast<UButton>(Widget);
-			UBorder* BorderWidget = Cast<UBorder>(Widget);
+			// Check if widget is a ContentWidget (can have a single child) via reflection
+			// ContentWidget has a SetContent method - check if GetContentSlot exists (returns UPanelSlot*)
+			UClass* WidgetClass = Widget->GetClass();
+			UFunction* SetContentFunc = WidgetClass->FindFunctionByName(TEXT("SetContent"));
+			UFunction* GetContentSlotFunc = WidgetClass->FindFunctionByName(TEXT("GetContentSlot"));
 
-			if (ButtonWidget || BorderWidget)
+			// If widget has SetContent or is a PanelWidget (even if Cast failed), handle as single-child container
+			if (SetContentFunc || GetContentSlotFunc || WidgetClass->IsChildOf(UPanelWidget::StaticClass()))
 			{
-				// Only process first child
+				// Only process first child for single-child containers
 				if ((*ChildrenArray)[0]->Type == EJson::Object)
 				{
 					TSharedPtr<FJsonObject> ChildNode = (*ChildrenArray)[0]->AsObject();
@@ -352,25 +418,25 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 					UWidget* ChildWidget = BuildWidgetTree(Blueprint, ChildNode, nullptr, ChildPath);
 					if (ChildWidget)
 					{
-						if (ButtonWidget)
+						// Try to add child - first check if it's a PanelWidget
+						UPanelWidget* WidgetAsPanel = Cast<UPanelWidget>(Widget);
+						if (WidgetAsPanel)
 						{
-							// Button uses AddChild through its internal slot
-							UPanelWidget* ButtonPanel = Cast<UPanelWidget>(ButtonWidget);
-							if (ButtonPanel)
-							{
-								ButtonPanel->AddChild(ChildWidget);
-							}
+							WidgetAsPanel->AddChild(ChildWidget);
 						}
-						else if (BorderWidget)
+						else if (SetContentFunc)
 						{
-							BorderWidget->SetContent(ChildWidget);
+							// Call SetContent via reflection
+							struct { UWidget* Content; } Params;
+							Params.Content = ChildWidget;
+							Widget->ProcessEvent(SetContentFunc, &Params);
 						}
 					}
 				}
 
 				if (ChildrenArray->Num() > 1)
 				{
-					UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Button/Border can only have one child, ignoring extra children"), *JsonPath);
+					UE_LOG(LogAssetFactory, Warning, TEXT("[%s] ContentWidget can only have one child, ignoring extra children"), *JsonPath);
 				}
 			}
 			else
@@ -399,15 +465,7 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 
 UClass* FWidgetBlueprintGenerator::FindWidgetClass(const FString& TypeString) const
 {
-	InitializeShorthandMap();
-
-	// First check shorthand map for common widget types
-	if (UClass* const* Found = ShorthandClassMap.Find(TypeString))
-	{
-		return *Found;
-	}
-
-	// Use ClassFinderUtils for dynamic lookup
+	// Use dynamic class lookup - supports "TextBlock", "UTextBlock", full paths, etc.
 	return FClassFinderUtils::FindWidgetClass(TypeString);
 }
 
@@ -417,8 +475,6 @@ UWidget* FWidgetBlueprintGenerator::CreateWidget(
 	const FString& WidgetName,
 	TSharedPtr<FJsonObject> Properties)
 {
-	InitializeShorthandMap();
-
 	// Handle UserWidget type with WidgetClass property (for instantiating other Widget Blueprints)
 	if (WidgetType == TEXT("UserWidget") || WidgetType == TEXT("WidgetBlueprint"))
 	{
@@ -434,356 +490,35 @@ UWidget* FWidgetBlueprintGenerator::CreateWidget(
 		}
 	}
 
-	// Use shorthand creators for known types
-	if (WidgetType == TEXT("CanvasPanel")) return CreateCanvasPanel(Blueprint, WidgetName);
-	if (WidgetType == TEXT("VerticalBox")) return CreateVerticalBox(Blueprint, WidgetName);
-	if (WidgetType == TEXT("HorizontalBox")) return CreateHorizontalBox(Blueprint, WidgetName);
-	if (WidgetType == TEXT("Overlay")) return CreateOverlay(Blueprint, WidgetName);
-	if (WidgetType == TEXT("ScrollBox")) return CreateScrollBox(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("SizeBox")) return CreateSizeBox(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("ScaleBox")) return CreateScaleBox(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("WidgetSwitcher")) return CreateWidgetSwitcher(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("GridPanel")) return CreateGridPanel(Blueprint, WidgetName);
-	if (WidgetType == TEXT("TextBlock")) return CreateTextBlock(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("RichTextBlock")) return CreateRichTextBlock(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("Image")) return CreateImage(Blueprint, WidgetName);
-	if (WidgetType == TEXT("Button")) return CreateButton(Blueprint, WidgetName);
-	if (WidgetType == TEXT("Border")) return CreateBorder(Blueprint, WidgetName);
-	if (WidgetType == TEXT("Spacer")) return CreateSpacer(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("EditableTextBox")) return CreateEditableTextBox(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("CheckBox")) return CreateCheckBox(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("Slider")) return CreateSlider(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("ProgressBar")) return CreateProgressBar(Blueprint, WidgetName, Properties);
-	if (WidgetType == TEXT("ComboBoxString")) return CreateComboBoxString(Blueprint, WidgetName, Properties);
-
-	// Try dynamic class loading for unknown types
+	// Dynamic class lookup for all widget types
 	UClass* WidgetClass = FindWidgetClass(WidgetType);
-	if (WidgetClass)
+	if (!WidgetClass)
 	{
-		return CreateCustomWidget(Blueprint, WidgetClass, WidgetName, Properties);
+		UE_LOG(LogAssetFactory, Error, TEXT("Widget class not found: %s"), *WidgetType);
+		return nullptr;
 	}
 
-	UE_LOG(LogAssetFactory, Error, TEXT("Unknown widget type: %s"), *WidgetType);
-	return nullptr;
-}
+	if (!WidgetClass->IsChildOf(UWidget::StaticClass()))
+	{
+		UE_LOG(LogAssetFactory, Error, TEXT("Class '%s' is not a UWidget subclass"), *WidgetType);
+		return nullptr;
+	}
 
-//~ Container Widget Creators
+	// Create widget using WidgetTree's ConstructWidget (dynamic, no hardcoded types)
+	UWidget* Widget = Blueprint->WidgetTree->ConstructWidget<UWidget>(WidgetClass, *WidgetName);
+	if (!Widget)
+	{
+		UE_LOG(LogAssetFactory, Error, TEXT("Failed to construct widget '%s' of type '%s'"), *WidgetName, *WidgetType);
+		return nullptr;
+	}
 
-UWidget* FWidgetBlueprintGenerator::CreateCanvasPanel(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateVerticalBox(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateHorizontalBox(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateOverlay(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateScrollBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UScrollBox* ScrollBox = Blueprint->WidgetTree->ConstructWidget<UScrollBox>(UScrollBox::StaticClass(), *Name);
-
+	// Set properties via reflection if provided
 	if (Properties.IsValid())
 	{
-		FString Orientation;
-		if (Properties->TryGetStringField(TEXT("Orientation"), Orientation))
-		{
-			if (Orientation == TEXT("Vertical"))
-			{
-				ScrollBox->SetOrientation(EOrientation::Orient_Vertical);
-			}
-			else if (Orientation == TEXT("Horizontal"))
-			{
-				ScrollBox->SetOrientation(EOrientation::Orient_Horizontal);
-			}
-		}
+		SetPropertiesViaReflection(Widget, Properties);
 	}
 
-	return ScrollBox;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateSizeBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	USizeBox* SizeBox = Blueprint->WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		// SizeBox properties use setter methods that also set the bOverride flags
-		// We handle these explicitly for correct behavior
-		double Value = 0;
-		if (Properties->TryGetNumberField(TEXT("WidthOverride"), Value))
-		{
-			SizeBox->SetWidthOverride(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("HeightOverride"), Value))
-		{
-			SizeBox->SetHeightOverride(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MinDesiredWidth"), Value))
-		{
-			SizeBox->SetMinDesiredWidth(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MinDesiredHeight"), Value))
-		{
-			SizeBox->SetMinDesiredHeight(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MaxDesiredWidth"), Value))
-		{
-			SizeBox->SetMaxDesiredWidth(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MaxDesiredHeight"), Value))
-		{
-			SizeBox->SetMaxDesiredHeight(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MinAspectRatio"), Value))
-		{
-			SizeBox->SetMinAspectRatio(static_cast<float>(Value));
-		}
-		if (Properties->TryGetNumberField(TEXT("MaxAspectRatio"), Value))
-		{
-			SizeBox->SetMaxAspectRatio(static_cast<float>(Value));
-		}
-	}
-
-	return SizeBox;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateScaleBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UScaleBox* ScaleBox = Blueprint->WidgetTree->ConstructWidget<UScaleBox>(UScaleBox::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		// Use generic reflection for all properties (Stretch enum will be handled automatically)
-		SetPropertiesViaReflection(ScaleBox, Properties);
-	}
-
-	return ScaleBox;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateWidgetSwitcher(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UWidgetSwitcher* Switcher = Blueprint->WidgetTree->ConstructWidget<UWidgetSwitcher>(UWidgetSwitcher::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		double ActiveIndex = 0;
-		if (Properties->TryGetNumberField(TEXT("ActiveWidgetIndex"), ActiveIndex))
-		{
-			Switcher->SetActiveWidgetIndex(static_cast<int32>(ActiveIndex));
-		}
-	}
-
-	return Switcher;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateGridPanel(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UGridPanel>(UGridPanel::StaticClass(), *Name);
-}
-
-//~ Basic Widget Creators
-
-UWidget* FWidgetBlueprintGenerator::CreateTextBlock(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UTextBlock* TextBlock = Blueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		// Use generic reflection for all properties
-		SetPropertiesViaReflection(TextBlock, Properties);
-	}
-
-	return TextBlock;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateRichTextBlock(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	URichTextBlock* RichText = Blueprint->WidgetTree->ConstructWidget<URichTextBlock>(URichTextBlock::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		FString Text;
-		if (Properties->TryGetStringField(TEXT("Text"), Text))
-		{
-			RichText->SetText(FText::FromString(Text));
-		}
-	}
-
-	return RichText;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateImage(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateButton(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateBorder(UWidgetBlueprint* Blueprint, const FString& Name)
-{
-	return Blueprint->WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *Name);
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateSpacer(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	USpacer* Spacer = Blueprint->WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* SizeArray = nullptr;
-		if (Properties->TryGetArrayField(TEXT("Size"), SizeArray) && SizeArray->Num() >= 2)
-		{
-			FVector2D Size = ParseVector2D(*SizeArray);
-			Spacer->SetSize(Size);
-		}
-	}
-
-	return Spacer;
-}
-
-//~ Input Widget Creators
-
-UWidget* FWidgetBlueprintGenerator::CreateEditableTextBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UEditableTextBox* TextBox = Blueprint->WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		FString Text;
-		if (Properties->TryGetStringField(TEXT("Text"), Text))
-		{
-			TextBox->SetText(FText::FromString(Text));
-		}
-
-		FString HintText;
-		if (Properties->TryGetStringField(TEXT("HintText"), HintText))
-		{
-			TextBox->SetHintText(FText::FromString(HintText));
-		}
-
-		bool bIsPassword = false;
-		if (Properties->TryGetBoolField(TEXT("IsPassword"), bIsPassword))
-		{
-			TextBox->SetIsPassword(bIsPassword);
-		}
-	}
-
-	return TextBox;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateCheckBox(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UCheckBox* CheckBox = Blueprint->WidgetTree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		bool bIsChecked = false;
-		if (Properties->TryGetBoolField(TEXT("IsChecked"), bIsChecked))
-		{
-			CheckBox->SetIsChecked(bIsChecked);
-		}
-	}
-
-	return CheckBox;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateSlider(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	USlider* Slider = Blueprint->WidgetTree->ConstructWidget<USlider>(USlider::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		double Value = 0;
-		if (Properties->TryGetNumberField(TEXT("Value"), Value))
-		{
-			Slider->SetValue(static_cast<float>(Value));
-		}
-
-		double MinValue = 0;
-		if (Properties->TryGetNumberField(TEXT("MinValue"), MinValue))
-		{
-			Slider->SetMinValue(static_cast<float>(MinValue));
-		}
-
-		double MaxValue = 1;
-		if (Properties->TryGetNumberField(TEXT("MaxValue"), MaxValue))
-		{
-			Slider->SetMaxValue(static_cast<float>(MaxValue));
-		}
-	}
-
-	return Slider;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateProgressBar(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UProgressBar* ProgressBar = Blueprint->WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		// Map common aliases to actual property names
-		TSharedPtr<FJsonObject> MappedProperties = MakeShared<FJsonObject>();
-		for (const auto& Pair : Properties->Values)
-		{
-			// "FillType" -> "BarFillType" alias
-			if (Pair.Key.Equals(TEXT("FillType"), ESearchCase::IgnoreCase))
-			{
-				MappedProperties->SetField(TEXT("BarFillType"), Pair.Value);
-			}
-			else
-			{
-				MappedProperties->SetField(Pair.Key, Pair.Value);
-			}
-		}
-
-		// Use generic reflection for all properties
-		SetPropertiesViaReflection(ProgressBar, MappedProperties);
-	}
-
-	return ProgressBar;
-}
-
-UWidget* FWidgetBlueprintGenerator::CreateComboBoxString(UWidgetBlueprint* Blueprint, const FString& Name, TSharedPtr<FJsonObject> Properties)
-{
-	UComboBoxString* ComboBox = Blueprint->WidgetTree->ConstructWidget<UComboBoxString>(UComboBoxString::StaticClass(), *Name);
-
-	if (Properties.IsValid())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* OptionsArray = nullptr;
-		if (Properties->TryGetArrayField(TEXT("Options"), OptionsArray))
-		{
-			for (const TSharedPtr<FJsonValue>& Option : *OptionsArray)
-			{
-				FString OptionStr;
-				if (Option->TryGetString(OptionStr))
-				{
-					ComboBox->AddOption(OptionStr);
-				}
-			}
-		}
-
-		FString SelectedOption;
-		if (Properties->TryGetStringField(TEXT("SelectedOption"), SelectedOption))
-		{
-			ComboBox->SetSelectedOption(SelectedOption);
-		}
-	}
-
-	return ComboBox;
+	return Widget;
 }
 
 //~ Widget Blueprint Instance Creator
@@ -852,31 +587,7 @@ UWidget* FWidgetBlueprintGenerator::CreateWidgetFromBlueprint(
 	return Widget;
 }
 
-//~ Custom Widget Creator
-
-UWidget* FWidgetBlueprintGenerator::CreateCustomWidget(
-	UWidgetBlueprint* Blueprint,
-	UClass* WidgetClass,
-	const FString& Name,
-	TSharedPtr<FJsonObject> Properties)
-{
-	if (!WidgetClass || !WidgetClass->IsChildOf(UWidget::StaticClass()))
-	{
-		UE_LOG(LogAssetFactory, Error, TEXT("Invalid widget class for custom widget: %s"), *Name);
-		return nullptr;
-	}
-
-	UWidget* Widget = Blueprint->WidgetTree->ConstructWidget<UWidget>(WidgetClass, *Name);
-
-	if (Widget && Properties.IsValid())
-	{
-		SetPropertiesViaReflection(Widget, Properties);
-	}
-
-	return Widget;
-}
-
-//~ Slot Configuration
+//~ Slot Configuration (Dynamic via reflection)
 
 void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Parent, TSharedPtr<FJsonObject> SlotConfig)
 {
@@ -885,319 +596,247 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 		return;
 	}
 
-	// Canvas Panel Slot
-	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
-	{
-		ConfigureCanvasSlot(CanvasSlot, SlotConfig);
-		return;
-	}
+	UPanelSlot* Slot = Widget->Slot;
+	UClass* SlotClass = Slot->GetClass();
 
-	// Vertical Box Slot
-	if (UVerticalBoxSlot* VBoxSlot = Cast<UVerticalBoxSlot>(Widget->Slot))
-	{
-		ConfigureVerticalBoxSlot(VBoxSlot, SlotConfig);
-		return;
-	}
+	// Apply common slot properties first
+	ConfigureCommonSlotProperties(Slot, SlotConfig);
 
-	// Horizontal Box Slot
-	if (UHorizontalBoxSlot* HBoxSlot = Cast<UHorizontalBoxSlot>(Widget->Slot))
-	{
-		ConfigureHorizontalBoxSlot(HBoxSlot, SlotConfig);
-		return;
-	}
-
-	// Overlay Slot
-	if (UOverlaySlot* OvSlot = Cast<UOverlaySlot>(Widget->Slot))
-	{
-		ConfigureOverlaySlot(OvSlot, SlotConfig);
-		return;
-	}
-
-	// Scroll Box Slot
-	if (UScrollBoxSlot* ScrollSlot = Cast<UScrollBoxSlot>(Widget->Slot))
-	{
-		ConfigureScrollBoxSlot(ScrollSlot, SlotConfig);
-		return;
-	}
-
-	// Grid Slot
-	if (UGridSlot* GridSlot = Cast<UGridSlot>(Widget->Slot))
-	{
-		ConfigureGridSlot(GridSlot, SlotConfig);
-		return;
-	}
-}
-
-void FWidgetBlueprintGenerator::ConfigureCanvasSlot(UCanvasPanelSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	// Default values
-	FAnchors Anchors(0.0f, 0.0f, 0.0f, 0.0f);
-	FMargin Offsets(0.0f, 0.0f, 100.0f, 100.0f);
-	FVector2D Alignment(0.0f, 0.0f);
-	bool bSizeToContent = false;
-
+	// Additional slot-specific properties via reflection
 	if (SlotConfig.IsValid())
 	{
-		// Parse anchors
+		// Handle Anchors (FAnchors struct) - common on canvas slots
 		if (SlotConfig->HasTypedField<EJson::Object>(TEXT("Anchors")))
 		{
-			TSharedPtr<FJsonObject> AnchorsConfig = SlotConfig->GetObjectField(TEXT("Anchors"));
-			if (AnchorsConfig.IsValid())
+			FProperty* AnchorsProp = SlotClass->FindPropertyByName(TEXT("Anchors"));
+			if (!AnchorsProp)
 			{
-				Anchors = ParseAnchors(AnchorsConfig);
+				// Also try LayoutData.Anchors for some slot types
+				AnchorsProp = SlotClass->FindPropertyByName(TEXT("LayoutData"));
+			}
+
+			if (AnchorsProp)
+			{
+				TSharedPtr<FJsonObject> AnchorsConfig = SlotConfig->GetObjectField(TEXT("Anchors"));
+				FAnchors Anchors = ParseAnchors(AnchorsConfig);
+
+				// Use reflection to set the anchors
+				if (FStructProperty* StructProp = CastField<FStructProperty>(AnchorsProp))
+				{
+					if (StructProp->Struct->GetFName() == TEXT("Anchors"))
+					{
+						void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+						*static_cast<FAnchors*>(ValuePtr) = Anchors;
+					}
+				}
 			}
 		}
 
-		// Parse offsets
+		// Handle Offsets (FMargin struct) - common on canvas slots
 		if (SlotConfig->HasField(TEXT("Offsets")))
 		{
-			Offsets = ParseMargins(SlotConfig->TryGetField(TEXT("Offsets")));
+			FProperty* OffsetsProp = SlotClass->FindPropertyByName(TEXT("Offsets"));
+			if (OffsetsProp)
+			{
+				FMargin Offsets = ParseMargins(SlotConfig->TryGetField(TEXT("Offsets")));
+				if (FStructProperty* StructProp = CastField<FStructProperty>(OffsetsProp))
+				{
+					void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+					*static_cast<FMargin*>(ValuePtr) = Offsets;
+				}
+			}
 		}
 
-		// Parse alignment
+		// Handle Alignment (FVector2D) - common on canvas slots
 		const TArray<TSharedPtr<FJsonValue>>* AlignmentArray = nullptr;
 		if (SlotConfig->TryGetArrayField(TEXT("Alignment"), AlignmentArray) && AlignmentArray->Num() >= 2)
 		{
-			Alignment = ParseVector2D(*AlignmentArray);
-		}
-
-		// Parse size to content
-		SlotConfig->TryGetBoolField(TEXT("SizeToContent"), bSizeToContent);
-	}
-
-	Slot->SetAnchors(Anchors);
-	Slot->SetOffsets(Offsets);
-	Slot->SetAlignment(Alignment);
-	Slot->SetAutoSize(bSizeToContent);
-}
-
-void FWidgetBlueprintGenerator::ConfigureVerticalBoxSlot(UVerticalBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	if (SlotConfig.IsValid())
-	{
-		// Padding
-		if (SlotConfig->HasField(TEXT("Padding")))
-		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
-			Slot->SetPadding(Padding);
-		}
-
-		// Size - supports both string format "Fill" and object format { "SizeRule": "Fill" }
-		if (SlotConfig->HasField(TEXT("Size")))
-		{
-			TSharedPtr<FJsonValue> SizeValue = SlotConfig->TryGetField(TEXT("Size"));
-			if (SizeValue->Type == EJson::String)
+			FProperty* AlignmentProp = SlotClass->FindPropertyByName(TEXT("Alignment"));
+			if (AlignmentProp)
 			{
-				FString SizeStr = SizeValue->AsString();
-				Slot->SetSize(ParseSizeRule(SizeStr));
-			}
-			else if (SizeValue->Type == EJson::Object)
-			{
-				TSharedPtr<FJsonObject> SizeObj = SizeValue->AsObject();
-				FString SizeRule;
-				if (SizeObj->TryGetStringField(TEXT("SizeRule"), SizeRule))
+				FVector2D Alignment = ParseVector2D(*AlignmentArray);
+				if (FStructProperty* StructProp = CastField<FStructProperty>(AlignmentProp))
 				{
-					Slot->SetSize(ParseSizeRule(SizeRule));
+					void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+					*static_cast<FVector2D*>(ValuePtr) = Alignment;
 				}
 			}
 		}
 
-		// Horizontal Alignment
-		FString HAlign;
-		if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign))
+		// Handle SizeToContent/AutoSize (bool) - common on canvas slots
+		bool bAutoSize = false;
+		if (SlotConfig->TryGetBoolField(TEXT("SizeToContent"), bAutoSize) ||
+			SlotConfig->TryGetBoolField(TEXT("AutoSize"), bAutoSize))
 		{
-			Slot->SetHorizontalAlignment(ParseHorizontalAlignment(HAlign));
+			FProperty* AutoSizeProp = SlotClass->FindPropertyByName(TEXT("bAutoSize"));
+			if (FBoolProperty* BoolProp = CastField<FBoolProperty>(AutoSizeProp))
+			{
+				void* ValuePtr = BoolProp->ContainerPtrToValuePtr<void>(Slot);
+				BoolProp->SetPropertyValue(ValuePtr, bAutoSize);
+			}
 		}
 
-		// Vertical Alignment
-		FString VAlign;
-		if (SlotConfig->TryGetStringField(TEXT("VAlign"), VAlign))
-		{
-			Slot->SetVerticalAlignment(ParseVerticalAlignment(VAlign));
-		}
-	}
-}
-
-void FWidgetBlueprintGenerator::ConfigureHorizontalBoxSlot(UHorizontalBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	if (SlotConfig.IsValid())
-	{
-		// Padding
-		if (SlotConfig->HasField(TEXT("Padding")))
-		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
-			Slot->SetPadding(Padding);
-		}
-
-		// Size - supports both string format "Fill" and object format { "SizeRule": "Fill" }
+		// Handle Size/SlotSize (FSlateChildSize) - for box slots
 		if (SlotConfig->HasField(TEXT("Size")))
 		{
 			TSharedPtr<FJsonValue> SizeValue = SlotConfig->TryGetField(TEXT("Size"));
-			if (SizeValue->Type == EJson::String)
+			FString SizeStr;
+
+			// Parse size rule
+			if (SizeValue->TryGetString(SizeStr))
 			{
-				FString SizeStr = SizeValue->AsString();
-				Slot->SetSize(ParseSizeRule(SizeStr));
+				// String format: "Fill" or "Auto"
 			}
 			else if (SizeValue->Type == EJson::Object)
 			{
 				TSharedPtr<FJsonObject> SizeObj = SizeValue->AsObject();
-				FString SizeRule;
-				if (SizeObj->TryGetStringField(TEXT("SizeRule"), SizeRule))
+				SizeObj->TryGetStringField(TEXT("SizeRule"), SizeStr);
+			}
+
+			if (!SizeStr.IsEmpty())
+			{
+				// Find Size or SlotSize property
+				FProperty* SizeProp = SlotClass->FindPropertyByName(TEXT("Size"));
+				if (!SizeProp)
 				{
-					Slot->SetSize(ParseSizeRule(SizeRule));
+					SizeProp = SlotClass->FindPropertyByName(TEXT("SlotSize"));
+				}
+
+				if (FStructProperty* StructProp = CastField<FStructProperty>(SizeProp))
+				{
+					// FSlateChildSize has SizeRule (enum) and Value (float)
+					void* SizePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+					UScriptStruct* SizeStruct = StructProp->Struct;
+
+					// Find SizeRule property within the struct
+					FProperty* SizeRuleProp = SizeStruct->FindPropertyByName(TEXT("SizeRule"));
+					if (FByteProperty* EnumProp = CastField<FByteProperty>(SizeRuleProp))
+					{
+						void* RulePtr = EnumProp->ContainerPtrToValuePtr<void>(SizePtr);
+						ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
+						EnumProp->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+					}
+					else if (FEnumProperty* EnumProp2 = CastField<FEnumProperty>(SizeRuleProp))
+					{
+						void* RulePtr = EnumProp2->ContainerPtrToValuePtr<void>(SizePtr);
+						ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
+						EnumProp2->GetUnderlyingProperty()->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+					}
 				}
 			}
 		}
 
-		// Horizontal Alignment
-		FString HAlign;
-		if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign))
-		{
-			Slot->SetHorizontalAlignment(ParseHorizontalAlignment(HAlign));
-		}
-
-		// Vertical Alignment
-		FString VAlign;
-		if (SlotConfig->TryGetStringField(TEXT("VAlign"), VAlign))
-		{
-			Slot->SetVerticalAlignment(ParseVerticalAlignment(VAlign));
-		}
-	}
-}
-
-void FWidgetBlueprintGenerator::ConfigureOverlaySlot(UOverlaySlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	if (SlotConfig.IsValid())
-	{
-		// Padding
-		if (SlotConfig->HasField(TEXT("Padding")))
-		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
-			Slot->SetPadding(Padding);
-		}
-
-		// Horizontal Alignment
-		FString HAlign;
-		if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign))
-		{
-			Slot->SetHorizontalAlignment(ParseHorizontalAlignment(HAlign));
-		}
-
-		// Vertical Alignment
-		FString VAlign;
-		if (SlotConfig->TryGetStringField(TEXT("VAlign"), VAlign))
-		{
-			Slot->SetVerticalAlignment(ParseVerticalAlignment(VAlign));
-		}
-	}
-}
-
-void FWidgetBlueprintGenerator::ConfigureScrollBoxSlot(UScrollBoxSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	if (SlotConfig.IsValid())
-	{
-		// Padding
-		if (SlotConfig->HasField(TEXT("Padding")))
-		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
-			Slot->SetPadding(Padding);
-		}
-
-		// Horizontal Alignment
-		FString HAlign;
-		if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign))
-		{
-			Slot->SetHorizontalAlignment(ParseHorizontalAlignment(HAlign));
-		}
-	}
-}
-
-void FWidgetBlueprintGenerator::ConfigureGridSlot(UGridSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
-{
-	if (!Slot)
-	{
-		return;
-	}
-
-	if (SlotConfig.IsValid())
-	{
-		// Row
+		// Handle Row/Column for grid slots (via reflection)
 		double Row = 0;
 		if (SlotConfig->TryGetNumberField(TEXT("Row"), Row))
 		{
-			Slot->SetRow(static_cast<int32>(Row));
+			FProperty* RowProp = SlotClass->FindPropertyByName(TEXT("Row"));
+			if (FIntProperty* IntProp = CastField<FIntProperty>(RowProp))
+			{
+				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Row));
+			}
 		}
 
-		// Column
 		double Column = 0;
 		if (SlotConfig->TryGetNumberField(TEXT("Column"), Column))
 		{
-			Slot->SetColumn(static_cast<int32>(Column));
+			FProperty* ColProp = SlotClass->FindPropertyByName(TEXT("Column"));
+			if (FIntProperty* IntProp = CastField<FIntProperty>(ColProp))
+			{
+				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Column));
+			}
 		}
 
-		// Row Span
-		double RowSpan = 1;
+		// Handle RowSpan/ColumnSpan for grid slots
+		double RowSpan = 0;
 		if (SlotConfig->TryGetNumberField(TEXT("RowSpan"), RowSpan))
 		{
-			Slot->SetRowSpan(static_cast<int32>(RowSpan));
+			FProperty* RowSpanProp = SlotClass->FindPropertyByName(TEXT("RowSpan"));
+			if (FIntProperty* IntProp = CastField<FIntProperty>(RowSpanProp))
+			{
+				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(RowSpan));
+			}
 		}
 
-		// Column Span
-		double ColumnSpan = 1;
+		double ColumnSpan = 0;
 		if (SlotConfig->TryGetNumberField(TEXT("ColumnSpan"), ColumnSpan))
 		{
-			Slot->SetColumnSpan(static_cast<int32>(ColumnSpan));
-		}
-
-		// Padding
-		if (SlotConfig->HasField(TEXT("Padding")))
-		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
-			Slot->SetPadding(Padding);
-		}
-
-		// Horizontal Alignment
-		FString HAlign;
-		if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign))
-		{
-			Slot->SetHorizontalAlignment(ParseHorizontalAlignment(HAlign));
-		}
-
-		// Vertical Alignment
-		FString VAlign;
-		if (SlotConfig->TryGetStringField(TEXT("VAlign"), VAlign))
-		{
-			Slot->SetVerticalAlignment(ParseVerticalAlignment(VAlign));
+			FProperty* ColSpanProp = SlotClass->FindPropertyByName(TEXT("ColumnSpan"));
+			if (FIntProperty* IntProp = CastField<FIntProperty>(ColSpanProp))
+			{
+				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(ColumnSpan));
+			}
 		}
 	}
 }
 
-//~ Style Application
+void FWidgetBlueprintGenerator::ConfigureCommonSlotProperties(UPanelSlot* Slot, TSharedPtr<FJsonObject> SlotConfig)
+{
+	if (!Slot || !SlotConfig.IsValid())
+	{
+		return;
+	}
+
+	UClass* SlotClass = Slot->GetClass();
+
+	// Handle Padding (FMargin) - exists on most slot types
+	if (SlotConfig->HasField(TEXT("Padding")))
+	{
+		FProperty* PaddingProp = SlotClass->FindPropertyByName(TEXT("Padding"));
+		if (FStructProperty* StructProp = CastField<FStructProperty>(PaddingProp))
+		{
+			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
+			void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+			*static_cast<FMargin*>(ValuePtr) = Padding;
+		}
+	}
+
+	// Handle HorizontalAlignment (supports both "HAlign" and "HorizontalAlignment")
+	FString HAlign;
+	if (SlotConfig->TryGetStringField(TEXT("HAlign"), HAlign) ||
+		SlotConfig->TryGetStringField(TEXT("HorizontalAlignment"), HAlign))
+	{
+		FProperty* HAlignProp = SlotClass->FindPropertyByName(TEXT("HorizontalAlignment"));
+		if (FByteProperty* EnumProp = CastField<FByteProperty>(HAlignProp))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+			EHorizontalAlignment Alignment = ParseHorizontalAlignment(HAlign);
+			EnumProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Alignment));
+		}
+		else if (FEnumProperty* EnumProp2 = CastField<FEnumProperty>(HAlignProp))
+		{
+			void* ValuePtr = EnumProp2->ContainerPtrToValuePtr<void>(Slot);
+			EHorizontalAlignment Alignment = ParseHorizontalAlignment(HAlign);
+			EnumProp2->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, static_cast<int64>(Alignment));
+		}
+	}
+
+	// Handle VerticalAlignment (supports both "VAlign" and "VerticalAlignment")
+	FString VAlign;
+	if (SlotConfig->TryGetStringField(TEXT("VAlign"), VAlign) ||
+		SlotConfig->TryGetStringField(TEXT("VerticalAlignment"), VAlign))
+	{
+		FProperty* VAlignProp = SlotClass->FindPropertyByName(TEXT("VerticalAlignment"));
+		if (FByteProperty* EnumProp = CastField<FByteProperty>(VAlignProp))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+			EVerticalAlignment Alignment = ParseVerticalAlignment(VAlign);
+			EnumProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Alignment));
+		}
+		else if (FEnumProperty* EnumProp2 = CastField<FEnumProperty>(VAlignProp))
+		{
+			void* ValuePtr = EnumProp2->ContainerPtrToValuePtr<void>(Slot);
+			EVerticalAlignment Alignment = ParseVerticalAlignment(VAlign);
+			EnumProp2->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, static_cast<int64>(Alignment));
+		}
+	}
+}
+
+//~ Style Application (Dynamic via reflection)
 
 void FWidgetBlueprintGenerator::ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObject> StyleConfig)
 {
@@ -1206,119 +845,125 @@ void FWidgetBlueprintGenerator::ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObje
 		return;
 	}
 
-	// TextBlock styling
-	if (UTextBlock* TextBlock = Cast<UTextBlock>(Widget))
-	{
-		ApplyTextBlockStyle(TextBlock, StyleConfig);
-		return;
-	}
+	UClass* WidgetClass = Widget->GetClass();
 
-	// Image styling
-	if (UImage* Image = Cast<UImage>(Widget))
-	{
-		ApplyImageStyle(Image, StyleConfig);
-		return;
-	}
-
-	// Border styling
-	if (UBorder* Border = Cast<UBorder>(Widget))
-	{
-		ApplyBorderStyle(Border, StyleConfig);
-		return;
-	}
-}
-
-void FWidgetBlueprintGenerator::ApplyTextBlockStyle(UTextBlock* TextBlock, TSharedPtr<FJsonObject> StyleConfig)
-{
-	if (!TextBlock || !StyleConfig.IsValid())
-	{
-		return;
-	}
-
-	// Color
+	// Handle Color/ColorAndOpacity - common style property
 	if (StyleConfig->HasField(TEXT("Color")))
 	{
 		FLinearColor Color = ParseColor(StyleConfig->TryGetField(TEXT("Color")));
-		TextBlock->SetColorAndOpacity(FSlateColor(Color));
+
+		// Try ColorAndOpacity (FSlateColor) first - used by TextBlock
+		FProperty* ColorProp = WidgetClass->FindPropertyByName(TEXT("ColorAndOpacity"));
+		if (FStructProperty* StructProp = CastField<FStructProperty>(ColorProp))
+		{
+			void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Widget);
+			if (StructProp->Struct->GetFName() == TEXT("SlateColor"))
+			{
+				*static_cast<FSlateColor*>(ValuePtr) = FSlateColor(Color);
+			}
+			else if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
+			{
+				*static_cast<FLinearColor*>(ValuePtr) = Color;
+			}
+		}
+		// Try BrushColor for Border widgets
+		else
+		{
+			FProperty* BrushColorProp = WidgetClass->FindPropertyByName(TEXT("BrushColor"));
+			if (FStructProperty* BrushColorStruct = CastField<FStructProperty>(BrushColorProp))
+			{
+				void* ValuePtr = BrushColorStruct->ContainerPtrToValuePtr<void>(Widget);
+				*static_cast<FLinearColor*>(ValuePtr) = Color;
+			}
+		}
 	}
 
-	// Font
+	// Handle Brush - for Image, Border, and similar widgets
+	if (StyleConfig->HasTypedField<EJson::Object>(TEXT("Brush")))
+	{
+		TSharedPtr<FJsonObject> BrushConfig = StyleConfig->GetObjectField(TEXT("Brush"));
+		if (BrushConfig.IsValid())
+		{
+			FSlateBrush Brush = ParseBrush(BrushConfig);
+
+			// Find Brush property
+			FProperty* BrushProp = WidgetClass->FindPropertyByName(TEXT("Brush"));
+			// Also try Background for Border widgets
+			if (!BrushProp)
+			{
+				BrushProp = WidgetClass->FindPropertyByName(TEXT("Background"));
+			}
+
+			if (FStructProperty* StructProp = CastField<FStructProperty>(BrushProp))
+			{
+				void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Widget);
+				*static_cast<FSlateBrush*>(ValuePtr) = Brush;
+			}
+		}
+	}
+
+	// Handle Font - for TextBlock and similar widgets
 	if (StyleConfig->HasTypedField<EJson::Object>(TEXT("Font")))
 	{
 		TSharedPtr<FJsonObject> FontConfig = StyleConfig->GetObjectField(TEXT("Font"));
 		if (FontConfig.IsValid())
 		{
-			FSlateFontInfo Font = TextBlock->GetFont();
-
-			double Size = 0;
-			if (FontConfig->TryGetNumberField(TEXT("Size"), Size))
+			FProperty* FontProp = WidgetClass->FindPropertyByName(TEXT("Font"));
+			if (FStructProperty* StructProp = CastField<FStructProperty>(FontProp))
 			{
-				Font.Size = static_cast<int32>(Size);
+				void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Widget);
+				FSlateFontInfo* FontPtr = static_cast<FSlateFontInfo*>(ValuePtr);
+
+				double Size = 0;
+				if (FontConfig->TryGetNumberField(TEXT("Size"), Size))
+				{
+					FontPtr->Size = static_cast<int32>(Size);
+				}
+
+				// Font family would need asset loading - handled separately if needed
 			}
-
-			FString Family;
-			if (FontConfig->TryGetStringField(TEXT("Family"), Family))
-			{
-				// Font family handling - would need font asset loading
-				// For now, just use the default font with specified size
-			}
-
-			TextBlock->SetFont(Font);
 		}
 	}
-}
 
-void FWidgetBlueprintGenerator::ApplyImageStyle(UImage* Image, TSharedPtr<FJsonObject> StyleConfig)
-{
-	if (!Image || !StyleConfig.IsValid())
+	// Handle any additional style properties via generic reflection
+	// This allows styles to set arbitrary widget properties
+	for (const auto& Pair : StyleConfig->Values)
 	{
-		return;
-	}
-
-	if (StyleConfig->HasTypedField<EJson::Object>(TEXT("Brush")))
-	{
-		TSharedPtr<FJsonObject> BrushConfig = StyleConfig->GetObjectField(TEXT("Brush"));
-		if (BrushConfig.IsValid())
+		// Skip already-handled properties
+		if (Pair.Key == TEXT("Color") || Pair.Key == TEXT("Brush") || Pair.Key == TEXT("Font"))
 		{
-			FSlateBrush Brush = ParseBrush(BrushConfig);
-			Image->SetBrush(Brush);
+			continue;
 		}
-	}
 
-	// Direct color/tint
-	if (StyleConfig->HasField(TEXT("Color")))
-	{
-		FLinearColor Color = ParseColor(StyleConfig->TryGetField(TEXT("Color")));
-		Image->SetColorAndOpacity(Color);
-	}
-}
-
-void FWidgetBlueprintGenerator::ApplyBorderStyle(UBorder* Border, TSharedPtr<FJsonObject> StyleConfig)
-{
-	if (!Border || !StyleConfig.IsValid())
-	{
-		return;
-	}
-
-	if (StyleConfig->HasTypedField<EJson::Object>(TEXT("Brush")))
-	{
-		TSharedPtr<FJsonObject> BrushConfig = StyleConfig->GetObjectField(TEXT("Brush"));
-		if (BrushConfig.IsValid())
+		// Try to set as a widget property via reflection
+		FProperty* Property = WidgetClass->FindPropertyByName(*Pair.Key);
+		if (Property)
 		{
-			FSlateBrush Brush = ParseBrush(BrushConfig);
-			Border->SetBrush(Brush);
+			FPropertySetterUtils::SetPropertyFromJson(Widget, Property, Pair.Value);
 		}
-	}
-
-	// Background color
-	if (StyleConfig->HasField(TEXT("Color")))
-	{
-		FLinearColor Color = ParseColor(StyleConfig->TryGetField(TEXT("Color")));
-		Border->SetBrushColor(Color);
 	}
 }
 
 //~ Reflection-based Property Setting
+
+// Helper to detect if properties use the new typed format
+static bool IsTypedPropertiesFormat(TSharedPtr<FJsonObject> Properties)
+{
+	if (!Properties.IsValid())
+	{
+		return false;
+	}
+	for (const auto& Pair : Properties->Values)
+	{
+		const TSharedPtr<FJsonObject>* PropObj;
+		if (Pair.Value->TryGetObject(PropObj) && (*PropObj)->HasField(TEXT("type")))
+		{
+			return true;
+		}
+		break; // Only check first property
+	}
+	return false;
+}
 
 void FWidgetBlueprintGenerator::SetPropertiesViaReflection(UWidget* Widget, TSharedPtr<FJsonObject> Properties)
 {
@@ -1327,8 +972,15 @@ void FWidgetBlueprintGenerator::SetPropertiesViaReflection(UWidget* Widget, TSha
 		return;
 	}
 
-	// Use the shared utility class for property setting
-	FPropertySetterUtils::SetPropertiesFromJson(Widget, Properties);
+	// Use the shared utility class for property setting (supports both formats)
+	if (IsTypedPropertiesFormat(Properties))
+	{
+		FPropertySetterUtils::SetTypedPropertiesFromJson(Widget, Properties);
+	}
+	else
+	{
+		FPropertySetterUtils::SetPropertiesFromJson(Widget, Properties);
+	}
 }
 
 void FWidgetBlueprintGenerator::SetObjectPropertiesViaReflection(UObject* Object, TSharedPtr<FJsonObject> Properties)
@@ -1338,8 +990,15 @@ void FWidgetBlueprintGenerator::SetObjectPropertiesViaReflection(UObject* Object
 		return;
 	}
 
-	// Use the shared utility class for property setting
-	FPropertySetterUtils::SetPropertiesFromJson(Object, Properties);
+	// Use the shared utility class for property setting (supports both formats)
+	if (IsTypedPropertiesFormat(Properties))
+	{
+		FPropertySetterUtils::SetTypedPropertiesFromJson(Object, Properties);
+	}
+	else
+	{
+		FPropertySetterUtils::SetPropertiesFromJson(Object, Properties);
+	}
 }
 
 bool FWidgetBlueprintGenerator::SetPropertyValueFromJson(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
@@ -1501,6 +1160,24 @@ FLinearColor FWidgetBlueprintGenerator::ParseColor(TSharedPtr<FJsonValue> ColorV
 		if (ColorStr == TEXT("Blue")) return FLinearColor::Blue;
 		if (ColorStr == TEXT("Yellow")) return FLinearColor::Yellow;
 		if (ColorStr == TEXT("Transparent")) return FLinearColor::Transparent;
+	}
+
+	// Array format [R, G, B, A]
+	const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
+	if (ColorValue->TryGetArray(ColorArray))
+	{
+		if (ColorArray->Num() >= 3)
+		{
+			double R = 1, G = 1, B = 1, A = 1;
+			(*ColorArray)[0]->TryGetNumber(R);
+			(*ColorArray)[1]->TryGetNumber(G);
+			(*ColorArray)[2]->TryGetNumber(B);
+			if (ColorArray->Num() >= 4)
+			{
+				(*ColorArray)[3]->TryGetNumber(A);
+			}
+			return FLinearColor(static_cast<float>(R), static_cast<float>(G), static_cast<float>(B), static_cast<float>(A));
+		}
 	}
 
 	// Object format {R, G, B, A}
@@ -1687,6 +1364,50 @@ void FWidgetBlueprintGenerator::ConfigureBindings(UWidgetBlueprint* Blueprint, U
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Invalid binding format for property '%s' on widget '%s'"), *PropertyName, *ActualWidgetName);
 			continue;
+		}
+
+		// Validate that the bound function exists in the class hierarchy (including C++ base classes)
+		if (NewBinding.Kind == EBindingKind::Function && !NewBinding.FunctionName.IsNone())
+		{
+			bool bFunctionFound = false;
+
+			// Try to find the function in the generated class hierarchy
+			UClass* ClassToCheck = Blueprint->GeneratedClass;
+			if (!ClassToCheck)
+			{
+				// If not compiled yet, use the parent class
+				ClassToCheck = Blueprint->ParentClass;
+			}
+
+			if (ClassToCheck)
+			{
+				// FindFunctionByName searches the entire class hierarchy including C++ base classes
+				UFunction* FoundFunction = ClassToCheck->FindFunctionByName(NewBinding.FunctionName);
+				if (FoundFunction)
+				{
+					bFunctionFound = true;
+				}
+			}
+
+			// Also check Blueprint function graphs (functions defined in this Blueprint but not yet compiled)
+			if (!bFunctionFound)
+			{
+				for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+				{
+					if (Graph && Graph->GetFName() == NewBinding.FunctionName)
+					{
+						bFunctionFound = true;
+						break;
+					}
+				}
+			}
+
+			if (!bFunctionFound)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("Binding function '%s' not found in class hierarchy for widget '%s.%s'. Binding will be created but may not work at runtime."),
+					*NewBinding.FunctionName.ToString(), *ActualWidgetName, *PropertyName);
+				// Continue to create the binding anyway - it might be added later or the user knows what they're doing
+			}
 		}
 
 		// Check if binding already exists and update it, otherwise add new
@@ -1992,4 +1713,383 @@ TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObj
 TArray<FString> FWidgetBlueprintGenerator::GetRequiredFields() const
 {
 	return { TEXT("RootWidget") };
+}
+
+//~ Extract Implementation
+
+bool FWidgetBlueprintGenerator::CanExtract(UObject* Asset) const
+{
+	return Asset && Asset->IsA<UWidgetBlueprint>();
+}
+
+TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UWidgetBlueprint* Blueprint = Cast<UWidgetBlueprint>(Asset);
+	if (!Blueprint)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// ParentClass
+	if (Blueprint->ParentClass && Blueprint->ParentClass != UUserWidget::StaticClass())
+	{
+		Config->SetStringField(TEXT("ParentClass"), Blueprint->ParentClass->GetPathName());
+	}
+
+	// RootWidget
+	if (Blueprint->WidgetTree && Blueprint->WidgetTree->RootWidget)
+	{
+		TSharedPtr<FJsonObject> RootWidgetJson = ExtractWidgetTree(Blueprint->WidgetTree->RootWidget);
+		if (RootWidgetJson.IsValid())
+		{
+			Config->SetObjectField(TEXT("RootWidget"), RootWidgetJson);
+		}
+	}
+
+	// Bindings
+	if (Blueprint->Bindings.Num() > 0)
+	{
+		TSharedPtr<FJsonObject> BindingsJson = MakeShared<FJsonObject>();
+		for (const FDelegateEditorBinding& Binding : Blueprint->Bindings)
+		{
+			TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+			if (Binding.Kind == EBindingKind::Function)
+			{
+				BindingObj->SetStringField(TEXT("Function"), Binding.FunctionName.ToString());
+				BindingObj->SetStringField(TEXT("Kind"), TEXT("Function"));
+			}
+			else
+			{
+				BindingObj->SetStringField(TEXT("Property"), Binding.SourceProperty.ToString());
+				BindingObj->SetStringField(TEXT("Kind"), TEXT("Property"));
+			}
+
+			// Key format: "WidgetName.PropertyName"
+			FString BindingKey = FString::Printf(TEXT("%s.%s"), *Binding.ObjectName, *Binding.PropertyName.ToString());
+			BindingsJson->SetObjectField(BindingKey, BindingObj);
+		}
+		if (BindingsJson->Values.Num() > 0)
+		{
+			Config->SetObjectField(TEXT("Bindings"), BindingsJson);
+		}
+	}
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetTree(UWidget* Widget) const
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> WidgetJson = MakeShared<FJsonObject>();
+
+	// Type - get the class name without U prefix
+	FString ClassName = Widget->GetClass()->GetName();
+	if (ClassName.StartsWith(TEXT("U")))
+	{
+		ClassName = ClassName.Mid(1);
+	}
+	WidgetJson->SetStringField(TEXT("Type"), ClassName);
+
+	// Name
+	WidgetJson->SetStringField(TEXT("Name"), Widget->GetName());
+
+	// IsVariable
+	if (Widget->bIsVariable)
+	{
+		WidgetJson->SetBoolField(TEXT("IsVariable"), true);
+	}
+
+	// Properties - extract common widget properties
+	TSharedPtr<FJsonObject> PropertiesJson = ExtractWidgetProperties(Widget, true);
+	if (PropertiesJson.IsValid() && PropertiesJson->Values.Num() > 0)
+	{
+		WidgetJson->SetObjectField(TEXT("Properties"), PropertiesJson);
+	}
+
+	// Slot - if widget has a slot (is child of a panel)
+	if (Widget->Slot)
+	{
+		TSharedPtr<FJsonObject> SlotJson = ExtractSlotConfig(Widget->Slot);
+		if (SlotJson.IsValid() && SlotJson->Values.Num() > 0)
+		{
+			WidgetJson->SetObjectField(TEXT("Slot"), SlotJson);
+		}
+	}
+
+	// Children - if this is a panel widget
+	UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget);
+	if (PanelWidget && PanelWidget->GetChildrenCount() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> ChildrenArray;
+		for (int32 i = 0; i < PanelWidget->GetChildrenCount(); ++i)
+		{
+			UWidget* ChildWidget = PanelWidget->GetChildAt(i);
+			if (ChildWidget)
+			{
+				TSharedPtr<FJsonObject> ChildJson = ExtractWidgetTree(ChildWidget);
+				if (ChildJson.IsValid())
+				{
+					ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildJson));
+				}
+			}
+		}
+		if (ChildrenArray.Num() > 0)
+		{
+			WidgetJson->SetArrayField(TEXT("Children"), ChildrenArray);
+		}
+	}
+
+	return WidgetJson;
+}
+
+TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractSlotConfig(UPanelSlot* Slot) const
+{
+	if (!Slot)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> SlotJson = MakeShared<FJsonObject>();
+	UClass* SlotClass = Slot->GetClass();
+
+	// Anchors (for CanvasPanelSlot)
+	if (FStructProperty* AnchorsProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Anchors"))))
+	{
+		void* ValuePtr = AnchorsProp->ContainerPtrToValuePtr<void>(Slot);
+		FAnchors* Anchors = static_cast<FAnchors*>(ValuePtr);
+
+		TSharedPtr<FJsonObject> AnchorsJson = MakeShared<FJsonObject>();
+		AnchorsJson->SetArrayField(TEXT("Min"), {
+			MakeShared<FJsonValueNumber>(Anchors->Minimum.X),
+			MakeShared<FJsonValueNumber>(Anchors->Minimum.Y)
+		});
+		AnchorsJson->SetArrayField(TEXT("Max"), {
+			MakeShared<FJsonValueNumber>(Anchors->Maximum.X),
+			MakeShared<FJsonValueNumber>(Anchors->Maximum.Y)
+		});
+		SlotJson->SetObjectField(TEXT("Anchors"), AnchorsJson);
+	}
+
+	// Offsets (for CanvasPanelSlot)
+	if (FStructProperty* OffsetsProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Offsets"))))
+	{
+		void* ValuePtr = OffsetsProp->ContainerPtrToValuePtr<void>(Slot);
+		FMargin* Offsets = static_cast<FMargin*>(ValuePtr);
+		SlotJson->SetField(TEXT("Offsets"), MarginToJson(*Offsets));
+	}
+
+	// Alignment (for CanvasPanelSlot)
+	if (FStructProperty* AlignmentProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Alignment"))))
+	{
+		void* ValuePtr = AlignmentProp->ContainerPtrToValuePtr<void>(Slot);
+		FVector2D* Alignment = static_cast<FVector2D*>(ValuePtr);
+		SlotJson->SetField(TEXT("Alignment"), Vector2DToJson(*Alignment));
+	}
+
+	// Padding (for most slot types)
+	if (FStructProperty* PaddingProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Padding"))))
+	{
+		void* ValuePtr = PaddingProp->ContainerPtrToValuePtr<void>(Slot);
+		FMargin* Padding = static_cast<FMargin*>(ValuePtr);
+		// Only add if non-zero
+		if (Padding->Left != 0 || Padding->Top != 0 || Padding->Right != 0 || Padding->Bottom != 0)
+		{
+			SlotJson->SetField(TEXT("Padding"), MarginToJson(*Padding));
+		}
+	}
+
+	// HorizontalAlignment
+	if (FProperty* HAlignProp = SlotClass->FindPropertyByName(TEXT("HorizontalAlignment")))
+	{
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(HAlignProp))
+		{
+			void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
+			EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
+			if (HAlign != HAlign_Fill)
+			{
+				SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
+			}
+		}
+		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(HAlignProp))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+			int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+			EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(EnumValue);
+			if (HAlign != HAlign_Fill)
+			{
+				SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
+			}
+		}
+	}
+
+	// VerticalAlignment
+	if (FProperty* VAlignProp = SlotClass->FindPropertyByName(TEXT("VerticalAlignment")))
+	{
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(VAlignProp))
+		{
+			void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
+			EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
+			if (VAlign != VAlign_Fill)
+			{
+				SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
+			}
+		}
+		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(VAlignProp))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+			int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+			EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(EnumValue);
+			if (VAlign != VAlign_Fill)
+			{
+				SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
+			}
+		}
+	}
+
+	// Row/Column (for GridSlot)
+	if (FIntProperty* RowProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Row"))))
+	{
+		void* ValuePtr = RowProp->ContainerPtrToValuePtr<void>(Slot);
+		int32 Row = RowProp->GetPropertyValue(ValuePtr);
+		if (Row != 0)
+		{
+			SlotJson->SetNumberField(TEXT("Row"), Row);
+		}
+	}
+	if (FIntProperty* ColProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Column"))))
+	{
+		void* ValuePtr = ColProp->ContainerPtrToValuePtr<void>(Slot);
+		int32 Column = ColProp->GetPropertyValue(ValuePtr);
+		if (Column != 0)
+		{
+			SlotJson->SetNumberField(TEXT("Column"), Column);
+		}
+	}
+
+	return SlotJson;
+}
+
+TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetProperties(UWidget* Widget, bool bDiffOnly) const
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+
+	// Use the generic property extraction utility
+	TSharedPtr<FJsonObject> AllProperties = FPropertySetterUtils::ExtractPropertiesToJson(Widget, true, bDiffOnly);
+
+	if (!AllProperties.IsValid())
+	{
+		return nullptr;
+	}
+
+	// Filter out UWidget base properties that are not useful for JSON config
+	TSharedPtr<FJsonObject> FilteredProperties = MakeShared<FJsonObject>();
+	UClass* WidgetClass = Widget->GetClass();
+
+	// Properties to exclude (from UWidget base class that are not useful in config)
+	static const TSet<FString> ExcludedProperties = {
+		TEXT("Slot"), TEXT("bIsVariable"), TEXT("ToolTipText"), TEXT("Cursor"),
+		TEXT("Visibility"), TEXT("RenderTransform"), TEXT("RenderTransformPivot"),
+		TEXT("bIsEnabled"), TEXT("Navigation"), TEXT("FlowDirectionPreference"),
+		TEXT("AccessibleBehavior"), TEXT("AccessibleSummaryBehavior"),
+		TEXT("AccessibleText"), TEXT("AccessibleSummaryText")
+	};
+
+	for (const auto& Pair : AllProperties->Values)
+	{
+		// Skip excluded properties
+		if (ExcludedProperties.Contains(Pair.Key))
+		{
+			continue;
+		}
+
+		// Skip event delegates (start with "On")
+		if (Pair.Key.StartsWith(TEXT("On")))
+		{
+			continue;
+		}
+
+		FProperty* Property = WidgetClass->FindPropertyByName(*Pair.Key);
+		if (Property)
+		{
+			UClass* OwnerClass = Property->GetOwnerClass();
+			// Keep properties from the widget's own class or intermediate classes
+			// but filter out base UWidget/UVisual properties (except important ones)
+			if (OwnerClass != UWidget::StaticClass() && OwnerClass != UObject::StaticClass())
+			{
+				FilteredProperties->SetField(Pair.Key, Pair.Value);
+			}
+			// Keep certain important UWidget properties
+			else if (OwnerClass == UWidget::StaticClass())
+			{
+				// These are properties that are commonly configured
+				if (Pair.Key == TEXT("ToolTipWidget") || Pair.Key == TEXT("Clipping"))
+				{
+					FilteredProperties->SetField(Pair.Key, Pair.Value);
+				}
+			}
+		}
+	}
+
+	return FilteredProperties;
+}
+
+FString FWidgetBlueprintGenerator::HorizontalAlignmentToString(EHorizontalAlignment Alignment) const
+{
+	switch (Alignment)
+	{
+	case HAlign_Left: return TEXT("Left");
+	case HAlign_Center: return TEXT("Center");
+	case HAlign_Right: return TEXT("Right");
+	case HAlign_Fill: return TEXT("Fill");
+	default: return TEXT("Fill");
+	}
+}
+
+FString FWidgetBlueprintGenerator::VerticalAlignmentToString(EVerticalAlignment Alignment) const
+{
+	switch (Alignment)
+	{
+	case VAlign_Top: return TEXT("Top");
+	case VAlign_Center: return TEXT("Center");
+	case VAlign_Bottom: return TEXT("Bottom");
+	case VAlign_Fill: return TEXT("Fill");
+	default: return TEXT("Fill");
+	}
+}
+
+TSharedPtr<FJsonValue> FWidgetBlueprintGenerator::ColorToJson(const FLinearColor& Color) const
+{
+	TArray<TSharedPtr<FJsonValue>> ColorArray;
+	ColorArray.Add(MakeShared<FJsonValueNumber>(Color.R));
+	ColorArray.Add(MakeShared<FJsonValueNumber>(Color.G));
+	ColorArray.Add(MakeShared<FJsonValueNumber>(Color.B));
+	ColorArray.Add(MakeShared<FJsonValueNumber>(Color.A));
+	return MakeShared<FJsonValueArray>(ColorArray);
+}
+
+TSharedPtr<FJsonValue> FWidgetBlueprintGenerator::Vector2DToJson(const FVector2D& Vector) const
+{
+	TArray<TSharedPtr<FJsonValue>> VectorArray;
+	VectorArray.Add(MakeShared<FJsonValueNumber>(Vector.X));
+	VectorArray.Add(MakeShared<FJsonValueNumber>(Vector.Y));
+	return MakeShared<FJsonValueArray>(VectorArray);
+}
+
+TSharedPtr<FJsonValue> FWidgetBlueprintGenerator::MarginToJson(const FMargin& Margin) const
+{
+	TArray<TSharedPtr<FJsonValue>> MarginArray;
+	MarginArray.Add(MakeShared<FJsonValueNumber>(Margin.Left));
+	MarginArray.Add(MakeShared<FJsonValueNumber>(Margin.Top));
+	MarginArray.Add(MakeShared<FJsonValueNumber>(Margin.Right));
+	MarginArray.Add(MakeShared<FJsonValueNumber>(Margin.Bottom));
+	return MakeShared<FJsonValueArray>(MarginArray);
 }

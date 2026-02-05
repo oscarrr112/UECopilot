@@ -508,10 +508,53 @@ bool FMaterialGenerator::BuildGradientFillMaterial(UMaterial* Material, TSharedP
 		return false;
 	}
 
+	// Parse StartColor from params (default: golden brown)
+	FLinearColor StartColorValue(0.55f, 0.41f, 0.08f, 1.0f);
+	if (Params.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* StartColorArr;
+		if (Params->TryGetArrayField(TEXT("StartColor"), StartColorArr) && StartColorArr->Num() >= 3)
+		{
+			double R = 0, G = 0, B = 0, A = 1;
+			(*StartColorArr)[0]->TryGetNumber(R);
+			(*StartColorArr)[1]->TryGetNumber(G);
+			(*StartColorArr)[2]->TryGetNumber(B);
+			if (StartColorArr->Num() >= 4) (*StartColorArr)[3]->TryGetNumber(A);
+			StartColorValue = FLinearColor(R, G, B, A);
+		}
+	}
+
+	// Parse EndColor from params (default: light gold)
+	FLinearColor EndColorValue(0.96f, 0.83f, 0.52f, 1.0f);
+	if (Params.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* EndColorArr;
+		if (Params->TryGetArrayField(TEXT("EndColor"), EndColorArr) && EndColorArr->Num() >= 3)
+		{
+			double R = 0, G = 0, B = 0, A = 1;
+			(*EndColorArr)[0]->TryGetNumber(R);
+			(*EndColorArr)[1]->TryGetNumber(G);
+			(*EndColorArr)[2]->TryGetNumber(B);
+			if (EndColorArr->Num() >= 4) (*EndColorArr)[3]->TryGetNumber(A);
+			EndColorValue = FLinearColor(R, G, B, A);
+		}
+	}
+
+	// Parse Opacity from params (default: 1.0)
+	float OpacityValue = 1.0f;
+	if (Params.IsValid())
+	{
+		double OpacityNum = 1.0;
+		if (Params->TryGetNumberField(TEXT("Opacity"), OpacityNum))
+		{
+			OpacityValue = static_cast<float>(OpacityNum);
+		}
+	}
+
 	// Start color (RGB)
 	UMaterialExpressionVectorParameter* StartColor = NewObject<UMaterialExpressionVectorParameter>(Material);
 	StartColor->ParameterName = TEXT("StartColor");
-	StartColor->DefaultValue = FLinearColor(0.55f, 0.41f, 0.08f, 1.0f);
+	StartColor->DefaultValue = StartColorValue;
 	StartColor->MaterialExpressionEditorX = -400;
 	StartColor->MaterialExpressionEditorY = 0;
 	Material->GetExpressionCollection().AddExpression(StartColor);
@@ -519,7 +562,7 @@ bool FMaterialGenerator::BuildGradientFillMaterial(UMaterial* Material, TSharedP
 	// End color (RGB)
 	UMaterialExpressionVectorParameter* EndColor = NewObject<UMaterialExpressionVectorParameter>(Material);
 	EndColor->ParameterName = TEXT("EndColor");
-	EndColor->DefaultValue = FLinearColor(0.96f, 0.83f, 0.52f, 1.0f);
+	EndColor->DefaultValue = EndColorValue;
 	EndColor->MaterialExpressionEditorX = -400;
 	EndColor->MaterialExpressionEditorY = 150;
 	Material->GetExpressionCollection().AddExpression(EndColor);
@@ -527,7 +570,7 @@ bool FMaterialGenerator::BuildGradientFillMaterial(UMaterial* Material, TSharedP
 	// Opacity parameter
 	UMaterialExpressionScalarParameter* Opacity = NewObject<UMaterialExpressionScalarParameter>(Material);
 	Opacity->ParameterName = TEXT("Opacity");
-	Opacity->DefaultValue = 1.0f;
+	Opacity->DefaultValue = OpacityValue;
 	Opacity->MaterialExpressionEditorX = -400;
 	Opacity->MaterialExpressionEditorY = 250;
 	Material->GetExpressionCollection().AddExpression(Opacity);

@@ -135,3 +135,82 @@ FVector FCurveVectorGenerator::ParseVector(const TSharedPtr<FJsonValue>& JsonVal
 
 	return Result;
 }
+
+FString FCurveVectorGenerator::InterpModeToString(ERichCurveInterpMode Mode) const
+{
+	switch (Mode)
+	{
+	case ERichCurveInterpMode::RCIM_Constant: return TEXT("Constant");
+	case ERichCurveInterpMode::RCIM_Cubic: return TEXT("Cubic");
+	case ERichCurveInterpMode::RCIM_Linear:
+	default: return TEXT("Linear");
+	}
+}
+
+//~ Extract Implementation
+
+bool FCurveVectorGenerator::CanExtract(UObject* Asset) const
+{
+	return Asset && Asset->IsA<UCurveVector>();
+}
+
+TSharedPtr<FJsonObject> FCurveVectorGenerator::Extract(UObject* Asset, bool bDiffOnly) const
+{
+	UCurveVector* Curve = Cast<UCurveVector>(Asset);
+	if (!Curve)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	// Get all unique times from all three channels
+	TSet<float> UniqueTimes;
+	for (int32 Channel = 0; Channel < 3; ++Channel)
+	{
+		for (auto It = Curve->FloatCurves[Channel].GetKeyIterator(); It; ++It)
+		{
+			UniqueTimes.Add(It->Time);
+		}
+	}
+
+	// Sort times
+	TArray<float> SortedTimes = UniqueTimes.Array();
+	SortedTimes.Sort();
+
+	// Extract keys
+	TArray<TSharedPtr<FJsonValue>> KeysArray;
+	for (float Time : SortedTimes)
+	{
+		TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+		KeyObj->SetNumberField(TEXT("Time"), Time);
+
+		// Get values from each channel at this time
+		float X = Curve->FloatCurves[0].Eval(Time);
+		float Y = Curve->FloatCurves[1].Eval(Time);
+		float Z = Curve->FloatCurves[2].Eval(Time);
+
+		TArray<TSharedPtr<FJsonValue>> ValueArray;
+		ValueArray.Add(MakeShared<FJsonValueNumber>(X));
+		ValueArray.Add(MakeShared<FJsonValueNumber>(Y));
+		ValueArray.Add(MakeShared<FJsonValueNumber>(Z));
+		KeyObj->SetArrayField(TEXT("Value"), ValueArray);
+
+		// Get interp mode from X channel (assuming all channels use the same)
+		FKeyHandle KeyHandle = Curve->FloatCurves[0].FindKey(Time);
+		if (KeyHandle != FKeyHandle::Invalid())
+		{
+			ERichCurveInterpMode InterpMode = Curve->FloatCurves[0].GetKeyInterpMode(KeyHandle);
+			KeyObj->SetStringField(TEXT("InterpMode"), InterpModeToString(InterpMode));
+		}
+
+		KeysArray.Add(MakeShared<FJsonValueObject>(KeyObj));
+	}
+
+	if (KeysArray.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("Keys"), KeysArray);
+	}
+
+	return Config;
+}

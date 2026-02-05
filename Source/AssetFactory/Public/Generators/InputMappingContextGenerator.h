@@ -40,13 +40,19 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
 protected:
 	/** Parse key name to FKey */
 	FKey ParseKey(const FString& KeyName) const;
 
 	/** Create trigger from name */
 	class UInputTrigger* CreateTrigger(UObject* Outer, const FString& TriggerName) const;
+	FString TriggerToString(class UInputTrigger* Trigger) const;
 
 	/** Create modifier from name */
 	class UInputModifier* CreateModifier(UObject* Outer, const FString& ModifierName) const;
+	FString ModifierToString(class UInputModifier* Modifier) const;
 };

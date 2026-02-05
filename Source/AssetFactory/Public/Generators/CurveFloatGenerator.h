@@ -33,7 +33,14 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
 protected:
 	/** Parse interpolation mode from string */
 	ERichCurveInterpMode ParseInterpMode(const FString& ModeString) const;
+
+	/** Convert interpolation mode to string */
+	FString InterpModeToString(ERichCurveInterpMode Mode) const;
 };

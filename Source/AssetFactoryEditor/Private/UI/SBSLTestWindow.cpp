@@ -11,7 +11,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Text/STextBlock.h"
-#include "EditorStyleSet.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "SBSLTestWindow"
 

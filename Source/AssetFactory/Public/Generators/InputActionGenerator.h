@@ -32,13 +32,20 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	//~ Extract functionality
+	virtual bool CanExtract(UObject* Asset) const override;
+	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
+
 protected:
 	/** Parse value type from string */
 	EInputActionValueType ParseValueType(const FString& TypeString) const;
+	FString ValueTypeToString(EInputActionValueType ValueType) const;
 
 	/** Create trigger from name */
 	UInputTrigger* CreateTrigger(UInputAction* Outer, const FString& TriggerName) const;
+	FString TriggerToString(UInputTrigger* Trigger) const;
 
 	/** Create modifier from name */
 	UInputModifier* CreateModifier(UInputAction* Outer, const FString& ModifierName) const;
+	FString ModifierToString(UInputModifier* Modifier) const;
 };
