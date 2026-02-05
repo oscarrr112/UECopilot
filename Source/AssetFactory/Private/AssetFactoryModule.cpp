@@ -3,6 +3,8 @@
 #include "AssetFactoryModule.h"
 #include "AssetGeneratorRegistry.h"
 #include "AssetFactorySubsystem.h"
+#include "AssetFactoryHttpServer.h"
+#include "AssetFactorySettings.h"
 #include "ToolMenus.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
@@ -34,11 +36,17 @@ void FAssetFactoryModule::StartupModule()
 
 	// Register menus after ToolMenus is ready
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FAssetFactoryModule::RegisterMenus));
+
+	// Start HTTP server if enabled
+	StartHttpServer();
 }
 
 void FAssetFactoryModule::ShutdownModule()
 {
 	UE_LOG(LogAssetFactory, Log, TEXT("AssetFactory module shutting down"));
+
+	// Stop HTTP server
+	StopHttpServer();
 
 	// Unregister menus
 	UnregisterMenus();
@@ -165,6 +173,35 @@ void FAssetFactoryModule::OnGenerateFromJSON()
 	}
 
 	FSlateNotificationManager::Get().AddNotification(Info);
+}
+
+void FAssetFactoryModule::StartHttpServer()
+{
+	const UAssetFactorySettings* Settings = UAssetFactorySettings::Get();
+	if (!Settings || !Settings->bEnableHttpServer)
+	{
+		UE_LOG(LogAssetFactory, Log, TEXT("HTTP Server is disabled in settings"));
+		return;
+	}
+
+	if (!HttpServer)
+	{
+		HttpServer = MakeUnique<FAssetFactoryHttpServer>();
+	}
+
+	if (!HttpServer->IsRunning())
+	{
+		HttpServer->Start(Settings->HttpServerPort);
+	}
+}
+
+void FAssetFactoryModule::StopHttpServer()
+{
+	if (HttpServer && HttpServer->IsRunning())
+	{
+		HttpServer->Stop();
+	}
+	HttpServer.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

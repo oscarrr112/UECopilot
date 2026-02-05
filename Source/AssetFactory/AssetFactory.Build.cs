@@ -35,7 +35,9 @@ public class AssetFactory : ModuleRules
 			"UMGEditor",
 			// Material generation
 			"RenderCore",
-			"MaterialEditor"
+			"MaterialEditor",
+			// HTTP Server
+			"HTTPServer"
 		});
 	}
 }
