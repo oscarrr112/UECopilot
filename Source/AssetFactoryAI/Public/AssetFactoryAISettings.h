@@ -34,6 +34,7 @@ public:
 	static UAssetFactoryAISettings* Get();
 
 	//~ Begin UDeveloperSettings Interface
+	virtual FName GetContainerName() const override { return FName("Project"); }
 	virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
 	virtual FName GetSectionName() const override { return TEXT("Asset Factory AI"); }
 	virtual FText GetSectionText() const override;
