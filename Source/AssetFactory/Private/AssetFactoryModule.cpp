@@ -22,6 +22,7 @@
 #include "Generators/BlueprintGenerator.h"
 #include "Generators/WidgetBlueprintGenerator.h"
 #include "Generators/MaterialGenerator.h"
+#include "Generators/DataTableGenerator.h"
 
 #define LOCTEXT_NAMESPACE "FAssetFactoryModule"
 
@@ -68,6 +69,7 @@ void FAssetFactoryModule::RegisterGenerators()
 	Registry.RegisterGenerator(MakeShared<FInputMappingContextGenerator>());
 	Registry.RegisterGenerator(MakeShared<FBlueprintGenerator>());
 	Registry.RegisterGenerator(MakeShared<FWidgetBlueprintGenerator>());
+	Registry.RegisterGenerator(MakeShared<FDataTableGenerator>());
 
 	UE_LOG(LogAssetFactory, Log, TEXT("Registered %d generators"), Registry.GetRegisteredTypes().Num());
 }

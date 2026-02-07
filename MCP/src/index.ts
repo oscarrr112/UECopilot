@@ -52,7 +52,7 @@ async function loadSchema(assetType: string): Promise<string> {
     const filePath = join(SCHEMAS_DIR, `${assetType}.md`);
     return await readFile(filePath, "utf-8");
   } catch {
-    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext`;
+    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext`;
   }
 }
 
@@ -61,7 +61,7 @@ const tools: Tool[] = [
   {
     name: "generate_assets",
     description:
-      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
+      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -74,7 +74,7 @@ const tools: Tool[] = [
               AssetType: {
                 type: "string",
                 description:
-                  "Type of asset: Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext",
+                  "Type of asset: Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext",
               },
               Name: {
                 type: "string",
@@ -107,12 +107,13 @@ const tools: Tool[] = [
         asset_type: {
           type: "string",
           description:
-            "The asset type to get schema for: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext",
+            "The asset type to get schema for: Blueprint, WidgetBlueprint, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext",
           enum: [
             "Blueprint",
             "WidgetBlueprint",
             "Material",
             "DataAsset",
+            "DataTable",
             "CurveFloat",
             "CurveVector",
             "InputAction",

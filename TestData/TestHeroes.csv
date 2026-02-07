@@ -1,0 +1,5 @@
+Name,DisplayName,MaxHealth,AttackPower,bIsRanged
+Hero_Warrior,Warrior,250,55,false
+Hero_Mage,Mage,110,90,true
+Hero_Rogue,Rogue,130,70,false
+Hero_Paladin,Paladin,300,40,false
