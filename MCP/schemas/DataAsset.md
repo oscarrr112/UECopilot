@@ -15,28 +15,39 @@ Creates UDataAsset subclass instances with custom properties.
 
 Two formats supported (auto-detected by checking if first property has `"type"` field):
 
-**Simple format:**
+**Simple format** (auto-detects type via reflection):
 ```json
 {
   "Properties": {
     "DisplayName": "Fire Sword",
     "Damage": 50,
     "bIsRare": true,
-    "Icon": "/Game/Textures/T_FireSword"
+    "Icon": "/Game/Textures/T_FireSword",
+    "Color": [1, 0.5, 0, 1],
+    "Offset": [10, 20, 30]
   }
 }
 ```
 
-**Typed format:**
+**Typed format** (explicit type):
 ```json
 {
   "Properties": {
-    "DisplayName": { "type": "string", "value": "Fire Sword" },
-    "Damage": { "type": "float", "value": 50 },
-    "Tags": { "type": "array", "value": ["weapon", "fire"] }
+    "DisplayName": { "type": "String", "value": "Fire Sword" },
+    "Damage": { "type": "Float", "value": 50 },
+    "Tags": { "type": "Array:String", "value": ["weapon", "fire"] },
+    "Color": { "type": "FLinearColor", "value": "#FF8800" },
+    "SpawnOffset": { "type": "FVector", "value": [10, 20, 30] }
   }
 }
 ```
+
+### Struct Value Formats
+
+Struct types accept:
+- **Array shorthand** for numeric-only structs: `[X, Y, Z]` for FVector, `[R, G, B, A]` for FLinearColor, etc.
+- **Object format** for any struct: `{"X": 1, "Y": 2, "Z": 3}`
+- **Special formats**: FLinearColor accepts hex `"#FF0000"` and named colors `"Red"`; FMargin accepts uniform number `10`
 
 ## Example
 

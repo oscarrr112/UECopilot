@@ -8,7 +8,7 @@ Creates UMG Widget Blueprint assets with a widget tree, slot positioning, styles
 |-------|------|----------|---------|-------------|
 | `RootWidget` | object | **Yes** | | Root widget node definition (typically CanvasPanel) |
 | `ParentClass` | string | No | `"UserWidget"` | Parent widget class |
-| `ClassDefaults` | object | No | | CDO properties applied after compilation |
+| `ClassDefaults` | object | No | | CDO properties set via reflection (see ClassDefaults section) |
 
 ## Widget Node Fields
 
@@ -33,11 +33,14 @@ Each widget node (including RootWidget):
 - Detection is automatic via `SetContent()` / `GetContentSlot()` function lookup
 
 ### Widget Instantiation (Embedding Other Widget Blueprints)
+
+**IMPORTANT:** Use the asset path without `_C` suffix. The generator loads the Widget Blueprint asset first, then falls back to loading as a class with `_C` suffix automatically. Do NOT include `_C` in the path.
+
 ```json
 {
   "Type": "UserWidget",
   "Properties": {
-    "WidgetClass": "/Game/UI/WBP_HealthBar.WBP_HealthBar_C"
+    "WidgetClass": "/Game/UI/WBP_HealthBar"
   }
 }
 ```
@@ -142,6 +145,27 @@ For children of VerticalBox, HorizontalBox, GridPanel, etc.:
 | `ImageSize` | array | `[Width, Height]` in pixels |
 | `Tint` | color | Tint color (same formats as Color) |
 | `DrawAs` | string | `"Box"`, `"Image"`, `"Border"`, `"NoDrawType"` |
+
+## ClassDefaults
+
+Sets properties on the Blueprint's Class Default Object (CDO) via reflection. Useful for setting C++ base class properties.
+
+```json
+{
+  "ClassDefaults": {
+    "ProgressMaterial": "/Game/UI/Materials/M_CircularProgress",
+    "AvailableColor": [0.2, 0.8, 0.2, 1.0],
+    "MaxSlots": 5,
+    "bShowLabel": true,
+    "ElementIcons": {
+      "Fire": "/Game/UI/Textures/element_fire",
+      "Water": "/Game/UI/Textures/element_water"
+    }
+  }
+}
+```
+
+Supports all property types: primitives, enums, structs (array shorthand `[1,2,3]` or object `{"X":1}`), object references (asset paths), arrays, and maps.
 
 ## Bindings Format
 

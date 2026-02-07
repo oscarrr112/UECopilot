@@ -4,10 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IAssetGenerator.h"
-#include "Widgets/Layout/Anchors.h"
 #include "Layout/Margin.h"
-#include "Fonts/SlateFontInfo.h"
-#include "Styling/SlateBrush.h"
 #include "Framework/Text/TextLayout.h"
 #include "Components/SlateWrapperTypes.h"
 
@@ -180,28 +177,7 @@ protected:
 	/** Apply class default properties to the Blueprint's CDO */
 	void ApplyClassDefaults(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> ClassDefaultsConfig);
 
-	/** Set a single property on the CDO via reflection */
-	bool SetCDOProperty(UObject* CDO, FProperty* Property, TSharedPtr<FJsonValue> JsonValue);
-
-	/** Handle TSoftObjectPtr properties */
-	bool SetSoftObjectProperty(UObject* CDO, FSoftObjectProperty* Property, const FString& AssetPath);
-
-	/** Handle TSubclassOf properties */
-	bool SetClassProperty(UObject* CDO, FClassProperty* Property, const FString& ClassPath);
-
-	/** Handle TMap properties */
-	bool SetMapProperty(UObject* CDO, FMapProperty* Property, TSharedPtr<FJsonObject> MapConfig);
-
-	/** Handle TArray properties */
-	bool SetArrayProperty(UObject* CDO, FArrayProperty* Property, const TArray<TSharedPtr<FJsonValue>>& ArrayValues);
-
 	//~ Parse Helpers
-	FAnchors ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfig) const;
-	FMargin ParseMargins(TSharedPtr<FJsonValue> MarginsValue) const;
-	FVector2D ParseVector2D(const TArray<TSharedPtr<FJsonValue>>& Array) const;
-	FLinearColor ParseColor(TSharedPtr<FJsonValue> ColorValue) const;
-	FSlateFontInfo ParseFont(TSharedPtr<FJsonObject> FontConfig) const;
-	FSlateBrush ParseBrush(TSharedPtr<FJsonObject> BrushConfig) const;
 	EHorizontalAlignment ParseHorizontalAlignment(const FString& AlignString) const;
 	EVerticalAlignment ParseVerticalAlignment(const FString& AlignString) const;
 	ETextJustify::Type ParseTextJustify(const FString& JustifyString) const;

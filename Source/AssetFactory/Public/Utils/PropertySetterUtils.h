@@ -6,6 +6,7 @@
 #include "Dom/JsonValue.h"
 #include "Dom/JsonObject.h"
 #include "UObject/UnrealType.h"
+#include <type_traits>
 #include "Layout/Margin.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Styling/SlateBrush.h"
@@ -232,46 +233,71 @@ public:
 	 */
 	static TSharedPtr<FJsonValue> ExtractMapToJson(FMapProperty* MapProp, const void* ValuePtr);
 
-	//~ Parse Helpers
-
 	/**
-	 * Parse a color from a JSON value
-	 * Supports: string (hex "#RRGGBBAA" or named), array [R,G,B,A], object {R,G,B,A}
+	 * Core unified entry point for setting struct values from JSON.
+	 * Uses 3-layer strategy: special format registry -> generic array -> generic object fallback.
+	 * Shared by SetStructPropertyFromJson and SetValueFromTypedJson.
 	 */
-	static FLinearColor ParseColor(TSharedPtr<FJsonValue> Value);
+	static bool SetStructFromJson(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue);
 
-	/**
-	 * Parse a 2D vector from a JSON array [X, Y]
-	 */
-	static FVector2D ParseVector2D(const TArray<TSharedPtr<FJsonValue>>& Array);
+	//~ Generic struct parser template — replaces all explicit Parse* helpers
 
-	/**
-	 * Parse a 3D vector from a JSON array [X, Y, Z]
-	 */
-	static FVector ParseVector(const TArray<TSharedPtr<FJsonValue>>& Array);
+	/** Parse any struct from a JSON value */
+	template<typename T>
+	static T ParseStruct(TSharedPtr<FJsonValue> JsonValue)
+	{
+		T Result{};
+		SetStructFromJson(TGetScriptStruct<T>::Get(), &Result, JsonValue);
+		return Result;
+	}
 
-	/**
-	 * Parse margins from a JSON value
-	 * Supports: number (uniform), array [L,T,R,B] or [H,V], object {Left,Top,Right,Bottom}
-	 */
-	static FMargin ParseMargin(TSharedPtr<FJsonValue> Value);
+	/** Convenience: parse struct from a JSON object */
+	template<typename T>
+	static T ParseStruct(TSharedPtr<FJsonObject> JsonObject)
+	{
+		return ParseStruct<T>(MakeShared<FJsonValueObject>(JsonObject));
+	}
 
-	/**
-	 * Parse a font info from a JSON object
-	 */
-	static FSlateFontInfo ParseFont(TSharedPtr<FJsonObject> FontConfig);
-
-	/**
-	 * Parse a slate brush from a JSON object
-	 */
-	static FSlateBrush ParseBrush(TSharedPtr<FJsonObject> BrushConfig);
-
-	/**
-	 * Parse anchors from a JSON object
-	 */
-	static FAnchors ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfig);
+	/** Convenience: parse struct from a JSON array */
+	template<typename T>
+	static T ParseStruct(const TArray<TSharedPtr<FJsonValue>>& Array)
+	{
+		return ParseStruct<T>(MakeShared<FJsonValueArray>(Array));
+	}
 
 private:
+	// SFINAE helper: use T::StaticStruct() if available (USTRUCTs), else TBaseStructure<T>::Get() (core math types)
+	template<typename T, typename = void>
+	struct TGetScriptStruct
+	{
+		static UScriptStruct* Get() { return TBaseStructure<T>::Get(); }
+	};
+
+	template<typename T>
+	struct TGetScriptStruct<T, std::void_t<decltype(T::StaticStruct())>>
+	{
+		static UScriptStruct* Get() { return T::StaticStruct(); }
+	};
+
+	//~ Parse Helpers (used internally by the special format registry)
+	static FLinearColor ParseColor(TSharedPtr<FJsonValue> Value);
+	static FVector2D ParseVector2D(const TArray<TSharedPtr<FJsonValue>>& Array);
+	static FVector ParseVector(const TArray<TSharedPtr<FJsonValue>>& Array);
+	static FMargin ParseMargin(TSharedPtr<FJsonValue> Value);
+	static FSlateFontInfo ParseFont(TSharedPtr<FJsonObject> FontConfig);
+	static FSlateBrush ParseBrush(TSharedPtr<FJsonObject> BrushConfig);
+	static FAnchors ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfig);
+
+	// Special format registry types
+	using FStructDeserializer = TFunction<bool(void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)>;
+	using FStructSerializer = TFunction<TSharedPtr<FJsonValue>(const void* ValuePtr)>;
+
+	/** Get lazily-initialized special deserializers registry */
+	static TMap<UScriptStruct*, FStructDeserializer>& GetSpecialDeserializers();
+
+	/** Get lazily-initialized special serializers registry */
+	static TMap<UScriptStruct*, FStructSerializer>& GetSpecialSerializers();
+
 	/**
 	 * Internal property value setter with void* pointer
 	 */

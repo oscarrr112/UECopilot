@@ -11,6 +11,7 @@
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
 #include "Engine/Texture2D.h"
+#include "Materials/MaterialInterface.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Layout/Margin.h"
 #include "Widgets/Layout/Anchors.h"
@@ -324,51 +325,40 @@ bool FPropertySetterUtils::ValidateTypedProperties(TSharedPtr<FJsonObject> Prope
 
 UScriptStruct* FPropertySetterUtils::FindStructByName(const FString& StructName)
 {
-	// Handle common built-in structs first
-	if (StructName == TEXT("FVector") || StructName == TEXT("Vector"))
+	static TMap<FString, UScriptStruct*> Cache;
+	static bool bInit = false;
+	if (!bInit)
 	{
-		return TBaseStructure<FVector>::Get();
-	}
-	if (StructName == TEXT("FVector2D") || StructName == TEXT("Vector2D"))
-	{
-		return TBaseStructure<FVector2D>::Get();
-	}
-	if (StructName == TEXT("FRotator") || StructName == TEXT("Rotator"))
-	{
-		return TBaseStructure<FRotator>::Get();
-	}
-	if (StructName == TEXT("FTransform") || StructName == TEXT("Transform"))
-	{
-		return TBaseStructure<FTransform>::Get();
-	}
-	if (StructName == TEXT("FLinearColor") || StructName == TEXT("LinearColor"))
-	{
-		return TBaseStructure<FLinearColor>::Get();
-	}
-	if (StructName == TEXT("FColor") || StructName == TEXT("Color"))
-	{
-		return TBaseStructure<FColor>::Get();
-	}
-	if (StructName == TEXT("FMargin") || StructName == TEXT("Margin"))
-	{
-		return TBaseStructure<FMargin>::Get();
-	}
-	if (StructName == TEXT("FSoftObjectPath") || StructName == TEXT("SoftObjectPath"))
-	{
-		return TBaseStructure<FSoftObjectPath>::Get();
+		bInit = true;
+
+		// Pre-populate common types (both with and without F prefix)
+		auto Add = [](UScriptStruct* S, const FString& Name)
+		{
+			Cache.Add(Name, S);
+			Cache.Add(TEXT("F") + Name, S);
+		};
+		Add(TBaseStructure<FVector>::Get(), TEXT("Vector"));
+		Add(TBaseStructure<FVector2D>::Get(), TEXT("Vector2D"));
+		Add(TBaseStructure<FRotator>::Get(), TEXT("Rotator"));
+		Add(TBaseStructure<FTransform>::Get(), TEXT("Transform"));
+		Add(TBaseStructure<FLinearColor>::Get(), TEXT("LinearColor"));
+		Add(TBaseStructure<FColor>::Get(), TEXT("Color"));
+		Add(TBaseStructure<FMargin>::Get(), TEXT("Margin"));
+		Add(TBaseStructure<FSoftObjectPath>::Get(), TEXT("SoftObjectPath"));
 	}
 
-	// Dynamic lookup for other structs
-	FString SearchName = StructName;
-	if (!SearchName.StartsWith(TEXT("F")))
+	if (auto* Found = Cache.Find(StructName))
 	{
-		SearchName = TEXT("F") + SearchName;
+		return *Found;
 	}
 
+	// Dynamic lookup + cache result
+	FString SearchName = StructName.StartsWith(TEXT("F")) ? StructName : TEXT("F") + StructName;
 	for (TObjectIterator<UScriptStruct> It; It; ++It)
 	{
 		if (It->GetName() == SearchName || It->GetName() == StructName)
 		{
+			Cache.Add(StructName, *It);
 			return *It;
 		}
 	}
@@ -496,92 +486,14 @@ bool FPropertySetterUtils::SetValueFromTypedJson(void* ValuePtr, const FParsedTy
 			return true;
 		}
 	}
-	// FVector
-	else if (Type == TEXT("FVector"))
+	// F-prefixed struct types (FVector, FLinearColor, FTransform, etc.)
+	else if (Type.StartsWith(TEXT("F")))
 	{
-		const TArray<TSharedPtr<FJsonValue>>* Arr;
-		if (JsonValue->TryGetArray(Arr) && Arr->Num() >= 3)
+		UScriptStruct* Struct = FindStructByName(Type);
+		if (Struct)
 		{
-			*static_cast<FVector*>(ValuePtr) = ParseVector(*Arr);
-			return true;
+			return SetStructFromJson(Struct, ValuePtr, JsonValue);
 		}
-	}
-	// FVector2D
-	else if (Type == TEXT("FVector2D"))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Arr;
-		if (JsonValue->TryGetArray(Arr) && Arr->Num() >= 2)
-		{
-			*static_cast<FVector2D*>(ValuePtr) = ParseVector2D(*Arr);
-			return true;
-		}
-	}
-	// FRotator
-	else if (Type == TEXT("FRotator"))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Arr;
-		if (JsonValue->TryGetArray(Arr) && Arr->Num() >= 3)
-		{
-			double Pitch = 0, Yaw = 0, Roll = 0;
-			(*Arr)[0]->TryGetNumber(Pitch);
-			(*Arr)[1]->TryGetNumber(Yaw);
-			(*Arr)[2]->TryGetNumber(Roll);
-			*static_cast<FRotator*>(ValuePtr) = FRotator(Pitch, Yaw, Roll);
-			return true;
-		}
-	}
-	// FTransform
-	else if (Type == TEXT("FTransform"))
-	{
-		const TSharedPtr<FJsonObject>* Obj;
-		if (JsonValue->TryGetObject(Obj))
-		{
-			FTransform Transform;
-
-			const TArray<TSharedPtr<FJsonValue>>* LocArr;
-			if ((*Obj)->TryGetArrayField(TEXT("Location"), LocArr) && LocArr->Num() >= 3)
-			{
-				Transform.SetLocation(ParseVector(*LocArr));
-			}
-
-			const TArray<TSharedPtr<FJsonValue>>* RotArr;
-			if ((*Obj)->TryGetArrayField(TEXT("Rotation"), RotArr) && RotArr->Num() >= 3)
-			{
-				double Pitch = 0, Yaw = 0, Roll = 0;
-				(*RotArr)[0]->TryGetNumber(Pitch);
-				(*RotArr)[1]->TryGetNumber(Yaw);
-				(*RotArr)[2]->TryGetNumber(Roll);
-				Transform.SetRotation(FRotator(Pitch, Yaw, Roll).Quaternion());
-			}
-
-			const TArray<TSharedPtr<FJsonValue>>* ScaleArr;
-			if ((*Obj)->TryGetArrayField(TEXT("Scale"), ScaleArr) && ScaleArr->Num() >= 3)
-			{
-				Transform.SetScale3D(ParseVector(*ScaleArr));
-			}
-
-			*static_cast<FTransform*>(ValuePtr) = Transform;
-			return true;
-		}
-	}
-	// FLinearColor
-	else if (Type == TEXT("FLinearColor"))
-	{
-		*static_cast<FLinearColor*>(ValuePtr) = ParseColor(JsonValue);
-		return true;
-	}
-	// FColor
-	else if (Type == TEXT("FColor"))
-	{
-		FLinearColor Linear = ParseColor(JsonValue);
-		*static_cast<FColor*>(ValuePtr) = Linear.ToFColor(true);
-		return true;
-	}
-	// FMargin
-	else if (Type == TEXT("FMargin"))
-	{
-		*static_cast<FMargin*>(ValuePtr) = ParseMargin(JsonValue);
-		return true;
 	}
 	// Object reference
 	else if (Type == TEXT("Object"))
@@ -858,8 +770,46 @@ bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* 
 		return false;
 	}
 
+	// Handle ByteProperty BEFORE NumericProperty (FByteProperty inherits FNumericProperty)
+	if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+	{
+		if (UEnum* Enum = ByteProp->Enum)
+		{
+			FString EnumValueStr;
+			if (JsonValue->TryGetString(EnumValueStr))
+			{
+				int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
+				if (EnumValue == INDEX_NONE)
+				{
+					EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
+				}
+				if (EnumValue != INDEX_NONE)
+				{
+					ByteProp->SetIntPropertyValue(ValuePtr, EnumValue);
+					return true;
+				}
+			}
+			// Also accept numeric value for byte enums
+			double Value = 0.0;
+			if (JsonValue->TryGetNumber(Value))
+			{
+				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
+				return true;
+			}
+		}
+		else
+		{
+			// Plain byte, treat as number
+			double Value = 0.0;
+			if (JsonValue->TryGetNumber(Value))
+			{
+				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
+				return true;
+			}
+		}
+	}
 	// Handle numeric types (int, float, double, etc.)
-	if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
+	else if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
 	{
 		double Value = 0.0;
 		if (JsonValue->TryGetNumber(Value))
@@ -940,37 +890,6 @@ bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* 
 			}
 		}
 	}
-	// Handle ByteProperty (with or without enum)
-	else if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
-	{
-		if (UEnum* Enum = ByteProp->Enum)
-		{
-			FString EnumValueStr;
-			if (JsonValue->TryGetString(EnumValueStr))
-			{
-				int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
-				if (EnumValue == INDEX_NONE)
-				{
-					EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
-				}
-				if (EnumValue != INDEX_NONE)
-				{
-					ByteProp->SetIntPropertyValue(ValuePtr, EnumValue);
-					return true;
-				}
-			}
-		}
-		else
-		{
-			// Plain byte, treat as number
-			double Value = 0.0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-				return true;
-			}
-		}
-	}
 	// Handle Struct types
 	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
@@ -1025,6 +944,279 @@ bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* 
 	return false;
 }
 
+// Check if a struct only contains numeric fields (float, double, int variants)
+static bool IsNumericOnlyStruct(UScriptStruct* Struct)
+{
+	if (!Struct)
+	{
+		return false;
+	}
+
+	int32 FieldCount = 0;
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		if (!CastField<FNumericProperty>(*It))
+		{
+			return false;
+		}
+		++FieldCount;
+	}
+	return FieldCount > 0;
+}
+
+// JSON array -> struct: map array elements to fields by declaration order
+static bool SetStructFromArray(UScriptStruct* Struct, void* ValuePtr, const TArray<TSharedPtr<FJsonValue>>& Array)
+{
+	int32 Index = 0;
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		if (Index >= Array.Num())
+		{
+			break;
+		}
+
+		FNumericProperty* NumProp = CastField<FNumericProperty>(*It);
+		if (!NumProp)
+		{
+			return false;
+		}
+
+		double Value = 0;
+		if (Array[Index]->TryGetNumber(Value))
+		{
+			void* FieldPtr = NumProp->ContainerPtrToValuePtr<void>(ValuePtr);
+			if (NumProp->IsFloatingPoint())
+			{
+				NumProp->SetFloatingPointPropertyValue(FieldPtr, Value);
+			}
+			else
+			{
+				NumProp->SetIntPropertyValue(FieldPtr, static_cast<int64>(Value));
+			}
+		}
+		++Index;
+	}
+	return true;
+}
+
+// struct -> JSON array: extract all numeric fields as a compact array
+static TSharedPtr<FJsonValue> ExtractStructToArray(UScriptStruct* Struct, const void* ValuePtr)
+{
+	TArray<TSharedPtr<FJsonValue>> JsonArray;
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FNumericProperty* NumProp = CastField<FNumericProperty>(*It);
+		if (!NumProp)
+		{
+			return nullptr;
+		}
+
+		const void* FieldPtr = NumProp->ContainerPtrToValuePtr<void>(ValuePtr);
+		if (NumProp->IsFloatingPoint())
+		{
+			JsonArray.Add(MakeShared<FJsonValueNumber>(NumProp->GetFloatingPointPropertyValue(FieldPtr)));
+		}
+		else
+		{
+			JsonArray.Add(MakeShared<FJsonValueNumber>(static_cast<double>(NumProp->GetSignedIntPropertyValue(FieldPtr))));
+		}
+	}
+	return MakeShared<FJsonValueArray>(JsonArray);
+}
+
+TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetterUtils::GetSpecialDeserializers()
+{
+	static TMap<UScriptStruct*, FStructDeserializer> Map;
+	static bool bInit = false;
+	if (!bInit)
+	{
+		bInit = true;
+
+		// FLinearColor - supports hex string, named color, array, object
+		Map.Add(TBaseStructure<FLinearColor>::Get(), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			*static_cast<FLinearColor*>(ValuePtr) = ParseColor(JsonValue);
+			return true;
+		});
+
+		// FColor - same as FLinearColor but converted
+		Map.Add(TBaseStructure<FColor>::Get(), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			*static_cast<FColor*>(ValuePtr) = ParseColor(JsonValue).ToFColor(true);
+			return true;
+		});
+
+		// FMargin - supports single number, [H,V], [L,T,R,B], object
+		Map.Add(TBaseStructure<FMargin>::Get(), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			*static_cast<FMargin*>(ValuePtr) = ParseMargin(JsonValue);
+			return true;
+		});
+
+		// FSoftObjectPath - string shorthand
+		Map.Add(TBaseStructure<FSoftObjectPath>::Get(), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			FString PathStr;
+			if (JsonValue->TryGetString(PathStr))
+			{
+				*static_cast<FSoftObjectPath*>(ValuePtr) = FSoftObjectPath(PathStr);
+				return true;
+			}
+			return false;
+		});
+
+		// FSlateColor - wraps FLinearColor
+		Map.Add(FindStructByName(TEXT("SlateColor")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			*static_cast<FSlateColor*>(ValuePtr) = FSlateColor(ParseColor(JsonValue));
+			return true;
+		});
+
+		// FSlateFontInfo
+		Map.Add(FindStructByName(TEXT("SlateFontInfo")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			const TSharedPtr<FJsonObject>* FontObj;
+			if (JsonValue->TryGetObject(FontObj))
+			{
+				*static_cast<FSlateFontInfo*>(ValuePtr) = ParseFont(*FontObj);
+				return true;
+			}
+			return false;
+		});
+
+		// FSlateBrush
+		Map.Add(FindStructByName(TEXT("SlateBrush")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			const TSharedPtr<FJsonObject>* BrushObj;
+			if (JsonValue->TryGetObject(BrushObj))
+			{
+				*static_cast<FSlateBrush*>(ValuePtr) = ParseBrush(*BrushObj);
+				return true;
+			}
+			return false;
+		});
+
+		// FAnchors
+		Map.Add(FindStructByName(TEXT("Anchors")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			const TSharedPtr<FJsonObject>* AnchorsObj;
+			if (JsonValue->TryGetObject(AnchorsObj))
+			{
+				*static_cast<FAnchors*>(ValuePtr) = ParseAnchors(*AnchorsObj);
+				return true;
+			}
+			return false;
+		});
+	}
+	return Map;
+}
+
+TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUtils::GetSpecialSerializers()
+{
+	static TMap<UScriptStruct*, FStructSerializer> Map;
+	static bool bInit = false;
+	if (!bInit)
+	{
+		bInit = true;
+
+		// FTransform - compound nested object {Location:[], Rotation:[], Scale:[]}
+		Map.Add(TBaseStructure<FTransform>::Get(), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FTransform* Trans = static_cast<const FTransform*>(ValuePtr);
+			TSharedPtr<FJsonObject> TransObj = MakeShared<FJsonObject>();
+
+			TArray<TSharedPtr<FJsonValue>> LocArray;
+			LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().X));
+			LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().Y));
+			LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().Z));
+			TransObj->SetArrayField(TEXT("Location"), LocArray);
+
+			FRotator Rot = Trans->Rotator();
+			TArray<TSharedPtr<FJsonValue>> RotArray;
+			RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+			RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+			RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+			TransObj->SetArrayField(TEXT("Rotation"), RotArray);
+
+			TArray<TSharedPtr<FJsonValue>> ScaleArray;
+			ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().X));
+			ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().Y));
+			ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().Z));
+			TransObj->SetArrayField(TEXT("Scale"), ScaleArray);
+
+			return MakeShared<FJsonValueObject>(TransObj);
+		});
+
+		// FAnchors - nested object {Min:[], Max:[]}
+		Map.Add(FindStructByName(TEXT("Anchors")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FAnchors* Anchors = static_cast<const FAnchors*>(ValuePtr);
+			TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
+
+			TArray<TSharedPtr<FJsonValue>> MinArray;
+			MinArray.Add(MakeShared<FJsonValueNumber>(Anchors->Minimum.X));
+			MinArray.Add(MakeShared<FJsonValueNumber>(Anchors->Minimum.Y));
+			AnchorsObj->SetArrayField(TEXT("Min"), MinArray);
+
+			TArray<TSharedPtr<FJsonValue>> MaxArray;
+			MaxArray.Add(MakeShared<FJsonValueNumber>(Anchors->Maximum.X));
+			MaxArray.Add(MakeShared<FJsonValueNumber>(Anchors->Maximum.Y));
+			AnchorsObj->SetArrayField(TEXT("Max"), MaxArray);
+
+			return MakeShared<FJsonValueObject>(AnchorsObj);
+		});
+
+		// FSoftObjectPath - string
+		Map.Add(TBaseStructure<FSoftObjectPath>::Get(), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FSoftObjectPath* SoftPath = static_cast<const FSoftObjectPath*>(ValuePtr);
+			return MakeShared<FJsonValueString>(SoftPath->ToString());
+		});
+	}
+	return Map;
+}
+
+bool FPropertySetterUtils::SetStructFromJson(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
+{
+	if (!Struct || !ValuePtr || !JsonValue.IsValid())
+	{
+		return false;
+	}
+
+	// 1. Special format registry
+	if (auto* Handler = GetSpecialDeserializers().Find(Struct))
+	{
+		if ((*Handler)(ValuePtr, JsonValue))
+		{
+			return true;
+		}
+	}
+
+	// 2. Generic array mapping (pure numeric structs)
+	const TArray<TSharedPtr<FJsonValue>>* Arr;
+	if (JsonValue->TryGetArray(Arr) && IsNumericOnlyStruct(Struct))
+	{
+		return SetStructFromArray(Struct, ValuePtr, *Arr);
+	}
+
+	// 3. Generic object fallback (match fields by name)
+	const TSharedPtr<FJsonObject>* Obj;
+	if (JsonValue->TryGetObject(Obj))
+	{
+		for (const auto& Pair : (*Obj)->Values)
+		{
+			if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
+			{
+				void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
+				SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+			}
+		}
+		return true;
+	}
+
+	return false;
+}
+
 bool FPropertySetterUtils::SetStructPropertyFromJson(FStructProperty* StructProp, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
 {
 	if (!StructProp || !ValuePtr || !JsonValue.IsValid())
@@ -1032,114 +1224,7 @@ bool FPropertySetterUtils::SetStructPropertyFromJson(FStructProperty* StructProp
 		return false;
 	}
 
-	UScriptStruct* Struct = StructProp->Struct;
-
-	// FLinearColor - [R, G, B, A] array or {R, G, B, A} object or string
-	if (Struct == TBaseStructure<FLinearColor>::Get())
-	{
-		*static_cast<FLinearColor*>(ValuePtr) = ParseColor(JsonValue);
-		return true;
-	}
-	// FColor
-	else if (Struct == TBaseStructure<FColor>::Get())
-	{
-		FLinearColor Color = ParseColor(JsonValue);
-		*static_cast<FColor*>(ValuePtr) = Color.ToFColor(true);
-		return true;
-	}
-	// FVector2D - [X, Y] array
-	else if (Struct == TBaseStructure<FVector2D>::Get())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Array;
-		if (JsonValue->TryGetArray(Array) && Array->Num() >= 2)
-		{
-			*static_cast<FVector2D*>(ValuePtr) = ParseVector2D(*Array);
-			return true;
-		}
-	}
-	// FVector - [X, Y, Z] array
-	else if (Struct == TBaseStructure<FVector>::Get())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Array;
-		if (JsonValue->TryGetArray(Array) && Array->Num() >= 3)
-		{
-			*static_cast<FVector*>(ValuePtr) = ParseVector(*Array);
-			return true;
-		}
-	}
-	// FMargin - number, [H, V], [L, T, R, B], or {Left, Top, Right, Bottom}
-	else if (Struct == TBaseStructure<FMargin>::Get())
-	{
-		*static_cast<FMargin*>(ValuePtr) = ParseMargin(JsonValue);
-		return true;
-	}
-	// FSlateColor
-	else if (Struct->GetFName() == TEXT("SlateColor"))
-	{
-		FLinearColor Color = ParseColor(JsonValue);
-		*static_cast<FSlateColor*>(ValuePtr) = FSlateColor(Color);
-		return true;
-	}
-	// FSlateFontInfo
-	else if (Struct->GetFName() == TEXT("SlateFontInfo"))
-	{
-		const TSharedPtr<FJsonObject>* FontObj;
-		if (JsonValue->TryGetObject(FontObj))
-		{
-			*static_cast<FSlateFontInfo*>(ValuePtr) = ParseFont(*FontObj);
-			return true;
-		}
-	}
-	// FSlateBrush
-	else if (Struct->GetFName() == TEXT("SlateBrush"))
-	{
-		const TSharedPtr<FJsonObject>* BrushObj;
-		if (JsonValue->TryGetObject(BrushObj))
-		{
-			*static_cast<FSlateBrush*>(ValuePtr) = ParseBrush(*BrushObj);
-			return true;
-		}
-	}
-	// FAnchors
-	else if (Struct->GetFName() == TEXT("Anchors"))
-	{
-		const TSharedPtr<FJsonObject>* AnchorsObj;
-		if (JsonValue->TryGetObject(AnchorsObj))
-		{
-			*static_cast<FAnchors*>(ValuePtr) = ParseAnchors(*AnchorsObj);
-			return true;
-		}
-	}
-	// FSoftObjectPath
-	else if (Struct == TBaseStructure<FSoftObjectPath>::Get())
-	{
-		FString PathStr;
-		if (JsonValue->TryGetString(PathStr))
-		{
-			*static_cast<FSoftObjectPath*>(ValuePtr) = FSoftObjectPath(PathStr);
-			return true;
-		}
-	}
-	// Generic struct - try to set fields recursively
-	else
-	{
-		const TSharedPtr<FJsonObject>* StructObj;
-		if (JsonValue->TryGetObject(StructObj))
-		{
-			for (const auto& Pair : (*StructObj)->Values)
-			{
-				FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key);
-				if (FieldProp)
-				{
-					void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-					SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
-				}
-			}
-			return true;
-		}
-	}
-
-	return false;
+	return SetStructFromJson(StructProp->Struct, ValuePtr, JsonValue);
 }
 
 bool FPropertySetterUtils::SetArrayProperty(UObject* Object, FArrayProperty* Property, const TArray<TSharedPtr<FJsonValue>>& ArrayValues)
@@ -1632,18 +1717,28 @@ FSlateBrush FPropertySetterUtils::ParseBrush(TSharedPtr<FJsonObject> BrushConfig
 		return Brush;
 	}
 
-	// Load image texture
+	// Load image resource (Texture2D, Material, or other UObject)
 	FString ImagePath;
-	if (BrushConfig->TryGetStringField(TEXT("Image"), ImagePath))
+	if (BrushConfig->TryGetStringField(TEXT("Image"), ImagePath) ||
+		BrushConfig->TryGetStringField(TEXT("ResourceObject"), ImagePath))
 	{
-		UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *ImagePath);
-		if (Texture)
+		UObject* Resource = LoadObject<UTexture2D>(nullptr, *ImagePath);
+		if (!Resource)
 		{
-			Brush.SetResourceObject(Texture);
+			Resource = LoadObject<UMaterialInterface>(nullptr, *ImagePath);
+		}
+		if (!Resource)
+		{
+			Resource = LoadObject<UObject>(nullptr, *ImagePath);
+		}
+
+		if (Resource)
+		{
+			Brush.SetResourceObject(Resource);
 		}
 		else
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load texture: %s"), *ImagePath);
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load brush resource: %s"), *ImagePath);
 		}
 	}
 
@@ -1652,6 +1747,13 @@ FSlateBrush FPropertySetterUtils::ParseBrush(TSharedPtr<FJsonObject> BrushConfig
 	{
 		FLinearColor Tint = ParseColor(BrushConfig->TryGetField(TEXT("Tint")));
 		Brush.TintColor = FSlateColor(Tint);
+	}
+
+	// Image size
+	const TArray<TSharedPtr<FJsonValue>>* ImageSizeArray = nullptr;
+	if (BrushConfig->TryGetArrayField(TEXT("ImageSize"), ImageSizeArray) && ImageSizeArray->Num() >= 2)
+	{
+		Brush.ImageSize = ParseVector2D(*ImageSizeArray);
 	}
 
 	// Draw type
@@ -1676,8 +1778,13 @@ FAnchors FPropertySetterUtils::ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfi
 		return Result;
 	}
 
+	// Array format: {"Min": [0.5, 0.5], "Max": [0.5, 0.5]}
 	const TArray<TSharedPtr<FJsonValue>>* MinArray = nullptr;
 	if (AnchorsConfig->TryGetArrayField(TEXT("Min"), MinArray) && MinArray->Num() >= 2)
+	{
+		Result.Minimum = ParseVector2D(*MinArray);
+	}
+	else if (AnchorsConfig->TryGetArrayField(TEXT("Minimum"), MinArray) && MinArray->Num() >= 2)
 	{
 		Result.Minimum = ParseVector2D(*MinArray);
 	}
@@ -1686,6 +1793,45 @@ FAnchors FPropertySetterUtils::ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfi
 	if (AnchorsConfig->TryGetArrayField(TEXT("Max"), MaxArray) && MaxArray->Num() >= 2)
 	{
 		Result.Maximum = ParseVector2D(*MaxArray);
+	}
+	else if (AnchorsConfig->TryGetArrayField(TEXT("Maximum"), MaxArray) && MaxArray->Num() >= 2)
+	{
+		Result.Maximum = ParseVector2D(*MaxArray);
+	}
+
+	// Object format: {"Minimum": {"X": 0.5, "Y": 0.5}, "Maximum": {"X": 0.5, "Y": 0.5}}
+	TSharedPtr<FJsonObject> MinObj;
+	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Minimum")))
+	{
+		MinObj = AnchorsConfig->GetObjectField(TEXT("Minimum"));
+	}
+	if (!MinObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Min")))
+	{
+		MinObj = AnchorsConfig->GetObjectField(TEXT("Min"));
+	}
+	if (MinObj.IsValid())
+	{
+		double X = 0, Y = 0;
+		MinObj->TryGetNumberField(TEXT("X"), X);
+		MinObj->TryGetNumberField(TEXT("Y"), Y);
+		Result.Minimum = FVector2D(X, Y);
+	}
+
+	TSharedPtr<FJsonObject> MaxObj;
+	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Maximum")))
+	{
+		MaxObj = AnchorsConfig->GetObjectField(TEXT("Maximum"));
+	}
+	if (!MaxObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Max")))
+	{
+		MaxObj = AnchorsConfig->GetObjectField(TEXT("Max"));
+	}
+	if (MaxObj.IsValid())
+	{
+		double X = 0, Y = 0;
+		MaxObj->TryGetNumberField(TEXT("X"), X);
+		MaxObj->TryGetNumberField(TEXT("Y"), Y);
+		Result.Maximum = FVector2D(X, Y);
 	}
 
 	return Result;
@@ -1912,141 +2058,28 @@ TSharedPtr<FJsonValue> FPropertySetterUtils::ExtractStructToJson(FStructProperty
 
 	UScriptStruct* Struct = StructProp->Struct;
 
-	// Handle common struct types with array format for compactness
-	if (Struct == TBaseStructure<FVector>::Get())
+	// 1. Special format registry
+	if (auto* Handler = GetSpecialSerializers().Find(Struct))
 	{
-		const FVector* Vec = static_cast<const FVector*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> VecArray;
-		VecArray.Add(MakeShared<FJsonValueNumber>(Vec->X));
-		VecArray.Add(MakeShared<FJsonValueNumber>(Vec->Y));
-		VecArray.Add(MakeShared<FJsonValueNumber>(Vec->Z));
-		return MakeShared<FJsonValueArray>(VecArray);
+		return (*Handler)(ValuePtr);
 	}
 
-	if (Struct == TBaseStructure<FVector2D>::Get())
+	// 2. Generic array (pure numeric structs)
+	if (IsNumericOnlyStruct(Struct))
 	{
-		const FVector2D* Vec = static_cast<const FVector2D*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> VecArray;
-		VecArray.Add(MakeShared<FJsonValueNumber>(Vec->X));
-		VecArray.Add(MakeShared<FJsonValueNumber>(Vec->Y));
-		return MakeShared<FJsonValueArray>(VecArray);
+		return ExtractStructToArray(Struct, ValuePtr);
 	}
 
-	if (Struct == TBaseStructure<FRotator>::Get())
-	{
-		const FRotator* Rot = static_cast<const FRotator*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> RotArray;
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot->Pitch));
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot->Yaw));
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot->Roll));
-		return MakeShared<FJsonValueArray>(RotArray);
-	}
-
-	if (Struct == TBaseStructure<FLinearColor>::Get())
-	{
-		const FLinearColor* Color = static_cast<const FLinearColor*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> ColorArray;
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->R));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->G));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->B));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->A));
-		return MakeShared<FJsonValueArray>(ColorArray);
-	}
-
-	if (Struct == TBaseStructure<FColor>::Get())
-	{
-		const FColor* Color = static_cast<const FColor*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> ColorArray;
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->R));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->G));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->B));
-		ColorArray.Add(MakeShared<FJsonValueNumber>(Color->A));
-		return MakeShared<FJsonValueArray>(ColorArray);
-	}
-
-	if (Struct == TBaseStructure<FTransform>::Get())
-	{
-		const FTransform* Trans = static_cast<const FTransform*>(ValuePtr);
-		TSharedPtr<FJsonObject> TransObj = MakeShared<FJsonObject>();
-
-		// Location
-		TArray<TSharedPtr<FJsonValue>> LocArray;
-		LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().X));
-		LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().Y));
-		LocArray.Add(MakeShared<FJsonValueNumber>(Trans->GetLocation().Z));
-		TransObj->SetArrayField(TEXT("Location"), LocArray);
-
-		// Rotation
-		FRotator Rot = Trans->Rotator();
-		TArray<TSharedPtr<FJsonValue>> RotArray;
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
-		RotArray.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
-		TransObj->SetArrayField(TEXT("Rotation"), RotArray);
-
-		// Scale
-		TArray<TSharedPtr<FJsonValue>> ScaleArray;
-		ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().X));
-		ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().Y));
-		ScaleArray.Add(MakeShared<FJsonValueNumber>(Trans->GetScale3D().Z));
-		TransObj->SetArrayField(TEXT("Scale"), ScaleArray);
-
-		return MakeShared<FJsonValueObject>(TransObj);
-	}
-
-	// FMargin
-	if (Struct->GetFName() == TEXT("Margin"))
-	{
-		const FMargin* Margin = static_cast<const FMargin*>(ValuePtr);
-		TArray<TSharedPtr<FJsonValue>> MarginArray;
-		MarginArray.Add(MakeShared<FJsonValueNumber>(Margin->Left));
-		MarginArray.Add(MakeShared<FJsonValueNumber>(Margin->Top));
-		MarginArray.Add(MakeShared<FJsonValueNumber>(Margin->Right));
-		MarginArray.Add(MakeShared<FJsonValueNumber>(Margin->Bottom));
-		return MakeShared<FJsonValueArray>(MarginArray);
-	}
-
-	// FAnchors
-	if (Struct->GetFName() == TEXT("Anchors"))
-	{
-		const FAnchors* Anchors = static_cast<const FAnchors*>(ValuePtr);
-		TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
-
-		TArray<TSharedPtr<FJsonValue>> MinArray;
-		MinArray.Add(MakeShared<FJsonValueNumber>(Anchors->Minimum.X));
-		MinArray.Add(MakeShared<FJsonValueNumber>(Anchors->Minimum.Y));
-		AnchorsObj->SetArrayField(TEXT("Min"), MinArray);
-
-		TArray<TSharedPtr<FJsonValue>> MaxArray;
-		MaxArray.Add(MakeShared<FJsonValueNumber>(Anchors->Maximum.X));
-		MaxArray.Add(MakeShared<FJsonValueNumber>(Anchors->Maximum.Y));
-		AnchorsObj->SetArrayField(TEXT("Max"), MaxArray);
-
-		return MakeShared<FJsonValueObject>(AnchorsObj);
-	}
-
-	// FSoftObjectPath
-	if (Struct == TBaseStructure<FSoftObjectPath>::Get())
-	{
-		const FSoftObjectPath* SoftPath = static_cast<const FSoftObjectPath*>(ValuePtr);
-		return MakeShared<FJsonValueString>(SoftPath->ToString());
-	}
-
-	// Generic struct - recursively extract fields
+	// 3. Generic object fallback
 	TSharedPtr<FJsonObject> StructObj = MakeShared<FJsonObject>();
-
-	for (TFieldIterator<FProperty> PropIt(Struct); PropIt; ++PropIt)
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
 	{
-		FProperty* FieldProp = *PropIt;
-		const void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-
-		TSharedPtr<FJsonValue> FieldJson = ExtractPropertyToJson(FieldProp, FieldPtr);
-		if (FieldJson.IsValid())
+		const void* FieldPtr = (*It)->ContainerPtrToValuePtr<void>(ValuePtr);
+		if (auto FieldJson = ExtractPropertyToJson(*It, FieldPtr))
 		{
-			StructObj->SetField(FieldProp->GetName(), FieldJson);
+			StructObj->SetField((*It)->GetName(), FieldJson);
 		}
 	}
-
 	return MakeShared<FJsonValueObject>(StructObj);
 }
 

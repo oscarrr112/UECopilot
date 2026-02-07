@@ -52,26 +52,40 @@ Each variable object:
 
 Two formats supported (detected by checking if first property has a `"type"` field):
 
-**Simple format:**
+**Simple format** (auto-detects type via reflection):
 ```json
 {
   "Properties": {
     "StaticMesh": "/Engine/BasicShapes/Cube.Cube",
     "Mobility": "Movable",
-    "CastShadow": true
+    "CastShadow": true,
+    "RelativeLocation": [100, 200, 300],
+    "BodyInstance": { "CollisionEnabled": "QueryAndPhysics" }
   }
 }
 ```
 
-**Typed format:**
+**Typed format** (explicit type, useful when reflection is unavailable):
 ```json
 {
   "Properties": {
-    "Health": { "type": "float", "value": 100 },
-    "Name": { "type": "string", "value": "Player" }
+    "Health": { "type": "Float", "value": 100 },
+    "Name": { "type": "String", "value": "Player" },
+    "SpawnLocation": { "type": "FVector", "value": [100, 200, 300] },
+    "Color": { "type": "FLinearColor", "value": "#FF0000" },
+    "Margin": { "type": "FMargin", "value": [10, 5, 10, 5] }
   }
 }
 ```
+
+### Struct Value Formats
+
+Struct types (both simple and typed format) accept:
+- **Array shorthand** for numeric-only structs: `[X, Y, Z]` for FVector, `[P, Y, R]` for FRotator, `[R, G, B, A]` for FLinearColor, `[L, T, R, B]` for FMargin, etc.
+- **Object format** for any struct: `{"X": 1, "Y": 2, "Z": 3}` — fields matched by name
+- **Special formats**: FLinearColor accepts hex `"#FF0000"` and named colors `"Red"`; FMargin accepts uniform number `10`
+
+In typed format, any `F`-prefixed struct name works (e.g., `"FVector"`, `"FRotator"`, `"FTransform"`, `"FLinearColor"`, `"FColor"`, `"FMargin"`).
 
 ## Complete Example
 

@@ -19,11 +19,9 @@
 #include "Components/PanelSlot.h"
 #include "Components/CanvasPanelSlot.h"
 
-// Styling (needed for parse helpers)
+// Styling
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
-#include "Engine/Texture2D.h"
-#include "Materials/MaterialInterface.h"
 
 // Asset handling
 #include "AssetToolsModule.h"
@@ -31,8 +29,6 @@
 #include "UObject/SavePackage.h"
 
 // Reflection and property helpers
-#include "UObject/SoftObjectPath.h"
-#include "UObject/SoftObjectPtr.h"
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
 
@@ -614,14 +610,14 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 			if (SlotConfig->HasTypedField<EJson::Object>(TEXT("Anchors")))
 			{
 				TSharedPtr<FJsonObject> AnchorsConfig = SlotConfig->GetObjectField(TEXT("Anchors"));
-				FAnchors Anchors = ParseAnchors(AnchorsConfig);
+				FAnchors Anchors = FPropertySetterUtils::ParseStruct<FAnchors>(AnchorsConfig);
 				CanvasSlot->SetAnchors(Anchors);
 			}
 
 			// Handle Offsets
 			if (SlotConfig->HasField(TEXT("Offsets")))
 			{
-				FMargin Offsets = ParseMargins(SlotConfig->TryGetField(TEXT("Offsets")));
+				FMargin Offsets = FPropertySetterUtils::ParseStruct<FMargin>(SlotConfig->TryGetField(TEXT("Offsets")));
 				CanvasSlot->SetOffsets(Offsets);
 			}
 
@@ -629,7 +625,7 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 			const TArray<TSharedPtr<FJsonValue>>* AlignmentArray = nullptr;
 			if (SlotConfig->TryGetArrayField(TEXT("Alignment"), AlignmentArray) && AlignmentArray->Num() >= 2)
 			{
-				FVector2D Alignment = ParseVector2D(*AlignmentArray);
+				FVector2D Alignment = FPropertySetterUtils::ParseStruct<FVector2D>(*AlignmentArray);
 				CanvasSlot->SetAlignment(Alignment);
 			}
 
@@ -637,7 +633,7 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 			const TArray<TSharedPtr<FJsonValue>>* PositionArray = nullptr;
 			if (SlotConfig->TryGetArrayField(TEXT("Position"), PositionArray) && PositionArray->Num() >= 2)
 			{
-				FVector2D Position = ParseVector2D(*PositionArray);
+				FVector2D Position = FPropertySetterUtils::ParseStruct<FVector2D>(*PositionArray);
 				CanvasSlot->SetPosition(Position);
 			}
 
@@ -645,7 +641,7 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 			const TArray<TSharedPtr<FJsonValue>>* SizeArray = nullptr;
 			if (SlotConfig->TryGetArrayField(TEXT("Size"), SizeArray) && SizeArray->Num() >= 2)
 			{
-				FVector2D Size = ParseVector2D(*SizeArray);
+				FVector2D Size = FPropertySetterUtils::ParseStruct<FVector2D>(*SizeArray);
 				CanvasSlot->SetSize(Size);
 			}
 
@@ -792,7 +788,7 @@ void FWidgetBlueprintGenerator::ConfigureCommonSlotProperties(UPanelSlot* Slot, 
 		FProperty* PaddingProp = SlotClass->FindPropertyByName(TEXT("Padding"));
 		if (FStructProperty* StructProp = CastField<FStructProperty>(PaddingProp))
 		{
-			FMargin Padding = ParseMargins(SlotConfig->TryGetField(TEXT("Padding")));
+			FMargin Padding = FPropertySetterUtils::ParseStruct<FMargin>(SlotConfig->TryGetField(TEXT("Padding")));
 			void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
 			*static_cast<FMargin*>(ValuePtr) = Padding;
 		}
@@ -853,7 +849,7 @@ void FWidgetBlueprintGenerator::ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObje
 	// Handle Color/ColorAndOpacity - common style property
 	if (StyleConfig->HasField(TEXT("Color")))
 	{
-		FLinearColor Color = ParseColor(StyleConfig->TryGetField(TEXT("Color")));
+		FLinearColor Color = FPropertySetterUtils::ParseStruct<FLinearColor>(StyleConfig->TryGetField(TEXT("Color")));
 
 		// Try ColorAndOpacity (FSlateColor) first - used by TextBlock
 		FProperty* ColorProp = WidgetClass->FindPropertyByName(TEXT("ColorAndOpacity"));
@@ -887,7 +883,7 @@ void FWidgetBlueprintGenerator::ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObje
 		TSharedPtr<FJsonObject> BrushConfig = StyleConfig->GetObjectField(TEXT("Brush"));
 		if (BrushConfig.IsValid())
 		{
-			FSlateBrush Brush = ParseBrush(BrushConfig);
+			FSlateBrush Brush = FPropertySetterUtils::ParseStruct<FSlateBrush>(BrushConfig);
 
 			// Find Brush property
 			FProperty* BrushProp = WidgetClass->FindPropertyByName(TEXT("Brush"));
@@ -1052,276 +1048,6 @@ void FWidgetBlueprintGenerator::ExposeAsVariable(UWidget* Widget, const FString&
 }
 
 //~ Parse Helpers
-
-FAnchors FWidgetBlueprintGenerator::ParseAnchors(TSharedPtr<FJsonObject> AnchorsConfig) const
-{
-	FAnchors Result;
-
-	if (!AnchorsConfig.IsValid())
-	{
-		return Result;
-	}
-
-	// Support array format: {"Min": [0.5, 0.5], "Max": [0.5, 0.5]}
-	const TArray<TSharedPtr<FJsonValue>>* MinArray = nullptr;
-	if (AnchorsConfig->TryGetArrayField(TEXT("Min"), MinArray) && MinArray->Num() >= 2)
-	{
-		Result.Minimum = ParseVector2D(*MinArray);
-	}
-	else if (AnchorsConfig->TryGetArrayField(TEXT("Minimum"), MinArray) && MinArray->Num() >= 2)
-	{
-		Result.Minimum = ParseVector2D(*MinArray);
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* MaxArray = nullptr;
-	if (AnchorsConfig->TryGetArrayField(TEXT("Max"), MaxArray) && MaxArray->Num() >= 2)
-	{
-		Result.Maximum = ParseVector2D(*MaxArray);
-	}
-	else if (AnchorsConfig->TryGetArrayField(TEXT("Maximum"), MaxArray) && MaxArray->Num() >= 2)
-	{
-		Result.Maximum = ParseVector2D(*MaxArray);
-	}
-
-	// Support object format: {"Minimum": {"X": 0.5, "Y": 0.5}, "Maximum": {"X": 0.5, "Y": 0.5}}
-	TSharedPtr<FJsonObject> MinObj;
-	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Minimum")))
-	{
-		MinObj = AnchorsConfig->GetObjectField(TEXT("Minimum"));
-	}
-	if (!MinObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Min")))
-	{
-		MinObj = AnchorsConfig->GetObjectField(TEXT("Min"));
-	}
-	if (MinObj.IsValid())
-	{
-		double X = 0, Y = 0;
-		MinObj->TryGetNumberField(TEXT("X"), X);
-		MinObj->TryGetNumberField(TEXT("Y"), Y);
-		Result.Minimum = FVector2D(X, Y);
-	}
-
-	TSharedPtr<FJsonObject> MaxObj;
-	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Maximum")))
-	{
-		MaxObj = AnchorsConfig->GetObjectField(TEXT("Maximum"));
-	}
-	if (!MaxObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Max")))
-	{
-		MaxObj = AnchorsConfig->GetObjectField(TEXT("Max"));
-	}
-	if (MaxObj.IsValid())
-	{
-		double X = 0, Y = 0;
-		MaxObj->TryGetNumberField(TEXT("X"), X);
-		MaxObj->TryGetNumberField(TEXT("Y"), Y);
-		Result.Maximum = FVector2D(X, Y);
-	}
-
-	return Result;
-}
-
-FMargin FWidgetBlueprintGenerator::ParseMargins(TSharedPtr<FJsonValue> MarginsValue) const
-{
-	FMargin Result(0.0f);
-
-	if (!MarginsValue.IsValid())
-	{
-		return Result;
-	}
-
-	// Single number - uniform margin
-	double UniformValue = 0;
-	if (MarginsValue->TryGetNumber(UniformValue))
-	{
-		return FMargin(static_cast<float>(UniformValue));
-	}
-
-	// Array format [Left, Top, Right, Bottom]
-	const TArray<TSharedPtr<FJsonValue>>* MarginsArray = nullptr;
-	if (MarginsValue->TryGetArray(MarginsArray) && MarginsArray->Num() >= 4)
-	{
-		double Left = 0, Top = 0, Right = 0, Bottom = 0;
-		(*MarginsArray)[0]->TryGetNumber(Left);
-		(*MarginsArray)[1]->TryGetNumber(Top);
-		(*MarginsArray)[2]->TryGetNumber(Right);
-		(*MarginsArray)[3]->TryGetNumber(Bottom);
-		return FMargin(static_cast<float>(Left), static_cast<float>(Top), static_cast<float>(Right), static_cast<float>(Bottom));
-	}
-
-	// Object format {Left, Top, Right, Bottom}
-	const TSharedPtr<FJsonObject>* MarginsObject = nullptr;
-	if (MarginsValue->TryGetObject(MarginsObject))
-	{
-		double Left = 0, Top = 0, Right = 0, Bottom = 0;
-		(*MarginsObject)->TryGetNumberField(TEXT("Left"), Left);
-		(*MarginsObject)->TryGetNumberField(TEXT("Top"), Top);
-		(*MarginsObject)->TryGetNumberField(TEXT("Right"), Right);
-		(*MarginsObject)->TryGetNumberField(TEXT("Bottom"), Bottom);
-		return FMargin(static_cast<float>(Left), static_cast<float>(Top), static_cast<float>(Right), static_cast<float>(Bottom));
-	}
-
-	return Result;
-}
-
-FVector2D FWidgetBlueprintGenerator::ParseVector2D(const TArray<TSharedPtr<FJsonValue>>& Array) const
-{
-	FVector2D Result(0.0f, 0.0f);
-
-	if (Array.Num() >= 2)
-	{
-		double X = 0, Y = 0;
-		Array[0]->TryGetNumber(X);
-		Array[1]->TryGetNumber(Y);
-		Result = FVector2D(static_cast<float>(X), static_cast<float>(Y));
-	}
-
-	return Result;
-}
-
-FLinearColor FWidgetBlueprintGenerator::ParseColor(TSharedPtr<FJsonValue> ColorValue) const
-{
-	FLinearColor Result = FLinearColor::White;
-
-	if (!ColorValue.IsValid())
-	{
-		return Result;
-	}
-
-	// String format - hex or named
-	FString ColorStr;
-	if (ColorValue->TryGetString(ColorStr))
-	{
-		// Hex format
-		if (ColorStr.StartsWith(TEXT("#")))
-		{
-			FColor ParsedColor = FColor::FromHex(ColorStr);
-			return FLinearColor(ParsedColor);
-		}
-
-		// Named colors
-		if (ColorStr == TEXT("White")) return FLinearColor::White;
-		if (ColorStr == TEXT("Black")) return FLinearColor::Black;
-		if (ColorStr == TEXT("Red")) return FLinearColor::Red;
-		if (ColorStr == TEXT("Green")) return FLinearColor::Green;
-		if (ColorStr == TEXT("Blue")) return FLinearColor::Blue;
-		if (ColorStr == TEXT("Yellow")) return FLinearColor::Yellow;
-		if (ColorStr == TEXT("Transparent")) return FLinearColor::Transparent;
-	}
-
-	// Array format [R, G, B, A]
-	const TArray<TSharedPtr<FJsonValue>>* ColorArray = nullptr;
-	if (ColorValue->TryGetArray(ColorArray))
-	{
-		if (ColorArray->Num() >= 3)
-		{
-			double R = 1, G = 1, B = 1, A = 1;
-			(*ColorArray)[0]->TryGetNumber(R);
-			(*ColorArray)[1]->TryGetNumber(G);
-			(*ColorArray)[2]->TryGetNumber(B);
-			if (ColorArray->Num() >= 4)
-			{
-				(*ColorArray)[3]->TryGetNumber(A);
-			}
-			return FLinearColor(static_cast<float>(R), static_cast<float>(G), static_cast<float>(B), static_cast<float>(A));
-		}
-	}
-
-	// Object format {R, G, B, A}
-	const TSharedPtr<FJsonObject>* ColorObject = nullptr;
-	if (ColorValue->TryGetObject(ColorObject))
-	{
-		double R = 1, G = 1, B = 1, A = 1;
-		(*ColorObject)->TryGetNumberField(TEXT("R"), R);
-		(*ColorObject)->TryGetNumberField(TEXT("G"), G);
-		(*ColorObject)->TryGetNumberField(TEXT("B"), B);
-		(*ColorObject)->TryGetNumberField(TEXT("A"), A);
-		return FLinearColor(static_cast<float>(R), static_cast<float>(G), static_cast<float>(B), static_cast<float>(A));
-	}
-
-	return Result;
-}
-
-FSlateFontInfo FWidgetBlueprintGenerator::ParseFont(TSharedPtr<FJsonObject> FontConfig) const
-{
-	FSlateFontInfo Font;
-
-	if (FontConfig.IsValid())
-	{
-		double Size = 12;
-		if (FontConfig->TryGetNumberField(TEXT("Size"), Size))
-		{
-			Font.Size = static_cast<int32>(Size);
-		}
-	}
-
-	return Font;
-}
-
-FSlateBrush FWidgetBlueprintGenerator::ParseBrush(TSharedPtr<FJsonObject> BrushConfig) const
-{
-	FSlateBrush Brush;
-
-	if (!BrushConfig.IsValid())
-	{
-		return Brush;
-	}
-
-	// Load image resource (Texture2D, Material, or other UObject)
-	FString ImagePath;
-	if (BrushConfig->TryGetStringField(TEXT("Image"), ImagePath) ||
-		BrushConfig->TryGetStringField(TEXT("ResourceObject"), ImagePath))
-	{
-		// Try Texture2D first
-		UObject* Resource = LoadObject<UTexture2D>(nullptr, *ImagePath);
-		// Try MaterialInterface if not a texture
-		if (!Resource)
-		{
-			Resource = LoadObject<UMaterialInterface>(nullptr, *ImagePath);
-		}
-		// Fallback: try as generic UObject
-		if (!Resource)
-		{
-			Resource = LoadObject<UObject>(nullptr, *ImagePath);
-		}
-
-		if (Resource)
-		{
-			Brush.SetResourceObject(Resource);
-		}
-		else
-		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load brush resource: %s"), *ImagePath);
-		}
-	}
-
-	// Tint color
-	if (BrushConfig->HasField(TEXT("Tint")))
-	{
-		FLinearColor Tint = ParseColor(BrushConfig->TryGetField(TEXT("Tint")));
-		Brush.TintColor = FSlateColor(Tint);
-	}
-
-	// Image size
-	const TArray<TSharedPtr<FJsonValue>>* ImageSizeArray = nullptr;
-	if (BrushConfig->TryGetArrayField(TEXT("ImageSize"), ImageSizeArray) && ImageSizeArray->Num() >= 2)
-	{
-		FVector2D Size = ParseVector2D(*ImageSizeArray);
-		Brush.ImageSize = Size;
-	}
-
-	// Draw type
-	FString DrawAs;
-	if (BrushConfig->TryGetStringField(TEXT("DrawAs"), DrawAs))
-	{
-		if (DrawAs == TEXT("Box")) Brush.DrawAs = ESlateBrushDrawType::Box;
-		else if (DrawAs == TEXT("Image")) Brush.DrawAs = ESlateBrushDrawType::Image;
-		else if (DrawAs == TEXT("Border")) Brush.DrawAs = ESlateBrushDrawType::Border;
-		else if (DrawAs == TEXT("NoDrawType")) Brush.DrawAs = ESlateBrushDrawType::NoDrawType;
-	}
-
-	return Brush;
-}
 
 EHorizontalAlignment FWidgetBlueprintGenerator::ParseHorizontalAlignment(const FString& AlignString) const
 {
@@ -1550,7 +1276,7 @@ void FWidgetBlueprintGenerator::ApplyClassDefaults(UWidgetBlueprint* Blueprint, 
 			continue;
 		}
 
-		if (SetCDOProperty(CDO, Property, JsonValue))
+		if (FPropertySetterUtils::SetPropertyFromJson(CDO, Property, JsonValue))
 		{
 			UE_LOG(LogAssetFactory, Log, TEXT("Set ClassDefault: %s"), *PropertyName);
 		}
@@ -1559,197 +1285,6 @@ void FWidgetBlueprintGenerator::ApplyClassDefaults(UWidgetBlueprint* Blueprint, 
 			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set ClassDefault: %s"), *PropertyName);
 		}
 	}
-}
-
-bool FWidgetBlueprintGenerator::SetCDOProperty(UObject* CDO, FProperty* Property, TSharedPtr<FJsonValue> JsonValue)
-{
-	if (!CDO || !Property || !JsonValue.IsValid())
-	{
-		return false;
-	}
-
-	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
-
-	// Handle TSoftObjectPtr (materials, textures)
-	if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
-	{
-		FString AssetPath;
-		if (JsonValue->TryGetString(AssetPath))
-		{
-			return SetSoftObjectProperty(CDO, SoftObjProp, AssetPath);
-		}
-		return false;
-	}
-
-	// Handle TSubclassOf
-	if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
-	{
-		FString ClassPath;
-		if (JsonValue->TryGetString(ClassPath))
-		{
-			return SetClassProperty(CDO, ClassProp, ClassPath);
-		}
-		return false;
-	}
-
-	// Handle TMap
-	if (FMapProperty* MapProp = CastField<FMapProperty>(Property))
-	{
-		if (JsonValue->Type == EJson::Object)
-		{
-			return SetMapProperty(CDO, MapProp, JsonValue->AsObject());
-		}
-		return false;
-	}
-
-	// Handle TArray
-	if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
-		if (JsonValue->TryGetArray(ArrayValues))
-		{
-			return SetArrayProperty(CDO, ArrayProp, *ArrayValues);
-		}
-		return false;
-	}
-
-	// Handle numeric types
-	if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
-	{
-		double Value = 0.0;
-		if (JsonValue->TryGetNumber(Value))
-		{
-			if (NumericProp->IsFloatingPoint())
-			{
-				NumericProp->SetFloatingPointPropertyValue(ValuePtr, Value);
-			}
-			else
-			{
-				NumericProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-			}
-			return true;
-		}
-		return false;
-	}
-
-	// Handle bool
-	if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-	{
-		bool Value = false;
-		if (JsonValue->TryGetBool(Value))
-		{
-			BoolProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-		return false;
-	}
-
-	// Handle FString
-	if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			StrProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-		return false;
-	}
-
-	// Handle FText
-	if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			TextProp->SetPropertyValue(ValuePtr, FText::FromString(Value));
-			return true;
-		}
-		return false;
-	}
-
-	// Handle FName
-	if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			NameProp->SetPropertyValue(ValuePtr, FName(*Value));
-			return true;
-		}
-		return false;
-	}
-
-	// Handle struct types
-	if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
-	{
-		// FLinearColor
-		if (StructProp->Struct == TBaseStructure<FLinearColor>::Get())
-		{
-			FLinearColor Color = ParseColor(JsonValue);
-			*static_cast<FLinearColor*>(ValuePtr) = Color;
-			return true;
-		}
-
-		// FColor
-		if (StructProp->Struct == TBaseStructure<FColor>::Get())
-		{
-			FLinearColor Color = ParseColor(JsonValue);
-			*static_cast<FColor*>(ValuePtr) = Color.ToFColor(true);
-			return true;
-		}
-
-		// FVector2D
-		if (StructProp->Struct == TBaseStructure<FVector2D>::Get())
-		{
-			const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
-			if (JsonValue->TryGetArray(ArrayValues) && ArrayValues->Num() >= 2)
-			{
-				*static_cast<FVector2D*>(ValuePtr) = ParseVector2D(*ArrayValues);
-				return true;
-			}
-			return false;
-		}
-
-		// FSoftObjectPath
-		if (StructProp->Struct == TBaseStructure<FSoftObjectPath>::Get())
-		{
-			FString PathStr;
-			if (JsonValue->TryGetString(PathStr))
-			{
-				*static_cast<FSoftObjectPath*>(ValuePtr) = FSoftObjectPath(PathStr);
-				return true;
-			}
-			return false;
-		}
-	}
-
-	UE_LOG(LogAssetFactory, Warning, TEXT("Unsupported property type for '%s': %s"), *Property->GetName(), *Property->GetClass()->GetName());
-	return false;
-}
-
-bool FWidgetBlueprintGenerator::SetSoftObjectProperty(UObject* CDO, FSoftObjectProperty* Property, const FString& AssetPath)
-{
-	// Delegate to the shared utility class
-	return FPropertySetterUtils::SetSoftObjectProperty(CDO, Property, AssetPath);
-}
-
-bool FWidgetBlueprintGenerator::SetClassProperty(UObject* CDO, FClassProperty* Property, const FString& ClassPath)
-{
-	// Delegate to the shared utility class
-	return FPropertySetterUtils::SetClassProperty(CDO, Property, ClassPath);
-}
-
-bool FWidgetBlueprintGenerator::SetMapProperty(UObject* CDO, FMapProperty* Property, TSharedPtr<FJsonObject> MapConfig)
-{
-	// Delegate to the shared utility class
-	return FPropertySetterUtils::SetMapProperty(CDO, Property, MapConfig);
-}
-
-bool FWidgetBlueprintGenerator::SetArrayProperty(UObject* CDO, FArrayProperty* Property, const TArray<TSharedPtr<FJsonValue>>& ArrayValues)
-{
-	// Delegate to the shared utility class
-	return FPropertySetterUtils::SetArrayProperty(CDO, Property, ArrayValues);
 }
 
 TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
