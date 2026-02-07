@@ -1,0 +1,126 @@
+# UE Copilot MCP Server
+
+MCP (Model Context Protocol) Server for Unreal Engine Copilot - enables AI-assisted asset generation in Unreal Engine.
+
+## Prerequisites
+
+- Node.js 18+
+- Unreal Engine Editor running with UECopilot plugin loaded
+- UECopilot HTTP Server running (default port: 8559)
+
+## Installation
+
+```bash
+cd MCP
+npm install
+npm run build
+```
+
+## Configuration
+
+### Claude Code
+
+Add to your Claude Code MCP settings (`~/.claude/claude_desktop_config.json` or via `/mcp` command):
+
+```json
+{
+  "mcpServers": {
+    "ue-copilot": {
+      "command": "node",
+      "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
+      "env": {
+        "UE_API_BASE": "http://localhost:8559"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ue-copilot": {
+      "command": "node",
+      "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"]
+    }
+  }
+}
+```
+
+## Available Tools
+
+### generate_assets
+Generate Unreal Engine assets from JSON configuration.
+
+```json
+{
+  "assets": [
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_Player",
+      "Path": "/Game/Blueprints",
+      "ParentClass": "Character",
+      "Components": [...]
+    }
+  ]
+}
+```
+
+Supported asset types:
+- Blueprint
+- WidgetBlueprint
+- DataAsset
+- Material
+- CurveFloat
+- CurveVector
+- InputAction
+- InputMappingContext
+
+### extract_assets
+Extract existing asset configurations as JSON.
+
+```json
+{
+  "assets": ["/Game/Blueprints/BP_Player"],
+  "diffOnly": true
+}
+```
+
+### delete_assets
+Delete assets from the project.
+
+```json
+{
+  "assets": ["/Game/Blueprints/BP_Old"]
+}
+```
+
+### query_asset
+Query specific properties from an asset using JSON path syntax.
+
+```json
+{
+  "asset": "/Game/Blueprints/BP_Player",
+  "path": "Components[0].Properties"
+}
+```
+
+### list_generators
+List all available asset generators.
+
+### health_check
+Check if the UE HTTP server is running.
+
+## Environment Variables
+
+- `UE_API_BASE`: Base URL for UE API (default: `http://localhost:8559`)
+
+## Development
+
+```bash
+npm run dev  # Build and run
+```
