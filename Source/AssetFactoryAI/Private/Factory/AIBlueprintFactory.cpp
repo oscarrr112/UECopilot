@@ -21,7 +21,19 @@
 #include "GameFramework/GameModeBase.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
+#include "Math/UnrealMathUtility.h"
+#include "Math/Vector2D.h"
+#include "K2Node_Event.h"
+#include "K2Node_ExecutionSequence.h"
 #include "EditorAssetLibrary.h"
+
+namespace
+{
+	TArray<FString> CollectEventTickConsumers(const FBlueprintGraphData& GraphData);
+	void EnsureTickNodesAppended(UBlueprint* Blueprint, const FBlueprintGraphData& GraphData, const TArray<FString>& TickConsumers, const TMap<FString, UK2Node*>& NodeMap);
+	UEdGraphPin* FindNodePin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
+	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
+}
 
 DEFINE_LOG_CATEGORY(LogBlueprintFactory);
 
@@ -361,6 +373,47 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 	ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 	Result.Warnings.Append(ConnErrors);
 
+	if (!GraphData.bIsFunction)
+	{
+		TArray<FString> TickConsumers = CollectEventTickConsumers(GraphData);
+		if (TickConsumers.Num() > 0)
+		{
+			EnsureTickNodesAppended(Blueprint, GraphData, TickConsumers, NodeMap);
+		}
+	}
+
+	constexpr float HorizontalSpacing = 280.0f;
+	constexpr float VerticalSpacing = 160.0f;
+	constexpr int32 NodesPerRow = 3;
+	int32 AutoIndex = 0;
+
+	for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+	{
+		if (UK2Node** NodePtr = NodeMap.Find(NodeData.NodeId))
+		{
+			if (UK2Node* Node = *NodePtr)
+			{
+				if (FMath::Abs(NodeData.Position.X) > KINDA_SMALL_NUMBER || FMath::Abs(NodeData.Position.Y) > KINDA_SMALL_NUMBER)
+				{
+					Node->NodePosX = static_cast<int32>(NodeData.Position.X);
+					Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
+					continue;
+				}
+
+				if (Node->NodePosX != 0 || Node->NodePosY != 0)
+				{
+					continue;
+				}
+
+				int32 Column = AutoIndex % NodesPerRow;
+				int32 Row = AutoIndex / NodesPerRow;
+				Node->NodePosX = Column * HorizontalSpacing;
+				Node->NodePosY = Row * VerticalSpacing;
+				AutoIndex++;
+			}
+		}
+	}
+
 	Result.CreatedNodes = NodeMap;
 	Result.bSuccess = true;
 	Result.Blueprint = Blueprint;
@@ -535,6 +588,299 @@ UClass* UAIBlueprintFactory::ResolveParentClass(const FString& ParentClassPath)
 
 	// Try to load by path
 	return UNodeSpawner::FindClassByPath(ParentClassPath);
+}
+
+namespace
+{
+	UEdGraph* FindEventGraph(UBlueprint* Blueprint, const FString& GraphName)
+	{
+		if (!Blueprint)
+		{
+			return nullptr;
+		}
+
+		if (GraphName.IsEmpty())
+		{
+			return Blueprint->UbergraphPages.Num() > 0 ? Blueprint->UbergraphPages[0] : nullptr;
+		}
+
+		for (UEdGraph* Graph : Blueprint->UbergraphPages)
+		{
+			if (Graph && Graph->GetName().Equals(GraphName, ESearchCase::IgnoreCase))
+			{
+				return Graph;
+			}
+		}
+
+		return Blueprint->UbergraphPages.Num() > 0 ? Blueprint->UbergraphPages[0] : nullptr;
+	}
+
+	UK2Node_Event* FindTickEventNode(UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+			{
+				if (EventNode->EventReference.GetMemberName() == FName(TEXT("ReceiveTick")))
+				{
+					return EventNode;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	TArray<FString> CollectEventTickConsumers(const FBlueprintGraphData& GraphData)
+	{
+		TArray<FString> Result;
+		for (const FBlueprintNodeData& Node : GraphData.Nodes)
+		{
+			for (const FBlueprintPinData& Pin : Node.Pins)
+			{
+				for (const FBlueprintPinConnection& Conn : Pin.Connections)
+				{
+					if (Conn.SourceNodeId.StartsWith(TEXT("event_tick"), ESearchCase::IgnoreCase))
+					{
+						if (!Result.Contains(Node.NodeId))
+						{
+							Result.Add(Node.NodeId);
+						}
+					}
+				}
+			}
+		}
+
+		return Result;
+	}
+
+	void EnsureTickNodesAppended(UBlueprint* Blueprint, const FBlueprintGraphData& GraphData, const TArray<FString>& TickConsumers, const TMap<FString, UK2Node*>& NodeMap)
+	{
+		if (!Blueprint || TickConsumers.Num() == 0)
+		{
+			return;
+		}
+
+		if (UEdGraph* EventGraph = FindEventGraph(Blueprint, GraphData.Name))
+		{
+			if (UK2Node_Event* TickNode = FindTickEventNode(EventGraph))
+			{
+				UEdGraphPin* TickExecPin = TickNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+				if (!TickExecPin)
+				{
+					TickExecPin = TickNode->FindPin(TEXT("then"), EGPD_Output);
+				}
+
+				if (!TickExecPin)
+				{
+					return;
+				}
+
+				TSet<UK2Node*> NewNodeSet;
+				for (const FString& NodeId : TickConsumers)
+				{
+					if (UK2Node* const* NodePtr = NodeMap.Find(NodeId))
+					{
+						NewNodeSet.Add(*NodePtr);
+					}
+				}
+
+				TArray<UEdGraphPin*> ConnectionsCopy = TickExecPin->LinkedTo;
+
+				TArray<UEdGraphPin*> ExistingConnections;
+				TMap<UK2Node*, UEdGraphPin*> EventNodeInputs;
+				for (UEdGraphPin* ConnectedPin : ConnectionsCopy)
+				{
+					UK2Node* ConnectedNode = Cast<UK2Node>(ConnectedPin->GetOwningNode());
+					TickExecPin->BreakLinkTo(ConnectedPin);
+
+					if (ConnectedNode && NewNodeSet.Contains(ConnectedNode))
+					{
+						EventNodeInputs.Add(ConnectedNode, ConnectedPin);
+					}
+					else
+					{
+						ExistingConnections.Add(ConnectedPin);
+					}
+				}
+
+				FGraphNodeCreator<UK2Node_ExecutionSequence> SequenceCreator(*EventGraph);
+				UK2Node_ExecutionSequence* SequenceNode = SequenceCreator.CreateNode();
+				SequenceNode->NodePosX = TickNode->NodePosX + 250;
+				SequenceNode->NodePosY = TickNode->NodePosY;
+				SequenceNode->AllocateDefaultPins();
+				SequenceCreator.Finalize();
+
+				UEdGraphPin* SequenceInput = SequenceNode->FindPin(TEXT("execute"), EGPD_Input);
+				if (SequenceInput && TickExecPin)
+				{
+					TickExecPin->MakeLinkTo(SequenceInput);
+				}
+
+				UEdGraphPin* SequenceThen0 = SequenceNode->FindPin(TEXT("then"), EGPD_Output);
+				UEdGraphPin* SequenceThen1 = SequenceNode->FindPin(TEXT("then 1"), EGPD_Output);
+				if (!SequenceThen0)
+				{
+					for (UEdGraphPin* Pin : SequenceNode->Pins)
+					{
+						if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+						{
+							SequenceThen0 = Pin;
+							break;
+						}
+					}
+				}
+
+				if (!SequenceThen1)
+				{
+					for (UEdGraphPin* Pin : SequenceNode->Pins)
+					{
+						if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec && Pin != SequenceThen0)
+						{
+							SequenceThen1 = Pin;
+							break;
+						}
+					}
+				}
+
+				if (!SequenceThen0 || !SequenceThen1)
+				{
+					return;
+				}
+
+				for (UEdGraphPin* ExistingPin : ExistingConnections)
+				{
+					SequenceThen0->MakeLinkTo(ExistingPin);
+				}
+
+				TMap<FString, const FBlueprintNodeData*> NodeDataLookup;
+				NodeDataLookup.Reserve(GraphData.Nodes.Num());
+				for (const FBlueprintNodeData& Node : GraphData.Nodes)
+				{
+					if (!Node.NodeId.IsEmpty())
+					{
+						NodeDataLookup.Add(Node.NodeId, &Node);
+					}
+				}
+
+				TSet<FString> PositionedDependencies;
+				auto PositionDependenciesFrom = [&](const FString& RootId, const FVector2D& RootPos)
+				{
+					TArray<TPair<FString, FVector2D>> WorkQueue;
+					WorkQueue.Emplace(RootId, RootPos);
+
+					while (WorkQueue.Num() > 0)
+					{
+						TPair<FString, FVector2D> Pair = WorkQueue[0];
+						WorkQueue.RemoveAt(0);
+
+						if (const FBlueprintNodeData* const* NodeDataPtr = NodeDataLookup.Find(Pair.Key))
+						{
+							const FBlueprintNodeData* NodeData = *NodeDataPtr;
+							int32 DependencyIndex = 0;
+
+							for (const FBlueprintPinData& Pin : NodeData->Pins)
+							{
+								for (const FBlueprintPinConnection& Conn : Pin.Connections)
+								{
+									if (Conn.SourceNodeId.IsEmpty() || PositionedDependencies.Contains(Conn.SourceNodeId))
+									{
+										continue;
+									}
+
+									UK2Node* const* SourceNodePtr = NodeMap.Find(Conn.SourceNodeId);
+									if (!SourceNodePtr || !*SourceNodePtr)
+									{
+										continue;
+									}
+
+									UK2Node* SourceNode = *SourceNodePtr;
+									if (FindExecPin(SourceNode, TEXT(""), EGPD_MAX))
+									{
+										continue;
+									}
+
+									if (SourceNode->NodePosX == 0 && SourceNode->NodePosY == 0)
+									{
+										constexpr float DependencyOffsetX = -220.0f;
+										constexpr float DependencyStepY = 80.0f;
+										float PositionX = Pair.Value.X + DependencyOffsetX - DependencyIndex * 40.0f;
+										float PositionY = Pair.Value.Y + ((DependencyIndex % 2 == 0) ? -DependencyStepY : DependencyStepY);
+										SourceNode->NodePosX = static_cast<int32>(PositionX);
+										SourceNode->NodePosY = static_cast<int32>(PositionY);
+									}
+
+									PositionedDependencies.Add(Conn.SourceNodeId);
+									WorkQueue.Emplace(Conn.SourceNodeId, FVector2D(SourceNode->NodePosX, SourceNode->NodePosY));
+									DependencyIndex++;
+								}
+							}
+						}
+					}
+				};
+
+				UEdGraphPin* PrevPin = SequenceThen1;
+				int32 ConsumerIndex = 0;
+				constexpr float ConsumerOffsetX = 240.0f;
+				constexpr float ConsumerOffsetY = 120.0f;
+				const float BaseX = SequenceNode->NodePosX + 200.0f;
+				const float BaseY = SequenceNode->NodePosY;
+
+				for (const FString& NodeId : TickConsumers)
+				{
+					if (UK2Node* const* NodePtr = NodeMap.Find(NodeId))
+					{
+						UK2Node* Node = *NodePtr;
+						UEdGraphPin* ExecInput = nullptr;
+
+						if (UEdGraphPin** ExecPinPtr = EventNodeInputs.Find(Node))
+						{
+							ExecInput = *ExecPinPtr;
+						}
+
+						if (!ExecInput)
+						{
+							ExecInput = FindExecPin(Node, TEXT(""), EGPD_Input);
+						}
+
+						if (PrevPin && ExecInput)
+						{
+							PrevPin->MakeLinkTo(ExecInput);
+						}
+
+						UEdGraphPin* ExecOutput = FindExecPin(Node, TEXT(""), EGPD_Output);
+						if (!ExecOutput)
+						{
+							ExecOutput = FindNodePin(Node, UEdGraphSchema_K2::PN_Then.ToString(), EGPD_Output);
+							if (!ExecOutput)
+							{
+								ExecOutput = FindNodePin(Node, TEXT("then"), EGPD_Output);
+							}
+						}
+
+						if (ExecOutput)
+						{
+							PrevPin = ExecOutput;
+
+							if (Node->NodePosX == 0 && Node->NodePosY == 0)
+							{
+								Node->NodePosX = static_cast<int32>(BaseX + ConsumerIndex * ConsumerOffsetX);
+								Node->NodePosY = static_cast<int32>(BaseY + ConsumerIndex * ConsumerOffsetY);
+							}
+
+							PositionDependenciesFrom(NodeId, FVector2D(Node->NodePosX, Node->NodePosY));
+							ConsumerIndex++;
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 void UAIBlueprintFactory::CreateVariables(UBlueprint* Blueprint, const TArray<FBlueprintVariableData>& Variables, TArray<FString>& OutWarnings)
@@ -878,64 +1224,22 @@ FEdGraphPinType UAIBlueprintFactory::VarTypeToPinType(const FBlueprintVariableDa
 
 UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction)
 {
-	if (!Node)
-	{
-		return nullptr;
-	}
+	return FindNodePin(Node, PinName, Direction);
+}
 
-	// Exact match first
-	for (UEdGraphPin* Pin : Node->Pins)
+namespace
+{
+	UEdGraphPin* FindNodePin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction)
 	{
-		if (Pin && Pin->PinName.ToString() == PinName)
+		if (!Node)
 		{
-			if (Direction == EGPD_MAX || Pin->Direction == Direction)
-			{
-				return Pin;
-			}
+			return nullptr;
 		}
-	}
 
-	// Handle positional argument names like "Arg0", "Arg1", etc.
-	if (PinName.StartsWith(TEXT("Arg")))
-	{
-		FString IndexStr = PinName.Mid(3);
-		if (IndexStr.IsNumeric())
+		// Exact match first
+		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			int32 ArgIndex = FCString::Atoi(*IndexStr);
-			int32 CurrentIndex = 0;
-
-			for (UEdGraphPin* Pin : Node->Pins)
-			{
-				if (Pin && Pin->Direction == EGPD_Input)
-				{
-					// Skip exec pins
-					if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-					{
-						continue;
-					}
-					// Skip self/world context pins
-					if (Pin->PinName == TEXT("self") || Pin->PinName == TEXT("WorldContextObject"))
-					{
-						continue;
-					}
-
-					if (CurrentIndex == ArgIndex)
-					{
-						return Pin;
-					}
-					CurrentIndex++;
-				}
-			}
-		}
-	}
-
-	// Try partial match (sometimes pins have prefixes/suffixes)
-	for (UEdGraphPin* Pin : Node->Pins)
-	{
-		if (Pin)
-		{
-			FString CurrentPinName = Pin->PinName.ToString();
-			if (CurrentPinName.Contains(PinName) || PinName.Contains(CurrentPinName))
+			if (Pin && Pin->PinName.ToString() == PinName)
 			{
 				if (Direction == EGPD_MAX || Pin->Direction == Direction)
 				{
@@ -943,7 +1247,90 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 				}
 			}
 		}
+
+		// Handle positional argument names like "Arg0", "Arg1", etc.
+		if (PinName.StartsWith(TEXT("Arg")))
+		{
+			FString IndexStr = PinName.Mid(3);
+			if (IndexStr.IsNumeric())
+			{
+				int32 ArgIndex = FCString::Atoi(*IndexStr);
+				int32 CurrentIndex = 0;
+
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Input)
+					{
+						// Skip exec pins
+						if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+						{
+							continue;
+						}
+						// Skip self/world context pins
+						if (Pin->PinName == TEXT("self") || Pin->PinName == TEXT("WorldContextObject"))
+						{
+							continue;
+						}
+
+						if (CurrentIndex == ArgIndex)
+						{
+							return Pin;
+						}
+						CurrentIndex++;
+					}
+				}
+			}
+		}
+
+		// Try partial match (sometimes pins have prefixes/suffixes)
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin)
+			{
+				FString CurrentPinName = Pin->PinName.ToString();
+				if (CurrentPinName.Contains(PinName) || PinName.Contains(CurrentPinName))
+				{
+					if (Direction == EGPD_MAX || Pin->Direction == Direction)
+					{
+						return Pin;
+					}
+				}
+			}
+		}
+
+		return nullptr;
 	}
 
-	return nullptr;
+	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction)
+	{
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			if (Direction != EGPD_MAX && Pin->Direction != Direction)
+			{
+				continue;
+			}
+
+			if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+			{
+				continue;
+			}
+
+			if (PinName.IsEmpty() || Pin->PinName.ToString().Equals(PinName, ESearchCase::IgnoreCase))
+			{
+				return Pin;
+			}
+		}
+
+		return nullptr;
+	}
 }
