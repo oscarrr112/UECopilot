@@ -197,7 +197,27 @@ bool FAssetFactoryHttpServer::HandleGenerate(const FHttpServerRequest& Request, 
 
 	// Convert report to JSON and send response
 	TSharedPtr<FJsonObject> ResponseJson = ReportToJson(Report);
-	SendJsonResponse(OnComplete, Report.HasFailures() ? 207 : 200, ResponseJson);
+
+	// Determine HTTP status code:
+	// - 200: all succeeded
+	// - 400: validation failed (has failures but no successes — nothing was generated)
+	// - 207: partial success (some generated, some failed)
+	int32 StatusCode = 200;
+	if (Report.HasFailures())
+	{
+		bool bHasSuccesses = (Report.SuccessCount + Report.UpdatedCount) > 0;
+		StatusCode = bHasSuccesses ? 207 : 400;
+
+		// Add error summary for validation failures
+		if (!bHasSuccesses)
+		{
+			ResponseJson->SetStringField(TEXT("error"),
+				FString::Printf(TEXT("Validation failed for %d of %d assets. No assets were generated."),
+					Report.FailedCount, Report.TotalCount));
+		}
+	}
+
+	SendJsonResponse(OnComplete, StatusCode, ResponseJson);
 
 	return true;
 }

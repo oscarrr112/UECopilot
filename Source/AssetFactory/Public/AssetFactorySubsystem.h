@@ -59,6 +59,13 @@ public:
 	 */
 	TSharedPtr<FJsonObject> ExtractAsset(const FString& AssetPath, bool bDiffOnly = false);
 
+	/**
+	 * Validate all asset configs upfront before any generation.
+	 * Returns a report where Failed entries have error messages and
+	 * Skipped entries passed validation. If HasFailures(), no generation should proceed.
+	 */
+	FGenerationReport ValidateAllConfigs(TSharedPtr<FJsonObject> RootObject) const;
+
 private:
 	/**
 	 * Process a single asset configuration

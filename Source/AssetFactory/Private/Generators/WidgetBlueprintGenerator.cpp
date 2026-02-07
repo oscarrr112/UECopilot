@@ -1084,8 +1084,15 @@ FAnchors FWidgetBlueprintGenerator::ParseAnchors(TSharedPtr<FJsonObject> Anchors
 	}
 
 	// Support object format: {"Minimum": {"X": 0.5, "Y": 0.5}, "Maximum": {"X": 0.5, "Y": 0.5}}
-	TSharedPtr<FJsonObject> MinObj = AnchorsConfig->GetObjectField(TEXT("Minimum"));
-	if (!MinObj.IsValid()) MinObj = AnchorsConfig->GetObjectField(TEXT("Min"));
+	TSharedPtr<FJsonObject> MinObj;
+	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Minimum")))
+	{
+		MinObj = AnchorsConfig->GetObjectField(TEXT("Minimum"));
+	}
+	if (!MinObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Min")))
+	{
+		MinObj = AnchorsConfig->GetObjectField(TEXT("Min"));
+	}
 	if (MinObj.IsValid())
 	{
 		double X = 0, Y = 0;
@@ -1094,8 +1101,15 @@ FAnchors FWidgetBlueprintGenerator::ParseAnchors(TSharedPtr<FJsonObject> Anchors
 		Result.Minimum = FVector2D(X, Y);
 	}
 
-	TSharedPtr<FJsonObject> MaxObj = AnchorsConfig->GetObjectField(TEXT("Maximum"));
-	if (!MaxObj.IsValid()) MaxObj = AnchorsConfig->GetObjectField(TEXT("Max"));
+	TSharedPtr<FJsonObject> MaxObj;
+	if (AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Maximum")))
+	{
+		MaxObj = AnchorsConfig->GetObjectField(TEXT("Maximum"));
+	}
+	if (!MaxObj.IsValid() && AnchorsConfig->HasTypedField<EJson::Object>(TEXT("Max")))
+	{
+		MaxObj = AnchorsConfig->GetObjectField(TEXT("Max"));
+	}
 	if (MaxObj.IsValid())
 	{
 		double X = 0, Y = 0;
@@ -1745,16 +1759,12 @@ TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObj
 		return FString(TEXT("Invalid configuration object"));
 	}
 
-	if (!Config->HasField(TEXT("RootWidget")))
+	if (!Config->HasTypedField<EJson::Object>(TEXT("RootWidget")))
 	{
-		return FString(TEXT("Missing required field 'RootWidget'"));
+		return FString(TEXT("'RootWidget' must be a JSON object"));
 	}
 
 	TSharedPtr<FJsonObject> RootWidget = Config->GetObjectField(TEXT("RootWidget"));
-	if (!RootWidget.IsValid())
-	{
-		return FString(TEXT("'RootWidget' must be a valid object"));
-	}
 
 	if (!RootWidget->HasField(TEXT("Type")))
 	{

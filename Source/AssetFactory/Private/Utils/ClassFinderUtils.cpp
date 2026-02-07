@@ -82,10 +82,20 @@ UClass* FClassFinderUtils::FindWidgetClass(const FString& WidgetTypeName)
 	// Try to load as full class path first
 	if (WidgetTypeName.StartsWith(TEXT("/Script/")))
 	{
-		UClass* LoadedClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *WidgetTypeName);
-		if (LoadedClass)
+		// Silent probe first
+		UClass* LoadedClass = FindObject<UClass>(nullptr, *WidgetTypeName);
+		if (LoadedClass && LoadedClass->IsChildOf(UWidget::StaticClass()))
 		{
 			return LoadedClass;
+		}
+		// Fallback to StaticLoadClass for lazy loading
+		if (!LoadedClass)
+		{
+			LoadedClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *WidgetTypeName);
+			if (LoadedClass)
+			{
+				return LoadedClass;
+			}
 		}
 	}
 
@@ -97,20 +107,27 @@ UClass* FClassFinderUtils::FindWidgetClass(const FString& WidgetTypeName)
 
 	for (const FString& ModulePath : ModulePaths)
 	{
-		// Try without U prefix first (StaticLoadClass uses class name without U/A prefix)
-		FString FullPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *SearchName);
-		UClass* FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
-		if (FoundClass)
+		const TCHAR* Prefixes[] = { TEXT(""), TEXT("U") };
+		for (const TCHAR* Prefix : Prefixes)
 		{
-			return FoundClass;
-		}
+			FString FullPath = FString::Printf(TEXT("%s.%s%s"), *ModulePath, Prefix, *SearchName);
 
-		// Try with U prefix as fallback
-		FullPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *SearchName);
-		FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
-		if (FoundClass)
-		{
-			return FoundClass;
+			// Silent probe first
+			UClass* FoundClass = FindObject<UClass>(nullptr, *FullPath);
+			if (FoundClass && FoundClass->IsChildOf(UWidget::StaticClass()))
+			{
+				return FoundClass;
+			}
+
+			// StaticLoadClass fallback for lazy loading
+			if (!FoundClass)
+			{
+				FoundClass = StaticLoadClass(UWidget::StaticClass(), nullptr, *FullPath);
+				if (FoundClass)
+				{
+					return FoundClass;
+				}
+			}
 		}
 	}
 
@@ -208,26 +225,32 @@ UClass* FClassFinderUtils::TryLoadClassFromModule(
 	const FString& ClassName,
 	UClass* BaseClass)
 {
-	// Try without prefix first (StaticLoadClass uses class name without U/A prefix)
-	FString ClassPath = FString::Printf(TEXT("%s.%s"), *ModulePath, *ClassName);
-	UClass* FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
-	if (FoundClass)
+	// For each prefix variant, try silent FindObject first, then StaticLoadClass as fallback
+	const TCHAR* Prefixes[] = { TEXT(""), TEXT("U"), TEXT("A") };
+
+	for (const TCHAR* Prefix : Prefixes)
 	{
-		return FoundClass;
+		FString ClassPath = FString::Printf(TEXT("%s.%s%s"), *ModulePath, Prefix, *ClassName);
+
+		// 1. Silent probe - FindObject doesn't log warnings for missing classes
+		UClass* FoundClass = FindObject<UClass>(nullptr, *ClassPath);
+		if (FoundClass && FoundClass->IsChildOf(BaseClass))
+		{
+			return FoundClass;
+		}
+
+		// 2. StaticLoadClass fallback - needed to trigger lazy loading for classes not yet in memory
+		if (!FoundClass)
+		{
+			FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
+			if (FoundClass)
+			{
+				return FoundClass;
+			}
+		}
 	}
 
-	// Try with U prefix (in case the name was stripped incorrectly)
-	ClassPath = FString::Printf(TEXT("%s.U%s"), *ModulePath, *ClassName);
-	FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
-	if (FoundClass)
-	{
-		return FoundClass;
-	}
-
-	// Try with A prefix (for AActor-derived classes)
-	ClassPath = FString::Printf(TEXT("%s.A%s"), *ModulePath, *ClassName);
-	FoundClass = StaticLoadClass(BaseClass, nullptr, *ClassPath, nullptr, LOAD_None, nullptr);
-	return FoundClass;
+	return nullptr;
 }
 
 UClass* FClassFinderUtils::TryLoadBlueprintClass(

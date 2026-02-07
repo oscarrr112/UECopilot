@@ -53,6 +53,78 @@ FGenerationReport UAssetFactorySubsystem::GenerateFromString(const FString& Json
 	return GenerateFromJson(RootObject);
 }
 
+FGenerationReport UAssetFactorySubsystem::ValidateAllConfigs(TSharedPtr<FJsonObject> RootObject) const
+{
+	FGenerationReport Report;
+
+	// Validate root structure
+	const TArray<TSharedPtr<FJsonValue>>* AssetsArray;
+	if (!RootObject.IsValid() || !RootObject->TryGetArrayField(TEXT("Assets"), AssetsArray))
+	{
+		Report.AddResult(FGenerationResult::MakeFailed(TEXT(""), TEXT(""), TEXT(""), TEXT("JSON missing 'Assets' array")));
+		return Report;
+	}
+
+	for (int32 i = 0; i < AssetsArray->Num(); ++i)
+	{
+		TSharedPtr<FJsonObject> AssetObj = (*AssetsArray)[i]->AsObject();
+		if (!AssetObj.IsValid())
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(TEXT(""), TEXT(""), TEXT(""),
+				FString::Printf(TEXT("Assets[%d]: not a valid JSON object"), i)));
+			continue;
+		}
+
+		// Validate common fields
+		FString AssetType;
+		if (!AssetObj->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType.IsEmpty())
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(TEXT("Unknown"), TEXT(""), TEXT(""),
+				FString::Printf(TEXT("Assets[%d]: missing 'AssetType'"), i)));
+			continue;
+		}
+
+		FString Name;
+		if (!AssetObj->TryGetStringField(TEXT("Name"), Name) || Name.IsEmpty())
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(AssetType, TEXT(""), TEXT(""),
+				FString::Printf(TEXT("Assets[%d]: missing 'Name'"), i)));
+			continue;
+		}
+
+		FString Path;
+		if (!AssetObj->TryGetStringField(TEXT("Path"), Path) || Path.IsEmpty())
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(AssetType, Name, TEXT(""),
+				FString::Printf(TEXT("Assets[%d]: missing 'Path'"), i)));
+			continue;
+		}
+
+		// Find generator
+		IAssetGenerator* Generator = FAssetGeneratorRegistry::Get().FindGenerator(AssetType);
+		if (!Generator)
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(AssetType, Name, Path,
+				FString::Printf(TEXT("Assets[%d]: no generator for type '%s'"), i, *AssetType)));
+			continue;
+		}
+
+		// Per-generator validation
+		TOptional<FString> GenError = Generator->ValidateConfig(AssetObj);
+		if (GenError.IsSet())
+		{
+			Report.AddResult(FGenerationResult::MakeFailed(AssetType, Name, Path,
+				FString::Printf(TEXT("Assets[%d]: %s"), i, *GenError.GetValue())));
+			continue;
+		}
+
+		// Passed validation — add a Skipped placeholder
+		Report.AddResult(FGenerationResult::MakeSkipped(AssetType, Name, Path, TEXT("Validation passed")));
+	}
+
+	return Report;
+}
+
 FGenerationReport UAssetFactorySubsystem::GenerateFromJson(TSharedPtr<FJsonObject> RootObject)
 {
 	FGenerationReport Report;
@@ -63,13 +135,27 @@ FGenerationReport UAssetFactorySubsystem::GenerateFromJson(TSharedPtr<FJsonObjec
 		return Report;
 	}
 
-	// Get Assets array
-	const TArray<TSharedPtr<FJsonValue>>* AssetsArray;
-	if (!RootObject->TryGetArrayField(TEXT("Assets"), AssetsArray))
+	// Phase 1: Validate all configs upfront
+	FGenerationReport ValidationReport = ValidateAllConfigs(RootObject);
+	if (ValidationReport.HasFailures())
 	{
-		UE_LOG(LogAssetFactory, Error, TEXT("JSON missing 'Assets' array"));
-		return Report;
+		UE_LOG(LogAssetFactory, Warning, TEXT("Validation failed for %d of %d assets. No assets were generated."),
+			ValidationReport.FailedCount, ValidationReport.TotalCount);
+
+		for (const FGenerationResult& Result : ValidationReport.Results)
+		{
+			const TCHAR* StatusStr = (Result.Status == EGenerationStatus::Failed) ? TEXT("FAILED") : TEXT("SKIPPED");
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] %s: %s - %s"),
+				StatusStr, *Result.AssetType, *Result.GetFullPath(), *Result.Message);
+		}
+
+		return ValidationReport;
 	}
+
+	// Phase 2: Generate (only if all validation passed)
+	// Get Assets array (already validated in Phase 1)
+	const TArray<TSharedPtr<FJsonValue>>* AssetsArray;
+	RootObject->TryGetArrayField(TEXT("Assets"), AssetsArray);
 
 	// Convert to array of objects
 	TArray<TSharedPtr<FJsonObject>> AssetConfigs;
@@ -82,7 +168,7 @@ FGenerationReport UAssetFactorySubsystem::GenerateFromJson(TSharedPtr<FJsonObjec
 		}
 	}
 
-	UE_LOG(LogAssetFactory, Log, TEXT("Found %d asset configurations"), AssetConfigs.Num());
+	UE_LOG(LogAssetFactory, Log, TEXT("Validation passed for %d assets, proceeding with generation"), AssetConfigs.Num());
 
 	// Sort by priority
 	SortByPriority(AssetConfigs);

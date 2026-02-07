@@ -161,6 +161,41 @@ FGenerationResult FInputMappingContextGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, IMC);
 }
 
+TOptional<FString> FInputMappingContextGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+{
+	if (!Config.IsValid())
+	{
+		return FString(TEXT("Invalid configuration object"));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* MappingsArray = nullptr;
+	if (Config->TryGetArrayField(TEXT("Mappings"), MappingsArray))
+	{
+		for (int32 i = 0; i < MappingsArray->Num(); ++i)
+		{
+			const TSharedPtr<FJsonObject>* MappingObj;
+			if (!(*MappingsArray)[i]->TryGetObject(MappingObj))
+			{
+				return FString::Printf(TEXT("Mappings[%d]: not a valid JSON object"), i);
+			}
+
+			FString ActionPath;
+			if (!(*MappingObj)->TryGetStringField(TEXT("Action"), ActionPath) || ActionPath.IsEmpty())
+			{
+				return FString::Printf(TEXT("Mappings[%d]: missing 'Action' field"), i);
+			}
+
+			FString KeyName;
+			if (!(*MappingObj)->TryGetStringField(TEXT("Key"), KeyName) || KeyName.IsEmpty())
+			{
+				return FString::Printf(TEXT("Mappings[%d]: missing 'Key' field"), i);
+			}
+		}
+	}
+
+	return TOptional<FString>();
+}
+
 FKey FInputMappingContextGenerator::ParseKey(const FString& KeyName) const
 {
 	// Common key mappings

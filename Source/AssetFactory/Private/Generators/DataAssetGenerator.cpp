@@ -146,6 +146,18 @@ TOptional<FString> FDataAssetGenerator::ValidateConfig(TSharedPtr<FJsonObject> C
 		return FString(TEXT("'ClassName' field must be a non-empty string"));
 	}
 
+	// Validate that the class actually exists
+	UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
+	if (!DataAssetClass)
+	{
+		return FString::Printf(TEXT("DataAsset class '%s' not found"), *ClassName);
+	}
+
+	if (DataAssetClass == UDataAsset::StaticClass())
+	{
+		return FString(TEXT("Cannot create base UDataAsset. Please specify a UDataAsset subclass in 'ClassName'"));
+	}
+
 	return TOptional<FString>();
 }
 

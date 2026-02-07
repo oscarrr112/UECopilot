@@ -377,7 +377,11 @@ void FBlueprintGenerator::AddComponents(UBlueprint* Blueprint, const TArray<TSha
 		NodeMap.Add(CompName, TargetNode);
 
 		// Set component properties if provided
-		TSharedPtr<FJsonObject> PropertiesObject = (*CompObject)->GetObjectField(TEXT("Properties"));
+		TSharedPtr<FJsonObject> PropertiesObject;
+		if ((*CompObject)->HasTypedField<EJson::Object>(TEXT("Properties")))
+		{
+			PropertiesObject = (*CompObject)->GetObjectField(TEXT("Properties"));
+		}
 		if (PropertiesObject.IsValid() && TargetNode->ComponentTemplate)
 		{
 			// Detect format: check if first property has "type" field (new typed format)
