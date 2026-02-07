@@ -2,9 +2,15 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
+import { readFile } from "fs/promises";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 // Configuration
 const UE_API_BASE = process.env.UE_API_BASE || "http://localhost:8559";
 const API_PREFIX = "/assetfactory";
+// Resolve schemas directory (relative to dist/index.js -> ../schemas/)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCHEMAS_DIR = join(__dirname, "..", "schemas");
 // Helper to make HTTP requests to UE
 async function callUEApi(endpoint, method, body) {
     const url = `${UE_API_BASE}${API_PREFIX}${endpoint}`;
@@ -29,11 +35,21 @@ async function callUEApi(endpoint, method, body) {
         };
     }
 }
+// Helper to load schema file
+async function loadSchema(assetType) {
+    try {
+        const filePath = join(SCHEMAS_DIR, `${assetType}.md`);
+        return await readFile(filePath, "utf-8");
+    }
+    catch {
+        return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext`;
+    }
+}
 // Define available tools
 const tools = [
     {
         name: "generate_assets",
-        description: "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext.",
+        description: "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
         inputSchema: {
             type: "object",
             properties: {
@@ -66,6 +82,30 @@ const tools = [
                 },
             },
             required: ["assets"],
+        },
+    },
+    {
+        name: "get_generator_schema",
+        description: "Get the JSON schema documentation for a specific asset generator. Returns field names, types, formats, and examples. Always call this before generate_assets to ensure correct field usage.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset_type: {
+                    type: "string",
+                    description: "The asset type to get schema for: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext",
+                    enum: [
+                        "Blueprint",
+                        "WidgetBlueprint",
+                        "Material",
+                        "DataAsset",
+                        "CurveFloat",
+                        "CurveVector",
+                        "InputAction",
+                        "InputMappingContext",
+                    ],
+                },
+            },
+            required: ["asset_type"],
         },
     },
     {
@@ -144,7 +184,7 @@ const tools = [
 // Create MCP server
 const server = new Server({
     name: "ue-copilot",
-    version: "1.0.0",
+    version: "1.1.0",
 }, {
     capabilities: {
         tools: {},
@@ -165,6 +205,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     Assets: args.assets,
                 });
                 break;
+            case "get_generator_schema": {
+                const schema = await loadSchema(args.asset_type);
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: schema,
+                        },
+                    ],
+                };
+            }
             case "extract_assets":
                 result = await callUEApi("/extract", "POST", {
                     Assets: args.assets,

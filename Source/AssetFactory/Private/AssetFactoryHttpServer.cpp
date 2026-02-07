@@ -398,8 +398,13 @@ bool FAssetFactoryHttpServer::HandleExtract(const FHttpServerRequest& Request, c
 
 bool FAssetFactoryHttpServer::HandleDelete(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
-	// Parse JSON body
-	FString RequestBody = Request.Body.IsEmpty() ? TEXT("") : UTF8_TO_TCHAR(reinterpret_cast<const char*>(Request.Body.GetData()));
+	// Parse request body as JSON (properly handle length to avoid reading garbage)
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
 
 	TSharedPtr<FJsonObject> JsonRequest;
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
@@ -722,8 +727,17 @@ void FAssetFactoryHttpServer::DeleteServiceDiscoveryFile()
 
 bool FAssetFactoryHttpServer::HandleQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
 {
-	// Parse request body as JSON
-	FString RequestBody = Request.Body.IsEmpty() ? TEXT("{}") : UTF8_TO_TCHAR(Request.Body.GetData());
+	// Parse request body as JSON (properly handle length to avoid reading garbage)
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
+	else
+	{
+		RequestBody = TEXT("{}");
+	}
 
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
 	TSharedPtr<FJsonObject> JsonObject;

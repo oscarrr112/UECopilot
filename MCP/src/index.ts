@@ -7,10 +7,17 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import { readFile } from "fs/promises";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 // Configuration
 const UE_API_BASE = process.env.UE_API_BASE || "http://localhost:8559";
 const API_PREFIX = "/assetfactory";
+
+// Resolve schemas directory (relative to dist/index.js -> ../schemas/)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCHEMAS_DIR = join(__dirname, "..", "schemas");
 
 // Helper to make HTTP requests to UE
 async function callUEApi(endpoint: string, method: string, body?: unknown): Promise<unknown> {
@@ -39,11 +46,22 @@ async function callUEApi(endpoint: string, method: string, body?: unknown): Prom
   }
 }
 
+// Helper to load schema file
+async function loadSchema(assetType: string): Promise<string> {
+  try {
+    const filePath = join(SCHEMAS_DIR, `${assetType}.md`);
+    return await readFile(filePath, "utf-8");
+  } catch {
+    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext`;
+  }
+}
+
 // Define available tools
 const tools: Tool[] = [
   {
     name: "generate_assets",
-    description: "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext.",
+    description:
+      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -55,7 +73,8 @@ const tools: Tool[] = [
             properties: {
               AssetType: {
                 type: "string",
-                description: "Type of asset: Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext",
+                description:
+                  "Type of asset: Blueprint, WidgetBlueprint, DataAsset, Material, CurveFloat, CurveVector, InputAction, InputMappingContext",
               },
               Name: {
                 type: "string",
@@ -79,8 +98,35 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "get_generator_schema",
+    description:
+      "Get the JSON schema documentation for a specific asset generator. Returns field names, types, formats, and examples. Always call this before generate_assets to ensure correct field usage.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset_type: {
+          type: "string",
+          description:
+            "The asset type to get schema for: Blueprint, WidgetBlueprint, Material, DataAsset, CurveFloat, CurveVector, InputAction, InputMappingContext",
+          enum: [
+            "Blueprint",
+            "WidgetBlueprint",
+            "Material",
+            "DataAsset",
+            "CurveFloat",
+            "CurveVector",
+            "InputAction",
+            "InputMappingContext",
+          ],
+        },
+      },
+      required: ["asset_type"],
+    },
+  },
+  {
     name: "extract_assets",
-    description: "Extract Unreal Engine asset configurations as JSON. Use this to understand existing asset structure before modifying.",
+    description:
+      "Extract Unreal Engine asset configurations as JSON. Use this to understand existing asset structure before modifying.",
     inputSchema: {
       type: "object",
       properties: {
@@ -118,7 +164,8 @@ const tools: Tool[] = [
   },
   {
     name: "query_asset",
-    description: "Query specific properties from an extracted asset using JSON path syntax. Supports Array[0], Array[*], and Parent.Child notation.",
+    description:
+      "Query specific properties from an extracted asset using JSON path syntax. Supports Array[0], Array[*], and Parent.Child notation.",
     inputSchema: {
       type: "object",
       properties: {
@@ -128,7 +175,8 @@ const tools: Tool[] = [
         },
         path: {
           type: "string",
-          description: "JSON path to query (e.g., Components[0].Properties, RootWidget.Children[*].Type)",
+          description:
+            "JSON path to query (e.g., Components[0].Properties, RootWidget.Children[*].Type)",
         },
       },
       required: ["asset", "path"],
@@ -156,7 +204,7 @@ const tools: Tool[] = [
 const server = new Server(
   {
     name: "ue-copilot",
-    version: "1.0.0",
+    version: "1.1.0",
   },
   {
     capabilities: {
@@ -183,6 +231,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           Assets: (args as { assets: unknown[] }).assets,
         });
         break;
+
+      case "get_generator_schema": {
+        const schema = await loadSchema((args as { asset_type: string }).asset_type);
+        return {
+          content: [
+            {
+              type: "text",
+              text: schema,
+            },
+          ],
+        };
+      }
 
       case "extract_assets":
         result = await callUEApi("/extract", "POST", {

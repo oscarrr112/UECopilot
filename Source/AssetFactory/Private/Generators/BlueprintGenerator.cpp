@@ -291,13 +291,15 @@ void FBlueprintGenerator::AddComponents(UBlueprint* Blueprint, const TArray<TSha
 	USimpleConstructionScript* SCS = Blueprint->SimpleConstructionScript;
 	TMap<FString, USCS_Node*> NodeMap; // For AttachTo lookup
 
-	// Build map of existing nodes for update detection
+	// Build map of existing nodes for update detection and AttachTo lookup
 	TMap<FString, USCS_Node*> ExistingNodes;
 	for (USCS_Node* Node : SCS->GetAllNodes())
 	{
 		if (Node && Node->ComponentTemplate)
 		{
-			ExistingNodes.Add(Node->GetVariableName().ToString(), Node);
+			FString NodeName = Node->GetVariableName().ToString();
+			ExistingNodes.Add(NodeName, Node);
+			NodeMap.Add(NodeName, Node); // Also add to NodeMap so AttachTo can find existing nodes
 		}
 	}
 

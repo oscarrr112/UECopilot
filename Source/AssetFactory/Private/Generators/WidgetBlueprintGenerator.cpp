@@ -17,11 +17,13 @@
 #include "Components/Widget.h"
 #include "Components/PanelWidget.h"
 #include "Components/PanelSlot.h"
+#include "Components/CanvasPanelSlot.h"
 
 // Styling (needed for parse helpers)
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
 #include "Engine/Texture2D.h"
+#include "Materials/MaterialInterface.h"
 
 // Asset handling
 #include "AssetToolsModule.h"
@@ -602,173 +604,174 @@ void FWidgetBlueprintGenerator::ConfigureSlot(UWidget* Widget, UPanelWidget* Par
 	// Apply common slot properties first
 	ConfigureCommonSlotProperties(Slot, SlotConfig);
 
-	// Additional slot-specific properties via reflection
+	// Additional slot-specific properties
 	if (SlotConfig.IsValid())
 	{
-		// Handle Anchors (FAnchors struct) - common on canvas slots
-		if (SlotConfig->HasTypedField<EJson::Object>(TEXT("Anchors")))
+		// CanvasPanelSlot uses FAnchorData (LayoutData) which contains Anchors, Offsets, Alignment
+		if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Slot))
 		{
-			FProperty* AnchorsProp = SlotClass->FindPropertyByName(TEXT("Anchors"));
-			if (!AnchorsProp)
-			{
-				// Also try LayoutData.Anchors for some slot types
-				AnchorsProp = SlotClass->FindPropertyByName(TEXT("LayoutData"));
-			}
-
-			if (AnchorsProp)
+			// Handle Anchors
+			if (SlotConfig->HasTypedField<EJson::Object>(TEXT("Anchors")))
 			{
 				TSharedPtr<FJsonObject> AnchorsConfig = SlotConfig->GetObjectField(TEXT("Anchors"));
 				FAnchors Anchors = ParseAnchors(AnchorsConfig);
-
-				// Use reflection to set the anchors
-				if (FStructProperty* StructProp = CastField<FStructProperty>(AnchorsProp))
-				{
-					if (StructProp->Struct->GetFName() == TEXT("Anchors"))
-					{
-						void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
-						*static_cast<FAnchors*>(ValuePtr) = Anchors;
-					}
-				}
+				CanvasSlot->SetAnchors(Anchors);
 			}
-		}
 
-		// Handle Offsets (FMargin struct) - common on canvas slots
-		if (SlotConfig->HasField(TEXT("Offsets")))
-		{
-			FProperty* OffsetsProp = SlotClass->FindPropertyByName(TEXT("Offsets"));
-			if (OffsetsProp)
+			// Handle Offsets
+			if (SlotConfig->HasField(TEXT("Offsets")))
 			{
 				FMargin Offsets = ParseMargins(SlotConfig->TryGetField(TEXT("Offsets")));
-				if (FStructProperty* StructProp = CastField<FStructProperty>(OffsetsProp))
-				{
-					void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
-					*static_cast<FMargin*>(ValuePtr) = Offsets;
-				}
+				CanvasSlot->SetOffsets(Offsets);
 			}
-		}
 
-		// Handle Alignment (FVector2D) - common on canvas slots
-		const TArray<TSharedPtr<FJsonValue>>* AlignmentArray = nullptr;
-		if (SlotConfig->TryGetArrayField(TEXT("Alignment"), AlignmentArray) && AlignmentArray->Num() >= 2)
-		{
-			FProperty* AlignmentProp = SlotClass->FindPropertyByName(TEXT("Alignment"));
-			if (AlignmentProp)
+			// Handle Alignment
+			const TArray<TSharedPtr<FJsonValue>>* AlignmentArray = nullptr;
+			if (SlotConfig->TryGetArrayField(TEXT("Alignment"), AlignmentArray) && AlignmentArray->Num() >= 2)
 			{
 				FVector2D Alignment = ParseVector2D(*AlignmentArray);
-				if (FStructProperty* StructProp = CastField<FStructProperty>(AlignmentProp))
-				{
-					void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
-					*static_cast<FVector2D*>(ValuePtr) = Alignment;
-				}
+				CanvasSlot->SetAlignment(Alignment);
+			}
+
+			// Handle Position (convenience: sets Offsets.Left and Offsets.Top)
+			const TArray<TSharedPtr<FJsonValue>>* PositionArray = nullptr;
+			if (SlotConfig->TryGetArrayField(TEXT("Position"), PositionArray) && PositionArray->Num() >= 2)
+			{
+				FVector2D Position = ParseVector2D(*PositionArray);
+				CanvasSlot->SetPosition(Position);
+			}
+
+			// Handle Size (convenience: sets Offsets.Right and Offsets.Bottom)
+			const TArray<TSharedPtr<FJsonValue>>* SizeArray = nullptr;
+			if (SlotConfig->TryGetArrayField(TEXT("Size"), SizeArray) && SizeArray->Num() >= 2)
+			{
+				FVector2D Size = ParseVector2D(*SizeArray);
+				CanvasSlot->SetSize(Size);
+			}
+
+			// Handle SizeToContent/AutoSize
+			bool bAutoSize = false;
+			if (SlotConfig->TryGetBoolField(TEXT("SizeToContent"), bAutoSize) ||
+				SlotConfig->TryGetBoolField(TEXT("AutoSize"), bAutoSize))
+			{
+				CanvasSlot->SetAutoSize(bAutoSize);
+			}
+
+			// Handle ZOrder
+			double ZOrder = 0;
+			if (SlotConfig->TryGetNumberField(TEXT("ZOrder"), ZOrder))
+			{
+				CanvasSlot->SetZOrder(static_cast<int32>(ZOrder));
 			}
 		}
-
-		// Handle SizeToContent/AutoSize (bool) - common on canvas slots
-		bool bAutoSize = false;
-		if (SlotConfig->TryGetBoolField(TEXT("SizeToContent"), bAutoSize) ||
-			SlotConfig->TryGetBoolField(TEXT("AutoSize"), bAutoSize))
+		else
 		{
-			FProperty* AutoSizeProp = SlotClass->FindPropertyByName(TEXT("bAutoSize"));
-			if (FBoolProperty* BoolProp = CastField<FBoolProperty>(AutoSizeProp))
+			// Non-canvas slots: use reflection for slot-specific properties
+			// Handle SizeToContent/AutoSize (bool)
+			bool bAutoSize = false;
+			if (SlotConfig->TryGetBoolField(TEXT("SizeToContent"), bAutoSize) ||
+				SlotConfig->TryGetBoolField(TEXT("AutoSize"), bAutoSize))
 			{
-				void* ValuePtr = BoolProp->ContainerPtrToValuePtr<void>(Slot);
-				BoolProp->SetPropertyValue(ValuePtr, bAutoSize);
-			}
-		}
-
-		// Handle Size/SlotSize (FSlateChildSize) - for box slots
-		if (SlotConfig->HasField(TEXT("Size")))
-		{
-			TSharedPtr<FJsonValue> SizeValue = SlotConfig->TryGetField(TEXT("Size"));
-			FString SizeStr;
-
-			// Parse size rule
-			if (SizeValue->TryGetString(SizeStr))
-			{
-				// String format: "Fill" or "Auto"
-			}
-			else if (SizeValue->Type == EJson::Object)
-			{
-				TSharedPtr<FJsonObject> SizeObj = SizeValue->AsObject();
-				SizeObj->TryGetStringField(TEXT("SizeRule"), SizeStr);
-			}
-
-			if (!SizeStr.IsEmpty())
-			{
-				// Find Size or SlotSize property
-				FProperty* SizeProp = SlotClass->FindPropertyByName(TEXT("Size"));
-				if (!SizeProp)
+				FProperty* AutoSizeProp = SlotClass->FindPropertyByName(TEXT("bAutoSize"));
+				if (FBoolProperty* BoolProp = CastField<FBoolProperty>(AutoSizeProp))
 				{
-					SizeProp = SlotClass->FindPropertyByName(TEXT("SlotSize"));
+					void* ValuePtr = BoolProp->ContainerPtrToValuePtr<void>(Slot);
+					BoolProp->SetPropertyValue(ValuePtr, bAutoSize);
+				}
+			}
+
+			// Handle Size/SlotSize (FSlateChildSize) - for box slots
+			if (SlotConfig->HasField(TEXT("Size")))
+			{
+				TSharedPtr<FJsonValue> SizeValue = SlotConfig->TryGetField(TEXT("Size"));
+				FString SizeStr;
+
+				// Parse size rule
+				if (SizeValue->TryGetString(SizeStr))
+				{
+					// String format: "Fill" or "Auto"
+				}
+				else if (SizeValue->Type == EJson::Object)
+				{
+					TSharedPtr<FJsonObject> SizeObj = SizeValue->AsObject();
+					SizeObj->TryGetStringField(TEXT("SizeRule"), SizeStr);
 				}
 
-				if (FStructProperty* StructProp = CastField<FStructProperty>(SizeProp))
+				if (!SizeStr.IsEmpty())
 				{
-					// FSlateChildSize has SizeRule (enum) and Value (float)
-					void* SizePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
-					UScriptStruct* SizeStruct = StructProp->Struct;
-
-					// Find SizeRule property within the struct
-					FProperty* SizeRuleProp = SizeStruct->FindPropertyByName(TEXT("SizeRule"));
-					if (FByteProperty* EnumProp = CastField<FByteProperty>(SizeRuleProp))
+					// Find Size or SlotSize property
+					FProperty* SizeProp = SlotClass->FindPropertyByName(TEXT("Size"));
+					if (!SizeProp)
 					{
-						void* RulePtr = EnumProp->ContainerPtrToValuePtr<void>(SizePtr);
-						ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
-						EnumProp->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+						SizeProp = SlotClass->FindPropertyByName(TEXT("SlotSize"));
 					}
-					else if (FEnumProperty* EnumProp2 = CastField<FEnumProperty>(SizeRuleProp))
+
+					if (FStructProperty* StructProp = CastField<FStructProperty>(SizeProp))
 					{
-						void* RulePtr = EnumProp2->ContainerPtrToValuePtr<void>(SizePtr);
-						ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
-						EnumProp2->GetUnderlyingProperty()->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+						void* SizePtr = StructProp->ContainerPtrToValuePtr<void>(Slot);
+						UScriptStruct* SizeStruct = StructProp->Struct;
+
+						FProperty* SizeRuleProp = SizeStruct->FindPropertyByName(TEXT("SizeRule"));
+						if (FByteProperty* EnumProp = CastField<FByteProperty>(SizeRuleProp))
+						{
+							void* RulePtr = EnumProp->ContainerPtrToValuePtr<void>(SizePtr);
+							ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
+							EnumProp->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+						}
+						else if (FEnumProperty* EnumProp2 = CastField<FEnumProperty>(SizeRuleProp))
+						{
+							void* RulePtr = EnumProp2->ContainerPtrToValuePtr<void>(SizePtr);
+							ESlateSizeRule::Type Rule = ParseSizeRule(SizeStr);
+							EnumProp2->GetUnderlyingProperty()->SetIntPropertyValue(RulePtr, static_cast<int64>(Rule));
+						}
 					}
 				}
 			}
-		}
 
-		// Handle Row/Column for grid slots (via reflection)
-		double Row = 0;
-		if (SlotConfig->TryGetNumberField(TEXT("Row"), Row))
-		{
-			FProperty* RowProp = SlotClass->FindPropertyByName(TEXT("Row"));
-			if (FIntProperty* IntProp = CastField<FIntProperty>(RowProp))
+			// Handle Row/Column for grid slots (via reflection)
+			double Row = 0;
+			if (SlotConfig->TryGetNumberField(TEXT("Row"), Row))
 			{
-				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
-				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Row));
+				FProperty* RowProp = SlotClass->FindPropertyByName(TEXT("Row"));
+				if (FIntProperty* IntProp = CastField<FIntProperty>(RowProp))
+				{
+					void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+					IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Row));
+				}
 			}
-		}
 
-		double Column = 0;
-		if (SlotConfig->TryGetNumberField(TEXT("Column"), Column))
-		{
-			FProperty* ColProp = SlotClass->FindPropertyByName(TEXT("Column"));
-			if (FIntProperty* IntProp = CastField<FIntProperty>(ColProp))
+			double Column = 0;
+			if (SlotConfig->TryGetNumberField(TEXT("Column"), Column))
 			{
-				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
-				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Column));
+				FProperty* ColProp = SlotClass->FindPropertyByName(TEXT("Column"));
+				if (FIntProperty* IntProp = CastField<FIntProperty>(ColProp))
+				{
+					void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+					IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(Column));
+				}
 			}
-		}
 
-		// Handle RowSpan/ColumnSpan for grid slots
-		double RowSpan = 0;
-		if (SlotConfig->TryGetNumberField(TEXT("RowSpan"), RowSpan))
-		{
-			FProperty* RowSpanProp = SlotClass->FindPropertyByName(TEXT("RowSpan"));
-			if (FIntProperty* IntProp = CastField<FIntProperty>(RowSpanProp))
+			// Handle RowSpan/ColumnSpan for grid slots
+			double RowSpan = 0;
+			if (SlotConfig->TryGetNumberField(TEXT("RowSpan"), RowSpan))
 			{
-				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
-				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(RowSpan));
+				FProperty* RowSpanProp = SlotClass->FindPropertyByName(TEXT("RowSpan"));
+				if (FIntProperty* IntProp = CastField<FIntProperty>(RowSpanProp))
+				{
+					void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+					IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(RowSpan));
+				}
 			}
-		}
 
-		double ColumnSpan = 0;
-		if (SlotConfig->TryGetNumberField(TEXT("ColumnSpan"), ColumnSpan))
-		{
-			FProperty* ColSpanProp = SlotClass->FindPropertyByName(TEXT("ColumnSpan"));
-			if (FIntProperty* IntProp = CastField<FIntProperty>(ColSpanProp))
+			double ColumnSpan = 0;
+			if (SlotConfig->TryGetNumberField(TEXT("ColumnSpan"), ColumnSpan))
 			{
-				void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
-				IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(ColumnSpan));
+				FProperty* ColSpanProp = SlotClass->FindPropertyByName(TEXT("ColumnSpan"));
+				if (FIntProperty* IntProp = CastField<FIntProperty>(ColSpanProp))
+				{
+					void* ValuePtr = IntProp->ContainerPtrToValuePtr<void>(Slot);
+					IntProp->SetPropertyValue(ValuePtr, static_cast<int32>(ColumnSpan));
+				}
 			}
 		}
 	}
@@ -1059,8 +1062,13 @@ FAnchors FWidgetBlueprintGenerator::ParseAnchors(TSharedPtr<FJsonObject> Anchors
 		return Result;
 	}
 
+	// Support array format: {"Min": [0.5, 0.5], "Max": [0.5, 0.5]}
 	const TArray<TSharedPtr<FJsonValue>>* MinArray = nullptr;
 	if (AnchorsConfig->TryGetArrayField(TEXT("Min"), MinArray) && MinArray->Num() >= 2)
+	{
+		Result.Minimum = ParseVector2D(*MinArray);
+	}
+	else if (AnchorsConfig->TryGetArrayField(TEXT("Minimum"), MinArray) && MinArray->Num() >= 2)
 	{
 		Result.Minimum = ParseVector2D(*MinArray);
 	}
@@ -1069,6 +1077,31 @@ FAnchors FWidgetBlueprintGenerator::ParseAnchors(TSharedPtr<FJsonObject> Anchors
 	if (AnchorsConfig->TryGetArrayField(TEXT("Max"), MaxArray) && MaxArray->Num() >= 2)
 	{
 		Result.Maximum = ParseVector2D(*MaxArray);
+	}
+	else if (AnchorsConfig->TryGetArrayField(TEXT("Maximum"), MaxArray) && MaxArray->Num() >= 2)
+	{
+		Result.Maximum = ParseVector2D(*MaxArray);
+	}
+
+	// Support object format: {"Minimum": {"X": 0.5, "Y": 0.5}, "Maximum": {"X": 0.5, "Y": 0.5}}
+	TSharedPtr<FJsonObject> MinObj = AnchorsConfig->GetObjectField(TEXT("Minimum"));
+	if (!MinObj.IsValid()) MinObj = AnchorsConfig->GetObjectField(TEXT("Min"));
+	if (MinObj.IsValid())
+	{
+		double X = 0, Y = 0;
+		MinObj->TryGetNumberField(TEXT("X"), X);
+		MinObj->TryGetNumberField(TEXT("Y"), Y);
+		Result.Minimum = FVector2D(X, Y);
+	}
+
+	TSharedPtr<FJsonObject> MaxObj = AnchorsConfig->GetObjectField(TEXT("Maximum"));
+	if (!MaxObj.IsValid()) MaxObj = AnchorsConfig->GetObjectField(TEXT("Max"));
+	if (MaxObj.IsValid())
+	{
+		double X = 0, Y = 0;
+		MaxObj->TryGetNumberField(TEXT("X"), X);
+		MaxObj->TryGetNumberField(TEXT("Y"), Y);
+		Result.Maximum = FVector2D(X, Y);
 	}
 
 	return Result;
@@ -1220,18 +1253,31 @@ FSlateBrush FWidgetBlueprintGenerator::ParseBrush(TSharedPtr<FJsonObject> BrushC
 		return Brush;
 	}
 
-	// Load image texture
+	// Load image resource (Texture2D, Material, or other UObject)
 	FString ImagePath;
-	if (BrushConfig->TryGetStringField(TEXT("Image"), ImagePath))
+	if (BrushConfig->TryGetStringField(TEXT("Image"), ImagePath) ||
+		BrushConfig->TryGetStringField(TEXT("ResourceObject"), ImagePath))
 	{
-		UTexture2D* Texture = LoadObject<UTexture2D>(nullptr, *ImagePath);
-		if (Texture)
+		// Try Texture2D first
+		UObject* Resource = LoadObject<UTexture2D>(nullptr, *ImagePath);
+		// Try MaterialInterface if not a texture
+		if (!Resource)
 		{
-			Brush.SetResourceObject(Texture);
+			Resource = LoadObject<UMaterialInterface>(nullptr, *ImagePath);
+		}
+		// Fallback: try as generic UObject
+		if (!Resource)
+		{
+			Resource = LoadObject<UObject>(nullptr, *ImagePath);
+		}
+
+		if (Resource)
+		{
+			Brush.SetResourceObject(Resource);
 		}
 		else
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load texture: %s"), *ImagePath);
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to load brush resource: %s"), *ImagePath);
 		}
 	}
 
@@ -1240,6 +1286,14 @@ FSlateBrush FWidgetBlueprintGenerator::ParseBrush(TSharedPtr<FJsonObject> BrushC
 	{
 		FLinearColor Tint = ParseColor(BrushConfig->TryGetField(TEXT("Tint")));
 		Brush.TintColor = FSlateColor(Tint);
+	}
+
+	// Image size
+	const TArray<TSharedPtr<FJsonValue>>* ImageSizeArray = nullptr;
+	if (BrushConfig->TryGetArrayField(TEXT("ImageSize"), ImageSizeArray) && ImageSizeArray->Num() >= 2)
+	{
+		FVector2D Size = ParseVector2D(*ImageSizeArray);
+		Brush.ImageSize = Size;
 	}
 
 	// Draw type
@@ -1858,117 +1912,126 @@ TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractSlotConfig(UPanelSlot*
 	TSharedPtr<FJsonObject> SlotJson = MakeShared<FJsonObject>();
 	UClass* SlotClass = Slot->GetClass();
 
-	// Anchors (for CanvasPanelSlot)
-	if (FStructProperty* AnchorsProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Anchors"))))
+	// CanvasPanelSlot: extract from LayoutData (FAnchorData)
+	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Slot))
 	{
-		void* ValuePtr = AnchorsProp->ContainerPtrToValuePtr<void>(Slot);
-		FAnchors* Anchors = static_cast<FAnchors*>(ValuePtr);
+		FAnchorData Layout = CanvasSlot->GetLayout();
 
+		// Anchors
 		TSharedPtr<FJsonObject> AnchorsJson = MakeShared<FJsonObject>();
 		AnchorsJson->SetArrayField(TEXT("Min"), {
-			MakeShared<FJsonValueNumber>(Anchors->Minimum.X),
-			MakeShared<FJsonValueNumber>(Anchors->Minimum.Y)
+			MakeShared<FJsonValueNumber>(Layout.Anchors.Minimum.X),
+			MakeShared<FJsonValueNumber>(Layout.Anchors.Minimum.Y)
 		});
 		AnchorsJson->SetArrayField(TEXT("Max"), {
-			MakeShared<FJsonValueNumber>(Anchors->Maximum.X),
-			MakeShared<FJsonValueNumber>(Anchors->Maximum.Y)
+			MakeShared<FJsonValueNumber>(Layout.Anchors.Maximum.X),
+			MakeShared<FJsonValueNumber>(Layout.Anchors.Maximum.Y)
 		});
 		SlotJson->SetObjectField(TEXT("Anchors"), AnchorsJson);
-	}
 
-	// Offsets (for CanvasPanelSlot)
-	if (FStructProperty* OffsetsProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Offsets"))))
-	{
-		void* ValuePtr = OffsetsProp->ContainerPtrToValuePtr<void>(Slot);
-		FMargin* Offsets = static_cast<FMargin*>(ValuePtr);
-		SlotJson->SetField(TEXT("Offsets"), MarginToJson(*Offsets));
-	}
+		// Offsets
+		SlotJson->SetField(TEXT("Offsets"), MarginToJson(Layout.Offsets));
 
-	// Alignment (for CanvasPanelSlot)
-	if (FStructProperty* AlignmentProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Alignment"))))
-	{
-		void* ValuePtr = AlignmentProp->ContainerPtrToValuePtr<void>(Slot);
-		FVector2D* Alignment = static_cast<FVector2D*>(ValuePtr);
-		SlotJson->SetField(TEXT("Alignment"), Vector2DToJson(*Alignment));
-	}
-
-	// Padding (for most slot types)
-	if (FStructProperty* PaddingProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Padding"))))
-	{
-		void* ValuePtr = PaddingProp->ContainerPtrToValuePtr<void>(Slot);
-		FMargin* Padding = static_cast<FMargin*>(ValuePtr);
-		// Only add if non-zero
-		if (Padding->Left != 0 || Padding->Top != 0 || Padding->Right != 0 || Padding->Bottom != 0)
+		// Alignment (only if non-zero)
+		if (!Layout.Alignment.IsZero())
 		{
-			SlotJson->SetField(TEXT("Padding"), MarginToJson(*Padding));
+			SlotJson->SetField(TEXT("Alignment"), Vector2DToJson(Layout.Alignment));
+		}
+
+		// AutoSize
+		if (CanvasSlot->GetAutoSize())
+		{
+			SlotJson->SetBoolField(TEXT("SizeToContent"), true);
+		}
+
+		// ZOrder
+		int32 ZOrder = CanvasSlot->GetZOrder();
+		if (ZOrder != 0)
+		{
+			SlotJson->SetNumberField(TEXT("ZOrder"), ZOrder);
 		}
 	}
-
-	// HorizontalAlignment
-	if (FProperty* HAlignProp = SlotClass->FindPropertyByName(TEXT("HorizontalAlignment")))
+	else
 	{
-		if (FByteProperty* ByteProp = CastField<FByteProperty>(HAlignProp))
+		// Non-canvas slots: use reflection
+
+		// Padding (for most slot types)
+		if (FStructProperty* PaddingProp = CastField<FStructProperty>(SlotClass->FindPropertyByName(TEXT("Padding"))))
 		{
-			void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
-			EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
-			if (HAlign != HAlign_Fill)
+			void* ValuePtr = PaddingProp->ContainerPtrToValuePtr<void>(Slot);
+			FMargin* Padding = static_cast<FMargin*>(ValuePtr);
+			if (Padding->Left != 0 || Padding->Top != 0 || Padding->Right != 0 || Padding->Bottom != 0)
 			{
-				SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
+				SlotJson->SetField(TEXT("Padding"), MarginToJson(*Padding));
 			}
 		}
-		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(HAlignProp))
-		{
-			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
-			int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
-			EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(EnumValue);
-			if (HAlign != HAlign_Fill)
-			{
-				SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
-			}
-		}
-	}
 
-	// VerticalAlignment
-	if (FProperty* VAlignProp = SlotClass->FindPropertyByName(TEXT("VerticalAlignment")))
-	{
-		if (FByteProperty* ByteProp = CastField<FByteProperty>(VAlignProp))
+		// HorizontalAlignment
+		if (FProperty* HAlignProp = SlotClass->FindPropertyByName(TEXT("HorizontalAlignment")))
 		{
-			void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
-			EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
-			if (VAlign != VAlign_Fill)
+			if (FByteProperty* ByteProp = CastField<FByteProperty>(HAlignProp))
 			{
-				SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
+				void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
+				EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
+				if (HAlign != HAlign_Fill)
+				{
+					SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
+				}
+			}
+			else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(HAlignProp))
+			{
+				void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+				int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+				EHorizontalAlignment HAlign = static_cast<EHorizontalAlignment>(EnumValue);
+				if (HAlign != HAlign_Fill)
+				{
+					SlotJson->SetStringField(TEXT("HorizontalAlignment"), HorizontalAlignmentToString(HAlign));
+				}
 			}
 		}
-		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(VAlignProp))
-		{
-			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
-			int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
-			EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(EnumValue);
-			if (VAlign != VAlign_Fill)
-			{
-				SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
-			}
-		}
-	}
 
-	// Row/Column (for GridSlot)
-	if (FIntProperty* RowProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Row"))))
-	{
-		void* ValuePtr = RowProp->ContainerPtrToValuePtr<void>(Slot);
-		int32 Row = RowProp->GetPropertyValue(ValuePtr);
-		if (Row != 0)
+		// VerticalAlignment
+		if (FProperty* VAlignProp = SlotClass->FindPropertyByName(TEXT("VerticalAlignment")))
 		{
-			SlotJson->SetNumberField(TEXT("Row"), Row);
+			if (FByteProperty* ByteProp = CastField<FByteProperty>(VAlignProp))
+			{
+				void* ValuePtr = ByteProp->ContainerPtrToValuePtr<void>(Slot);
+				EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(ByteProp->GetUnsignedIntPropertyValue(ValuePtr));
+				if (VAlign != VAlign_Fill)
+				{
+					SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
+				}
+			}
+			else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(VAlignProp))
+			{
+				void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Slot);
+				int64 EnumValue = EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr);
+				EVerticalAlignment VAlign = static_cast<EVerticalAlignment>(EnumValue);
+				if (VAlign != VAlign_Fill)
+				{
+					SlotJson->SetStringField(TEXT("VerticalAlignment"), VerticalAlignmentToString(VAlign));
+				}
+			}
 		}
-	}
-	if (FIntProperty* ColProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Column"))))
-	{
-		void* ValuePtr = ColProp->ContainerPtrToValuePtr<void>(Slot);
-		int32 Column = ColProp->GetPropertyValue(ValuePtr);
-		if (Column != 0)
+
+		// Row/Column (for GridSlot)
+		if (FIntProperty* RowProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Row"))))
 		{
-			SlotJson->SetNumberField(TEXT("Column"), Column);
+			void* ValuePtr = RowProp->ContainerPtrToValuePtr<void>(Slot);
+			int32 Row = RowProp->GetPropertyValue(ValuePtr);
+			if (Row != 0)
+			{
+				SlotJson->SetNumberField(TEXT("Row"), Row);
+			}
+		}
+		if (FIntProperty* ColProp = CastField<FIntProperty>(SlotClass->FindPropertyByName(TEXT("Column"))))
+		{
+			void* ValuePtr = ColProp->ContainerPtrToValuePtr<void>(Slot);
+			int32 Column = ColProp->GetPropertyValue(ValuePtr);
+			if (Column != 0)
+			{
+				SlotJson->SetNumberField(TEXT("Column"), Column);
+			}
 		}
 	}
 
