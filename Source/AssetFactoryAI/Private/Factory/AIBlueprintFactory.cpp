@@ -562,7 +562,14 @@ bool UAIBlueprintFactory::CreateEventGraph(
 	// Use existing event graph or create new one
 	UEdGraph* EventGraph = nullptr;
 
-	if (GraphData.Name.IsEmpty() || GraphData.Name == TEXT("EventGraph"))
+	const FString NormalizedGraphName = GraphData.Name.ToLower();
+	const bool bUseUbergraph =
+		GraphData.Name.IsEmpty() ||
+		GraphData.Name.Equals(TEXT("EventGraph"), ESearchCase::IgnoreCase) ||
+		GraphData.Name.Equals(TEXT("Ubergraph"), ESearchCase::IgnoreCase) ||
+		(!NormalizedGraphName.IsEmpty() && NormalizedGraphName.Contains(TEXT("tick")));
+
+	if (bUseUbergraph)
 	{
 		// Use default event graph
 		if (Blueprint->UbergraphPages.Num() > 0)

@@ -3,6 +3,7 @@
 #include "UI/SAIChatWindow.h"
 #include "AssetFactoryAISettings.h"
 #include "JSON/BlueprintJSONParser.h"
+#include "JSON/BlueprintJSONSchema.h"
 #include "BSL/BSLCompiler.h"
 #include "Factory/AIBlueprintFactory.h"
 #include "ContentBrowserModule.h"
@@ -21,10 +22,171 @@
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "Selection.h"
+#include "UObject/FieldIterator.h"
 #include "Editor.h"
+
+namespace
+{
+	FString NormalizeIdentifier(const FString& Input)
+	{
+		FString Result = Input.ToLower();
+		Result.ReplaceInline(TEXT("_"), TEXT(""));
+		Result.ReplaceInline(TEXT(" "), TEXT(""));
+		Result.ReplaceInline(TEXT("-"), TEXT(""));
+		Result.ReplaceInline(TEXT("."), TEXT(""));
+		return Result;
+	}
+
+	bool FindBlueprintVariableName(UBlueprint* Blueprint, const FBlueprintData& Data, const FString& Key, FString& OutVariableName)
+	{
+		if (Key.IsEmpty())
+		{
+			return false;
+		}
+
+		const FString NormalizedKey = NormalizeIdentifier(Key);
+		const auto Matches = [&NormalizedKey](const FString& Candidate)
+		{
+			return !Candidate.IsEmpty() && NormalizeIdentifier(Candidate) == NormalizedKey;
+		};
+
+		for (const FBlueprintVariableData& Var : Data.Variables)
+		{
+			if (Matches(Var.Name))
+			{
+				OutVariableName = Var.Name;
+				return true;
+			}
+		}
+
+		if (Blueprint)
+		{
+			for (const FBPVariableDescription& Desc : Blueprint->NewVariables)
+			{
+				FString Candidate = Desc.VarName.ToString();
+				if (Matches(Candidate))
+				{
+					OutVariableName = Candidate;
+					return true;
+				}
+			}
+
+			if (Blueprint->GeneratedClass)
+			{
+				for (TFieldIterator<FProperty> It(Blueprint->GeneratedClass); It; ++It)
+				{
+					FString Candidate = It->GetName();
+					if (Matches(Candidate))
+					{
+						OutVariableName = Candidate;
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	bool TryCreateSyntheticEventNode(const FString& NodeId, FBlueprintNodeData& OutNode)
+	{
+		if (!NodeId.StartsWith(TEXT("event_"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+
+		FString EventKey = NodeId.Mid(6);
+		FString NormalizedKey = NormalizeIdentifier(EventKey);
+
+		if (NormalizedKey == TEXT("tick"))
+		{
+			OutNode.NodeId = NodeId;
+			OutNode.NodeType = EBlueprintNodeType::Event_Tick;
+			OutNode.EventName = TEXT("Tick");
+			return true;
+		}
+
+		if (NormalizedKey == TEXT("beginplay"))
+		{
+			OutNode.NodeId = NodeId;
+			OutNode.NodeType = EBlueprintNodeType::Event_BeginPlay;
+			OutNode.EventName = TEXT("BeginPlay");
+			return true;
+		}
+
+		OutNode.NodeId = NodeId;
+		OutNode.NodeType = EBlueprintNodeType::Event_Custom;
+		OutNode.EventName = EventKey;
+		return true;
+	}
+
+	bool TryCreateSyntheticVariableNode(UBlueprint* Blueprint, const FBlueprintData& Data, const FString& NodeId, FBlueprintNodeData& OutNode)
+	{
+		bool bIsGetter = NodeId.StartsWith(TEXT("get_"), ESearchCase::IgnoreCase);
+		bool bIsSetter = NodeId.StartsWith(TEXT("set_"), ESearchCase::IgnoreCase);
+
+		if (!bIsGetter && !bIsSetter)
+		{
+			return false;
+		}
+
+		const int32 PrefixLen = bIsGetter ? 4 : 4;
+		FString Key = NodeId.Mid(PrefixLen);
+		if (Key.IsEmpty())
+		{
+			return false;
+		}
+
+		FString VariableName;
+		if (!FindBlueprintVariableName(Blueprint, Data, Key, VariableName))
+		{
+			return false;
+		}
+
+		OutNode.NodeId = NodeId;
+		OutNode.NodeType = bIsGetter ? EBlueprintNodeType::Variable_Get : EBlueprintNodeType::Variable_Set;
+		OutNode.VariableName = VariableName;
+		return true;
+	}
+
+	bool TryCreateSyntheticNode(UBlueprint* Blueprint, const FBlueprintData& Data, const FString& NodeId, FBlueprintNodeData& OutNode)
+	{
+		if (TryCreateSyntheticEventNode(NodeId, OutNode))
+		{
+			return true;
+		}
+
+		return TryCreateSyntheticVariableNode(Blueprint, Data, NodeId, OutNode);
+	}
+
+	bool IsTargetEventGraph(const FBlueprintGraphData& Graph)
+	{
+		if (Graph.Name.IsEmpty())
+		{
+			return true;
+		}
+
+		if (Graph.Name.Contains(TEXT("Tick"), ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+
+		static const TArray<FString> SpecialNames = { TEXT("EventGraph"), TEXT("Ubergraph") };
+		for (const FString& Candidate : SpecialNames)
+		{
+			if (Graph.Name.Equals(Candidate, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
 
 #define LOCTEXT_NAMESPACE "SAIChatWindow"
 
+DEFINE_LOG_CATEGORY_STATIC(LogSAIChatWindow, Log, All);
 const FString SAIChatWindow::QuickCommandPrefix = TEXT("/");
 
 void SAIChatWindow::Construct(const FArguments& InArgs)
@@ -282,6 +444,8 @@ void SAIChatWindow::SendMessage()
 		return;
 	}
 
+	UE_LOG(LogSAIChatWindow, Log, TEXT("User input: %s"), *InputText);
+
 	// Save to input history (avoid duplicates at top)
 	if (InputHistory.Num() == 0 || InputHistory[0] != InputText)
 	{
@@ -318,6 +482,9 @@ void SAIChatWindow::SendMessage()
 	// Send request to AI
 	bIsProcessing = true;
 
+	TArray<FChatMessage> OutgoingMessages = ConversationContext->GetMessages();
+	LogConversationMessages(OutgoingMessages);
+
 	UOpenAICompatibleService* Service = UOpenAICompatibleService::Get();
 	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
 
@@ -327,7 +494,7 @@ void SAIChatWindow::SendMessage()
 		AddMessage(EChatMessageRole::Assistant, TEXT(""), true);
 
 		Service->SendChatRequestStreaming(
-			ConversationContext->GetMessages(),
+			OutgoingMessages,
 			FOnAIStreamChunk::CreateSP(this, &SAIChatWindow::OnAIStreamChunk),
 			FOnAIStreamComplete::CreateSP(this, &SAIChatWindow::OnAIStreamComplete),
 			FOnAIError::CreateSP(this, &SAIChatWindow::OnAIError)
@@ -336,7 +503,7 @@ void SAIChatWindow::SendMessage()
 	else
 	{
 		Service->SendChatRequest(
-			ConversationContext->GetMessages(),
+			OutgoingMessages,
 			FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
 		);
 	}
@@ -478,6 +645,8 @@ void SAIChatWindow::OnAIResponseReceived(const FAIResponse& Response)
 {
 	bIsProcessing = false;
 
+	UE_LOG(LogSAIChatWindow, Log, TEXT("AI response raw: %s"), *Response.Content);
+
 	if (Response.bSuccess)
 	{
 		AddMessage(EChatMessageRole::Assistant, Response.Content);
@@ -501,6 +670,8 @@ void SAIChatWindow::OnAIStreamChunk(const FString& Chunk)
 void SAIChatWindow::OnAIStreamComplete()
 {
 	bIsProcessing = false;
+
+	UE_LOG(LogSAIChatWindow, Log, TEXT("AI streaming response complete: %s"), *CurrentStreamingResponse);
 
 	// Mark last message as not streaming
 	if (Messages.Num() > 0)
@@ -558,11 +729,15 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 	// Check if this looks like BSL (starts with "blueprint")
 	if (!BSLContent.IsEmpty() && BSLContent.StartsWith(TEXT("blueprint")))
 	{
+		UE_LOG(LogSAIChatWindow, Log, TEXT("Extracted BSL block: %s"), *BSLContent);
 		// Try BSL compilation
 		BSL::FCompileResult CompileResult = BSL::FCompiler::Compile(BSLContent);
 
 		if (CompileResult.bSuccess)
 		{
+			LogBlueprintDataSummary(CompileResult.BlueprintData, TEXT("BSL compiled"));
+			EnrichBlueprintData(CompileResult.BlueprintData);
+			EnsureTickGraph(CompileResult.BlueprintData);
 			// Validate
 			TArray<FString> ValidationErrors;
 			if (UBlueprintJSONParser::ValidateBlueprintData(CompileResult.BlueprintData, ValidationErrors))
@@ -612,12 +787,20 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 	// Fall back to JSON parsing for backwards compatibility
 	FString JSONContent = UBlueprintJSONParser::ExtractJSONFromResponse(ResponseContent);
 
+	if (!JSONContent.IsEmpty())
+	{
+		UE_LOG(LogSAIChatWindow, Log, TEXT("Extracted JSON block: %s"), *JSONContent);
+	}
+
 	if (!JSONContent.IsEmpty() && JSONContent.StartsWith(TEXT("{")))
 	{
 		FBlueprintParseResult ParseResult = UBlueprintJSONParser::ParseBlueprintJSON(JSONContent);
 
 		if (ParseResult.bSuccess)
 		{
+			LogBlueprintDataSummary(ParseResult.BlueprintData, TEXT("JSON parsed"));
+			EnrichBlueprintData(ParseResult.BlueprintData);
+			EnsureTickGraph(ParseResult.BlueprintData);
 			// Validate
 			TArray<FString> ValidationErrors;
 			if (UBlueprintJSONParser::ValidateBlueprintData(ParseResult.BlueprintData, ValidationErrors))
@@ -667,6 +850,80 @@ FReply SAIChatWindow::OnClearClicked()
 	return FReply::Handled();
 }
 
+void SAIChatWindow::EnrichBlueprintData(FBlueprintData& Data)
+{
+	if (Data.Name.IsEmpty() && bIsModifyMode && BlueprintBeingModified.IsValid())
+	{
+		Data.Name = BlueprintBeingModified->GetName();
+	}
+
+	if (Data.ParentClass.IsEmpty() && bIsModifyMode && BlueprintBeingModified.IsValid() && BlueprintBeingModified->ParentClass)
+	{
+		Data.ParentClass = BlueprintBeingModified->ParentClass->GetName();
+	}
+}
+
+void SAIChatWindow::EnsureTickGraph(FBlueprintData& Data) const
+{
+	if (!BlueprintBeingModified.IsValid())
+	{
+		return;
+	}
+
+	UBlueprint* Blueprint = BlueprintBeingModified.Get();
+	if (!Blueprint)
+	{
+		return;
+	}
+
+	for (FBlueprintGraphData& Graph : Data.EventGraphs)
+	{
+		if (!IsTargetEventGraph(Graph))
+		{
+			continue;
+		}
+
+		Graph.Name = TEXT("EventGraph");
+
+		TSet<FString> ExistingNodeIds;
+		TSet<FString> ReferencedNodeIds;
+
+		for (const FBlueprintNodeData& Node : Graph.Nodes)
+		{
+			if (!Node.NodeId.IsEmpty())
+			{
+				ExistingNodeIds.Add(Node.NodeId);
+			}
+
+			for (const FBlueprintPinData& Pin : Node.Pins)
+			{
+				for (const FBlueprintPinConnection& Conn : Pin.Connections)
+				{
+					if (!Conn.SourceNodeId.IsEmpty())
+					{
+						ReferencedNodeIds.Add(Conn.SourceNodeId);
+					}
+				}
+			}
+		}
+
+		for (const FString& SourceId : ReferencedNodeIds)
+		{
+			if (ExistingNodeIds.Contains(SourceId))
+			{
+				continue;
+			}
+
+			FBlueprintNodeData Synthetic;
+			if (TryCreateSyntheticNode(Blueprint, Data, SourceId, Synthetic))
+			{
+				Graph.Nodes.Add(Synthetic);
+				ExistingNodeIds.Add(SourceId);
+			}
+		}
+	}
+}
+
 FReply SAIChatWindow::OnSettingsClicked()
 {
 	if (ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings"))
@@ -687,9 +944,11 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 		FString Prompt = Args.IsEmpty()
 			? TEXT("Generate a blueprint based on my description.")
 			: FString::Printf(TEXT("Generate a blueprint: %s"), *Args);
+		Prompt += GetBlueprintSchemaHint();
 
 		AddMessage(EChatMessageRole::User, Command);
-		ConversationContext->AddUserMessage(Prompt);
+		UE_LOG(LogSAIChatWindow, Log, TEXT("Generate prompt: %s"), *Prompt);
+			ConversationContext->AddUserMessage(Prompt);
 
 		bIsProcessing = true;
 		UOpenAICompatibleService::Get()->SendChatRequest(
@@ -879,7 +1138,9 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 		FString Prompt = FString::Printf(
 			TEXT("Modify blueprint %s:\n%s\n\nChanges: %s\n\nReturn JSON with only new/changed elements."),
 			*SelectedBP->GetName(), *BPSummary, *Args);
+		Prompt += GetBlueprintSchemaHint();
 
+		UE_LOG(LogSAIChatWindow, Log, TEXT("Modify prompt: %s"), *Prompt);
 		ConversationContext->AddUserMessage(Prompt);
 
 		bIsProcessing = true;
@@ -1054,6 +1315,39 @@ void SAIChatWindow::ScrollToBottom()
 	}
 }
 
+FString RoleToString(EChatMessageRole Role)
+{
+	switch (Role)
+	{
+	case EChatMessageRole::User: return TEXT("User");
+	case EChatMessageRole::Assistant: return TEXT("Assistant");
+	case EChatMessageRole::System: return TEXT("System");
+	default: return TEXT("Unknown");
+	}
+}
+
+void SAIChatWindow::LogConversationMessages(const TArray<FChatMessage>& MessageList) const
+{
+	for (int32 Index = 0; Index < MessageList.Num(); ++Index)
+	{
+		const FChatMessage& Message = MessageList[Index];
+		FString Content = Message.Content.Replace(TEXT("\r"), TEXT("")).Replace(TEXT("\n"), TEXT("\\n"));
+		Content = Content.Left(256);
+		UE_LOG(LogSAIChatWindow, Log, TEXT("Outgoing[%d] %s: %s"), Index, *RoleToString(Message.Role), *Content);
+	}
+}
+
+void SAIChatWindow::LogBlueprintDataSummary(const FBlueprintData& Data, const TCHAR* Source) const
+{
+	UE_LOG(LogSAIChatWindow, Log, TEXT("%s blueprint summary: name=%s parent=%s vars=%d events=%d funcs=%d"),
+		Source,
+		Data.Name.IsEmpty() ? TEXT("(empty)") : *Data.Name,
+		Data.ParentClass.IsEmpty() ? TEXT("(empty)") : *Data.ParentClass,
+		Data.Variables.Num(),
+		Data.EventGraphs.Num(),
+		Data.Functions.Num());
+}
+
 UBlueprint* SAIChatWindow::GetSelectedBlueprint() const
 {
 	// Get selected assets from Content Browser
@@ -1142,3 +1436,34 @@ FString SAIChatWindow::GetBlueprintSummaryForAI(UBlueprint* Blueprint) const
 }
 
 #undef LOCTEXT_NAMESPACE
+FString SAIChatWindow::GetBlueprintSchemaHint()
+{
+	return TEXT("\nPlease return JSON following this pattern:\n")
+		TEXT("{\n")
+		TEXT("  \"name\": \"BP_Name\",\n")
+		TEXT("  \"parent_class\": \"Actor\",\n")
+		TEXT("  \"event_graphs\": [\n")
+		TEXT("    {\n")
+		TEXT("      \"name\": \"Tick\",\n")
+		TEXT("      \"nodes\": [\n")
+		TEXT("        {\n")
+		TEXT("          \"node_id\": \"math_subtract\",\n")
+		TEXT("          \"node_type\": \"Math_Subtract\",\n")
+		TEXT("          \"pins\": {\n")
+		TEXT("            \"A\": {\"connection\": \"get_health.Health\"},\n")
+		TEXT("            \"B\": {\"value\": \"1\"}\n")
+		TEXT("          }\n")
+		TEXT("        },\n")
+		TEXT("        {\n")
+		TEXT("          \"node_id\": \"set_health\",\n")
+		TEXT("          \"node_type\": \"Variable_Set\",\n")
+		TEXT("          \"pins\": {\n")
+		TEXT("            \"execute\": {\"connection\": \"event_tick.then\"},\n")
+		TEXT("            \"Health\": {\"connection\": \"math_subtract.ReturnValue\"}\n")
+		TEXT("          }\n")
+		TEXT("        }\n")
+		TEXT("      ]\n")
+		TEXT("    }\n")
+		TEXT("  ]\n")
+		TEXT("}");
+}

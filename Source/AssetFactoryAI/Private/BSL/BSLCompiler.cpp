@@ -9,7 +9,7 @@ FCompiler::FCompiler()
 {
 }
 
-FCompileResult FCompiler::Compile(const FString& Source)
+FCompileResult FCompiler:: Compile(const FString& Source)
 {
 	FCompileResult Result;
 

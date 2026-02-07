@@ -399,11 +399,47 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	return Result;
 }
 
+namespace
+{
+	FString InferVariableName(const FString& NodeId)
+	{
+		if (NodeId.IsEmpty())
+		{
+			return FString();
+		}
+
+		FString Lower = NodeId.ToLower();
+		const TArray<FString> Prefixes = { TEXT("get_"), TEXT("set_"), TEXT("get"), TEXT("set") };
+
+		for (const FString& Prefix : Prefixes)
+		{
+			if (Lower.StartsWith(Prefix) && NodeId.Len() > Prefix.Len())
+			{
+				return NodeId.Mid(Prefix.Len());
+			}
+		}
+
+		return NodeId;
+	}
+}
+
 FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
 {
 	FNodeSpawnResult Result;
 
-	FName VarName(*NodeData.VariableName);
+	FString VariableName = NodeData.VariableName;
+	if (VariableName.IsEmpty())
+	{
+		VariableName = InferVariableName(NodeData.NodeId);
+	}
+
+	if (VariableName.IsEmpty())
+	{
+		Result.ErrorMessage = TEXT("Variable name is empty");
+		return Result;
+	}
+
+	FName VarName(*VariableName);
 
 	// Check if variable exists
 	FProperty* Property = FindFProperty<FProperty>(Blueprint->GeneratedClass, VarName);
@@ -486,25 +522,29 @@ FNodeSpawnResult UNodeSpawner::SpawnMathNode(UEdGraph* Graph, const FBlueprintNo
 	// Use specific operand type if provided by compiler, otherwise fall back to default order
 	UFunction* Function = nullptr;
 
+	auto TryFindMathFunction = [&](const FString& Suffix) -> UFunction*
+	{
+		FString Path = FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_%s"), *FunctionName, *Suffix);
+		return FindFunctionByPath(Path);
+	};
+
 	if (!NodeData.OperandType.IsEmpty())
 	{
-		// Use the operand type specified by the compiler
-		FString SpecificPath = FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_%s"), *FunctionName, *NodeData.OperandType);
-		Function = FindFunctionByPath(SpecificPath);
+		Function = TryFindMathFunction(NodeData.OperandType);
 	}
 
 	if (!Function)
 	{
-		// Fall back to trying common types (Double first for UE5)
-		TArray<FString> FunctionPaths = {
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_DoubleDouble"), *FunctionName),
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_FloatFloat"), *FunctionName),
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_IntInt"), *FunctionName)
+		// Prefer integer operations when no guidance provided; fall back to double/float
+		TArray<FString> FunctionSuffixes = {
+			TEXT("IntInt"),
+			TEXT("DoubleDouble"),
+			TEXT("FloatFloat")
 		};
 
-		for (const FString& Path : FunctionPaths)
+		for (const FString& Suffix : FunctionSuffixes)
 		{
-			Function = FindFunctionByPath(Path);
+			Function = TryFindMathFunction(Suffix);
 			if (Function)
 			{
 				break;

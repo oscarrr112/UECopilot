@@ -112,6 +112,12 @@ private:
 	/** Update the last message (for streaming) */
 	void UpdateLastMessage(const FString& AdditionalContent);
 
+	void EnrichBlueprintData(FBlueprintData& Data);
+	void LogConversationMessages(const TArray<FChatMessage>& MessageList) const;
+	void LogBlueprintDataSummary(const FBlueprintData& Data, const TCHAR* Source) const;
+	void EnsureTickGraph(FBlueprintData& Data) const;
+	static FString GetBlueprintSchemaHint();
+
 	/** Scroll to bottom of chat */
 	void ScrollToBottom();
 

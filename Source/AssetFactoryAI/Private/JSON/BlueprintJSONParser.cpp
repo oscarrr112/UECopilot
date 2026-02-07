@@ -5,6 +5,105 @@
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
 
+namespace
+{
+	FString NormalizeNodeTypeKey(const FString& Value)
+	{
+		FString Normalized = Value;
+		Normalized = Normalized.ToLower();
+		Normalized.ReplaceInline(TEXT("_"), TEXT(""));
+		Normalized.ReplaceInline(TEXT("-"), TEXT(""));
+		Normalized.ReplaceInline(TEXT(" "), TEXT(""));
+		Normalized.ReplaceInline(TEXT("."), TEXT(""));
+		return Normalized;
+	}
+
+	const TMap<FString, EBlueprintNodeType>& GetNodeTypeMap()
+	{
+		static TMap<FString, EBlueprintNodeType> Map;
+		if (Map.Num() == 0)
+		{
+			auto AddEntry = [&](const TCHAR* Name, EBlueprintNodeType Type)
+			{
+				Map.Add(NormalizeNodeTypeKey(Name), Type);
+			};
+
+			AddEntry(TEXT("Event_BeginPlay"), EBlueprintNodeType::Event_BeginPlay);
+			AddEntry(TEXT("BeginPlay"), EBlueprintNodeType::Event_BeginPlay);
+			AddEntry(TEXT("Event_Tick"), EBlueprintNodeType::Event_Tick);
+			AddEntry(TEXT("Tick"), EBlueprintNodeType::Event_Tick);
+			AddEntry(TEXT("Event_Custom"), EBlueprintNodeType::Event_Custom);
+			AddEntry(TEXT("CustomEvent"), EBlueprintNodeType::Event_Custom);
+			AddEntry(TEXT("Event_Input"), EBlueprintNodeType::Event_Input);
+			AddEntry(TEXT("InputEvent"), EBlueprintNodeType::Event_Input);
+
+			AddEntry(TEXT("Branch"), EBlueprintNodeType::Flow_Branch);
+			AddEntry(TEXT("Sequence"), EBlueprintNodeType::Flow_Sequence);
+			AddEntry(TEXT("ForLoop"), EBlueprintNodeType::Flow_ForLoop);
+			AddEntry(TEXT("ForEachLoop"), EBlueprintNodeType::Flow_ForEachLoop);
+			AddEntry(TEXT("WhileLoop"), EBlueprintNodeType::Flow_WhileLoop);
+			AddEntry(TEXT("Switch"), EBlueprintNodeType::Flow_Switch);
+			AddEntry(TEXT("DoOnce"), EBlueprintNodeType::Flow_DoOnce);
+			AddEntry(TEXT("Gate"), EBlueprintNodeType::Flow_Gate);
+			AddEntry(TEXT("Delay"), EBlueprintNodeType::Flow_Delay);
+
+			AddEntry(TEXT("CallFunction"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("PureFunction"), EBlueprintNodeType::PureFunction);
+
+			AddEntry(TEXT("GetVariable"), EBlueprintNodeType::Variable_Get);
+			AddEntry(TEXT("Get"), EBlueprintNodeType::Variable_Get);
+			AddEntry(TEXT("Variable_Get"), EBlueprintNodeType::Variable_Get);
+			AddEntry(TEXT("SetVariable"), EBlueprintNodeType::Variable_Set);
+			AddEntry(TEXT("Set"), EBlueprintNodeType::Variable_Set);
+			AddEntry(TEXT("Variable_Set"), EBlueprintNodeType::Variable_Set);
+
+			AddEntry(TEXT("Add"), EBlueprintNodeType::Math_Add);
+			AddEntry(TEXT("Math_Add"), EBlueprintNodeType::Math_Add);
+			AddEntry(TEXT("Subtract"), EBlueprintNodeType::Math_Subtract);
+			AddEntry(TEXT("Math_Subtract"), EBlueprintNodeType::Math_Subtract);
+			AddEntry(TEXT("Multiply"), EBlueprintNodeType::Math_Multiply);
+			AddEntry(TEXT("Math_Multiply"), EBlueprintNodeType::Math_Multiply);
+			AddEntry(TEXT("Divide"), EBlueprintNodeType::Math_Divide);
+			AddEntry(TEXT("Math_Divide"), EBlueprintNodeType::Math_Divide);
+
+			AddEntry(TEXT("Equal"), EBlueprintNodeType::Compare_Equal);
+			AddEntry(TEXT("NotEqual"), EBlueprintNodeType::Compare_NotEqual);
+			AddEntry(TEXT("Greater"), EBlueprintNodeType::Compare_Greater);
+			AddEntry(TEXT("Less"), EBlueprintNodeType::Compare_Less);
+			AddEntry(TEXT("GreaterEqual"), EBlueprintNodeType::Compare_GreaterEqual);
+			AddEntry(TEXT("LessEqual"), EBlueprintNodeType::Compare_LessEqual);
+
+			AddEntry(TEXT("And"), EBlueprintNodeType::Logic_And);
+			AddEntry(TEXT("Or"), EBlueprintNodeType::Logic_Or);
+			AddEntry(TEXT("Not"), EBlueprintNodeType::Logic_Not);
+
+			AddEntry(TEXT("Cast"), EBlueprintNodeType::Cast);
+			AddEntry(TEXT("MakeStruct"), EBlueprintNodeType::MakeStruct);
+			AddEntry(TEXT("BreakStruct"), EBlueprintNodeType::BreakStruct);
+
+			AddEntry(TEXT("ArrayAdd"), EBlueprintNodeType::Array_Add);
+			AddEntry(TEXT("ArrayRemove"), EBlueprintNodeType::Array_Remove);
+			AddEntry(TEXT("ArrayGet"), EBlueprintNodeType::Array_Get);
+			AddEntry(TEXT("ArraySet"), EBlueprintNodeType::Array_Set);
+			AddEntry(TEXT("ArrayLength"), EBlueprintNodeType::Array_Length);
+			AddEntry(TEXT("ArrayClear"), EBlueprintNodeType::Array_Clear);
+			AddEntry(TEXT("Array_Add"), EBlueprintNodeType::Array_Add);
+			AddEntry(TEXT("Array_Remove"), EBlueprintNodeType::Array_Remove);
+			AddEntry(TEXT("Array_Get"), EBlueprintNodeType::Array_Get);
+			AddEntry(TEXT("Array_Set"), EBlueprintNodeType::Array_Set);
+			AddEntry(TEXT("Array_Length"), EBlueprintNodeType::Array_Length);
+			AddEntry(TEXT("Array_Clear"), EBlueprintNodeType::Array_Clear);
+
+			AddEntry(TEXT("Literal"), EBlueprintNodeType::Literal);
+			AddEntry(TEXT("Comment"), EBlueprintNodeType::Comment);
+			AddEntry(TEXT("Reroute"), EBlueprintNodeType::Reroute);
+			AddEntry(TEXT("Return"), EBlueprintNodeType::Return);
+		}
+
+		return Map;
+	}
+}
+
 DEFINE_LOG_CATEGORY(LogBlueprintJSON);
 
 FBlueprintParseResult UBlueprintJSONParser::ParseBlueprintJSON(const FString& JSONString)
@@ -431,8 +530,17 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 
 bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, FBlueprintNodeData& OutData, FString& OutError)
 {
-	OutData.NodeId = JsonObject->GetStringField(TEXT("id"));
-	OutData.NodeType = StringToNodeType(JsonObject->GetStringField(TEXT("type")));
+	if (!JsonObject->TryGetStringField(TEXT("node_id"), OutData.NodeId))
+	{
+		JsonObject->TryGetStringField(TEXT("id"), OutData.NodeId);
+	}
+
+	FString NodeTypeString;
+	if (!JsonObject->TryGetStringField(TEXT("node_type"), NodeTypeString))
+	{
+		JsonObject->TryGetStringField(TEXT("type"), NodeTypeString);
+	}
+	OutData.NodeType = StringToNodeType(NodeTypeString);
 
 	JsonObject->TryGetStringField(TEXT("function"), OutData.FunctionReference);
 	JsonObject->TryGetStringField(TEXT("event_name"), OutData.EventName);
@@ -532,78 +640,13 @@ bool UBlueprintJSONParser::ParseConnection(const TSharedPtr<FJsonObject>& JsonOb
 
 EBlueprintNodeType UBlueprintJSONParser::StringToNodeType(const FString& TypeString)
 {
-	static TMap<FString, EBlueprintNodeType> TypeMap = {
-		// Events
-		{TEXT("Event_BeginPlay"), EBlueprintNodeType::Event_BeginPlay},
-		{TEXT("BeginPlay"), EBlueprintNodeType::Event_BeginPlay},
-		{TEXT("Event_Tick"), EBlueprintNodeType::Event_Tick},
-		{TEXT("Tick"), EBlueprintNodeType::Event_Tick},
-		{TEXT("Event_Custom"), EBlueprintNodeType::Event_Custom},
-		{TEXT("CustomEvent"), EBlueprintNodeType::Event_Custom},
-		{TEXT("Event_Input"), EBlueprintNodeType::Event_Input},
-		{TEXT("InputEvent"), EBlueprintNodeType::Event_Input},
+	if (TypeString.IsEmpty())
+	{
+		return EBlueprintNodeType::Unknown;
+	}
 
-		// Flow Control
-		{TEXT("Branch"), EBlueprintNodeType::Flow_Branch},
-		{TEXT("Sequence"), EBlueprintNodeType::Flow_Sequence},
-		{TEXT("ForLoop"), EBlueprintNodeType::Flow_ForLoop},
-		{TEXT("ForEachLoop"), EBlueprintNodeType::Flow_ForEachLoop},
-		{TEXT("WhileLoop"), EBlueprintNodeType::Flow_WhileLoop},
-		{TEXT("Switch"), EBlueprintNodeType::Flow_Switch},
-		{TEXT("DoOnce"), EBlueprintNodeType::Flow_DoOnce},
-		{TEXT("Gate"), EBlueprintNodeType::Flow_Gate},
-		{TEXT("Delay"), EBlueprintNodeType::Flow_Delay},
-
-		// Functions
-		{TEXT("CallFunction"), EBlueprintNodeType::CallFunction},
-		{TEXT("PureFunction"), EBlueprintNodeType::PureFunction},
-
-		// Variables
-		{TEXT("GetVariable"), EBlueprintNodeType::Variable_Get},
-		{TEXT("Get"), EBlueprintNodeType::Variable_Get},
-		{TEXT("SetVariable"), EBlueprintNodeType::Variable_Set},
-		{TEXT("Set"), EBlueprintNodeType::Variable_Set},
-
-		// Math
-		{TEXT("Add"), EBlueprintNodeType::Math_Add},
-		{TEXT("Subtract"), EBlueprintNodeType::Math_Subtract},
-		{TEXT("Multiply"), EBlueprintNodeType::Math_Multiply},
-		{TEXT("Divide"), EBlueprintNodeType::Math_Divide},
-
-		// Comparison
-		{TEXT("Equal"), EBlueprintNodeType::Compare_Equal},
-		{TEXT("NotEqual"), EBlueprintNodeType::Compare_NotEqual},
-		{TEXT("Greater"), EBlueprintNodeType::Compare_Greater},
-		{TEXT("Less"), EBlueprintNodeType::Compare_Less},
-		{TEXT("GreaterEqual"), EBlueprintNodeType::Compare_GreaterEqual},
-		{TEXT("LessEqual"), EBlueprintNodeType::Compare_LessEqual},
-
-		// Logic
-		{TEXT("And"), EBlueprintNodeType::Logic_And},
-		{TEXT("Or"), EBlueprintNodeType::Logic_Or},
-		{TEXT("Not"), EBlueprintNodeType::Logic_Not},
-
-		// Cast and Struct
-		{TEXT("Cast"), EBlueprintNodeType::Cast},
-		{TEXT("MakeStruct"), EBlueprintNodeType::MakeStruct},
-		{TEXT("BreakStruct"), EBlueprintNodeType::BreakStruct},
-
-		// Array
-		{TEXT("ArrayAdd"), EBlueprintNodeType::Array_Add},
-		{TEXT("ArrayRemove"), EBlueprintNodeType::Array_Remove},
-		{TEXT("ArrayGet"), EBlueprintNodeType::Array_Get},
-		{TEXT("ArraySet"), EBlueprintNodeType::Array_Set},
-		{TEXT("ArrayLength"), EBlueprintNodeType::Array_Length},
-		{TEXT("ArrayClear"), EBlueprintNodeType::Array_Clear},
-
-		// Misc
-		{TEXT("Literal"), EBlueprintNodeType::Literal},
-		{TEXT("Comment"), EBlueprintNodeType::Comment},
-		{TEXT("Reroute"), EBlueprintNodeType::Reroute},
-		{TEXT("Return"), EBlueprintNodeType::Return},
-	};
-
-	if (const EBlueprintNodeType* Found = TypeMap.Find(TypeString))
+	const FString Key = NormalizeNodeTypeKey(TypeString);
+	if (const EBlueprintNodeType* Found = GetNodeTypeMap().Find(Key))
 	{
 		return *Found;
 	}
