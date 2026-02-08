@@ -15,6 +15,10 @@
 #include "Fonts/SlateFontInfo.h"
 #include "Layout/Margin.h"
 #include "Widgets/Layout/Anchors.h"
+#include "GameplayTagsManager.h"
+#if WITH_GAMEPLAY_ABILITIES
+#include "AttributeSet.h"
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // New Typed Property System
@@ -734,13 +738,14 @@ bool FPropertySetterUtils::SetPropertyFromJson(UObject* Object, FProperty* Prope
 	return SetPropertyValueInternal(Object, Property, ValuePtr, JsonValue);
 }
 
-void FPropertySetterUtils::SetPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties)
+bool FPropertySetterUtils::SetPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties)
 {
 	if (!Object || !Properties.IsValid())
 	{
-		return;
+		return false;
 	}
 
+	bool bAllSucceeded = true;
 	UClass* ObjectClass = Object->GetClass();
 
 	for (const auto& Pair : Properties->Values)
@@ -753,14 +758,17 @@ void FPropertySetterUtils::SetPropertiesFromJson(UObject* Object, TSharedPtr<FJs
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Property '%s' not found on class '%s'"),
 				*PropertyName, *ObjectClass->GetName());
+			bAllSucceeded = false;
 			continue;
 		}
 
 		if (!SetPropertyFromJson(Object, Property, JsonValue))
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set property '%s'"), *PropertyName);
+			bAllSucceeded = false;
 		}
 	}
+	return bAllSucceeded;
 }
 
 bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
@@ -1027,10 +1035,23 @@ static TSharedPtr<FJsonValue> ExtractStructToArray(UScriptStruct* Struct, const 
 TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetterUtils::GetSpecialDeserializers()
 {
 	static TMap<UScriptStruct*, FStructDeserializer> Map;
-	static bool bInit = false;
-	if (!bInit)
+	static bool bFullyInit = false;
+	if (!bFullyInit)
 	{
-		bInit = true;
+		bool bAllFound = true;
+
+		// Helper: register if struct found, track if any missing
+		auto SafeAdd = [&bAllFound](UScriptStruct* Struct, FStructDeserializer Handler)
+		{
+			if (Struct)
+			{
+				Map.FindOrAdd(Struct) = MoveTemp(Handler);
+			}
+			else
+			{
+				bAllFound = false;
+			}
+		};
 
 		// FLinearColor - supports hex string, named color, array, object
 		Map.Add(TBaseStructure<FLinearColor>::Get(), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
@@ -1066,14 +1087,14 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 		});
 
 		// FSlateColor - wraps FLinearColor
-		Map.Add(FindStructByName(TEXT("SlateColor")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		SafeAdd(FindStructByName(TEXT("SlateColor")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			*static_cast<FSlateColor*>(ValuePtr) = FSlateColor(ParseColor(JsonValue));
 			return true;
 		});
 
 		// FSlateFontInfo
-		Map.Add(FindStructByName(TEXT("SlateFontInfo")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		SafeAdd(FindStructByName(TEXT("SlateFontInfo")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			const TSharedPtr<FJsonObject>* FontObj;
 			if (JsonValue->TryGetObject(FontObj))
@@ -1085,7 +1106,7 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 		});
 
 		// FSlateBrush
-		Map.Add(FindStructByName(TEXT("SlateBrush")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		SafeAdd(FindStructByName(TEXT("SlateBrush")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			const TSharedPtr<FJsonObject>* BrushObj;
 			if (JsonValue->TryGetObject(BrushObj))
@@ -1097,7 +1118,7 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 		});
 
 		// FAnchors
-		Map.Add(FindStructByName(TEXT("Anchors")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		SafeAdd(FindStructByName(TEXT("Anchors")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			const TSharedPtr<FJsonObject>* AnchorsObj;
 			if (JsonValue->TryGetObject(AnchorsObj))
@@ -1107,6 +1128,90 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 			}
 			return false;
 		});
+
+		// FGameplayTag - string → RequestGameplayTag (strict: tag must exist)
+		SafeAdd(FindStructByName(TEXT("GameplayTag")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			FString TagStr;
+			if (JsonValue->TryGetString(TagStr))
+			{
+				FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
+				if (!Tag.IsValid())
+				{
+					UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayTag: tag '%s' not found. Register it first (e.g. via GameplayTag generator)."), *TagStr);
+					return false;
+				}
+				*static_cast<FGameplayTag*>(ValuePtr) = Tag;
+				return true;
+			}
+			return false;
+		});
+
+		// FGameplayTagContainer - string array → AddTag each (strict: all tags must exist)
+		SafeAdd(FindStructByName(TEXT("GameplayTagContainer")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			FGameplayTagContainer* Container = static_cast<FGameplayTagContainer*>(ValuePtr);
+			Container->Reset();
+
+			const TArray<TSharedPtr<FJsonValue>>* Arr;
+			if (JsonValue->TryGetArray(Arr))
+			{
+				for (const auto& Elem : *Arr)
+				{
+					FString TagStr;
+					if (Elem->TryGetString(TagStr))
+					{
+						FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
+						if (!Tag.IsValid())
+						{
+							UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayTagContainer: tag '%s' not found. Register it first (e.g. via GameplayTag generator)."), *TagStr);
+							return false;
+						}
+						Container->AddTag(Tag);
+					}
+				}
+				return true;
+			}
+			return false;
+		});
+
+		// FGameplayAttribute - "ClassName.PropertyName" → SetUProperty
+#if WITH_GAMEPLAY_ABILITIES
+		SafeAdd(FindStructByName(TEXT("GameplayAttribute")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			FString AttrStr;
+			if (!JsonValue->TryGetString(AttrStr))
+			{
+				return false;
+			}
+
+			FString ClassName, PropName;
+			if (!AttrStr.Split(TEXT("."), &ClassName, &PropName))
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayAttribute: expected 'ClassName.PropertyName', got '%s'"), *AttrStr);
+				return false;
+			}
+
+			UClass* AttrSetClass = FClassFinderUtils::FindClassByName(ClassName, UAttributeSet::StaticClass(), false);
+			if (!AttrSetClass)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayAttribute: AttributeSet class '%s' not found"), *ClassName);
+				return false;
+			}
+
+			FProperty* AttrProp = AttrSetClass->FindPropertyByName(*PropName);
+			if (!AttrProp)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayAttribute: property '%s' not found on '%s'"), *PropName, *ClassName);
+				return false;
+			}
+
+			FGameplayAttribute* Attr = static_cast<FGameplayAttribute*>(ValuePtr);
+			Attr->SetUProperty(AttrProp);
+			return true;
+		});
+#endif
+		bFullyInit = bAllFound;
 	}
 	return Map;
 }
@@ -1114,10 +1219,22 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUtils::GetSpecialSerializers()
 {
 	static TMap<UScriptStruct*, FStructSerializer> Map;
-	static bool bInit = false;
-	if (!bInit)
+	static bool bFullyInit = false;
+	if (!bFullyInit)
 	{
-		bInit = true;
+		bool bAllFound = true;
+
+		auto SafeAdd = [&bAllFound](UScriptStruct* Struct, FStructSerializer Handler)
+		{
+			if (Struct)
+			{
+				Map.FindOrAdd(Struct) = MoveTemp(Handler);
+			}
+			else
+			{
+				bAllFound = false;
+			}
+		};
 
 		// FTransform - compound nested object {Location:[], Rotation:[], Scale:[]}
 		Map.Add(TBaseStructure<FTransform>::Get(), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
@@ -1148,7 +1265,7 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUt
 		});
 
 		// FAnchors - nested object {Min:[], Max:[]}
-		Map.Add(FindStructByName(TEXT("Anchors")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		SafeAdd(FindStructByName(TEXT("Anchors")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
 		{
 			const FAnchors* Anchors = static_cast<const FAnchors*>(ValuePtr);
 			TSharedPtr<FJsonObject> AnchorsObj = MakeShared<FJsonObject>();
@@ -1172,6 +1289,40 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUt
 			const FSoftObjectPath* SoftPath = static_cast<const FSoftObjectPath*>(ValuePtr);
 			return MakeShared<FJsonValueString>(SoftPath->ToString());
 		});
+
+		// FGameplayTag → tag name string
+		SafeAdd(FindStructByName(TEXT("GameplayTag")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FGameplayTag* Tag = static_cast<const FGameplayTag*>(ValuePtr);
+			return MakeShared<FJsonValueString>(Tag->GetTagName().ToString());
+		});
+
+		// FGameplayTagContainer → array of tag name strings
+		SafeAdd(FindStructByName(TEXT("GameplayTagContainer")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FGameplayTagContainer* Container = static_cast<const FGameplayTagContainer*>(ValuePtr);
+			TArray<TSharedPtr<FJsonValue>> JsonArray;
+			for (const FGameplayTag& Tag : *Container)
+			{
+				JsonArray.Add(MakeShared<FJsonValueString>(Tag.GetTagName().ToString()));
+			}
+			return MakeShared<FJsonValueArray>(JsonArray);
+		});
+
+		// FGameplayAttribute → "ClassName.PropertyName"
+#if WITH_GAMEPLAY_ABILITIES
+		SafeAdd(FindStructByName(TEXT("GameplayAttribute")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
+		{
+			const FGameplayAttribute* Attr = static_cast<const FGameplayAttribute*>(ValuePtr);
+			if (Attr->IsValid())
+			{
+				FString Result = Attr->GetAttributeSetClass()->GetName() + TEXT(".") + Attr->GetName();
+				return MakeShared<FJsonValueString>(Result);
+			}
+			return MakeShared<FJsonValueNull>();
+		});
+#endif
+		bFullyInit = bAllFound;
 	}
 	return Map;
 }
@@ -1297,6 +1448,57 @@ bool FPropertySetterUtils::SetArrayProperty(UObject* Object, FArrayProperty* Pro
 			if (JsonValue->TryGetString(Value))
 			{
 				NameProp->SetPropertyValue(ElementPtr, FName(*Value));
+			}
+		}
+		else if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(InnerProp))
+		{
+			// String → LoadObject (plain object reference)
+			FString ObjPath;
+			if (JsonValue->TryGetString(ObjPath))
+			{
+				UObject* LoadedObj = StaticLoadObject(ObjProp->PropertyClass, nullptr, *ObjPath);
+				if (LoadedObj)
+				{
+					ObjProp->SetObjectPropertyValue(ElementPtr, LoadedObj);
+				}
+				else
+				{
+					UE_LOG(LogAssetFactory, Warning, TEXT("SetArrayProperty: failed to load object '%s'"), *ObjPath);
+				}
+			}
+			// Object with "Class" field → NewObject (instanced subobject)
+			else
+			{
+				const TSharedPtr<FJsonObject>* ElemObj;
+				if (JsonValue->TryGetObject(ElemObj))
+				{
+					FString ClassName;
+					if ((*ElemObj)->TryGetStringField(TEXT("Class"), ClassName))
+					{
+						UClass* ElemClass = FClassFinderUtils::FindClassByName(ClassName, ObjProp->PropertyClass, false);
+						if (ElemClass)
+						{
+							UObject* NewObj = NewObject<UObject>(Object, ElemClass);
+							if (NewObj)
+							{
+								TSharedPtr<FJsonObject> PropsJson;
+								if ((*ElemObj)->HasField(TEXT("Properties")))
+								{
+									PropsJson = (*ElemObj)->GetObjectField(TEXT("Properties"));
+								}
+								if (PropsJson.IsValid())
+								{
+									SetPropertiesFromJson(NewObj, PropsJson);
+								}
+								ObjProp->SetObjectPropertyValue(ElementPtr, NewObj);
+							}
+						}
+						else
+						{
+							UE_LOG(LogAssetFactory, Warning, TEXT("SetArrayProperty: class '%s' not found (base: %s)"), *ClassName, *ObjProp->PropertyClass->GetName());
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1848,6 +2050,31 @@ TSharedPtr<FJsonValue> FPropertySetterUtils::ExtractPropertyToJson(FProperty* Pr
 		return nullptr;
 	}
 
+	// Enum (FEnumProperty — UE5 native enum)
+	if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
+	{
+		UEnum* Enum = EnumProp->GetEnum();
+		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
+		int64 EnumValue = UnderlyingProp->GetSignedIntPropertyValue(ValuePtr);
+		FString EnumName = Enum->GetNameStringByValue(EnumValue);
+		return MakeShared<FJsonValueString>(EnumName);
+	}
+
+	// Byte enum (TEnumAsByte — must check BEFORE FNumericProperty since FByteProperty is a subclass)
+	if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
+	{
+		if (UEnum* Enum = ByteProp->Enum)
+		{
+			uint8 ByteValue = ByteProp->GetPropertyValue(ValuePtr);
+			FString EnumName = Enum->GetNameStringByValue(ByteValue);
+			return MakeShared<FJsonValueString>(EnumName);
+		}
+		else
+		{
+			return MakeShared<FJsonValueNumber>(ByteProp->GetPropertyValue(ValuePtr));
+		}
+	}
+
 	// Numeric properties
 	if (FNumericProperty* NumProp = CastField<FNumericProperty>(Property))
 	{
@@ -1885,37 +2112,24 @@ TSharedPtr<FJsonValue> FPropertySetterUtils::ExtractPropertyToJson(FProperty* Pr
 		return MakeShared<FJsonValueString>(TextProp->GetPropertyValue(ValuePtr).ToString());
 	}
 
-	// Enum
-	if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
-	{
-		UEnum* Enum = EnumProp->GetEnum();
-		FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
-		int64 EnumValue = UnderlyingProp->GetSignedIntPropertyValue(ValuePtr);
-		FString EnumName = Enum->GetNameStringByValue(EnumValue);
-		return MakeShared<FJsonValueString>(EnumName);
-	}
-
-	// Byte (may be enum)
-	if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
-	{
-		if (UEnum* Enum = ByteProp->Enum)
-		{
-			uint8 ByteValue = ByteProp->GetPropertyValue(ValuePtr);
-			FString EnumName = Enum->GetNameStringByValue(ByteValue);
-			return MakeShared<FJsonValueString>(EnumName);
-		}
-		else
-		{
-			return MakeShared<FJsonValueNumber>(ByteProp->GetPropertyValue(ValuePtr));
-		}
-	}
-
 	// Object reference
 	if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
 	{
 		UObject* ObjValue = ObjProp->GetObjectPropertyValue(ValuePtr);
 		if (ObjValue)
 		{
+			// Instanced subobject: Outer is not a UPackage → extract Class + Properties recursively
+			if (ObjValue->GetOuter() && !ObjValue->GetOuter()->IsA<UPackage>())
+			{
+				TSharedPtr<FJsonObject> SubObj = MakeShared<FJsonObject>();
+				SubObj->SetStringField(TEXT("Class"), ObjValue->GetClass()->GetName());
+				TSharedPtr<FJsonObject> Props = ExtractPropertiesToJson(ObjValue, true, true);
+				if (Props.IsValid() && Props->Values.Num() > 0)
+				{
+					SubObj->SetObjectField(TEXT("Properties"), Props);
+				}
+				return MakeShared<FJsonValueObject>(SubObj);
+			}
 			return MakeShared<FJsonValueString>(ObjValue->GetPathName());
 		}
 		return MakeShared<FJsonValueNull>();

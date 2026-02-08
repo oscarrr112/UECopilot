@@ -21,6 +21,11 @@
 		{
 			"Name": "EditorScriptingUtilities",
 			"Enabled": true
+		},
+		{
+			"Name": "GameplayAbilities",
+			"Enabled": true,
+			"Optional": true
 		}
 	],
 	"Modules": [

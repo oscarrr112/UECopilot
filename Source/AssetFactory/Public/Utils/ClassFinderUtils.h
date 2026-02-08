@@ -102,4 +102,16 @@ private:
 	static UClass* TryLoadBlueprintClass(
 		const FString& ClassName,
 		UClass* BaseClass);
+
+	/**
+	 * Generic fallback: iterate all loaded UClass objects to find a match.
+	 * Slower than module path lookup but works for any module.
+	 * Results are cached for subsequent lookups.
+	 * @param ClassName - The class name (without U/A prefix)
+	 * @param BaseClass - Base class constraint
+	 * @return The found class, or nullptr if not found
+	 */
+	static UClass* FindClassByIterator(
+		const FString& ClassName,
+		UClass* BaseClass);
 };

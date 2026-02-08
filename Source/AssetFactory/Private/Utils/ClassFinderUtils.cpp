@@ -5,6 +5,7 @@
 #include "Engine/DataAsset.h"
 #include "Components/Widget.h"
 #include "Misc/App.h"
+#include "UObject/UObjectIterator.h"
 
 UClass* FClassFinderUtils::FindClassByName(
 	const FString& ClassName,
@@ -29,6 +30,12 @@ UClass* FClassFinderUtils::FindClassByName(
 		{
 			return FoundClass;
 		}
+	}
+
+	// Generic fallback: iterate all loaded classes
+	if (UClass* FoundClass = FindClassByIterator(SearchName, BaseClass))
+	{
+		return FoundClass;
 	}
 
 	// Try loading Blueprint class if enabled
@@ -66,6 +73,12 @@ UClass* FClassFinderUtils::FindInterfaceClass(const FString& InterfaceName)
 		{
 			return FoundClass;
 		}
+	}
+
+	// Generic fallback
+	if (UClass* FoundClass = FindClassByIterator(SearchName, UInterface::StaticClass()))
+	{
+		return FoundClass;
 	}
 
 	UE_LOG(LogAssetFactory, Warning, TEXT("Could not find interface class '%s'"), *InterfaceName);
@@ -169,6 +182,12 @@ UClass* FClassFinderUtils::FindDataAssetClass(const FString& ClassName)
 		{
 			return FoundClass;
 		}
+	}
+
+	// Generic fallback
+	if (UClass* FoundClass = FindClassByIterator(SearchName, UDataAsset::StaticClass()))
+	{
+		return FoundClass;
 	}
 
 	// Try loading Blueprint class
@@ -281,6 +300,53 @@ UClass* FClassFinderUtils::TryLoadBlueprintClass(
 		if (LoadedClass && LoadedClass->IsChildOf(BaseClass))
 		{
 			return LoadedClass;
+		}
+	}
+
+	return nullptr;
+}
+
+UClass* FClassFinderUtils::FindClassByIterator(
+	const FString& ClassName,
+	UClass* BaseClass)
+{
+	// Cache: ClassName -> UClass* (avoids repeated iteration)
+	static TMap<FString, TWeakObjectPtr<UClass>> Cache;
+
+	FString CacheKey = ClassName + TEXT(":") + BaseClass->GetName();
+	if (auto* Cached = Cache.Find(CacheKey))
+	{
+		if (Cached->IsValid())
+		{
+			return Cached->Get();
+		}
+		Cache.Remove(CacheKey);
+	}
+
+	// Try both with and without U/A prefix
+	TArray<FString> NamesToMatch = { ClassName };
+	if (!ClassName.StartsWith(TEXT("U")) && !ClassName.StartsWith(TEXT("A")))
+	{
+		NamesToMatch.Add(TEXT("U") + ClassName);
+		NamesToMatch.Add(TEXT("A") + ClassName);
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Class = *It;
+		if (!Class->IsChildOf(BaseClass))
+		{
+			continue;
+		}
+
+		FString Name = Class->GetName();
+		for (const FString& Match : NamesToMatch)
+		{
+			if (Name == Match)
+			{
+				Cache.Add(CacheKey, Class);
+				return Class;
+			}
 		}
 	}
 

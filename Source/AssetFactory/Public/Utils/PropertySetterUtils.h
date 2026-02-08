@@ -133,8 +133,9 @@ public:
 	 * Set multiple properties from a JSON object
 	 * @param Object - The UObject to set properties on
 	 * @param Properties - JSON object containing property name/value pairs
+	 * @return true if all properties were set successfully
 	 */
-	static void SetPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties);
+	static bool SetPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties);
 
 	/**
 	 * Set a struct property from a JSON value

@@ -52,8 +52,8 @@ public:
 	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;
 
 protected:
-	/** Set default properties on CDO using utility class */
-	void SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr<FJsonObject> Properties);
+	/** Set default properties on CDO using utility class. Returns false if any property failed. */
+	bool SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr<FJsonObject> Properties);
 
 	/** Add variables to blueprint */
 	void AddVariables(UBlueprint* Blueprint, const TArray<TSharedPtr<FJsonValue>>* VariablesArray);

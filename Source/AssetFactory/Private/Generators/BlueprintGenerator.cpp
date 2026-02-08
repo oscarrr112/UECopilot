@@ -44,9 +44,8 @@ FGenerationResult FBlueprintGenerator::Generate(
 	UClass* ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UObject::StaticClass(), true);
 	if (!ParentClass)
 	{
-		// Fallback to AActor if not found
-		UE_LOG(LogAssetFactory, Warning, TEXT("Parent class '%s' not found, using AActor"), *ParentClassName);
-		ParentClass = AActor::StaticClass();
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
+			FString::Printf(TEXT("Parent class '%s' not found"), *ParentClassName));
 	}
 
 	UBlueprint* Blueprint = nullptr;
@@ -125,15 +124,18 @@ FGenerationResult FBlueprintGenerator::Generate(
 		AddComponents(Blueprint, ComponentsArray);
 	}
 
-	// Set default properties on CDO
+	// Compile blueprint first (this regenerates GeneratedClass and CDO)
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	// Set default properties on CDO after compilation
 	TSharedPtr<FJsonObject> DefaultProperties = GetObjectField(Config, TEXT("DefaultProperties"));
 	if (DefaultProperties.IsValid())
 	{
-		SetDefaultProperties(Blueprint, DefaultProperties);
+		if (!SetDefaultProperties(Blueprint, DefaultProperties))
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to set DefaultProperties (check log for details)"));
+		}
 	}
-
-	// Compile blueprint
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 
 	// Save
 	Blueprint->MarkPackageDirty();
@@ -151,23 +153,23 @@ FGenerationResult FBlueprintGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, Blueprint);
 }
 
-void FBlueprintGenerator::SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr<FJsonObject> Properties)
+bool FBlueprintGenerator::SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr<FJsonObject> Properties)
 {
 	if (!Blueprint || !Properties.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	UClass* GeneratedClass = Blueprint->GeneratedClass;
 	if (!GeneratedClass)
 	{
-		return;
+		return false;
 	}
 
 	UObject* CDO = GeneratedClass->GetDefaultObject();
 	if (!CDO)
 	{
-		return;
+		return false;
 	}
 
 	// Detect format: check if first property has "type" field (new typed format)
@@ -183,17 +185,20 @@ void FBlueprintGenerator::SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr
 	}
 
 	// Use PropertySetterUtils to set properties on CDO
+	bool bSuccess;
 	if (bUseTypedFormat)
 	{
 		FPropertySetterUtils::SetTypedPropertiesFromJson(CDO, Properties);
+		bSuccess = true; // typed format doesn't return status yet
 	}
 	else
 	{
-		FPropertySetterUtils::SetPropertiesFromJson(CDO, Properties);
+		bSuccess = FPropertySetterUtils::SetPropertiesFromJson(CDO, Properties);
 	}
 
 	// Mark CDO as modified
 	CDO->Modify();
+	return bSuccess;
 }
 
 TOptional<FString> FBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
@@ -601,6 +606,44 @@ TSharedPtr<FJsonObject> FBlueprintGenerator::Extract(UObject* Asset, bool bDiffO
 	if (VariablesArray.Num() > 0)
 	{
 		Config->SetArrayField(TEXT("Variables"), VariablesArray);
+	}
+
+	// DefaultProperties (CDO properties that differ from parent CDO)
+	if (Blueprint->GeneratedClass)
+	{
+		UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject();
+		UObject* ParentCDO = Blueprint->ParentClass ? Blueprint->ParentClass->GetDefaultObject() : nullptr;
+		if (CDO)
+		{
+			// Extract all editable properties (bSkipDefaults=false because CDO vs itself always matches)
+			TSharedPtr<FJsonObject> AllProps = FPropertySetterUtils::ExtractPropertiesToJson(CDO, true, false);
+
+			// If diffOnly, manually filter against parent CDO
+			if (AllProps.IsValid() && bDiffOnly && ParentCDO)
+			{
+				TSharedPtr<FJsonObject> DiffProps = MakeShared<FJsonObject>();
+				UClass* ObjectClass = CDO->GetClass();
+				for (const auto& Pair : AllProps->Values)
+				{
+					FProperty* Property = ObjectClass->FindPropertyByName(*Pair.Key);
+					if (Property)
+					{
+						const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
+						const void* ParentPtr = Property->ContainerPtrToValuePtr<void>(ParentCDO);
+						if (!Property->Identical(ValuePtr, ParentPtr))
+						{
+							DiffProps->SetField(Pair.Key, Pair.Value);
+						}
+					}
+				}
+				AllProps = DiffProps;
+			}
+
+			if (AllProps.IsValid() && AllProps->Values.Num() > 0)
+			{
+				Config->SetObjectField(TEXT("DefaultProperties"), AllProps);
+			}
+		}
 	}
 
 	return Config;

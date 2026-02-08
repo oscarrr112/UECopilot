@@ -39,7 +39,30 @@ public class AssetFactory : ModuleRules
 			// HTTP Server
 			"HTTPServer",
 			// Settings
-			"DeveloperSettings"
+			"DeveloperSettings",
+			// GAS (Gameplay Ability System) - GameplayTags is always available
+			"GameplayTags",
+			"GameplayTagsEditor"
 		});
+
+		// GameplayAbilities is optional — only link when the plugin is enabled
+		if (Target.bBuildDeveloperTools || DoesModuleExist("GameplayAbilities"))
+		{
+			PrivateDependencyModuleNames.Add("GameplayAbilities");
+			PrivateDefinitions.Add("WITH_GAMEPLAY_ABILITIES=1");
+		}
+	}
+
+	private bool DoesModuleExist(string ModuleName)
+	{
+		try
+		{
+			// If the module can be resolved, it exists
+			return !string.IsNullOrEmpty(GetModuleDirectory(ModuleName));
+		}
+		catch
+		{
+			return false;
+		}
 	}
 }
