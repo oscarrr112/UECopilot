@@ -33,6 +33,79 @@ namespace
 	void EnsureTickNodesAppended(UBlueprint* Blueprint, const FBlueprintGraphData& GraphData, const TArray<FString>& TickConsumers, const TMap<FString, UK2Node*>& NodeMap);
 	UEdGraphPin* FindNodePin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
 	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
+	void RemoveUnlinkedFunctionResultNodes(TMap<FString, UK2Node*>& NodeMap);
+	void LayoutFunctionNodesInDeclaredOrder(const FBlueprintGraphData& GraphData, const TMap<FString, UK2Node*>& NodeMap);
+
+	FString NormalizePinToken(const FString& Name)
+	{
+		FString Result = Name.ToLower();
+		Result.ReplaceInline(TEXT(" "), TEXT(""));
+		Result.ReplaceInline(TEXT("_"), TEXT(""));
+		Result.ReplaceInline(TEXT("."), TEXT(""));
+		return Result;
+	}
+
+	bool PinNamesEquivalent(const FString& CandidateName, const FString& RequestedName)
+	{
+		const FString Candidate = NormalizePinToken(CandidateName);
+		const FString Requested = NormalizePinToken(RequestedName);
+
+		if (Candidate == Requested)
+		{
+			return true;
+		}
+
+		auto InGroup = [](const FString& Value, std::initializer_list<const TCHAR*> Group)
+		{
+			for (const TCHAR* Item : Group)
+			{
+				if (Value == Item)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		if (InGroup(Candidate, { TEXT("execute"), TEXT("exec"), TEXT("then"), TEXT("in"), TEXT("input") }) &&
+			InGroup(Requested, { TEXT("execute"), TEXT("exec"), TEXT("then"), TEXT("in"), TEXT("input") }))
+		{
+			return true;
+		}
+
+		if (InGroup(Candidate, { TEXT("then"), TEXT("true"), TEXT("out"), TEXT("output") }) &&
+			InGroup(Requested, { TEXT("then"), TEXT("true"), TEXT("out"), TEXT("output") }))
+		{
+			return true;
+		}
+
+		if (InGroup(Candidate, { TEXT("else"), TEXT("false") }) &&
+			InGroup(Requested, { TEXT("else"), TEXT("false") }))
+		{
+			return true;
+		}
+
+		if (InGroup(Candidate, { TEXT("condition"), TEXT("cond") }) &&
+			InGroup(Requested, { TEXT("condition"), TEXT("cond") }))
+		{
+			return true;
+		}
+
+		if (InGroup(Candidate, { TEXT("returnvalue"), TEXT("return"), TEXT("result") }) &&
+			InGroup(Requested, { TEXT("returnvalue"), TEXT("return"), TEXT("result") }))
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	bool IsExecLikePinName(const FString& PinName)
+	{
+		const FString Name = NormalizePinToken(PinName);
+		return Name == TEXT("execute") || Name == TEXT("exec") || Name == TEXT("then") ||
+			Name == TEXT("in") || Name == TEXT("input");
+	}
 }
 
 DEFINE_LOG_CATEGORY(LogBlueprintFactory);
@@ -373,6 +446,12 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 	ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 	Result.Warnings.Append(ConnErrors);
 
+	if (GraphData.bIsFunction)
+	{
+		RemoveUnlinkedFunctionResultNodes(NodeMap);
+		LayoutFunctionNodesInDeclaredOrder(GraphData, NodeMap);
+	}
+
 	if (!GraphData.bIsFunction)
 	{
 		TArray<FString> TickConsumers = CollectEventTickConsumers(GraphData);
@@ -534,6 +613,12 @@ int32 UAIBlueprintFactory::ConnectNodes(
 
 				if (!TargetPin)
 				{
+					// Ignore bogus exec links on pure nodes (e.g. Variable_Get.execute).
+					if (IsExecLikePinName(PinData.Name) && FindExecPin(TargetNode, TEXT(""), EGPD_Input) == nullptr)
+					{
+						continue;
+					}
+
 					OutErrors.Add(FString::Printf(TEXT("Target pin not found: %s.%s"), *Data.NodeId, *PinData.Name));
 					continue;
 				}
@@ -592,6 +677,130 @@ UClass* UAIBlueprintFactory::ResolveParentClass(const FString& ParentClassPath)
 
 namespace
 {
+	void RemoveUnlinkedFunctionResultNodes(TMap<FString, UK2Node*>& NodeMap)
+	{
+		TArray<TPair<FString, UK2Node*>> ResultNodes;
+		for (const TPair<FString, UK2Node*>& Pair : NodeMap)
+		{
+			if (Pair.Value && Pair.Value->IsA(UK2Node_FunctionResult::StaticClass()))
+			{
+				ResultNodes.Add(Pair);
+			}
+		}
+
+		if (ResultNodes.Num() <= 1)
+		{
+			return;
+		}
+
+		bool bHasAnyLinkedResultNode = false;
+		for (const TPair<FString, UK2Node*>& Pair : ResultNodes)
+		{
+			UK2Node* Node = Pair.Value;
+			if (!Node)
+			{
+				continue;
+			}
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && Pin->LinkedTo.Num() > 0)
+				{
+					bHasAnyLinkedResultNode = true;
+					break;
+				}
+			}
+			if (bHasAnyLinkedResultNode)
+			{
+				break;
+			}
+		}
+
+		for (const TPair<FString, UK2Node*>& Pair : ResultNodes)
+		{
+			UK2Node* Node = Pair.Value;
+			if (!Node)
+			{
+				continue;
+			}
+
+			bool bHasLinks = false;
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (Pin && Pin->LinkedTo.Num() > 0)
+				{
+					bHasLinks = true;
+					break;
+				}
+			}
+
+			if (bHasLinks)
+			{
+				continue;
+			}
+
+			if (Pair.Key.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase) && !bHasAnyLinkedResultNode)
+			{
+				continue;
+			}
+
+			NodeMap.Remove(Pair.Key);
+			Node->DestroyNode();
+		}
+	}
+
+	void LayoutFunctionNodesInDeclaredOrder(const FBlueprintGraphData& GraphData, const TMap<FString, UK2Node*>& NodeMap)
+	{
+		constexpr int32 StartX = 160;
+		constexpr int32 StartY = 120;
+		constexpr int32 StepX = 320;
+		constexpr int32 StepY = 180;
+
+		int32 NextX = StartX;
+
+		if (UK2Node* const* EntryPtr = NodeMap.Find(TEXT("fn_entry")))
+		{
+			if (UK2Node* EntryNode = *EntryPtr)
+			{
+				EntryNode->NodePosX = StartX;
+				EntryNode->NodePosY = StartY;
+				NextX += StepX;
+			}
+		}
+
+		int32 ReturnRow = 0;
+		for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+		{
+			UK2Node* const* NodePtr = NodeMap.Find(NodeData.NodeId);
+			if (!NodePtr || !*NodePtr)
+			{
+				continue;
+			}
+
+			UK2Node* Node = *NodePtr;
+			if (NodeData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			if (FMath::Abs(NodeData.Position.X) > KINDA_SMALL_NUMBER || FMath::Abs(NodeData.Position.Y) > KINDA_SMALL_NUMBER)
+			{
+				Node->NodePosX = static_cast<int32>(NodeData.Position.X);
+				Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
+				continue;
+			}
+
+			Node->NodePosX = NextX;
+			Node->NodePosY = StartY;
+			NextX += StepX;
+
+			if (NodeData.NodeType == EBlueprintNodeType::Return)
+			{
+				Node->NodePosY = StartY + StepY * ReturnRow;
+				ReturnRow++;
+			}
+		}
+	}
+
 	UEdGraph* FindEventGraph(UBlueprint* Blueprint, const FString& GraphName)
 	{
 		if (!Blueprint)
@@ -1236,10 +1445,10 @@ namespace
 			return nullptr;
 		}
 
-		// Exact match first
+		// Exact match first (case-insensitive with alias support).
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			if (Pin && Pin->PinName.ToString() == PinName)
+			if (Pin && PinNamesEquivalent(Pin->PinName.ToString(), PinName))
 			{
 				if (Direction == EGPD_MAX || Pin->Direction == Direction)
 				{
@@ -1282,13 +1491,15 @@ namespace
 			}
 		}
 
-		// Try partial match (sometimes pins have prefixes/suffixes)
+		// Try partial match (sometimes pins have prefixes/suffixes).
+		const FString RequestedLower = PinName.ToLower();
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
 			if (Pin)
 			{
-				FString CurrentPinName = Pin->PinName.ToString();
-				if (CurrentPinName.Contains(PinName) || PinName.Contains(CurrentPinName))
+				const FString CurrentPinName = Pin->PinName.ToString();
+				const FString CurrentPinLower = CurrentPinName.ToLower();
+				if (CurrentPinLower.Contains(RequestedLower) || RequestedLower.Contains(CurrentPinLower))
 				{
 					if (Direction == EGPD_MAX || Pin->Direction == Direction)
 					{

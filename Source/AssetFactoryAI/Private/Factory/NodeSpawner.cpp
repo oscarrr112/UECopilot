@@ -867,22 +867,36 @@ FNodeSpawnResult UNodeSpawner::SpawnReturnNode(UEdGraph* Graph, const FBlueprint
 		return Result;
 	}
 
-	// Check if there's already a result node
-	UK2Node_FunctionResult* ResultNode = nullptr;
+	// Find existing result node as a template for user-defined output pins.
+	UK2Node_FunctionResult* TemplateResultNode = nullptr;
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
-		ResultNode = Cast<UK2Node_FunctionResult>(Node);
-		if (ResultNode)
+		TemplateResultNode = Cast<UK2Node_FunctionResult>(Node);
+		if (TemplateResultNode)
 		{
 			break;
 		}
 	}
 
+	UK2Node_FunctionResult* ResultNode = nullptr;
+	const bool bUseExistingNode = NodeData.NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
+	if (bUseExistingNode)
+	{
+		ResultNode = TemplateResultNode;
+	}
+
 	if (!ResultNode)
 	{
-		// Create new result node
+		// Create a dedicated result node for this return node.
+		// This allows branching return paths (e.g., true/false each returning different values).
 		ResultNode = CreateNode<UK2Node_FunctionResult>(Graph);
 		ResultNode->AllocateDefaultPins();
+
+		if (TemplateResultNode && TemplateResultNode->UserDefinedPins.Num() > 0)
+		{
+			ResultNode->UserDefinedPins = TemplateResultNode->UserDefinedPins;
+			ResultNode->ReconstructNode();
+		}
 	}
 
 	SetNodePosition(ResultNode, NodeData.Position);

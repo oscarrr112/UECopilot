@@ -155,6 +155,9 @@ private:
 	/** Whether we are in modify mode (vs create mode) */
 	bool bIsModifyMode = false;
 
+	/** Prevent infinite retries when AI returns unsupported legacy function format */
+	bool bSchemaCorrectionRetried = false;
+
 	/** Input history for arrow key navigation */
 	TArray<FString> InputHistory;
 

@@ -38,14 +38,23 @@ namespace
 			AddEntry(TEXT("InputEvent"), EBlueprintNodeType::Event_Input);
 
 			AddEntry(TEXT("Branch"), EBlueprintNodeType::Flow_Branch);
+			AddEntry(TEXT("Flow_Branch"), EBlueprintNodeType::Flow_Branch);
 			AddEntry(TEXT("Sequence"), EBlueprintNodeType::Flow_Sequence);
+			AddEntry(TEXT("Flow_Sequence"), EBlueprintNodeType::Flow_Sequence);
 			AddEntry(TEXT("ForLoop"), EBlueprintNodeType::Flow_ForLoop);
+			AddEntry(TEXT("Flow_ForLoop"), EBlueprintNodeType::Flow_ForLoop);
 			AddEntry(TEXT("ForEachLoop"), EBlueprintNodeType::Flow_ForEachLoop);
+			AddEntry(TEXT("Flow_ForEachLoop"), EBlueprintNodeType::Flow_ForEachLoop);
 			AddEntry(TEXT("WhileLoop"), EBlueprintNodeType::Flow_WhileLoop);
+			AddEntry(TEXT("Flow_WhileLoop"), EBlueprintNodeType::Flow_WhileLoop);
 			AddEntry(TEXT("Switch"), EBlueprintNodeType::Flow_Switch);
+			AddEntry(TEXT("Flow_Switch"), EBlueprintNodeType::Flow_Switch);
 			AddEntry(TEXT("DoOnce"), EBlueprintNodeType::Flow_DoOnce);
+			AddEntry(TEXT("Flow_DoOnce"), EBlueprintNodeType::Flow_DoOnce);
 			AddEntry(TEXT("Gate"), EBlueprintNodeType::Flow_Gate);
+			AddEntry(TEXT("Flow_Gate"), EBlueprintNodeType::Flow_Gate);
 			AddEntry(TEXT("Delay"), EBlueprintNodeType::Flow_Delay);
+			AddEntry(TEXT("Flow_Delay"), EBlueprintNodeType::Flow_Delay);
 
 			AddEntry(TEXT("CallFunction"), EBlueprintNodeType::CallFunction);
 			AddEntry(TEXT("PureFunction"), EBlueprintNodeType::PureFunction);
@@ -67,11 +76,17 @@ namespace
 			AddEntry(TEXT("Math_Divide"), EBlueprintNodeType::Math_Divide);
 
 			AddEntry(TEXT("Equal"), EBlueprintNodeType::Compare_Equal);
+			AddEntry(TEXT("Compare_Equal"), EBlueprintNodeType::Compare_Equal);
 			AddEntry(TEXT("NotEqual"), EBlueprintNodeType::Compare_NotEqual);
+			AddEntry(TEXT("Compare_NotEqual"), EBlueprintNodeType::Compare_NotEqual);
 			AddEntry(TEXT("Greater"), EBlueprintNodeType::Compare_Greater);
+			AddEntry(TEXT("Compare_Greater"), EBlueprintNodeType::Compare_Greater);
 			AddEntry(TEXT("Less"), EBlueprintNodeType::Compare_Less);
+			AddEntry(TEXT("Compare_Less"), EBlueprintNodeType::Compare_Less);
 			AddEntry(TEXT("GreaterEqual"), EBlueprintNodeType::Compare_GreaterEqual);
+			AddEntry(TEXT("Compare_GreaterEqual"), EBlueprintNodeType::Compare_GreaterEqual);
 			AddEntry(TEXT("LessEqual"), EBlueprintNodeType::Compare_LessEqual);
+			AddEntry(TEXT("Compare_LessEqual"), EBlueprintNodeType::Compare_LessEqual);
 
 			AddEntry(TEXT("And"), EBlueprintNodeType::Logic_And);
 			AddEntry(TEXT("Or"), EBlueprintNodeType::Logic_Or);
@@ -503,23 +518,147 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 	JsonObject->TryGetBoolField(TEXT("is_const"), OutData.bIsConst);
 	JsonObject->TryGetStringField(TEXT("description"), OutData.Description);
 
+	// Parse function inputs
+	const TArray<TSharedPtr<FJsonValue>>* InputsArray;
+	if (JsonObject->TryGetArrayField(TEXT("inputs"), InputsArray))
+	{
+		for (const TSharedPtr<FJsonValue>& InputValue : *InputsArray)
+		{
+			const TSharedPtr<FJsonObject>* InputObject;
+			if (InputValue->TryGetObject(InputObject))
+			{
+				FBlueprintPinData InputData;
+				if (ParsePin(*InputObject, InputData, OutError))
+				{
+					OutData.Inputs.Add(InputData);
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	// Parse function outputs
+	const TArray<TSharedPtr<FJsonValue>>* OutputsArray;
+	if (JsonObject->TryGetArrayField(TEXT("outputs"), OutputsArray))
+	{
+		for (const TSharedPtr<FJsonValue>& OutputValue : *OutputsArray)
+		{
+			const TSharedPtr<FJsonObject>* OutputObject;
+			if (OutputValue->TryGetObject(OutputObject))
+			{
+				FBlueprintPinData OutputData;
+				if (ParsePin(*OutputObject, OutputData, OutError))
+				{
+					OutData.Outputs.Add(OutputData);
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	// Legacy compatibility: map "parameters" and "return_type" into graph pins.
+	const TArray<TSharedPtr<FJsonValue>>* ParametersArray;
+	if (OutData.Inputs.Num() == 0 && JsonObject->TryGetArrayField(TEXT("parameters"), ParametersArray))
+	{
+		for (const TSharedPtr<FJsonValue>& ParamValue : *ParametersArray)
+		{
+			const TSharedPtr<FJsonObject>* ParamObject;
+			if (ParamValue->TryGetObject(ParamObject))
+			{
+				FBlueprintPinData ParamData;
+				ParamData.Direction = EBlueprintPinDirection::Input;
+				(*ParamObject)->TryGetStringField(TEXT("name"), ParamData.Name);
+				(*ParamObject)->TryGetStringField(TEXT("type"), ParamData.Type);
+				if (!ParamData.Name.IsEmpty())
+				{
+					OutData.Inputs.Add(ParamData);
+				}
+			}
+		}
+	}
+
+	FString ReturnType;
+	if (OutData.Outputs.Num() == 0 && JsonObject->TryGetStringField(TEXT("return_type"), ReturnType))
+	{
+		if (!ReturnType.IsEmpty() && !ReturnType.Equals(TEXT("void"), ESearchCase::IgnoreCase))
+		{
+			FBlueprintPinData ReturnData;
+			ReturnData.Name = TEXT("ReturnValue");
+			ReturnData.Type = ReturnType;
+			ReturnData.Direction = EBlueprintPinDirection::Output;
+			OutData.Outputs.Add(ReturnData);
+		}
+	}
+
 	// Parse nodes
 	const TArray<TSharedPtr<FJsonValue>>* NodesArray;
 	if (JsonObject->TryGetArrayField(TEXT("nodes"), NodesArray))
 	{
+		TMap<FString, FString> NodeIdRemap;
+
 		for (const TSharedPtr<FJsonValue>& NodeValue : *NodesArray)
 		{
 			const TSharedPtr<FJsonObject>* NodeObject;
 			if (NodeValue->TryGetObject(NodeObject))
 			{
+				FString RawNodeId;
+				if (!(*NodeObject)->TryGetStringField(TEXT("node_id"), RawNodeId))
+				{
+					(*NodeObject)->TryGetStringField(TEXT("id"), RawNodeId);
+				}
+
+				FString RawNodeType;
+				if (!(*NodeObject)->TryGetStringField(TEXT("node_type"), RawNodeType))
+				{
+					(*NodeObject)->TryGetStringField(TEXT("type"), RawNodeType);
+				}
+
+				const FString NormalizedRawType = NormalizeNodeTypeKey(RawNodeType);
+				if (!RawNodeId.IsEmpty() && (NormalizedRawType == TEXT("functionentry") || NormalizedRawType == TEXT("entry")))
+				{
+					NodeIdRemap.Add(RawNodeId, TEXT("fn_entry"));
+				}
+				else if (!RawNodeId.IsEmpty() && (NormalizedRawType == TEXT("functionresult") || NormalizedRawType == TEXT("result")))
+				{
+					NodeIdRemap.Add(RawNodeId, TEXT("fn_result"));
+				}
+
 				FBlueprintNodeData NodeData;
 				if (ParseNode(*NodeObject, NodeData, OutError))
 				{
+					if (const FString* CanonicalId = NodeIdRemap.Find(NodeData.NodeId))
+					{
+						NodeData.NodeId = *CanonicalId;
+					}
 					OutData.Nodes.Add(NodeData);
 				}
 				else
 				{
 					return false;
+				}
+			}
+		}
+
+		// Rewrite connection source ids if they referenced normalized function entry/result aliases.
+		if (NodeIdRemap.Num() > 0)
+		{
+			for (FBlueprintNodeData& Node : OutData.Nodes)
+			{
+				for (FBlueprintPinData& Pin : Node.Pins)
+				{
+					for (FBlueprintPinConnection& Conn : Pin.Connections)
+					{
+						if (const FString* CanonicalId = NodeIdRemap.Find(Conn.SourceNodeId))
+						{
+							Conn.SourceNodeId = *CanonicalId;
+						}
+					}
 				}
 			}
 		}

@@ -37,6 +37,16 @@ namespace
 		return Result;
 	}
 
+	bool ContainsLegacyFunctionFormat(const FString& JsonContent)
+	{
+		const bool bHasFunctions = JsonContent.Contains(TEXT("\"functions\""));
+		const bool bHasLegacyFields =
+			JsonContent.Contains(TEXT("\"body\"")) ||
+			JsonContent.Contains(TEXT("\"return_type\"")) ||
+			JsonContent.Contains(TEXT("\"parameters\""));
+		return bHasFunctions && bHasLegacyFields;
+	}
+
 	bool FindBlueprintVariableName(UBlueprint* Blueprint, const FBlueprintData& Data, const FString& Key, FString& OutVariableName)
 	{
 		if (Key.IsEmpty())
@@ -106,7 +116,7 @@ namespace
 			return true;
 		}
 
-		if (NormalizedKey == TEXT("beginplay"))
+		if (NormalizedKey == TEXT("beginplay") || NormalizedKey == TEXT("begin"))
 		{
 			OutNode.NodeId = NodeId;
 			OutNode.NodeType = EBlueprintNodeType::Event_BeginPlay;
@@ -157,6 +167,26 @@ namespace
 		}
 
 		return TryCreateSyntheticVariableNode(Blueprint, Data, NodeId, OutNode);
+	}
+
+	bool TryCreateSyntheticFunctionNode(const FString& NodeId, FBlueprintNodeData& OutNode)
+	{
+		const FString Key = NormalizeIdentifier(NodeId);
+		if (Key == TEXT("fnentry") || Key == TEXT("functionentry") || Key == TEXT("entry"))
+		{
+			OutNode.NodeId = NodeId;
+			OutNode.NodeType = EBlueprintNodeType::Unknown;
+			return true;
+		}
+
+		if (Key == TEXT("fnresult") || Key == TEXT("functionresult"))
+		{
+			OutNode.NodeId = NodeId;
+			OutNode.NodeType = EBlueprintNodeType::Return;
+			return true;
+		}
+
+		return false;
 	}
 
 	bool IsTargetEventGraph(const FBlueprintGraphData& Graph)
@@ -443,6 +473,9 @@ void SAIChatWindow::SendMessage()
 	{
 		return;
 	}
+
+	// New user input resets schema correction retry state.
+	bSchemaCorrectionRetried = false;
 
 	UE_LOG(LogSAIChatWindow, Log, TEXT("User input: %s"), *InputText);
 
@@ -794,6 +827,36 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 
 	if (!JSONContent.IsEmpty() && JSONContent.StartsWith(TEXT("{")))
 	{
+		if (ContainsLegacyFunctionFormat(JSONContent))
+		{
+			PendingBlueprintData.Reset();
+
+			if (!bSchemaCorrectionRetried)
+			{
+				bSchemaCorrectionRetried = true;
+				AddMessage(EChatMessageRole::System,
+					TEXT("AI returned an unsupported function format (body/return_type/parameters). Retrying once with strict node-graph schema."));
+
+				FString CorrectionPrompt = TEXT("Rewrite ONLY the previous JSON using graph format. ")
+					TEXT("For function logic, use functions[].nodes with explicit node_id/node_type/pins. ")
+					TEXT("Do NOT use body, return_type, or parameters fields. Return JSON only.");
+				CorrectionPrompt += GetBlueprintSchemaHint();
+
+				ConversationContext->AddUserMessage(CorrectionPrompt);
+				bIsProcessing = true;
+				UOpenAICompatibleService::Get()->SendChatRequest(
+					ConversationContext->GetMessages(),
+					FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
+				);
+			}
+			else
+			{
+				AddMessage(EChatMessageRole::System,
+					TEXT("AI still returned unsupported function format after retry. Please run /modify again; function logic must be expressed as nodes, not body text."));
+			}
+			return;
+		}
+
 		FBlueprintParseResult ParseResult = UBlueprintJSONParser::ParseBlueprintJSON(JSONContent);
 
 		if (ParseResult.bSuccess)
@@ -828,6 +891,12 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 				AddMessage(EChatMessageRole::System,
 					FString::Printf(TEXT("Blueprint validation failed:\n%s"), *ErrorList));
 			}
+		}
+		else
+		{
+			PendingBlueprintData.Reset();
+			AddMessage(EChatMessageRole::System,
+				FString::Printf(TEXT("Failed to parse JSON response: %s"), *ParseResult.ErrorMessage));
 		}
 	}
 }
@@ -922,6 +991,46 @@ void SAIChatWindow::EnsureTickGraph(FBlueprintData& Data) const
 			}
 		}
 	}
+
+	for (FBlueprintGraphData& Graph : Data.Functions)
+	{
+		TSet<FString> ExistingNodeIds;
+		TSet<FString> ReferencedNodeIds;
+
+		for (const FBlueprintNodeData& Node : Graph.Nodes)
+		{
+			if (!Node.NodeId.IsEmpty())
+			{
+				ExistingNodeIds.Add(Node.NodeId);
+			}
+
+			for (const FBlueprintPinData& Pin : Node.Pins)
+			{
+				for (const FBlueprintPinConnection& Conn : Pin.Connections)
+				{
+					if (!Conn.SourceNodeId.IsEmpty())
+					{
+						ReferencedNodeIds.Add(Conn.SourceNodeId);
+					}
+				}
+			}
+		}
+
+		for (const FString& SourceId : ReferencedNodeIds)
+		{
+			if (ExistingNodeIds.Contains(SourceId))
+			{
+				continue;
+			}
+
+			FBlueprintNodeData Synthetic;
+			if (TryCreateSyntheticFunctionNode(SourceId, Synthetic) || TryCreateSyntheticVariableNode(Blueprint, Data, SourceId, Synthetic))
+			{
+				Graph.Nodes.Add(Synthetic);
+				ExistingNodeIds.Add(SourceId);
+			}
+		}
+	}
 }
 
 FReply SAIChatWindow::OnSettingsClicked()
@@ -938,6 +1047,7 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 {
 	FString Cmd, Args;
 	ParseQuickCommand(Command, Cmd, Args);
+	bSchemaCorrectionRetried = false;
 
 	if (Cmd.Equals(TEXT("generate"), ESearchCase::IgnoreCase))
 	{
@@ -1442,6 +1552,19 @@ FString SAIChatWindow::GetBlueprintSchemaHint()
 		TEXT("{\n")
 		TEXT("  \"name\": \"BP_Name\",\n")
 		TEXT("  \"parent_class\": \"Actor\",\n")
+		TEXT("  \"functions\": [\n")
+		TEXT("    {\n")
+		TEXT("      \"name\": \"GetLocation\",\n")
+		TEXT("      \"outputs\": [{\"name\": \"ReturnValue\", \"type\": \"int\"}],\n")
+		TEXT("      \"nodes\": [\n")
+		TEXT("        {\"node_id\": \"get_aaa\", \"node_type\": \"Variable_Get\", \"variable\": \"aaa\"},\n")
+		TEXT("        {\"node_id\": \"cmp_gt\", \"node_type\": \"Compare_Greater\", \"pins\": {\"A\": {\"connection\": \"get_aaa.aaa\"}, \"B\": {\"value\": \"0\"}}},\n")
+		TEXT("        {\"node_id\": \"branch\", \"node_type\": \"Flow_Branch\", \"pins\": {\"execute\": {\"connection\": \"fn_entry.then\"}, \"Condition\": {\"connection\": \"cmp_gt.ReturnValue\"}}},\n")
+		TEXT("        {\"node_id\": \"return_true\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Then\"}, \"ReturnValue\": {\"connection\": \"get_aaa.aaa\"}}},\n")
+		TEXT("        {\"node_id\": \"fn_result_else\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Else\"}, \"ReturnValue\": {\"value\": \"0\"}}}\n")
+		TEXT("      ]\n")
+		TEXT("    }\n")
+		TEXT("  ],\n")
 		TEXT("  \"event_graphs\": [\n")
 		TEXT("    {\n")
 		TEXT("      \"name\": \"Tick\",\n")
@@ -1465,5 +1588,12 @@ FString SAIChatWindow::GetBlueprintSchemaHint()
 		TEXT("      ]\n")
 		TEXT("    }\n")
 		TEXT("  ]\n")
-		TEXT("}");
+		TEXT("}\n")
+		TEXT("Rules:\n")
+		TEXT("- Function logic must be represented with graph nodes in functions[].nodes.\n")
+		TEXT("- In function graphs, use the built-in entry node id \"fn_entry\" for exec flow.\n")
+		TEXT("- Prefer \"inputs\"/\"outputs\" for function signatures.\n")
+		TEXT("- Use \"ReturnValue\" as return pin name for non-void functions.\n")
+		TEXT("- Do NOT use field \"body\".\n")
+		TEXT("- Return JSON only, no markdown.");
 }
