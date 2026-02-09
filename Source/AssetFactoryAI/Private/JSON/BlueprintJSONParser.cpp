@@ -18,6 +18,108 @@ namespace
 		return Normalized;
 	}
 
+	EBlueprintNodeType InferNodeTypeFromData(const FBlueprintNodeData& NodeData)
+	{
+		const FString NodeIdKey = NormalizeNodeTypeKey(NodeData.NodeId);
+		const auto HasPin = [&NodeData](const TCHAR* PinName)
+		{
+			for (const FBlueprintPinData& Pin : NodeData.Pins)
+			{
+				if (Pin.Name.Equals(PinName, ESearchCase::IgnoreCase))
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		if (!NodeData.EventName.IsEmpty())
+		{
+			const FString EventKey = NormalizeNodeTypeKey(NodeData.EventName);
+			if (EventKey.Contains(TEXT("beginplay")) || NodeIdKey.Contains(TEXT("eventbegin")) || NodeIdKey.Contains(TEXT("eventbeginplay")))
+			{
+				return EBlueprintNodeType::Event_BeginPlay;
+			}
+			if (EventKey.Contains(TEXT("tick")) || NodeIdKey.Contains(TEXT("eventtick")))
+			{
+				return EBlueprintNodeType::Event_Tick;
+			}
+			return EBlueprintNodeType::Event_Custom;
+		}
+
+		if (!NodeData.VariableName.IsEmpty())
+		{
+			return HasPin(TEXT("execute")) ? EBlueprintNodeType::Variable_Set : EBlueprintNodeType::Variable_Get;
+		}
+
+		if (HasPin(TEXT("Condition")) || NodeIdKey.Contains(TEXT("branch")))
+		{
+			return EBlueprintNodeType::Flow_Branch;
+		}
+		if (NodeIdKey.Contains(TEXT("return")))
+		{
+			return EBlueprintNodeType::Return;
+		}
+
+		if (NodeIdKey.Contains(TEXT("comparegreaterequal")) || NodeIdKey.Contains(TEXT("cmpge")))
+		{
+			return EBlueprintNodeType::Compare_GreaterEqual;
+		}
+		if (NodeIdKey.Contains(TEXT("comparelessequal")) || NodeIdKey.Contains(TEXT("cmple")))
+		{
+			return EBlueprintNodeType::Compare_LessEqual;
+		}
+		if (NodeIdKey.Contains(TEXT("comparegreater")) || NodeIdKey.Contains(TEXT("cmpgt")))
+		{
+			return EBlueprintNodeType::Compare_Greater;
+		}
+		if (NodeIdKey.Contains(TEXT("compareless")) || NodeIdKey.Contains(TEXT("cmplt")))
+		{
+			return EBlueprintNodeType::Compare_Less;
+		}
+		if (NodeIdKey.Contains(TEXT("compareequal")) || NodeIdKey.Contains(TEXT("cmpeq")))
+		{
+			return EBlueprintNodeType::Compare_Equal;
+		}
+
+		if (NodeIdKey.Contains(TEXT("logicand")) || NodeIdKey.EndsWith(TEXT("and")))
+		{
+			return EBlueprintNodeType::Logic_And;
+		}
+		if (NodeIdKey.Contains(TEXT("logicor")) || NodeIdKey.EndsWith(TEXT("or")))
+		{
+			return EBlueprintNodeType::Logic_Or;
+		}
+		if (NodeIdKey.Contains(TEXT("logicnot")) || NodeIdKey.EndsWith(TEXT("not")))
+		{
+			return EBlueprintNodeType::Logic_Not;
+		}
+
+		if (NodeIdKey.Contains(TEXT("mathadd")) || NodeIdKey.Contains(TEXT("add")))
+		{
+			return EBlueprintNodeType::Math_Add;
+		}
+		if (NodeIdKey.Contains(TEXT("mathsubtract")) || NodeIdKey.Contains(TEXT("sub")))
+		{
+			return EBlueprintNodeType::Math_Subtract;
+		}
+		if (NodeIdKey.Contains(TEXT("mathmultiply")) || NodeIdKey.Contains(TEXT("mul")))
+		{
+			return EBlueprintNodeType::Math_Multiply;
+		}
+		if (NodeIdKey.Contains(TEXT("mathdivide")) || NodeIdKey.Contains(TEXT("div")))
+		{
+			return EBlueprintNodeType::Math_Divide;
+		}
+
+		if (!NodeData.FunctionReference.IsEmpty())
+		{
+			return EBlueprintNodeType::CallFunction;
+		}
+
+		return EBlueprintNodeType::Unknown;
+	}
+
 	const TMap<FString, EBlueprintNodeType>& GetNodeTypeMap()
 	{
 		static TMap<FString, EBlueprintNodeType> Map;
@@ -57,14 +159,18 @@ namespace
 			AddEntry(TEXT("Flow_Delay"), EBlueprintNodeType::Flow_Delay);
 
 			AddEntry(TEXT("CallFunction"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("K2Node_CallFunction"), EBlueprintNodeType::CallFunction);
 			AddEntry(TEXT("PureFunction"), EBlueprintNodeType::PureFunction);
+			AddEntry(TEXT("K2Node_PureFunction"), EBlueprintNodeType::PureFunction);
 
 			AddEntry(TEXT("GetVariable"), EBlueprintNodeType::Variable_Get);
 			AddEntry(TEXT("Get"), EBlueprintNodeType::Variable_Get);
 			AddEntry(TEXT("Variable_Get"), EBlueprintNodeType::Variable_Get);
+			AddEntry(TEXT("K2Node_VariableGet"), EBlueprintNodeType::Variable_Get);
 			AddEntry(TEXT("SetVariable"), EBlueprintNodeType::Variable_Set);
 			AddEntry(TEXT("Set"), EBlueprintNodeType::Variable_Set);
 			AddEntry(TEXT("Variable_Set"), EBlueprintNodeType::Variable_Set);
+			AddEntry(TEXT("K2Node_VariableSet"), EBlueprintNodeType::Variable_Set);
 
 			AddEntry(TEXT("Add"), EBlueprintNodeType::Math_Add);
 			AddEntry(TEXT("Math_Add"), EBlueprintNodeType::Math_Add);
@@ -116,6 +222,11 @@ namespace
 			AddEntry(TEXT("Comment"), EBlueprintNodeType::Comment);
 			AddEntry(TEXT("Reroute"), EBlueprintNodeType::Reroute);
 			AddEntry(TEXT("Return"), EBlueprintNodeType::Return);
+			AddEntry(TEXT("K2Node_FunctionResult"), EBlueprintNodeType::Return);
+			AddEntry(TEXT("K2Node_IfThenElse"), EBlueprintNodeType::Flow_Branch);
+			AddEntry(TEXT("K2Node_Event"), EBlueprintNodeType::Event_Custom);
+			AddEntry(TEXT("K2Node_InputAction"), EBlueprintNodeType::Event_Input);
+			AddEntry(TEXT("K2Node_FunctionEntry"), EBlueprintNodeType::Unknown);
 		}
 
 		return Map;
@@ -720,31 +831,6 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 		}
 	}
 
-	if (OutData.NodeType == EBlueprintNodeType::Unknown)
-	{
-		const bool bIsFunctionBoundaryHelper =
-			NormalizedNodeTypeKey == TEXT("functionentry") ||
-			NormalizedNodeTypeKey == TEXT("entry") ||
-			NormalizedNodeTypeKey == TEXT("functionresult") ||
-			NormalizedNodeTypeKey == TEXT("result") ||
-			OutData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
-			OutData.NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
-		if (bIsFunctionBoundaryHelper)
-		{
-			return true;
-		}
-
-		if (bHasTypeString)
-		{
-			OutError = FString::Printf(TEXT("Unknown node_type '%s' for node '%s'"), *NodeTypeString, *OutData.NodeId);
-		}
-		else
-		{
-			OutError = FString::Printf(TEXT("Unknown or missing node_type for node '%s'"), *OutData.NodeId);
-		}
-		return false;
-	}
-
 	JsonObject->TryGetStringField(TEXT("function"), OutData.FunctionReference);
 	JsonObject->TryGetStringField(TEXT("event_name"), OutData.EventName);
 	JsonObject->TryGetStringField(TEXT("variable"), OutData.VariableName);
@@ -811,6 +897,40 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 
 			OutData.Pins.Add(PinData);
 		}
+	}
+
+	if (OutData.NodeType == EBlueprintNodeType::Unknown)
+	{
+		const bool bIsFunctionBoundaryHelper =
+			NormalizedNodeTypeKey == TEXT("functionentry") ||
+			NormalizedNodeTypeKey == TEXT("entry") ||
+			NormalizedNodeTypeKey == TEXT("k2nodefunctionentry") ||
+			NormalizedNodeTypeKey == TEXT("functionresult") ||
+			NormalizedNodeTypeKey == TEXT("result") ||
+			NormalizedNodeTypeKey == TEXT("k2nodefunctionresult") ||
+			OutData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
+			OutData.NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
+		if (bIsFunctionBoundaryHelper)
+		{
+			return true;
+		}
+
+		const EBlueprintNodeType InferredType = InferNodeTypeFromData(OutData);
+		if (InferredType != EBlueprintNodeType::Unknown)
+		{
+			OutData.NodeType = InferredType;
+			return true;
+		}
+
+		if (bHasTypeString)
+		{
+			OutError = FString::Printf(TEXT("Unknown node_type '%s' for node '%s'"), *NodeTypeString, *OutData.NodeId);
+		}
+		else
+		{
+			OutError = FString::Printf(TEXT("Unknown or missing node_type for node '%s'"), *OutData.NodeId);
+		}
+		return false;
 	}
 
 	return true;

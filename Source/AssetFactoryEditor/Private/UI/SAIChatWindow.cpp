@@ -213,8 +213,7 @@ namespace
 		}
 
 		return false;
-	}
-ie
+}
 	FString NormalizeSkillText(const FString& Input)
 	{
 		FString Result;
