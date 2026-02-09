@@ -42,7 +42,11 @@ public class AssetFactory : ModuleRules
 			"DeveloperSettings",
 			// GAS (Gameplay Ability System) - GameplayTags is always available
 			"GameplayTags",
-			"GameplayTagsEditor"
+			"GameplayTagsEditor",
+			// Editor state & Python execution
+			"ContentBrowser",
+			"LevelEditor",
+			"PythonScriptPlugin"
 		});
 
 		// GameplayAbilities is optional — only link when the plugin is enabled

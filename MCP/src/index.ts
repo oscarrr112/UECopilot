@@ -200,6 +200,36 @@ const tools: Tool[] = [
       properties: {},
     },
   },
+  {
+    name: "get_editor_context",
+    description:
+      "Get the current Unreal Editor state: selected actors (with transform), selected content browser assets, current level, open asset editors, PIE status, and active editor modes. Use this to understand what the user is currently working on.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "execute_python",
+    description:
+      "Execute Python code in the Unreal Editor via PythonScriptPlugin. Supports multi-line scripts with imports. Wrapped in an undo transaction for safety. Use this for operations not covered by structured generators (e.g., renaming, bulk edits, editor automation).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          description:
+            "Python code to execute. Supports multi-line with imports (e.g., 'import unreal; unreal.log(\"hello\")')",
+        },
+        description: {
+          type: "string",
+          description:
+            "Optional description for the undo history entry (shown in Edit > Undo)",
+        },
+      },
+      required: ["code"],
+    },
+  },
 ];
 
 // Create MCP server
@@ -272,6 +302,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "health_check":
         result = await callUEApi("/health", "GET");
+        break;
+
+      case "get_editor_context":
+        result = await callUEApi("/context", "GET");
+        break;
+
+      case "execute_python":
+        result = await callUEApi("/execute", "POST", {
+          Code: (args as { code: string }).code,
+          Description: (args as { description?: string }).description,
+        });
         break;
 
       default:

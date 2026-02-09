@@ -18,6 +18,15 @@
 #include "HAL/PlatformFileManager.h"
 #include "Editor.h"
 #include "ObjectTools.h"
+// Editor state
+#include "Subsystems/EditorActorSubsystem.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
+#include "EditorModeManager.h"
+#include "EditorModeRegistry.h"
+// Python execution
+#include "IPythonScriptPlugin.h"
 
 FAssetFactoryHttpServer::FAssetFactoryHttpServer()
 {
@@ -89,6 +98,20 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleHealth)
 	);
 
+	// GET /assetfactory/context
+	ContextRouteHandle = HttpRouter->BindRoute(
+		FHttpPath(TEXT("/assetfactory/context")),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleContext)
+	);
+
+	// POST /assetfactory/execute
+	ExecuteRouteHandle = HttpRouter->BindRoute(
+		FHttpPath(TEXT("/assetfactory/execute")),
+		EHttpServerRequestVerbs::VERB_POST,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExecute)
+	);
+
 	// Start listeners
 	HttpServerModule.StartAllListeners();
 
@@ -105,6 +128,8 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/query"), Port);
 	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/generators"), Port);
 	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/health"), Port);
+	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/context"), Port);
+	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/execute"), Port);
 	UE_LOG(LogAssetFactory, Display, TEXT("  Service discovery: %s"), *GetServiceDiscoveryFilePath());
 
 	return true;
@@ -129,6 +154,8 @@ void FAssetFactoryHttpServer::Stop()
 		HttpRouter->UnbindRoute(QueryRouteHandle);
 		HttpRouter->UnbindRoute(GeneratorsRouteHandle);
 		HttpRouter->UnbindRoute(HealthRouteHandle);
+		HttpRouter->UnbindRoute(ContextRouteHandle);
+		HttpRouter->UnbindRoute(ExecuteRouteHandle);
 	}
 
 	bIsRunning = false;
@@ -270,6 +297,261 @@ bool FAssetFactoryHttpServer::HandleHealth(const FHttpServerRequest& Request, co
 	ResponseJson->SetBoolField(TEXT("subsystemAvailable"), bSubsystemAvailable);
 
 	SendJsonResponse(OnComplete, 200, ResponseJson);
+	return true;
+}
+
+bool FAssetFactoryHttpServer::HandleContext(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+
+	auto DoCollect = [&]()
+	{
+		// 1. selectedActors
+		TArray<TSharedPtr<FJsonValue>> ActorsArray;
+		if (UEditorActorSubsystem* ActorSubsystem = GEditor->GetEditorSubsystem<UEditorActorSubsystem>())
+		{
+			TArray<AActor*> SelectedActors = ActorSubsystem->GetSelectedLevelActors();
+			for (AActor* Actor : SelectedActors)
+			{
+				if (!Actor) continue;
+				TSharedPtr<FJsonObject> ActorObj = MakeShared<FJsonObject>();
+				ActorObj->SetStringField(TEXT("name"), Actor->GetActorLabel());
+				ActorObj->SetStringField(TEXT("class"), Actor->GetClass()->GetName());
+				ActorObj->SetStringField(TEXT("path"), Actor->GetPathName());
+
+				FVector Loc = Actor->GetActorLocation();
+				TSharedPtr<FJsonObject> LocObj = MakeShared<FJsonObject>();
+				LocObj->SetNumberField(TEXT("x"), Loc.X);
+				LocObj->SetNumberField(TEXT("y"), Loc.Y);
+				LocObj->SetNumberField(TEXT("z"), Loc.Z);
+				ActorObj->SetObjectField(TEXT("location"), LocObj);
+
+				FRotator Rot = Actor->GetActorRotation();
+				TSharedPtr<FJsonObject> RotObj = MakeShared<FJsonObject>();
+				RotObj->SetNumberField(TEXT("pitch"), Rot.Pitch);
+				RotObj->SetNumberField(TEXT("yaw"), Rot.Yaw);
+				RotObj->SetNumberField(TEXT("roll"), Rot.Roll);
+				ActorObj->SetObjectField(TEXT("rotation"), RotObj);
+
+				FVector Scale = Actor->GetActorScale3D();
+				TSharedPtr<FJsonObject> ScaleObj = MakeShared<FJsonObject>();
+				ScaleObj->SetNumberField(TEXT("x"), Scale.X);
+				ScaleObj->SetNumberField(TEXT("y"), Scale.Y);
+				ScaleObj->SetNumberField(TEXT("z"), Scale.Z);
+				ActorObj->SetObjectField(TEXT("scale"), ScaleObj);
+
+				ActorsArray.Add(MakeShared<FJsonValueObject>(ActorObj));
+			}
+		}
+		ResponseJson->SetArrayField(TEXT("selectedActors"), ActorsArray);
+
+		// 2. selectedAssets from Content Browser
+		TArray<TSharedPtr<FJsonValue>> AssetsArray;
+		{
+			FContentBrowserModule& CBModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+			TArray<FAssetData> SelectedAssets;
+			CBModule.Get().GetSelectedAssets(SelectedAssets);
+			for (const FAssetData& AssetData : SelectedAssets)
+			{
+				TSharedPtr<FJsonObject> AssetObj = MakeShared<FJsonObject>();
+				AssetObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+				AssetObj->SetStringField(TEXT("class"), AssetData.AssetClassPath.GetAssetName().ToString());
+				AssetObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+				AssetsArray.Add(MakeShared<FJsonValueObject>(AssetObj));
+			}
+		}
+		ResponseJson->SetArrayField(TEXT("selectedAssets"), AssetsArray);
+
+		// 3. currentLevel
+		{
+			TSharedPtr<FJsonObject> LevelObj = MakeShared<FJsonObject>();
+			UWorld* World = GEditor->GetEditorWorldContext().World();
+			if (World)
+			{
+				LevelObj->SetStringField(TEXT("levelName"), World->GetCurrentLevel()->GetOutermost()->GetName());
+				LevelObj->SetStringField(TEXT("worldName"), World->GetName());
+				LevelObj->SetStringField(TEXT("worldPath"), World->GetPathName());
+			}
+			ResponseJson->SetObjectField(TEXT("currentLevel"), LevelObj);
+		}
+
+		// 4. openEditors
+		TArray<TSharedPtr<FJsonValue>> EditorsArray;
+		if (UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+		{
+			TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
+			for (UObject* Asset : EditedAssets)
+			{
+				if (!Asset) continue;
+				TSharedPtr<FJsonObject> EditorObj = MakeShared<FJsonObject>();
+				EditorObj->SetStringField(TEXT("name"), Asset->GetName());
+				EditorObj->SetStringField(TEXT("class"), Asset->GetClass()->GetName());
+				EditorObj->SetStringField(TEXT("path"), Asset->GetPathName());
+
+				IAssetEditorInstance* EditorInstance = AssetEditorSubsystem->FindEditorForAsset(Asset, false);
+				if (EditorInstance)
+				{
+					EditorObj->SetStringField(TEXT("editorName"), EditorInstance->GetEditorName().ToString());
+				}
+
+				EditorsArray.Add(MakeShared<FJsonValueObject>(EditorObj));
+			}
+		}
+		ResponseJson->SetArrayField(TEXT("openEditors"), EditorsArray);
+
+		// 5. isPlayInEditor
+		ResponseJson->SetBoolField(TEXT("isPlayInEditor"), GEditor->IsPlaySessionInProgress());
+
+		// 6. activeModes — iterate all registered modes and check which are active
+		TArray<TSharedPtr<FJsonValue>> ModesArray;
+		{
+			FEditorModeTools& ModeTools = GLevelEditorModeTools();
+			const auto& FactoryMap = FEditorModeRegistry::Get().GetFactoryMap();
+			for (const auto& Pair : FactoryMap)
+			{
+				if (ModeTools.IsModeActive(Pair.Key))
+				{
+					ModesArray.Add(MakeShared<FJsonValueString>(Pair.Key.ToString()));
+				}
+			}
+		}
+		ResponseJson->SetArrayField(TEXT("activeModes"), ModesArray);
+	};
+
+	if (IsInGameThread())
+	{
+		DoCollect();
+	}
+	else
+	{
+		FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [&]()
+		{
+			DoCollect();
+			CompletionEvent->Trigger();
+		});
+		CompletionEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+	}
+
+	ResponseJson->SetBoolField(TEXT("success"), true);
+	SendJsonResponse(OnComplete, 200, ResponseJson);
+	return true;
+}
+
+bool FAssetFactoryHttpServer::HandleExecute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Parse request body
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
+
+	if (RequestBody.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Request body is empty"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> JsonObject;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
+	if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+	{
+		SendErrorResponse(OnComplete, 400, FString::Printf(TEXT("Invalid JSON: %s"), *Reader->GetErrorMessage()));
+		return true;
+	}
+
+	FString Code;
+	if (!JsonObject->TryGetStringField(TEXT("Code"), Code))
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Missing required 'Code' field"));
+		return true;
+	}
+
+	FString Description;
+	if (!JsonObject->TryGetStringField(TEXT("Description"), Description))
+	{
+		Description = TEXT("Python Execution via AssetFactory");
+	}
+
+	// Execute on game thread
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+
+	auto DoExecute = [&]()
+	{
+		IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
+		if (!PythonPlugin)
+		{
+			ResponseJson->SetBoolField(TEXT("success"), false);
+			ResponseJson->SetStringField(TEXT("error"), TEXT("PythonScriptPlugin is not available"));
+			return;
+		}
+
+		// Begin undo transaction
+		GEditor->BeginTransaction(FText::FromString(Description));
+
+		FPythonCommandEx PythonCommand;
+		PythonCommand.Command = Code;
+		PythonCommand.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+		PythonCommand.FileExecutionScope = EPythonFileExecutionScope::Private;
+
+		bool bSuccess = PythonPlugin->ExecPythonCommandEx(PythonCommand);
+
+		if (bSuccess)
+		{
+			GEditor->EndTransaction();
+		}
+		else
+		{
+			GEditor->UndoTransaction();
+		}
+
+		ResponseJson->SetBoolField(TEXT("success"), bSuccess);
+		ResponseJson->SetStringField(TEXT("result"), PythonCommand.CommandResult);
+
+		// Collect logs
+		TArray<TSharedPtr<FJsonValue>> LogsArray;
+		for (const FPythonLogOutputEntry& LogEntry : PythonCommand.LogOutput)
+		{
+			TSharedPtr<FJsonObject> LogEntryObj = MakeShared<FJsonObject>();
+			switch (LogEntry.Type)
+			{
+			case EPythonLogOutputType::Info:
+				LogEntryObj->SetStringField(TEXT("type"), TEXT("info"));
+				break;
+			case EPythonLogOutputType::Warning:
+				LogEntryObj->SetStringField(TEXT("type"), TEXT("warning"));
+				break;
+			case EPythonLogOutputType::Error:
+				LogEntryObj->SetStringField(TEXT("type"), TEXT("error"));
+				break;
+			}
+			LogEntryObj->SetStringField(TEXT("message"), LogEntry.Output);
+			LogsArray.Add(MakeShared<FJsonValueObject>(LogEntryObj));
+		}
+		ResponseJson->SetArrayField(TEXT("logs"), LogsArray);
+	};
+
+	if (IsInGameThread())
+	{
+		DoExecute();
+	}
+	else
+	{
+		FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [&]()
+		{
+			DoExecute();
+			CompletionEvent->Trigger();
+		});
+		CompletionEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+	}
+
+	int32 StatusCode = ResponseJson->GetBoolField(TEXT("success")) ? 200 : 500;
+	SendJsonResponse(OnComplete, StatusCode, ResponseJson);
 	return true;
 }
 
@@ -693,6 +975,25 @@ void FAssetFactoryHttpServer::WriteServiceDiscoveryFile()
 		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
 		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/delete"));
 		Endpoint->SetStringField(TEXT("description"), TEXT("Delete assets"));
+		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
+	}
+
+	// Context endpoint
+	{
+		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
+		Endpoint->SetStringField(TEXT("method"), TEXT("GET"));
+		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/context"));
+		Endpoint->SetStringField(TEXT("description"), TEXT("Get current editor state (selected actors, assets, level, open editors)"));
+		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
+	}
+
+	// Execute endpoint
+	{
+		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
+		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
+		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/execute"));
+		Endpoint->SetStringField(TEXT("description"), TEXT("Execute Python code in the editor with undo support"));
 		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
 		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
 	}

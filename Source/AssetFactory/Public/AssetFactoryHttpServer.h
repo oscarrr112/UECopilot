@@ -20,6 +20,8 @@ class UAssetFactorySubsystem;
  *   POST /assetfactory/query - Query extracted JSON using property paths
  *   GET  /assetfactory/generators - List available asset generators
  *   GET  /assetfactory/health - Health check
+ *   GET  /assetfactory/context - Get current editor state (selected actors, assets, level, etc.)
+ *   POST /assetfactory/execute - Execute Python code in the editor
  *
  * Service Discovery:
  *   On startup, writes service info to {ProjectDir}/Saved/AssetFactory/service.json
@@ -81,6 +83,12 @@ private:
 	/** Handle POST /delete request */
 	bool HandleDelete(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
+	/** Handle GET /context request - returns current editor state */
+	bool HandleContext(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
+	/** Handle POST /execute request - execute Python code in the editor */
+	bool HandleExecute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
 	/** Send JSON response */
 	void SendJsonResponse(const FHttpResultCallback& OnComplete, int32 StatusCode, TSharedPtr<FJsonObject> JsonResponse);
 
@@ -98,6 +106,8 @@ private:
 	FHttpRouteHandle QueryRouteHandle;
 	FHttpRouteHandle GeneratorsRouteHandle;
 	FHttpRouteHandle HealthRouteHandle;
+	FHttpRouteHandle ContextRouteHandle;
+	FHttpRouteHandle ExecuteRouteHandle;
 
 	/** Server state */
 	bool bIsRunning = false;
