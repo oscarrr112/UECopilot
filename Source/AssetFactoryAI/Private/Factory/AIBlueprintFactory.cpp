@@ -654,6 +654,16 @@ UClass* UAIBlueprintFactory::ResolveParentClass(const FString& ParentClassPath)
 		return AActor::StaticClass();
 	}
 
+	// Handle common UI shortcuts without requiring callers to pass full script path.
+	if (ParentClassPath.Equals(TEXT("UserWidget"), ESearchCase::IgnoreCase) ||
+		ParentClassPath.Equals(TEXT("Widget"), ESearchCase::IgnoreCase))
+	{
+		if (UClass* WidgetClass = UNodeSpawner::FindClassByPath(TEXT("/Script/UMG.UserWidget")))
+		{
+			return WidgetClass;
+		}
+	}
+
 	// Try common shortcuts
 	static TMap<FString, UClass*> CommonClasses = {
 		{TEXT("Actor"), AActor::StaticClass()},

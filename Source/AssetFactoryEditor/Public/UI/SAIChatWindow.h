@@ -42,6 +42,21 @@ public:
 	/** Destructor */
 	virtual ~SAIChatWindow();
 
+	/** Build modify prompt from selected blueprint + requested changes. */
+	FString BuildModifyPromptForTest(UBlueprint* SelectedBlueprint, const FString& Args) const;
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** Parse a quick command from raw editor input, e.g. "/modify xxx". */
+	static bool ParseQuickCommandForTest(const FString& Input, FString& OutCommand, FString& OutArgs);
+
+	/** Build a modify prompt directly from raw user input. */
+	bool TryBuildModifyPromptFromInputForTest(
+		const FString& Input,
+		UBlueprint* SelectedBlueprint,
+		FString& OutPrompt,
+		FString& OutError) const;
+#endif
+
 private:
 	/** Build the header toolbar */
 	TSharedRef<SWidget> BuildToolbar();

@@ -22,6 +22,8 @@
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "Selection.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "UObject/FieldIterator.h"
 #include "Editor.h"
 
@@ -211,6 +213,185 @@ namespace
 		}
 
 		return false;
+	}
+ie
+	FString NormalizeSkillText(const FString& Input)
+	{
+		FString Result;
+		Result.Reserve(Input.Len());
+		for (TCHAR Ch : Input.ToLower())
+		{
+			if (FChar::IsAlnum(Ch))
+			{
+				Result.AppendChar(Ch);
+			}
+		}
+		return Result;
+	}
+
+	FString ResolveSkillParentBucket(UBlueprint* Blueprint)
+	{
+		if (!Blueprint || !Blueprint->ParentClass)
+		{
+			return TEXT("unknown");
+		}
+
+		const FString ParentClassPath = NormalizeSkillText(Blueprint->ParentClass->GetPathName());
+		if (ParentClassPath.Contains(TEXT("userwidget")) || ParentClassPath.Contains(TEXT("widget")))
+		{
+			return TEXT("widget");
+		}
+		if (ParentClassPath.Contains(TEXT("character")) || ParentClassPath.Contains(TEXT("pawn")))
+		{
+			return TEXT("character");
+		}
+		if (ParentClassPath.Contains(TEXT("gamemode")) || ParentClassPath.Contains(TEXT("gamestate")) ||
+			ParentClassPath.Contains(TEXT("playercontroller")) || ParentClassPath.Contains(TEXT("playerstate")))
+		{
+			return TEXT("gameframework");
+		}
+		if (ParentClassPath.Contains(TEXT("actorcomponent")) || ParentClassPath.Contains(TEXT("scenecomponent")) ||
+			ParentClassPath.Contains(TEXT("component")) || ParentClassPath.Contains(TEXT("actor")))
+		{
+			return TEXT("actor");
+		}
+		return TEXT("unknown");
+	}
+
+	FString ResolveSkillNeedBucket(const FString& Requirement)
+	{
+		const FString Req = NormalizeSkillText(Requirement);
+		if (Req.Contains(TEXT("function")) || Req.Contains(TEXT("return")) || Req.Contains(TEXT("branch")) ||
+			Req.Contains(TEXT("if")) || Req.Contains(TEXT("compare")) || Req.Contains(TEXT("output")))
+		{
+			return TEXT("function");
+		}
+		if (Req.Contains(TEXT("tick")) || Req.Contains(TEXT("beginplay")) || Req.Contains(TEXT("event")) ||
+			Req.Contains(TEXT("trigger")) || Req.Contains(TEXT("overlap")) || Req.Contains(TEXT("onclick")) ||
+			Req.Contains(TEXT("pressed")) || Req.Contains(TEXT("released")))
+		{
+			return TEXT("event");
+		}
+		return TEXT("mixed");
+	}
+
+	TArray<FString> GetRuntimeSkillIds(UBlueprint* Blueprint, const FString& Requirement)
+	{
+		const FString ParentBucket = ResolveSkillParentBucket(Blueprint);
+		const FString NeedBucket = ResolveSkillNeedBucket(Requirement);
+		TArray<FString> SkillIds;
+
+		if (NeedBucket == TEXT("function"))
+		{
+			SkillIds.Add(TEXT("ue-bp-function-logic"));
+		}
+		else if (NeedBucket == TEXT("event"))
+		{
+			SkillIds.Add(TEXT("ue-bp-event-graph-logic"));
+		}
+		else
+		{
+			SkillIds.Add(TEXT("ue-bp-function-logic"));
+			SkillIds.Add(TEXT("ue-bp-event-graph-logic"));
+		}
+
+		if (ParentBucket == TEXT("actor"))
+		{
+			SkillIds.Add(TEXT("ue-bp-actor-interaction"));
+		}
+		else if (ParentBucket == TEXT("character"))
+		{
+			SkillIds.Add(TEXT("ue-bp-character-gameplay"));
+		}
+		else if (ParentBucket == TEXT("widget"))
+		{
+			SkillIds.Add(TEXT("ue-bp-widget-ui-logic"));
+		}
+		else if (ParentBucket == TEXT("gameframework"))
+		{
+			SkillIds.Add(TEXT("ue-bp-gameframework-rules"));
+		}
+
+		TArray<FString> UniqueSkills;
+		for (const FString& SkillId : SkillIds)
+		{
+			UniqueSkills.AddUnique(SkillId);
+		}
+		SkillIds = MoveTemp(UniqueSkills);
+		return SkillIds;
+	}
+
+	bool TryLoadSkillSnippet(const FString& SkillId, FString& OutSnippet)
+	{
+		const FString SkillPath = FPaths::Combine(
+			FPaths::ProjectPluginsDir(),
+			TEXT("UECopilot"),
+			TEXT("Skills"),
+			SkillId,
+			TEXT("SKILL.md"));
+
+		FString Raw;
+		if (!FPaths::FileExists(SkillPath) || !FFileHelper::LoadFileToString(Raw, *SkillPath))
+		{
+			return false;
+		}
+
+		TArray<FString> Lines;
+		Raw.ParseIntoArrayLines(Lines, true);
+
+		FString Snippet;
+		int32 Taken = 0;
+		for (const FString& Line : Lines)
+		{
+			const FString Trimmed = Line.TrimStartAndEnd();
+			if (Trimmed.IsEmpty())
+			{
+				continue;
+			}
+			if (Trimmed.StartsWith(TEXT("#")))
+			{
+				continue;
+			}
+
+			Snippet += Trimmed + TEXT("\n");
+			++Taken;
+			if (Taken >= 10 || Snippet.Len() >= 900)
+			{
+				break;
+			}
+		}
+
+		OutSnippet = Snippet.TrimStartAndEnd();
+		return !OutSnippet.IsEmpty();
+	}
+
+	FString BuildRuntimeSkillPrompt(UBlueprint* Blueprint, const FString& Requirement)
+	{
+		const TArray<FString> SkillIds = GetRuntimeSkillIds(Blueprint, Requirement);
+		if (SkillIds.Num() == 0)
+		{
+			return FString();
+		}
+
+		FString Prompt = TEXT("\nRuntime skill routing (auto-selected):\n");
+		for (const FString& SkillId : SkillIds)
+		{
+			FString SkillSnippet;
+			Prompt += FString::Printf(TEXT("- %s"), *SkillId);
+			if (TryLoadSkillSnippet(SkillId, SkillSnippet))
+			{
+				Prompt += TEXT(" constraints:\n");
+				Prompt += SkillSnippet;
+				Prompt += TEXT("\n");
+			}
+			else
+			{
+				Prompt += TEXT(" constraints: (SKILL.md not found, use default best practice)\n");
+			}
+		}
+
+		Prompt += TEXT("Apply these skill constraints while producing blueprint JSON.\n");
+		return Prompt;
 	}
 }
 
@@ -1239,16 +1420,10 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 		// Clear conversation history to reduce request size for modify operations
 		ConversationContext->ClearHistory();
 
-		// Get blueprint summary (simplified)
-		FString BPSummary = GetBlueprintSummaryForAI(SelectedBP);
-
 		AddMessage(EChatMessageRole::User, FString::Printf(TEXT("/modify %s: %s"), *SelectedBP->GetName(), *Args));
 
 		// Simplified prompt to reduce request size
-		FString Prompt = FString::Printf(
-			TEXT("Modify blueprint %s:\n%s\n\nChanges: %s\n\nReturn JSON with only new/changed elements."),
-			*SelectedBP->GetName(), *BPSummary, *Args);
-		Prompt += GetBlueprintSchemaHint();
+		FString Prompt = BuildModifyPromptForTest(SelectedBP, Args);
 
 		UE_LOG(LogSAIChatWindow, Log, TEXT("Modify prompt: %s"), *Prompt);
 		ConversationContext->AddUserMessage(Prompt);
@@ -1313,6 +1488,87 @@ bool SAIChatWindow::ParseQuickCommand(const FString& Input, FString& OutCommand,
 
 	return true;
 }
+
+FString SAIChatWindow::BuildModifyPromptForTest(UBlueprint* SelectedBlueprint, const FString& Args) const
+{
+	if (!SelectedBlueprint)
+	{
+		return FString();
+	}
+
+	const FString BPSummary = GetBlueprintSummaryForAI(SelectedBlueprint);
+	FString Prompt = FString::Printf(
+		TEXT("Modify blueprint %s:\n%s\n\nChanges: %s\n\nReturn JSON with only new/changed elements."),
+		*SelectedBlueprint->GetName(), *BPSummary, *Args);
+	Prompt += BuildRuntimeSkillPrompt(SelectedBlueprint, Args);
+	Prompt += GetBlueprintSchemaHint();
+	return Prompt;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool SAIChatWindow::ParseQuickCommandForTest(const FString& Input, FString& OutCommand, FString& OutArgs)
+{
+	if (!Input.StartsWith(QuickCommandPrefix))
+	{
+		return false;
+	}
+
+	FString Content = Input.Mid(1); // Remove prefix
+
+	int32 SpaceIndex;
+	if (Content.FindChar(' ', SpaceIndex))
+	{
+		OutCommand = Content.Left(SpaceIndex);
+		OutArgs = Content.Mid(SpaceIndex + 1).TrimStartAndEnd();
+	}
+	else
+	{
+		OutCommand = Content;
+		OutArgs = TEXT("");
+	}
+
+	return true;
+}
+
+bool SAIChatWindow::TryBuildModifyPromptFromInputForTest(
+	const FString& Input,
+	UBlueprint* SelectedBlueprint,
+	FString& OutPrompt,
+	FString& OutError) const
+{
+	OutPrompt.Empty();
+	OutError.Empty();
+
+	FString Cmd;
+	FString Args;
+	if (!ParseQuickCommandForTest(Input, Cmd, Args))
+	{
+		OutError = TEXT("Input is not a quick command");
+		return false;
+	}
+
+	if (!Cmd.Equals(TEXT("modify"), ESearchCase::IgnoreCase))
+	{
+		OutError = TEXT("Only /modify is supported by this helper");
+		return false;
+	}
+
+	if (!SelectedBlueprint)
+	{
+		OutError = TEXT("No blueprint selected");
+		return false;
+	}
+
+	if (Args.IsEmpty())
+	{
+		OutError = TEXT("Modify args are empty");
+		return false;
+	}
+
+	OutPrompt = BuildModifyPromptForTest(SelectedBlueprint, Args);
+	return !OutPrompt.IsEmpty();
+}
+#endif
 
 FString SAIChatWindow::GetSystemPrompt() const
 {

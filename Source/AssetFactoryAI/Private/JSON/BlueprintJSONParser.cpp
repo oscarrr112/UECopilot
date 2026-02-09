@@ -89,8 +89,11 @@ namespace
 			AddEntry(TEXT("Compare_LessEqual"), EBlueprintNodeType::Compare_LessEqual);
 
 			AddEntry(TEXT("And"), EBlueprintNodeType::Logic_And);
+			AddEntry(TEXT("Logic_And"), EBlueprintNodeType::Logic_And);
 			AddEntry(TEXT("Or"), EBlueprintNodeType::Logic_Or);
+			AddEntry(TEXT("Logic_Or"), EBlueprintNodeType::Logic_Or);
 			AddEntry(TEXT("Not"), EBlueprintNodeType::Logic_Not);
+			AddEntry(TEXT("Logic_Not"), EBlueprintNodeType::Logic_Not);
 
 			AddEntry(TEXT("Cast"), EBlueprintNodeType::Cast);
 			AddEntry(TEXT("MakeStruct"), EBlueprintNodeType::MakeStruct);
@@ -253,6 +256,16 @@ bool UBlueprintJSONParser::ValidateBlueprintData(const FBlueprintData& Data, TAr
 				{
 					for (const FBlueprintPinConnection& Conn : Pin.Connections)
 					{
+						const bool bIsVirtualEntryOrEvent =
+							Conn.SourceNodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
+							Conn.SourceNodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase) ||
+							Conn.SourceNodeId.StartsWith(TEXT("event_"), ESearchCase::IgnoreCase);
+
+						if (bIsVirtualEntryOrEvent)
+						{
+							continue;
+						}
+
 						if (!NodeIds.Contains(Conn.SourceNodeId))
 						{
 							OutErrors.Add(FString::Printf(TEXT("Node '%s' references non-existent node '%s'"),
@@ -447,9 +460,10 @@ bool UBlueprintJSONParser::ParseBlueprintObject(const TSharedPtr<FJsonObject>& J
 		}
 	}
 
-	// Parse event graphs
-	const TArray<TSharedPtr<FJsonValue>>* EventGraphsArray;
-	if (JsonObject->TryGetArrayField(TEXT("event_graphs"), EventGraphsArray))
+	// Parse event graphs (support both "event_graphs" and legacy "events")
+	const TArray<TSharedPtr<FJsonValue>>* EventGraphsArray = nullptr;
+	if (JsonObject->TryGetArrayField(TEXT("event_graphs"), EventGraphsArray) ||
+		JsonObject->TryGetArrayField(TEXT("events"), EventGraphsArray))
 	{
 		for (const TSharedPtr<FJsonValue>& GraphValue : *EventGraphsArray)
 		{
@@ -675,11 +689,61 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 	}
 
 	FString NodeTypeString;
-	if (!JsonObject->TryGetStringField(TEXT("node_type"), NodeTypeString))
+	bool bHasTypeString = JsonObject->TryGetStringField(TEXT("node_type"), NodeTypeString);
+	if (!bHasTypeString)
 	{
-		JsonObject->TryGetStringField(TEXT("type"), NodeTypeString);
+		bHasTypeString = JsonObject->TryGetStringField(TEXT("type"), NodeTypeString);
 	}
-	OutData.NodeType = StringToNodeType(NodeTypeString);
+	const FString NormalizedNodeTypeKey = NormalizeNodeTypeKey(NodeTypeString);
+
+	if (bHasTypeString)
+	{
+		OutData.NodeType = StringToNodeType(NodeTypeString);
+	}
+	else
+	{
+		double NodeTypeNumber = 0.0;
+		bool bHasTypeNumber = JsonObject->TryGetNumberField(TEXT("node_type"), NodeTypeNumber);
+		if (!bHasTypeNumber)
+		{
+			bHasTypeNumber = JsonObject->TryGetNumberField(TEXT("type"), NodeTypeNumber);
+		}
+
+		if (bHasTypeNumber)
+		{
+			const int32 NodeTypeInt = static_cast<int32>(NodeTypeNumber);
+			const int32 UnknownValue = static_cast<int32>(EBlueprintNodeType::Unknown);
+			if (NodeTypeInt >= 0 && NodeTypeInt <= UnknownValue)
+			{
+				OutData.NodeType = static_cast<EBlueprintNodeType>(NodeTypeInt);
+			}
+		}
+	}
+
+	if (OutData.NodeType == EBlueprintNodeType::Unknown)
+	{
+		const bool bIsFunctionBoundaryHelper =
+			NormalizedNodeTypeKey == TEXT("functionentry") ||
+			NormalizedNodeTypeKey == TEXT("entry") ||
+			NormalizedNodeTypeKey == TEXT("functionresult") ||
+			NormalizedNodeTypeKey == TEXT("result") ||
+			OutData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
+			OutData.NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
+		if (bIsFunctionBoundaryHelper)
+		{
+			return true;
+		}
+
+		if (bHasTypeString)
+		{
+			OutError = FString::Printf(TEXT("Unknown node_type '%s' for node '%s'"), *NodeTypeString, *OutData.NodeId);
+		}
+		else
+		{
+			OutError = FString::Printf(TEXT("Unknown or missing node_type for node '%s'"), *OutData.NodeId);
+		}
+		return false;
+	}
 
 	JsonObject->TryGetStringField(TEXT("function"), OutData.FunctionReference);
 	JsonObject->TryGetStringField(TEXT("event_name"), OutData.EventName);
@@ -782,6 +846,16 @@ EBlueprintNodeType UBlueprintJSONParser::StringToNodeType(const FString& TypeStr
 	if (TypeString.IsEmpty())
 	{
 		return EBlueprintNodeType::Unknown;
+	}
+
+	int32 NumericType = INDEX_NONE;
+	if (LexTryParseString(NumericType, *TypeString))
+	{
+		const int32 UnknownValue = static_cast<int32>(EBlueprintNodeType::Unknown);
+		if (NumericType >= 0 && NumericType <= UnknownValue)
+		{
+			return static_cast<EBlueprintNodeType>(NumericType);
+		}
 	}
 
 	const FString Key = NormalizeNodeTypeKey(TypeString);
