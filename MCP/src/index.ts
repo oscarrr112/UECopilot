@@ -206,7 +206,7 @@ const tools: Tool[] = [
   {
     name: "generate_assets",
     description:
-      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
+      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -232,7 +232,7 @@ const tools: Tool[] = [
               Action: {
                 type: "string",
                 enum: ["Create", "Update", "CreateOrUpdate"],
-                description: "Action to perform. Default is CreateOrUpdate",
+                description: "Action to perform. Default is CreateOrUpdate. Use 'Update' for field-level patch: only fields present in JSON are modified, missing fields are preserved unchanged.",
               },
             },
             required: ["AssetType", "Name", "Path"],
@@ -401,6 +401,35 @@ const tools: Tool[] = [
         },
       },
       required: ["asset_path", "blueprint_json"],
+    },
+  },
+  {
+    name: "update_datatable_rows",
+    description:
+      "Update specific rows in an existing DataTable without rewriting the entire CSV. Supports adding new rows, updating fields of existing rows, and deleting rows by name. Internally extracts the current CSV, applies changes, and regenerates the DataTable.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset: {
+          type: "string",
+          description:
+            "Asset path of the existing DataTable (e.g., /Game/Data/DT_Heroes)",
+        },
+        rows: {
+          type: "object",
+          description:
+            "Map of RowName → {FieldName: Value} to add or update. If the row exists, only specified fields are modified. If the row doesn't exist, a new row is added with defaults for unspecified fields. Values should be simple types (number, string, bool). For complex UE types (FVector, FLinearColor, etc.), provide the UE text format as a string, e.g. \"(X=1,Y=2,Z=3)\".",
+          additionalProperties: {
+            type: "object",
+          },
+        },
+        deleteRows: {
+          type: "array",
+          description: "Array of row names to delete from the DataTable",
+          items: { type: "string" },
+        },
+      },
+      required: ["asset"],
     },
   },
   {
@@ -638,6 +667,27 @@ const toolHandlers: Record<string, ToolHandler> = {
       Description: (args as { description?: string }).description,
     }),
   apply_blueprint_change: applyBlueprintChangeHandler,
+  update_datatable_rows: async (args) => {
+    const {
+      asset,
+      rows: rowUpdates,
+      deleteRows,
+    } = args as {
+      asset: string;
+      rows?: Record<string, Record<string, unknown>>;
+      deleteRows?: string[];
+    };
+
+    if (!rowUpdates && !deleteRows) {
+      throw new Error("At least one of 'rows' or 'deleteRows' must be provided.");
+    }
+
+    return callUEApi("/datatable/rows", "POST", {
+      Asset: asset,
+      Rows: rowUpdates,
+      DeleteRows: deleteRows,
+    });
+  },
 };
 
 for (const sidecarToolName of [

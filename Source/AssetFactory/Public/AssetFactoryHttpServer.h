@@ -89,6 +89,9 @@ private:
 	/** Handle POST /execute request - execute Python code in the editor */
 	bool HandleExecute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
+	/** Handle POST /datatable/rows request - update specific rows in a DataTable */
+	bool HandleUpdateDataTableRows(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
 	/** Send JSON response */
 	void SendJsonResponse(const FHttpResultCallback& OnComplete, int32 StatusCode, TSharedPtr<FJsonObject> JsonResponse);
 

@@ -27,6 +27,10 @@
 #include "EditorModeRegistry.h"
 // Python execution
 #include "IPythonScriptPlugin.h"
+#include "Engine/DataTable.h"
+#include "Utils/PropertySetterUtils.h"
+#include "DataTableEditorUtils.h"
+#include "UObject/SavePackage.h"
 
 namespace
 {
@@ -139,6 +143,15 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 	{
 		RouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Spec.Path), Spec.Verb, Spec.Handler));
 	}
+
+	RouteSpecs.Add({
+		TEXT("/assetfactory/datatable/rows"),
+		EHttpServerRequestVerbs::VERB_POST,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleUpdateDataTableRows),
+		TEXT("POST"),
+		TEXT("Update specific rows in a DataTable"),
+		true
+	});
 
 	// Start listeners
 	HttpServerModule.StartAllListeners();
@@ -973,6 +986,16 @@ void FAssetFactoryHttpServer::WriteServiceDiscoveryFile()
 		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
 	}
 
+	// DataTable row update endpoint
+	{
+		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
+		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
+		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/datatable/rows"));
+		Endpoint->SetStringField(TEXT("description"), TEXT("Add, update, or delete specific rows in an existing DataTable"));
+		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
+	}
+
 	ServiceInfo->SetArrayField(TEXT("endpoints"), EndpointsArray);
 
 	// Timestamp
@@ -1019,6 +1042,195 @@ void FAssetFactoryHttpServer::DeleteServiceDiscoveryFile()
 			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to delete service discovery file: %s"), *FilePath);
 		}
 	}
+}
+
+bool FAssetFactoryHttpServer::HandleUpdateDataTableRows(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Parse request body
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
+
+	if (RequestBody.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Request body is empty"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> JsonObject;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
+	if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+	{
+		SendErrorResponse(OnComplete, 400, FString::Printf(TEXT("Invalid JSON: %s"), *Reader->GetErrorMessage()));
+		return true;
+	}
+
+	// Get asset path
+	FString AssetPath;
+	if (!JsonObject->TryGetStringField(TEXT("Asset"), AssetPath))
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Missing required 'Asset' field"));
+		return true;
+	}
+
+	// Get Rows (add/update) and DeleteRows (delete)
+	const TSharedPtr<FJsonObject>* RowsObject = nullptr;
+	JsonObject->TryGetObjectField(TEXT("Rows"), RowsObject);
+
+	const TArray<TSharedPtr<FJsonValue>>* DeleteRowsArray = nullptr;
+	JsonObject->TryGetArrayField(TEXT("DeleteRows"), DeleteRowsArray);
+
+	if (!RowsObject && !DeleteRowsArray)
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("At least one of 'Rows' or 'DeleteRows' must be provided"));
+		return true;
+	}
+
+	// Execute on game thread
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+
+	auto DoUpdate = [&]()
+	{
+		// Build full asset path with object name suffix
+		FString AssetName = FPaths::GetBaseFilename(AssetPath);
+		FString FullPath = FString::Printf(TEXT("%s.%s"), *AssetPath, *AssetName);
+
+		// Load the DataTable
+		UDataTable* DataTable = LoadObject<UDataTable>(nullptr, *FullPath);
+		if (!DataTable)
+		{
+			DataTable = LoadObject<UDataTable>(nullptr, *AssetPath);
+		}
+		if (!DataTable)
+		{
+			ResponseJson->SetBoolField(TEXT("success"), false);
+			ResponseJson->SetStringField(TEXT("error"), FString::Printf(TEXT("DataTable not found: %s"), *AssetPath));
+			return;
+		}
+
+		UScriptStruct* RowStruct = DataTable->RowStruct;
+		if (!RowStruct)
+		{
+			ResponseJson->SetBoolField(TEXT("success"), false);
+			ResponseJson->SetStringField(TEXT("error"), TEXT("DataTable has no RowStruct"));
+			return;
+		}
+
+		DataTable->Modify();
+
+		TArray<TSharedPtr<FJsonValue>> ChangesArray;
+
+		// 1. Process deletes
+		if (DeleteRowsArray)
+		{
+			for (const TSharedPtr<FJsonValue>& Value : *DeleteRowsArray)
+			{
+				FString RowName;
+				if (!Value->TryGetString(RowName)) continue;
+
+				TSharedPtr<FJsonObject> ChangeObj = MakeShared<FJsonObject>();
+				ChangeObj->SetStringField(TEXT("row"), RowName);
+
+				if (DataTable->FindRowUnchecked(FName(*RowName)))
+				{
+					DataTable->RemoveRow(FName(*RowName));
+					ChangeObj->SetStringField(TEXT("action"), TEXT("Deleted"));
+				}
+				else
+				{
+					ChangeObj->SetStringField(TEXT("action"), TEXT("NotFound"));
+				}
+
+				ChangesArray.Add(MakeShared<FJsonValueObject>(ChangeObj));
+			}
+		}
+
+		// 2. Process add/update
+		if (RowsObject)
+		{
+			for (const auto& Pair : (*RowsObject)->Values)
+			{
+				const FString& RowName = Pair.Key;
+				const TSharedPtr<FJsonObject>* ValuesObj = nullptr;
+				if (!Pair.Value->TryGetObject(ValuesObj)) continue;
+
+				TSharedPtr<FJsonObject> ChangeObj = MakeShared<FJsonObject>();
+				ChangeObj->SetStringField(TEXT("row"), RowName);
+
+				uint8* RowData = DataTable->FindRowUnchecked(FName(*RowName));
+
+				if (RowData)
+				{
+					// Update existing row: set fields directly on existing memory
+					FPropertySetterUtils::SetStructFromJson(RowStruct, RowData, MakeShared<FJsonValueObject>(*ValuesObj));
+					ChangeObj->SetStringField(TEXT("action"), TEXT("Updated"));
+				}
+				else
+				{
+					// Add new row: use FDataTableEditorUtils to create a default row, then set values
+					FDataTableEditorUtils::AddRow(DataTable, FName(*RowName));
+					RowData = DataTable->FindRowUnchecked(FName(*RowName));
+
+					if (RowData)
+					{
+						FPropertySetterUtils::SetStructFromJson(RowStruct, RowData, MakeShared<FJsonValueObject>(*ValuesObj));
+						ChangeObj->SetStringField(TEXT("action"), TEXT("Added"));
+					}
+					else
+					{
+						ChangeObj->SetStringField(TEXT("action"), TEXT("Failed"));
+						ChangeObj->SetStringField(TEXT("error"), TEXT("Failed to add row"));
+					}
+				}
+
+				// Collect modified field names
+				TArray<TSharedPtr<FJsonValue>> FieldsArray;
+				for (const auto& FieldPair : (*ValuesObj)->Values)
+				{
+					FieldsArray.Add(MakeShared<FJsonValueString>(FieldPair.Key));
+				}
+				ChangeObj->SetArrayField(TEXT("fields"), FieldsArray);
+
+				ChangesArray.Add(MakeShared<FJsonValueObject>(ChangeObj));
+			}
+		}
+
+		// Save
+		DataTable->MarkPackageDirty();
+		UPackage* Package = DataTable->GetOutermost();
+		FString PackageFileName = FPackageName::LongPackageNameToFilename(
+			Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		UPackage::SavePackage(Package, DataTable, *PackageFileName, SaveArgs);
+
+		ResponseJson->SetBoolField(TEXT("success"), true);
+		ResponseJson->SetStringField(TEXT("asset"), AssetPath);
+		ResponseJson->SetArrayField(TEXT("changes"), ChangesArray);
+	};
+
+	if (IsInGameThread())
+	{
+		DoUpdate();
+	}
+	else
+	{
+		FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [&]()
+		{
+			DoUpdate();
+			CompletionEvent->Trigger();
+		});
+		CompletionEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+	}
+
+	int32 StatusCode = ResponseJson->GetBoolField(TEXT("success")) ? 200 : 400;
+	SendJsonResponse(OnComplete, StatusCode, ResponseJson);
+	return true;
 }
 
 bool FAssetFactoryHttpServer::HandleQuery(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
