@@ -47,6 +47,11 @@ namespace
 			return EBlueprintNodeType::Event_Custom;
 		}
 
+		if (!NodeData.FunctionReference.IsEmpty())
+		{
+			return HasPin(TEXT("execute")) ? EBlueprintNodeType::CallFunction : EBlueprintNodeType::PureFunction;
+		}
+
 		if (!NodeData.VariableName.IsEmpty())
 		{
 			return HasPin(TEXT("execute")) ? EBlueprintNodeType::Variable_Set : EBlueprintNodeType::Variable_Get;
@@ -159,8 +164,14 @@ namespace
 			AddEntry(TEXT("Flow_Delay"), EBlueprintNodeType::Flow_Delay);
 
 			AddEntry(TEXT("CallFunction"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("FunctionCall"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("Function_Call"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("Call_Function"), EBlueprintNodeType::CallFunction);
 			AddEntry(TEXT("K2Node_CallFunction"), EBlueprintNodeType::CallFunction);
 			AddEntry(TEXT("PureFunction"), EBlueprintNodeType::PureFunction);
+			AddEntry(TEXT("PureCall"), EBlueprintNodeType::PureFunction);
+			AddEntry(TEXT("FunctionPure"), EBlueprintNodeType::PureFunction);
+			AddEntry(TEXT("Function_Pure"), EBlueprintNodeType::PureFunction);
 			AddEntry(TEXT("K2Node_PureFunction"), EBlueprintNodeType::PureFunction);
 
 			AddEntry(TEXT("GetVariable"), EBlueprintNodeType::Variable_Get);
@@ -219,6 +230,7 @@ namespace
 			AddEntry(TEXT("Array_Clear"), EBlueprintNodeType::Array_Clear);
 
 			AddEntry(TEXT("Literal"), EBlueprintNodeType::Literal);
+			AddEntry(TEXT("Constant"), EBlueprintNodeType::Literal);
 			AddEntry(TEXT("Comment"), EBlueprintNodeType::Comment);
 			AddEntry(TEXT("Reroute"), EBlueprintNodeType::Reroute);
 			AddEntry(TEXT("Return"), EBlueprintNodeType::Return);
@@ -903,9 +915,14 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 	{
 		const bool bIsFunctionBoundaryHelper =
 			NormalizedNodeTypeKey == TEXT("functionentry") ||
+			NormalizedNodeTypeKey == TEXT("fnentry") ||
+			NormalizedNodeTypeKey == TEXT("fnentrythen") ||
 			NormalizedNodeTypeKey == TEXT("entry") ||
 			NormalizedNodeTypeKey == TEXT("k2nodefunctionentry") ||
+			NormalizedNodeTypeKey == TEXT("functionterminator") ||
+			NormalizedNodeTypeKey == TEXT("endgraph") ||
 			NormalizedNodeTypeKey == TEXT("functionresult") ||
+			NormalizedNodeTypeKey == TEXT("fnresult") ||
 			NormalizedNodeTypeKey == TEXT("result") ||
 			NormalizedNodeTypeKey == TEXT("k2nodefunctionresult") ||
 			OutData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
