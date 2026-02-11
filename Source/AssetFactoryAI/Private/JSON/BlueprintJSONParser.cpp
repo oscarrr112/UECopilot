@@ -210,14 +210,22 @@ namespace
 
 			AddEntry(TEXT("And"), EBlueprintNodeType::Logic_And);
 			AddEntry(TEXT("Logic_And"), EBlueprintNodeType::Logic_And);
+			AddEntry(TEXT("Boolean_AND"), EBlueprintNodeType::Logic_And);
 			AddEntry(TEXT("Or"), EBlueprintNodeType::Logic_Or);
 			AddEntry(TEXT("Logic_Or"), EBlueprintNodeType::Logic_Or);
+			AddEntry(TEXT("Boolean_OR"), EBlueprintNodeType::Logic_Or);
 			AddEntry(TEXT("Not"), EBlueprintNodeType::Logic_Not);
 			AddEntry(TEXT("Logic_Not"), EBlueprintNodeType::Logic_Not);
+			AddEntry(TEXT("Boolean_NOT"), EBlueprintNodeType::Logic_Not);
 
 			AddEntry(TEXT("Cast"), EBlueprintNodeType::Cast);
 			AddEntry(TEXT("MakeStruct"), EBlueprintNodeType::MakeStruct);
 			AddEntry(TEXT("BreakStruct"), EBlueprintNodeType::BreakStruct);
+			// Model-friendly aliases routed as generic function calls.
+			AddEntry(TEXT("MakeVector"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("BreakVector"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("PrintString"), EBlueprintNodeType::CallFunction);
+			AddEntry(TEXT("FormatText"), EBlueprintNodeType::CallFunction);
 
 			AddEntry(TEXT("ArrayAdd"), EBlueprintNodeType::Array_Add);
 			AddEntry(TEXT("ArrayRemove"), EBlueprintNodeType::Array_Remove);
@@ -742,6 +750,7 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 	if (JsonObject->TryGetArrayField(TEXT("nodes"), NodesArray))
 	{
 		TMap<FString, FString> NodeIdRemap;
+		TMap<FString, FString> FunctionInputNodeToParamPin;
 
 		for (const TSharedPtr<FJsonValue>& NodeValue : *NodesArray)
 		{
@@ -761,6 +770,40 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 				}
 
 				const FString NormalizedRawType = NormalizeNodeTypeKey(RawNodeType);
+				if (!RawNodeId.IsEmpty() &&
+					(NormalizedRawType == TEXT("functioninput") ||
+						NormalizedRawType == TEXT("functionparam") ||
+						NormalizedRawType == TEXT("parameter")))
+				{
+					FString InputPinName;
+
+					JsonObject->TryGetStringField(TEXT("name"), InputPinName);
+					if (InputPinName.IsEmpty())
+					{
+						(*NodeObject)->TryGetStringField(TEXT("name"), InputPinName);
+					}
+
+					const TSharedPtr<FJsonObject>* InputPinsObject = nullptr;
+					if ((*NodeObject)->TryGetObjectField(TEXT("pins"), InputPinsObject) && InputPinsObject && InputPinsObject->IsValid())
+					{
+						const TSharedPtr<FJsonObject>* NamePinObject = nullptr;
+						if ((*InputPinsObject)->TryGetObjectField(TEXT("Name"), NamePinObject) && NamePinObject && NamePinObject->IsValid())
+						{
+							const TSharedPtr<FJsonValue> ValueField = (*NamePinObject)->Values.FindRef(TEXT("value"));
+							if (ValueField.IsValid() && ValueField->Type == EJson::String)
+							{
+								InputPinName = ValueField->AsString();
+							}
+						}
+					}
+
+					if (!InputPinName.IsEmpty())
+					{
+						FunctionInputNodeToParamPin.Add(RawNodeId, InputPinName);
+					}
+					continue;
+				}
+
 				if (!RawNodeId.IsEmpty() && (NormalizedRawType == TEXT("functionentry") || NormalizedRawType == TEXT("entry")))
 				{
 					NodeIdRemap.Add(RawNodeId, TEXT("fn_entry"));
@@ -787,7 +830,7 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 		}
 
 		// Rewrite connection source ids if they referenced normalized function entry/result aliases.
-		if (NodeIdRemap.Num() > 0)
+		if (NodeIdRemap.Num() > 0 || FunctionInputNodeToParamPin.Num() > 0)
 		{
 			for (FBlueprintNodeData& Node : OutData.Nodes)
 			{
@@ -798,6 +841,11 @@ bool UBlueprintJSONParser::ParseGraph(const TSharedPtr<FJsonObject>& JsonObject,
 						if (const FString* CanonicalId = NodeIdRemap.Find(Conn.SourceNodeId))
 						{
 							Conn.SourceNodeId = *CanonicalId;
+						}
+						if (const FString* InputPinName = FunctionInputNodeToParamPin.Find(Conn.SourceNodeId))
+						{
+							Conn.SourceNodeId = TEXT("fn_entry");
+							Conn.SourcePinName = *InputPinName;
 						}
 					}
 				}
@@ -853,6 +901,27 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 	JsonObject->TryGetStringField(TEXT("target_class"), OutData.TargetClass);
 	JsonObject->TryGetStringField(TEXT("value"), OutData.LiteralValue);
 	JsonObject->TryGetStringField(TEXT("comment"), OutData.Comment);
+
+	// Be resilient to model-specific helper node names that are really function calls.
+	if (OutData.NodeType == EBlueprintNodeType::CallFunction && OutData.FunctionReference.IsEmpty())
+	{
+		if (NormalizedNodeTypeKey == TEXT("makevector"))
+		{
+			OutData.FunctionReference = TEXT("MakeVector");
+		}
+		else if (NormalizedNodeTypeKey == TEXT("breakvector"))
+		{
+			OutData.FunctionReference = TEXT("BreakVector");
+		}
+		else if (NormalizedNodeTypeKey == TEXT("printstring"))
+		{
+			OutData.FunctionReference = TEXT("PrintString");
+		}
+		else if (NormalizedNodeTypeKey == TEXT("formattext"))
+		{
+			OutData.FunctionReference = TEXT("Format");
+		}
+	}
 
 	// Parse position
 	const TSharedPtr<FJsonObject>* PosObject;

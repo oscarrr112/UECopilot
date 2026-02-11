@@ -815,6 +815,11 @@ void SAIChatWindow::OnInputCommitted(const FText& Text, ETextCommit::Type Commit
 
 FReply SAIChatWindow::OnInputKeyDown(const FGeometry& Geometry, const FKeyEvent& KeyEvent)
 {
+	const bool bHistoryNavigationChord =
+		KeyEvent.IsControlDown() &&
+		!KeyEvent.IsAltDown() &&
+		!KeyEvent.IsShiftDown();
+
 	if (KeyEvent.GetKey() == EKeys::Enter)
 	{
 		if (KeyEvent.IsShiftDown())
@@ -838,6 +843,13 @@ FReply SAIChatWindow::OnInputKeyDown(const FGeometry& Geometry, const FKeyEvent&
 	}
 	else if (KeyEvent.GetKey() == EKeys::Up)
 	{
+		// Keep plain arrow keys for caret movement and IME candidate navigation.
+		// History navigation is explicit with Ctrl+Up.
+		if (!bHistoryNavigationChord)
+		{
+			return FReply::Unhandled();
+		}
+
 		if (!InputTextBox.IsValid() || InputHistory.Num() == 0)
 		{
 			return FReply::Unhandled();
@@ -887,6 +899,13 @@ FReply SAIChatWindow::OnInputKeyDown(const FGeometry& Geometry, const FKeyEvent&
 	}
 	else if (KeyEvent.GetKey() == EKeys::Down)
 	{
+		// Keep plain arrow keys for caret movement and IME candidate navigation.
+		// History navigation is explicit with Ctrl+Down.
+		if (!bHistoryNavigationChord)
+		{
+			return FReply::Unhandled();
+		}
+
 		if (!InputTextBox.IsValid())
 		{
 			return FReply::Unhandled();

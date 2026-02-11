@@ -35,6 +35,9 @@ namespace
 	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
 	void RemoveUnlinkedFunctionResultNodes(TMap<FString, UK2Node*>& NodeMap);
 	void LayoutFunctionNodesInDeclaredOrder(const FBlueprintGraphData& GraphData, const TMap<FString, UK2Node*>& NodeMap);
+	UEdGraph* ResolveGraphFromNodeMap(const TMap<FString, UK2Node*>& NodeMap);
+	void PlaceNodesInRightwardFlow(const FBlueprintGraphData& GraphData, UEdGraph* Graph, const TMap<FString, UK2Node*>& NodeMap);
+	void RunPostLayoutPass(UEdGraph* Graph);
 
 	FString NormalizePinToken(const FString& Name)
 	{
@@ -105,6 +108,60 @@ namespace
 		const FString Name = NormalizePinToken(PinName);
 		return Name == TEXT("execute") || Name == TEXT("exec") || Name == TEXT("then") ||
 			Name == TEXT("in") || Name == TEXT("input");
+	}
+
+	struct FLayoutRect
+	{
+		float X = 0.0f;
+		float Y = 0.0f;
+		float W = 300.0f;
+		float H = 180.0f;
+	};
+
+	FLayoutRect MakeRectFromNode(const UK2Node* Node)
+	{
+		FLayoutRect Rect;
+		if (Node)
+		{
+			Rect.X = static_cast<float>(Node->NodePosX);
+			Rect.Y = static_cast<float>(Node->NodePosY);
+		}
+		return Rect;
+	}
+
+	bool RectsOverlap(const FLayoutRect& A, const FLayoutRect& B, float Padding)
+	{
+		return (A.X < B.X + B.W + Padding) &&
+			(A.X + A.W + Padding > B.X) &&
+			(A.Y < B.Y + B.H + Padding) &&
+			(A.Y + A.H + Padding > B.Y);
+	}
+
+	float FindAvailableY(const TArray<FLayoutRect>& Occupied, float X, float PreferredY, float Width, float Height, float Padding, float VerticalStep)
+	{
+		float CandidateY = PreferredY;
+		for (int32 Attempts = 0; Attempts < 128; ++Attempts)
+		{
+			FLayoutRect Candidate{ X, CandidateY, Width, Height };
+			bool bOverlaps = false;
+			for (const FLayoutRect& Existing : Occupied)
+			{
+				if (RectsOverlap(Candidate, Existing, Padding))
+				{
+					bOverlaps = true;
+					break;
+				}
+			}
+
+			if (!bOverlaps)
+			{
+				return CandidateY;
+			}
+
+			CandidateY += VerticalStep;
+		}
+
+		return CandidateY;
 	}
 }
 
@@ -461,36 +518,12 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 		}
 	}
 
-	constexpr float HorizontalSpacing = 280.0f;
-	constexpr float VerticalSpacing = 160.0f;
-	constexpr int32 NodesPerRow = 3;
-	int32 AutoIndex = 0;
-
-	for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+	if (UEdGraph* Graph = ResolveGraphFromNodeMap(NodeMap))
 	{
-		if (UK2Node** NodePtr = NodeMap.Find(NodeData.NodeId))
-		{
-			if (UK2Node* Node = *NodePtr)
-			{
-				if (FMath::Abs(NodeData.Position.X) > KINDA_SMALL_NUMBER || FMath::Abs(NodeData.Position.Y) > KINDA_SMALL_NUMBER)
-				{
-					Node->NodePosX = static_cast<int32>(NodeData.Position.X);
-					Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
-					continue;
-				}
-
-				if (Node->NodePosX != 0 || Node->NodePosY != 0)
-				{
-					continue;
-				}
-
-				int32 Column = AutoIndex % NodesPerRow;
-				int32 Row = AutoIndex / NodesPerRow;
-				Node->NodePosX = Column * HorizontalSpacing;
-				Node->NodePosY = Row * VerticalSpacing;
-				AutoIndex++;
-			}
-		}
+		// Phase 1: deterministic rightward placement for newly generated nodes.
+		PlaceNodesInRightwardFlow(GraphData, Graph, NodeMap);
+		// Phase 2: whole-graph cleanup pass to reduce overlaps and tangled wires.
+		RunPostLayoutPass(Graph);
 	}
 
 	Result.CreatedNodes = NodeMap;
@@ -687,6 +720,239 @@ UClass* UAIBlueprintFactory::ResolveParentClass(const FString& ParentClassPath)
 
 namespace
 {
+	UEdGraph* ResolveGraphFromNodeMap(const TMap<FString, UK2Node*>& NodeMap)
+	{
+		for (const TPair<FString, UK2Node*>& Pair : NodeMap)
+		{
+			if (Pair.Value)
+			{
+				return Pair.Value->GetGraph();
+			}
+		}
+		return nullptr;
+	}
+
+	void PlaceNodesInRightwardFlow(const FBlueprintGraphData& GraphData, UEdGraph* Graph, const TMap<FString, UK2Node*>& NodeMap)
+	{
+		if (!Graph || GraphData.Nodes.Num() == 0 || NodeMap.Num() == 0)
+		{
+			return;
+		}
+
+		constexpr float NodeWidth = 320.0f;
+		constexpr float NodeHeight = 180.0f;
+		constexpr float HorizontalSpacing = 380.0f;
+		constexpr float VerticalSpacing = 220.0f;
+		constexpr float CollisionPadding = 40.0f;
+
+		TSet<UK2Node*> NewNodes;
+		for (const TPair<FString, UK2Node*>& Pair : NodeMap)
+		{
+			if (Pair.Value)
+			{
+				NewNodes.Add(Pair.Value);
+			}
+		}
+
+		float MaxExistingRight = 0.0f;
+		float MinExistingY = 0.0f;
+		bool bHasExisting = false;
+		TArray<FLayoutRect> OccupiedRects;
+
+		for (UEdGraphNode* RawNode : Graph->Nodes)
+		{
+			UK2Node* ExistingNode = Cast<UK2Node>(RawNode);
+			if (!ExistingNode)
+			{
+				continue;
+			}
+
+			if (!NewNodes.Contains(ExistingNode))
+			{
+				bHasExisting = true;
+				MaxExistingRight = FMath::Max(MaxExistingRight, static_cast<float>(ExistingNode->NodePosX) + NodeWidth);
+				MinExistingY = bHasExisting ? FMath::Min(MinExistingY, static_cast<float>(ExistingNode->NodePosY)) : static_cast<float>(ExistingNode->NodePosY);
+				OccupiedRects.Add(MakeRectFromNode(ExistingNode));
+			}
+		}
+
+		const float BaseX = bHasExisting ? (MaxExistingRight + HorizontalSpacing) : 0.0f;
+		const float BaseY = bHasExisting ? MinExistingY : 0.0f;
+
+		TMap<FString, int32> DeclOrder;
+		TSet<FString> NodeIds;
+		for (int32 Index = 0; Index < GraphData.Nodes.Num(); ++Index)
+		{
+			DeclOrder.Add(GraphData.Nodes[Index].NodeId, Index);
+			NodeIds.Add(GraphData.Nodes[Index].NodeId);
+		}
+
+		TMap<FString, const FBlueprintNodeData*> NodeDataById;
+		TMap<FString, int32> InDegree;
+		TMap<FString, int32> LayerById;
+		TMap<FString, TArray<FString>> SuccById;
+		TMap<FString, TArray<FString>> PredById;
+		for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+		{
+			NodeDataById.Add(NodeData.NodeId, &NodeData);
+			InDegree.Add(NodeData.NodeId, 0);
+			LayerById.Add(NodeData.NodeId, 0);
+		}
+
+		for (const FBlueprintNodeData& TargetNode : GraphData.Nodes)
+		{
+			for (const FBlueprintPinData& Pin : TargetNode.Pins)
+			{
+				for (const FBlueprintPinConnection& Conn : Pin.Connections)
+				{
+					if (!NodeIds.Contains(Conn.SourceNodeId))
+					{
+						continue;
+					}
+
+					SuccById.FindOrAdd(Conn.SourceNodeId).Add(TargetNode.NodeId);
+					PredById.FindOrAdd(TargetNode.NodeId).Add(Conn.SourceNodeId);
+					InDegree.FindOrAdd(TargetNode.NodeId) += 1;
+				}
+			}
+		}
+
+		TArray<FString> Queue;
+		for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+		{
+			if (InDegree.FindRef(NodeData.NodeId) == 0)
+			{
+				Queue.Add(NodeData.NodeId);
+			}
+		}
+		Queue.Sort([&DeclOrder](const FString& A, const FString& B)
+		{
+			return DeclOrder.FindRef(A) < DeclOrder.FindRef(B);
+		});
+
+		TArray<FString> TopoOrder;
+		while (Queue.Num() > 0)
+		{
+			const FString Current = Queue[0];
+			Queue.RemoveAt(0);
+			TopoOrder.Add(Current);
+
+			for (const FString& Succ : SuccById.FindOrAdd(Current))
+			{
+				LayerById.FindOrAdd(Succ) = FMath::Max(LayerById.FindRef(Succ), LayerById.FindRef(Current) + 1);
+				int32& Degree = InDegree.FindOrAdd(Succ);
+				Degree = FMath::Max(0, Degree - 1);
+				if (Degree == 0)
+				{
+					Queue.Add(Succ);
+				}
+			}
+
+			Queue.Sort([&DeclOrder](const FString& A, const FString& B)
+			{
+				return DeclOrder.FindRef(A) < DeclOrder.FindRef(B);
+			});
+		}
+
+		for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
+		{
+			if (!TopoOrder.Contains(NodeData.NodeId))
+			{
+				TopoOrder.Add(NodeData.NodeId);
+			}
+		}
+
+		TMap<int32, int32> LayerRowCounters;
+		for (const FString& NodeId : TopoOrder)
+		{
+			const FBlueprintNodeData* const* NodeDataPtr = NodeDataById.Find(NodeId);
+			UK2Node* const* NodePtr = NodeMap.Find(NodeId);
+			if (!NodeDataPtr || !*NodeDataPtr || !NodePtr || !*NodePtr)
+			{
+				continue;
+			}
+
+			const FBlueprintNodeData& NodeData = **NodeDataPtr;
+			UK2Node* Node = *NodePtr;
+
+			if (FMath::Abs(NodeData.Position.X) > KINDA_SMALL_NUMBER || FMath::Abs(NodeData.Position.Y) > KINDA_SMALL_NUMBER)
+			{
+				Node->NodePosX = static_cast<int32>(NodeData.Position.X);
+				Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
+				OccupiedRects.Add(MakeRectFromNode(Node));
+				continue;
+			}
+
+			if (Node->NodePosX != 0 || Node->NodePosY != 0)
+			{
+				OccupiedRects.Add(MakeRectFromNode(Node));
+				continue;
+			}
+
+			const int32 Layer = LayerById.FindRef(NodeId);
+			const float TargetX = BaseX + Layer * HorizontalSpacing;
+
+			float PreferredY = BaseY + LayerRowCounters.FindOrAdd(Layer) * VerticalSpacing;
+			TArray<float> SourceYs;
+			for (const FString& PredId : PredById.FindOrAdd(NodeId))
+			{
+				if (UK2Node* const* PredNodePtr = NodeMap.Find(PredId))
+				{
+					if (*PredNodePtr)
+					{
+						SourceYs.Add(static_cast<float>((*PredNodePtr)->NodePosY));
+					}
+				}
+			}
+
+			for (const FBlueprintPinData& Pin : NodeData.Pins)
+			{
+				for (const FBlueprintPinConnection& Conn : Pin.Connections)
+				{
+					if (NodeIds.Contains(Conn.SourceNodeId))
+					{
+						continue;
+					}
+					if (UK2Node* ExternalNode = Cast<UK2Node>(FindObject<UEdGraphNode>(Graph, *Conn.SourceNodeId)))
+					{
+						SourceYs.Add(static_cast<float>(ExternalNode->NodePosY));
+					}
+				}
+			}
+
+			if (SourceYs.Num() > 0)
+			{
+				float SumY = 0.0f;
+				for (float Y : SourceYs)
+				{
+					SumY += Y;
+				}
+				PreferredY = SumY / SourceYs.Num();
+			}
+
+			const float FinalY = FindAvailableY(OccupiedRects, TargetX, PreferredY, NodeWidth, NodeHeight, CollisionPadding, VerticalSpacing);
+			Node->NodePosX = static_cast<int32>(TargetX);
+			Node->NodePosY = static_cast<int32>(FinalY);
+
+			LayerRowCounters.FindOrAdd(Layer) = LayerRowCounters.FindRef(Layer) + 1;
+			OccupiedRects.Add(MakeRectFromNode(Node));
+		}
+	}
+
+	void RunPostLayoutPass(UEdGraph* Graph)
+	{
+		if (!Graph)
+		{
+			return;
+		}
+
+		FLayoutSettings LayoutSettings;
+		LayoutSettings.HorizontalSpacing = 380.0f;
+		LayoutSettings.VerticalSpacing = 180.0f;
+		LayoutSettings.bPrioritizeExecFlow = true;
+		ULayoutEngine::AutoLayoutGraph(Graph, LayoutSettings);
+	}
+
 	void RemoveUnlinkedFunctionResultNodes(TMap<FString, UK2Node*>& NodeMap)
 	{
 		TArray<TPair<FString, UK2Node*>> ResultNodes;

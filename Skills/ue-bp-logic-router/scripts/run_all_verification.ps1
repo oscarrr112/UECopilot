@@ -5,7 +5,8 @@ param(
     [string]$Target = "TestProjectEditor",
     [string]$Platform = "Win64",
     [string]$Config = "Development",
-    [string]$Filter = "AssetFactoryAI.BlueprintJSON"
+    [string]$Filter = "AssetFactoryAI.BlueprintJSON",
+    [string]$ReadabilityFilter = "AssetFactoryAI.Layout.ReadabilityGate"
 )
 
 Set-StrictMode -Version Latest
@@ -30,6 +31,10 @@ Write-Host "[2/3] Skill verification"
 & $verifySkills
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host "[3/3] UE automation: $Filter"
+Write-Host "[3/4] UE automation: $Filter"
 & $runTests -Project $Project -UECmd $UECmd -Filter $Filter
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host "[4/4] UE automation: $ReadabilityFilter"
+& $runTests -Project $Project -UECmd $UECmd -Filter $ReadabilityFilter
 exit $LASTEXITCODE

@@ -10,6 +10,95 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 
+namespace
+{
+	void ResolveNodeOverlapsWithPush(TArray<UK2Node*>& Nodes, float Padding)
+	{
+		if (Nodes.Num() <= 1)
+		{
+			return;
+		}
+
+		TArray<UK2Node*> SortedNodes = Nodes;
+		SortedNodes.Sort([](const UK2Node& A, const UK2Node& B)
+		{
+			if (A.NodePosX == B.NodePosX)
+			{
+				return A.NodePosY < B.NodePosY;
+			}
+			return A.NodePosX < B.NodePosX;
+		});
+
+		FNodePlacementGrid Grid;
+		for (UK2Node* Node : SortedNodes)
+		{
+			if (!Node)
+			{
+				continue;
+			}
+
+			// Conservative estimate that works for most K2 node visual sizes.
+			const FNodePlacement Placement(Node, static_cast<float>(Node->NodePosX), static_cast<float>(Node->NodePosY), 320.0f, 180.0f);
+			Grid.PlaceAndPush(Placement, Padding, true);
+		}
+
+		Grid.ApplyToNodes();
+
+		// Deterministic final sweep: guarantee no residual overlaps remain.
+		auto MakeRect = [](const UK2Node* Node)
+		{
+			FNodePlacement Rect;
+			if (Node)
+			{
+				Rect.X = static_cast<float>(Node->NodePosX);
+				Rect.Y = static_cast<float>(Node->NodePosY);
+			}
+			Rect.Width = 320.0f;
+			Rect.Height = 180.0f;
+			return Rect;
+		};
+
+		for (int32 Pass = 0; Pass < 8; ++Pass)
+		{
+			bool bAnyMoved = false;
+			for (int32 I = 0; I < SortedNodes.Num(); ++I)
+			{
+				UK2Node* A = SortedNodes[I];
+				if (!A)
+				{
+					continue;
+				}
+
+				for (int32 J = I + 1; J < SortedNodes.Num(); ++J)
+				{
+					UK2Node* B = SortedNodes[J];
+					if (!B)
+					{
+						continue;
+					}
+
+					const FNodePlacement RA = MakeRect(A);
+					FNodePlacement RB = MakeRect(B);
+					if (RA.Overlaps(RB, Padding))
+					{
+						const float NewY = RA.Y + RA.Height + Padding;
+						if (NewY > RB.Y)
+						{
+							B->NodePosY = static_cast<int32>(NewY);
+							bAnyMoved = true;
+						}
+					}
+				}
+			}
+
+			if (!bAnyMoved)
+			{
+				break;
+			}
+		}
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FNodePlacementGrid Implementation
 
@@ -452,6 +541,12 @@ void ULayoutEngine::AutoLayoutNodes(TArray<UK2Node*>& Nodes, const FLayoutSettin
 			DataNode->NodePosX = static_cast<int32>(Settings.StartX + FloatLayer * Settings.HorizontalSpacing);
 		}
 	}
+
+	// Step 7: Move pure data nodes close to their first/nearest consumers to reduce wire bends.
+	PositionDataNodesNearConsumers(DataNodes, ExecNodes, Settings);
+
+	// Step 8: Final overlap resolution pass for all nodes.
+	ResolveNodeOverlapsWithPush(Nodes, Settings.VerticalSpacing * 0.35f);
 }
 
 TMap<FString, FNodePosition> ULayoutEngine::CalculateLayout(
