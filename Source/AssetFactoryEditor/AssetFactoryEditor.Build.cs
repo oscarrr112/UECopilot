@@ -33,7 +33,9 @@ public class AssetFactoryEditor : ModuleRules
 				"GraphEditor",
 				"WorkspaceMenuStructure",
 				"Projects",
-				"ContentBrowser"
+				"ContentBrowser",
+				"Json",
+				"JsonUtilities"
 			}
 		);
 	}

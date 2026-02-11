@@ -55,6 +55,13 @@ public:
 		UBlueprint* SelectedBlueprint,
 		FString& OutPrompt,
 		FString& OutError) const;
+
+	/** Invoke an MCP tool directly from tests. */
+	bool InvokeMCPToolForTest(
+		const TArray<FChatMessage>& InMessages,
+		const FString& ToolName,
+		FString& OutResponseContent,
+		FString& OutError) const;
 #endif
 
 private:
@@ -132,6 +139,10 @@ private:
 	void LogBlueprintDataSummary(const FBlueprintData& Data, const TCHAR* Source) const;
 	void EnsureTickGraph(FBlueprintData& Data) const;
 	static FString GetBlueprintSchemaHint();
+	void SendRequestWithMCPFallback(const FString& ToolName);
+	void SendModifyRequestWithMCPFallback();
+	bool TryInvokeMCPTool(const TArray<FChatMessage>& Messages, const FString& ToolName, FString& OutResponseContent, FString& OutError) const;
+	bool TryInvokeMCPValidateBlueprint(const FBlueprintData& Data, TArray<FString>& OutValidationErrors, FString& OutError) const;
 
 	/** Scroll to bottom of chat */
 	void ScrollToBottom();

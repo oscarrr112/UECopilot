@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetFactoryAISettings.h"
+#include "HAL/PlatformMisc.h"
 
 #define LOCTEXT_NAMESPACE "AssetFactoryAISettings"
 
@@ -44,6 +45,12 @@ FString UAssetFactoryAISettings::GetEndpointURL() const
 
 FString UAssetFactoryAISettings::GetAPIKey() const
 {
+	FString EnvApiKey;
+	if (bPreferEnvironmentApiKey && TryGetEnvironmentAPIKey(EnvApiKey))
+	{
+		return EnvApiKey;
+	}
+
 	switch (ServiceProvider)
 	{
 	case EAIServiceProvider::Deepseek:
@@ -59,6 +66,63 @@ FString UAssetFactoryAISettings::GetAPIKey() const
 	default:
 		return TEXT("");
 	}
+}
+
+bool UAssetFactoryAISettings::TryGetEnvironmentAPIKey(FString& OutApiKey) const
+{
+	OutApiKey.Empty();
+
+	auto ReadEnv = [](const FString& Name) -> FString
+	{
+		if (Name.IsEmpty())
+		{
+			return FString();
+		}
+		return FPlatformMisc::GetEnvironmentVariable(*Name).TrimStartAndEnd();
+	};
+
+	auto TrySetFrom = [&](const FString& EnvName) -> bool
+	{
+		const FString Value = ReadEnv(EnvName);
+		if (!Value.IsEmpty())
+		{
+			OutApiKey = Value;
+			return true;
+		}
+		return false;
+	};
+
+	switch (ServiceProvider)
+	{
+	case EAIServiceProvider::Deepseek:
+		if (TrySetFrom(DeepseekAPIKeyEnvVar))
+		{
+			return true;
+		}
+		break;
+	case EAIServiceProvider::GLM:
+		if (TrySetFrom(GLMAPIKeyEnvVar))
+		{
+			return true;
+		}
+		break;
+	case EAIServiceProvider::OpenAI:
+		if (TrySetFrom(OpenAIAPIKeyEnvVar))
+		{
+			return true;
+		}
+		break;
+	case EAIServiceProvider::Custom:
+		if (TrySetFrom(CustomAPIKeyEnvVar))
+		{
+			return true;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return TrySetFrom(GenericAPIKeyEnvVar);
 }
 
 FString UAssetFactoryAISettings::GetModelName() const

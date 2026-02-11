@@ -24,8 +24,16 @@
 #include "Selection.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/Guid.h"
+#include "HAL/PlatformProcess.h"
+#include "Interfaces/IPluginManager.h"
 #include "UObject/FieldIterator.h"
 #include "Editor.h"
+#include "Async/Async.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Dom/JsonObject.h"
 
 namespace
 {
@@ -392,6 +400,76 @@ namespace
 		Prompt += TEXT("Apply these skill constraints while producing blueprint JSON.\n");
 		return Prompt;
 	}
+
+	FString ChatRoleToString(EChatMessageRole Role)
+	{
+		switch (Role)
+		{
+		case EChatMessageRole::System: return TEXT("system");
+		case EChatMessageRole::User: return TEXT("user");
+		case EChatMessageRole::Assistant: return TEXT("assistant");
+		default: return TEXT("user");
+		}
+	}
+
+	FString TryExtractFirstJsonObject(const FString& Raw)
+	{
+		const int32 Start = Raw.Find(TEXT("{"));
+		const int32 End = Raw.Find(TEXT("}"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+		if (Start == INDEX_NONE || End == INDEX_NONE || End < Start)
+		{
+			return FString();
+		}
+		return Raw.Mid(Start, End - Start + 1);
+	}
+
+	bool ParseMcpResponseContent(const FString& RawResponse, FString& OutContent, FString& OutError)
+	{
+		OutContent.Empty();
+		OutError.Empty();
+
+		const FString JsonText = TryExtractFirstJsonObject(RawResponse);
+		if (JsonText.IsEmpty())
+		{
+			OutError = TEXT("MCP returned no JSON response");
+			return false;
+		}
+
+		TSharedPtr<FJsonObject> Root;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+		if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+		{
+			OutError = TEXT("Failed to parse MCP response JSON");
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* ErrorObj = nullptr;
+		if (Root->TryGetObjectField(TEXT("error"), ErrorObj) && ErrorObj && ErrorObj->IsValid())
+		{
+			FString Message;
+			if (!(*ErrorObj)->TryGetStringField(TEXT("message"), Message) || Message.IsEmpty())
+			{
+				Message = TEXT("Unknown MCP error");
+			}
+			OutError = Message;
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* ResultObj = nullptr;
+		if (!Root->TryGetObjectField(TEXT("result"), ResultObj) || !ResultObj || !ResultObj->IsValid())
+		{
+			OutError = TEXT("MCP response missing result");
+			return false;
+		}
+
+		if (!(*ResultObj)->TryGetStringField(TEXT("content"), OutContent) || OutContent.IsEmpty())
+		{
+			OutError = TEXT("MCP response missing result.content");
+			return false;
+		}
+
+		return true;
+	}
 }
 
 #define LOCTEXT_NAMESPACE "SAIChatWindow"
@@ -700,8 +778,9 @@ void SAIChatWindow::SendMessage()
 
 	UOpenAICompatibleService* Service = UOpenAICompatibleService::Get();
 	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
+	const bool bPreferMCPChat = Settings && (Settings->bEnableMCPForChatRequests || Settings->bEnableMCPOnlyMode);
 
-	if (Settings->bEnableStreaming)
+	if (Settings->bEnableStreaming && !bPreferMCPChat)
 	{
 		CurrentStreamingResponse.Empty();
 		AddMessage(EChatMessageRole::Assistant, TEXT(""), true);
@@ -715,10 +794,7 @@ void SAIChatWindow::SendMessage()
 	}
 	else
 	{
-		Service->SendChatRequest(
-			OutgoingMessages,
-			FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
-		);
+		SendRequestWithMCPFallback(TEXT("chat_completion"));
 	}
 }
 
@@ -1024,10 +1100,7 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 
 				ConversationContext->AddUserMessage(CorrectionPrompt);
 				bIsProcessing = true;
-				UOpenAICompatibleService::Get()->SendChatRequest(
-					ConversationContext->GetMessages(),
-					FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
-				);
+				SendModifyRequestWithMCPFallback();
 			}
 			else
 			{
@@ -1241,10 +1314,7 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 			ConversationContext->AddUserMessage(Prompt);
 
 		bIsProcessing = true;
-		UOpenAICompatibleService::Get()->SendChatRequest(
-			ConversationContext->GetMessages(),
-			FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
-		);
+		SendRequestWithMCPFallback(TEXT("chat_completion"));
 	}
 	else if (Cmd.Equals(TEXT("apply"), ESearchCase::IgnoreCase))
 	{
@@ -1254,6 +1324,27 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 			AddMessage(EChatMessageRole::System,
 				TEXT("No blueprint data to apply. First generate a blueprint using /generate or use /modify to modify an existing one."));
 			return;
+		}
+
+		if (const UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get())
+		{
+			if (Settings->bEnableMCPForModify || Settings->bEnableMCPForChatRequests || Settings->bEnableMCPOnlyMode)
+			{
+				TArray<FString> McpValidationErrors;
+				FString McpValidateError;
+				if (!TryInvokeMCPValidateBlueprint(PendingBlueprintData.GetValue(), McpValidationErrors, McpValidateError))
+				{
+					AddMessage(EChatMessageRole::System,
+						FString::Printf(TEXT("MCP pre-apply validation failed: %s"), *McpValidateError));
+					return;
+				}
+				if (McpValidationErrors.Num() > 0)
+				{
+					AddMessage(EChatMessageRole::System,
+						FString::Printf(TEXT("MCP pre-apply validation errors:\n%s"), *FString::Join(McpValidationErrors, TEXT("\n"))));
+					return;
+				}
+			}
 		}
 
 		if (bIsModifyMode)
@@ -1389,10 +1480,7 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 		ConversationContext->AddUserMessage(Prompt);
 
 		bIsProcessing = true;
-		UOpenAICompatibleService::Get()->SendChatRequest(
-			ConversationContext->GetMessages(),
-			FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
-		);
+		SendRequestWithMCPFallback(TEXT("chat_completion"));
 	}
 	else if (Cmd.Equals(TEXT("modify"), ESearchCase::IgnoreCase))
 	{
@@ -1428,10 +1516,7 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 		ConversationContext->AddUserMessage(Prompt);
 
 		bIsProcessing = true;
-		UOpenAICompatibleService::Get()->SendChatRequest(
-			ConversationContext->GetMessages(),
-			FOnAIResponseReceived::CreateSP(this, &SAIChatWindow::OnAIResponseReceived)
-		);
+		SendModifyRequestWithMCPFallback();
 	}
 	else if (Cmd.Equals(TEXT("clear"), ESearchCase::IgnoreCase))
 	{
@@ -1504,6 +1589,352 @@ FString SAIChatWindow::BuildModifyPromptForTest(UBlueprint* SelectedBlueprint, c
 	return Prompt;
 }
 
+bool SAIChatWindow::TryInvokeMCPTool(const TArray<FChatMessage>& InMessages, const FString& ToolName, FString& OutResponseContent, FString& OutError) const
+{
+	OutResponseContent.Empty();
+	OutError.Empty();
+
+	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
+	if (!Settings)
+	{
+		OutError = TEXT("Missing AI settings");
+		return false;
+	}
+
+	const FString Command = Settings->MCPServerCommand.TrimStartAndEnd();
+	if (Command.IsEmpty())
+	{
+		OutError = TEXT("MCP command is empty");
+		return false;
+	}
+
+	FString ScriptPath = Settings->MCPServerScriptPath.TrimStartAndEnd();
+	if (ScriptPath.IsEmpty())
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UECopilot"));
+		if (Plugin.IsValid())
+		{
+			ScriptPath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+		else
+		{
+			ScriptPath = FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("UECopilot"), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+	}
+
+	if (!FPaths::FileExists(ScriptPath))
+	{
+		OutError = FString::Printf(TEXT("MCP script not found: %s"), *ScriptPath);
+		return false;
+	}
+
+	TSharedRef<FJsonObject> ArgsObj = MakeShared<FJsonObject>();
+	ArgsObj->SetStringField(TEXT("endpoint"), Settings->GetEndpointURL());
+	ArgsObj->SetStringField(TEXT("model"), Settings->GetModelName());
+	ArgsObj->SetNumberField(TEXT("timeout_seconds"), Settings->MCPTimeoutSeconds);
+	ArgsObj->SetNumberField(TEXT("max_retries"), Settings->MCPNetworkRetries);
+	ArgsObj->SetNumberField(TEXT("max_tokens"), Settings->MaxTokens);
+	ArgsObj->SetNumberField(TEXT("temperature"), Settings->Temperature);
+
+	FString EnvApiKey;
+	const bool bHasEnvApiKey = Settings->TryGetEnvironmentAPIKey(EnvApiKey);
+	if (Settings->bWriteApiKeyToMCPRequestFile || !bHasEnvApiKey)
+	{
+		const FString ApiKeyToUse = Settings->GetAPIKey();
+		if (!ApiKeyToUse.IsEmpty())
+		{
+			ArgsObj->SetStringField(TEXT("api_key"), ApiKeyToUse);
+		}
+	}
+	else
+	{
+		UE_LOG(LogSAIChatWindow, Verbose, TEXT("MCP request omits api_key field and expects environment-based key resolution."));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> MessageArray;
+	for (const FChatMessage& Msg : InMessages)
+	{
+		TSharedRef<FJsonObject> MsgObj = MakeShared<FJsonObject>();
+		MsgObj->SetStringField(TEXT("role"), ChatRoleToString(Msg.Role));
+		MsgObj->SetStringField(TEXT("content"), Msg.Content);
+		MessageArray.Add(MakeShared<FJsonValueObject>(MsgObj));
+	}
+	ArgsObj->SetArrayField(TEXT("messages"), MessageArray);
+
+	TSharedRef<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+	ParamsObj->SetStringField(TEXT("name"), ToolName);
+	ParamsObj->SetObjectField(TEXT("arguments"), ArgsObj);
+
+	TSharedRef<FJsonObject> RequestObj = MakeShared<FJsonObject>();
+	RequestObj->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+	RequestObj->SetNumberField(TEXT("id"), 1);
+	RequestObj->SetStringField(TEXT("method"), TEXT("tools/call"));
+	RequestObj->SetObjectField(TEXT("params"), ParamsObj);
+
+	FString RequestJson;
+	{
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestJson);
+		FJsonSerializer::Serialize(RequestObj, Writer);
+	}
+
+	const FString TempDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("AssetFactory"), TEXT("MCP"));
+	IFileManager::Get().MakeDirectory(*TempDir, true);
+	const FString RequestPath = FPaths::Combine(TempDir, FString::Printf(TEXT("mcp_req_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+
+	if (!FFileHelper::SaveStringToFile(
+		RequestJson,
+		*RequestPath,
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		OutError = TEXT("Failed to write MCP request file");
+		return false;
+	}
+
+	const FString Params = FString::Printf(TEXT("-u \"%s\" --request \"%s\""), *ScriptPath, *RequestPath);
+	int32 ReturnCode = -1;
+	FString StdOut;
+	FString StdErr;
+	FPlatformProcess::ExecProcess(*Command, *Params, &ReturnCode, &StdOut, &StdErr);
+	IFileManager::Get().Delete(*RequestPath, false, true, true);
+
+	if (ReturnCode != 0)
+	{
+		const FString StdErrTrimmed = StdErr.TrimStartAndEnd();
+		const FString StdOutTrimmed = StdOut.TrimStartAndEnd();
+		const FString ProcessError = !StdErrTrimmed.IsEmpty() ? StdErrTrimmed : StdOutTrimmed;
+		OutError = FString::Printf(TEXT("MCP process failed (%d): %s"), ReturnCode, *ProcessError);
+		return false;
+	}
+
+	if (!ParseMcpResponseContent(StdOut, OutResponseContent, OutError))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool SAIChatWindow::TryInvokeMCPValidateBlueprint(const FBlueprintData& Data, TArray<FString>& OutValidationErrors, FString& OutError) const
+{
+	OutValidationErrors.Empty();
+	OutError.Empty();
+
+	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
+	if (!Settings)
+	{
+		OutError = TEXT("Missing AI settings");
+		return false;
+	}
+
+	const FString Command = Settings->MCPServerCommand.TrimStartAndEnd();
+	if (Command.IsEmpty())
+	{
+		OutError = TEXT("MCP command is empty");
+		return false;
+	}
+
+	FString ScriptPath = Settings->MCPServerScriptPath.TrimStartAndEnd();
+	if (ScriptPath.IsEmpty())
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UECopilot"));
+		if (Plugin.IsValid())
+		{
+			ScriptPath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+		else
+		{
+			ScriptPath = FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("UECopilot"), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+	}
+
+	if (!FPaths::FileExists(ScriptPath))
+	{
+		OutError = FString::Printf(TEXT("MCP script not found: %s"), *ScriptPath);
+		return false;
+	}
+
+	const FString BlueprintJson = UBlueprintJSONParser::SerializeBlueprintData(Data);
+
+	TSharedRef<FJsonObject> ArgsObj = MakeShared<FJsonObject>();
+	ArgsObj->SetStringField(TEXT("blueprint_json"), BlueprintJson);
+
+	TSharedRef<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+	ParamsObj->SetStringField(TEXT("name"), TEXT("validate_blueprint_json"));
+	ParamsObj->SetObjectField(TEXT("arguments"), ArgsObj);
+
+	TSharedRef<FJsonObject> RequestObj = MakeShared<FJsonObject>();
+	RequestObj->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+	RequestObj->SetNumberField(TEXT("id"), 1);
+	RequestObj->SetStringField(TEXT("method"), TEXT("tools/call"));
+	RequestObj->SetObjectField(TEXT("params"), ParamsObj);
+
+	FString RequestJson;
+	{
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestJson);
+		FJsonSerializer::Serialize(RequestObj, Writer);
+	}
+
+	const FString TempDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("AssetFactory"), TEXT("MCP"));
+	IFileManager::Get().MakeDirectory(*TempDir, true);
+	const FString RequestPath = FPaths::Combine(TempDir, FString::Printf(TEXT("mcp_validate_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+
+	if (!FFileHelper::SaveStringToFile(
+		RequestJson,
+		*RequestPath,
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		OutError = TEXT("Failed to write MCP validate request");
+		return false;
+	}
+
+	const FString Params = FString::Printf(TEXT("-u \"%s\" --request \"%s\""), *ScriptPath, *RequestPath);
+	int32 ReturnCode = -1;
+	FString StdOut;
+	FString StdErr;
+	FPlatformProcess::ExecProcess(*Command, *Params, &ReturnCode, &StdOut, &StdErr);
+	IFileManager::Get().Delete(*RequestPath, false, true, true);
+
+	if (ReturnCode != 0)
+	{
+		const FString StdErrTrimmed = StdErr.TrimStartAndEnd();
+		const FString StdOutTrimmed = StdOut.TrimStartAndEnd();
+		const FString ProcessError = !StdErrTrimmed.IsEmpty() ? StdErrTrimmed : StdOutTrimmed;
+		OutError = FString::Printf(TEXT("MCP validate process failed (%d): %s"), ReturnCode, *ProcessError);
+		return false;
+	}
+
+	FString Content;
+	FString ParseError;
+	if (!ParseMcpResponseContent(StdOut, Content, ParseError))
+	{
+		OutError = ParseError;
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> ValidateObj;
+	TSharedRef<TJsonReader<>> ValidateReader = TJsonReaderFactory<>::Create(Content);
+	if (!FJsonSerializer::Deserialize(ValidateReader, ValidateObj) || !ValidateObj.IsValid())
+	{
+		OutError = TEXT("MCP validate response content is not valid JSON");
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ErrorsArray = nullptr;
+	if (ValidateObj->TryGetArrayField(TEXT("errors"), ErrorsArray) && ErrorsArray)
+	{
+		for (const TSharedPtr<FJsonValue>& ErrVal : *ErrorsArray)
+		{
+			if (ErrVal.IsValid())
+			{
+				FString ErrText = ErrVal->AsString();
+				if (!ErrText.IsEmpty())
+				{
+					OutValidationErrors.Add(ErrText);
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+void SAIChatWindow::SendRequestWithMCPFallback(const FString& ToolName)
+{
+	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
+	const TArray<FChatMessage> RequestMessages = ConversationContext->GetMessages();
+
+	const bool bIsModifyTool = ToolName.Equals(TEXT("orchestrate_modify_request"), ESearchCase::IgnoreCase);
+	const bool bMcpOnly = Settings && Settings->bEnableMCPOnlyMode;
+	const bool bMcpEnabled = Settings &&
+		(bMcpOnly ||
+		((bIsModifyTool && Settings->bEnableMCPForModify) ||
+		 (!bIsModifyTool && Settings->bEnableMCPForChatRequests)));
+	const bool bAllowDirectDebug = Settings && Settings->bAllowDirectAIHttpForDebug;
+
+	auto SendDirect = [WeakThis = TWeakPtr<SAIChatWindow>(SharedThis(this)), RequestMessages]()
+	{
+		if (TSharedPtr<SAIChatWindow> Pinned = WeakThis.Pin())
+		{
+			UOpenAICompatibleService::Get()->SendChatRequest(
+				RequestMessages,
+				FOnAIResponseReceived::CreateSP(Pinned.ToSharedRef(), &SAIChatWindow::OnAIResponseReceived));
+		}
+	};
+
+	if (!bMcpEnabled)
+	{
+		if (bMcpOnly)
+		{
+			FAIResponse ErrorResponse;
+			ErrorResponse.bSuccess = false;
+			ErrorResponse.ErrorMessage = TEXT("MCP-only mode is enabled but this request path is not configured for MCP.");
+			OnAIResponseReceived(ErrorResponse);
+			return;
+		}
+		if (!bAllowDirectDebug)
+		{
+			FAIResponse ErrorResponse;
+			ErrorResponse.bSuccess = false;
+			ErrorResponse.ErrorMessage = TEXT("Direct AI HTTP is disabled. Enable MCP or allow debug direct HTTP in settings.");
+			OnAIResponseReceived(ErrorResponse);
+			return;
+		}
+		SendDirect();
+		return;
+	}
+
+	TWeakPtr<SAIChatWindow> WeakChat = SharedThis(this);
+	Async(EAsyncExecution::ThreadPool, [WeakChat, RequestMessages, ToolName]()
+	{
+		FString McpContent;
+		FString McpError;
+		bool bSuccess = false;
+		if (TSharedPtr<SAIChatWindow> Pinned = WeakChat.Pin())
+		{
+			bSuccess = Pinned->TryInvokeMCPTool(RequestMessages, ToolName, McpContent, McpError);
+		}
+
+		AsyncTask(ENamedThreads::GameThread, [WeakChat, RequestMessages, bSuccess, McpContent, McpError]()
+		{
+			TSharedPtr<SAIChatWindow> Pinned = WeakChat.Pin();
+			if (!Pinned.IsValid())
+			{
+				return;
+			}
+
+			if (bSuccess)
+			{
+				FAIResponse Response;
+				Response.bSuccess = true;
+				Response.Content = McpContent;
+				Pinned->OnAIResponseReceived(Response);
+				return;
+			}
+
+			const UAssetFactoryAISettings* CurrentSettings = UAssetFactoryAISettings::Get();
+			if (CurrentSettings && CurrentSettings->bMCPFallbackToDirectAI && CurrentSettings->bAllowDirectAIHttpForDebug && !CurrentSettings->bEnableMCPOnlyMode)
+			{
+				Pinned->AddMessage(EChatMessageRole::System,
+					FString::Printf(TEXT("MCP unavailable, fallback to direct AI request: %s"), *McpError));
+				UOpenAICompatibleService::Get()->SendChatRequest(
+					RequestMessages,
+					FOnAIResponseReceived::CreateSP(Pinned.ToSharedRef(), &SAIChatWindow::OnAIResponseReceived));
+				return;
+			}
+
+			FAIResponse ErrorResponse;
+			ErrorResponse.bSuccess = false;
+			ErrorResponse.ErrorMessage = McpError.IsEmpty() ? TEXT("MCP request failed") : McpError;
+			Pinned->OnAIResponseReceived(ErrorResponse);
+		});
+	});
+}
+
+void SAIChatWindow::SendModifyRequestWithMCPFallback()
+{
+	SendRequestWithMCPFallback(TEXT("orchestrate_modify_request"));
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 bool SAIChatWindow::ParseQuickCommandForTest(const FString& Input, FString& OutCommand, FString& OutArgs)
 {
@@ -1566,6 +1997,15 @@ bool SAIChatWindow::TryBuildModifyPromptFromInputForTest(
 
 	OutPrompt = BuildModifyPromptForTest(SelectedBlueprint, Args);
 	return !OutPrompt.IsEmpty();
+}
+
+bool SAIChatWindow::InvokeMCPToolForTest(
+	const TArray<FChatMessage>& InMessages,
+	const FString& ToolName,
+	FString& OutResponseContent,
+	FString& OutError) const
+{
+	return TryInvokeMCPTool(InMessages, ToolName, OutResponseContent, OutError);
 }
 #endif
 

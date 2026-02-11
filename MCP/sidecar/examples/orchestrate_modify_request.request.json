@@ -1,0 +1,26 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "orchestrate_modify_request",
+    "arguments": {
+      "endpoint": "https://api.deepseek.com/v1/chat/completions",
+      "api_key": "REPLACE_WITH_LOCAL_SECRET",
+      "model": "deepseek-chat",
+      "timeout_seconds": 90,
+      "max_tokens": 4096,
+      "temperature": 0.4,
+      "messages": [
+        {
+          "role": "system",
+          "content": "You output Unreal blueprint JSON only."
+        },
+        {
+          "role": "user",
+          "content": "Modify blueprint BP_HelloWorld: add function GetLocation returning aaa if aaa > 0 else 0"
+        }
+      ]
+    }
+  }
+}

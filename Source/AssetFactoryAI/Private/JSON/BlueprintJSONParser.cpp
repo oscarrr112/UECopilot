@@ -146,8 +146,11 @@ namespace
 
 			AddEntry(TEXT("Branch"), EBlueprintNodeType::Flow_Branch);
 			AddEntry(TEXT("Flow_Branch"), EBlueprintNodeType::Flow_Branch);
+			AddEntry(TEXT("K2Node_Branch"), EBlueprintNodeType::Flow_Branch);
+			AddEntry(TEXT("K2Node_IfThenElse"), EBlueprintNodeType::Flow_Branch);
 			AddEntry(TEXT("Sequence"), EBlueprintNodeType::Flow_Sequence);
 			AddEntry(TEXT("Flow_Sequence"), EBlueprintNodeType::Flow_Sequence);
+			AddEntry(TEXT("K2Node_ExecutionSequence"), EBlueprintNodeType::Flow_Sequence);
 			AddEntry(TEXT("ForLoop"), EBlueprintNodeType::Flow_ForLoop);
 			AddEntry(TEXT("Flow_ForLoop"), EBlueprintNodeType::Flow_ForLoop);
 			AddEntry(TEXT("ForEachLoop"), EBlueprintNodeType::Flow_ForEachLoop);
@@ -231,6 +234,7 @@ namespace
 
 			AddEntry(TEXT("Literal"), EBlueprintNodeType::Literal);
 			AddEntry(TEXT("Constant"), EBlueprintNodeType::Literal);
+			AddEntry(TEXT("K2Node_Literal"), EBlueprintNodeType::Literal);
 			AddEntry(TEXT("Comment"), EBlueprintNodeType::Comment);
 			AddEntry(TEXT("Reroute"), EBlueprintNodeType::Reroute);
 			AddEntry(TEXT("Return"), EBlueprintNodeType::Return);
@@ -862,6 +866,126 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 	const TSharedPtr<FJsonObject>* PinsObject;
 	if (JsonObject->TryGetObjectField(TEXT("pins"), PinsObject))
 	{
+		auto AddConnectionFromString = [](const FString& ConnectionStr, FBlueprintPinData& PinData)
+		{
+			int32 DotIndex;
+			if (ConnectionStr.FindChar('.', DotIndex))
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ConnectionStr.Left(DotIndex);
+				Conn.SourcePinName = ConnectionStr.Mid(DotIndex + 1);
+				PinData.Connections.Add(Conn);
+				return true;
+			}
+			return false;
+		};
+
+		auto JsonValueToString = [](const TSharedPtr<FJsonValue>& Value) -> FString
+		{
+			if (!Value.IsValid())
+			{
+				return FString();
+			}
+
+			switch (Value->Type)
+			{
+			case EJson::String:
+				return Value->AsString();
+			case EJson::Number:
+				return FString::SanitizeFloat(Value->AsNumber());
+			case EJson::Boolean:
+				return Value->AsBool() ? TEXT("true") : TEXT("false");
+			case EJson::Object:
+			case EJson::Array:
+			{
+				FString Serialized;
+				const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+				FJsonSerializer::Serialize(Value.ToSharedRef(), TEXT(""), Writer);
+				return Serialized;
+			}
+			default:
+				return FString();
+			}
+		};
+
+		auto AddConnectionFromValue = [&AddConnectionFromString](const TSharedPtr<FJsonValue>& ConnectionValue, FBlueprintPinData& PinData)
+		{
+			if (!ConnectionValue.IsValid())
+			{
+				return;
+			}
+
+			if (ConnectionValue->Type == EJson::String)
+			{
+				AddConnectionFromString(ConnectionValue->AsString(), PinData);
+				return;
+			}
+
+			if (ConnectionValue->Type == EJson::Object)
+			{
+				const TSharedPtr<FJsonObject> ConnObj = ConnectionValue->AsObject();
+				if (!ConnObj.IsValid())
+				{
+					return;
+				}
+
+				FString NodeId;
+				FString PinName;
+				if (!ConnObj->TryGetStringField(TEXT("node_id"), NodeId))
+				{
+					ConnObj->TryGetStringField(TEXT("source_node"), NodeId);
+					if (NodeId.IsEmpty())
+					{
+						ConnObj->TryGetStringField(TEXT("node"), NodeId);
+					}
+				}
+				if (!ConnObj->TryGetStringField(TEXT("pin_name"), PinName))
+				{
+					ConnObj->TryGetStringField(TEXT("source_pin"), PinName);
+					if (PinName.IsEmpty())
+					{
+						ConnObj->TryGetStringField(TEXT("pin"), PinName);
+					}
+				}
+
+				if (!NodeId.IsEmpty() && !PinName.IsEmpty())
+				{
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = NodeId;
+					Conn.SourcePinName = PinName;
+					PinData.Connections.Add(Conn);
+					return;
+				}
+
+				if (ConnObj->HasTypedField<EJson::String>(TEXT("connection")))
+				{
+					FString InlineConnection;
+					if (ConnObj->TryGetStringField(TEXT("connection"), InlineConnection))
+					{
+						AddConnectionFromString(InlineConnection, PinData);
+					}
+				}
+				else if (ConnObj->HasTypedField<EJson::Object>(TEXT("connection")))
+				{
+					const TSharedPtr<FJsonObject>* InlineConnObj = nullptr;
+					if (ConnObj->TryGetObjectField(TEXT("connection"), InlineConnObj) && InlineConnObj && InlineConnObj->IsValid())
+					{
+						FString InlineNodeId;
+						FString InlinePinName;
+						(*InlineConnObj)->TryGetStringField(TEXT("node_id"), InlineNodeId);
+						(*InlineConnObj)->TryGetStringField(TEXT("pin_name"), InlinePinName);
+						if (!InlineNodeId.IsEmpty() && !InlinePinName.IsEmpty())
+						{
+							FBlueprintPinConnection Conn;
+							Conn.SourceNodeId = InlineNodeId;
+							Conn.SourcePinName = InlinePinName;
+							PinData.Connections.Add(Conn);
+						}
+					}
+				}
+			}
+		};
+
 		for (const auto& PinPair : (*PinsObject)->Values)
 		{
 			FBlueprintPinData PinData;
@@ -870,41 +994,35 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 			const TSharedPtr<FJsonObject>* PinObject;
 			if (PinPair.Value->TryGetObject(PinObject))
 			{
-				// Check for connection
-				FString ConnectionStr;
-				if ((*PinObject)->TryGetStringField(TEXT("connection"), ConnectionStr))
+				// Check for single connection, supports both string and object payloads.
+				if ((*PinObject)->HasField(TEXT("connection")))
 				{
-					// Parse "node_id.pin_name" format
-					int32 DotIndex;
-					if (ConnectionStr.FindChar('.', DotIndex))
+					const TSharedPtr<FJsonValue> ConnectionValue = (*PinObject)->Values.FindRef(TEXT("connection"));
+					if (ConnectionValue.IsValid())
 					{
-						FBlueprintPinConnection Conn;
-						Conn.SourceNodeId = ConnectionStr.Left(DotIndex);
-						Conn.SourcePinName = ConnectionStr.Mid(DotIndex + 1);
-						PinData.Connections.Add(Conn);
+						AddConnectionFromValue(ConnectionValue, PinData);
 					}
 				}
 
-				// Check for multiple connections
+				// Check for multiple connections, supports [ "node.pin", {"node_id":"x","pin_name":"y"} ].
 				const TArray<TSharedPtr<FJsonValue>>* ConnectionsArray;
 				if ((*PinObject)->TryGetArrayField(TEXT("connections"), ConnectionsArray))
 				{
 					for (const TSharedPtr<FJsonValue>& ConnValue : *ConnectionsArray)
 					{
-						FString ConnStr = ConnValue->AsString();
-						int32 DotIndex;
-						if (ConnStr.FindChar('.', DotIndex))
-						{
-							FBlueprintPinConnection Conn;
-							Conn.SourceNodeId = ConnStr.Left(DotIndex);
-							Conn.SourcePinName = ConnStr.Mid(DotIndex + 1);
-							PinData.Connections.Add(Conn);
-						}
+						AddConnectionFromValue(ConnValue, PinData);
 					}
 				}
 
-				// Check for default value
-				(*PinObject)->TryGetStringField(TEXT("value"), PinData.DefaultValue);
+				// Check for default value and normalize scalar/object forms into string payload.
+				if ((*PinObject)->HasField(TEXT("value")))
+				{
+					const TSharedPtr<FJsonValue> DefaultValue = (*PinObject)->Values.FindRef(TEXT("value"));
+					if (DefaultValue.IsValid())
+					{
+						PinData.DefaultValue = JsonValueToString(DefaultValue);
+					}
+				}
 			}
 
 			OutData.Pins.Add(PinData);
@@ -936,6 +1054,21 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 		if (InferredType != EBlueprintNodeType::Unknown)
 		{
 			OutData.NodeType = InferredType;
+			return true;
+		}
+
+		// Some models occasionally emit placeholder node objects without type/id.
+		// Keep parsing resilient by turning them into ignorable comment nodes.
+		if (OutData.NodeId.IsEmpty() && !bHasTypeString)
+		{
+			OutData.NodeId = FString::Printf(
+				TEXT("auto_unknown_%s"),
+				*FGuid::NewGuid().ToString(EGuidFormats::Digits).Left(8));
+			OutData.NodeType = EBlueprintNodeType::Comment;
+			if (OutData.Comment.IsEmpty())
+			{
+				OutData.Comment = TEXT("Auto-recovered unknown node");
+			}
 			return true;
 		}
 

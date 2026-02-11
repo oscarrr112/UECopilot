@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "validate_blueprint_json",
+    "arguments": {
+      "blueprint_json": "{\"name\":\"BP_Test\",\"parent_class\":\"Actor\",\"variables\":[],\"functions\":[],\"event_graphs\":[]}"
+    }
+  }
+}

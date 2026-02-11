@@ -124,3 +124,14 @@ Check if the UE HTTP server is running.
 ```bash
 npm run dev  # Build and run
 ```
+
+## Blueprint Logic Sidecar (Python)
+
+This plugin also includes a local Python MCP sidecar used by the in-editor `/modify` flow:
+
+- Entry: `MCP/assetfactory_mcp_server.py`
+- Docs: `MCP/sidecar/README.md`
+- Tool specs: `MCP/sidecar/tools/`
+- JSON-RPC examples: `MCP/sidecar/examples/`
+
+The Python sidecar is used by `SAIChatWindow` for MCP-first blueprint logic requests and validation.
