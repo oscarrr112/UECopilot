@@ -20,6 +20,7 @@ public class AssetFactory : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"UnrealEd",
+			"AssetFactoryAI",
 			"AssetTools",
 			"EnhancedInput",
 			"InputCore",

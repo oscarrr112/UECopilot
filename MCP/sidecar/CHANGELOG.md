@@ -11,6 +11,10 @@
   - `repair_blueprint_json`
   - `orchestrate_modify_request`
   - `validate_blueprint_json`
+  - `layout_blueprint_graph`
+
+### Updated
+- `orchestrate_modify_request` now performs layout post-processing by default (`apply_layout=true`).
 
 ### Added (docs)
 - `MCP/sidecar/README.md`

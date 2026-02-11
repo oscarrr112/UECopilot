@@ -1,6 +1,7 @@
 ﻿#!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import random
 import re
@@ -196,7 +197,11 @@ def run_orchestrate_modify(tool_args):
 
     first_json = extract_json_candidate(first)
     if is_valid_json_object(first_json):
-        return first
+        if bool(tool_args.get("apply_layout", True)):
+            layout_args = dict(tool_args)
+            layout_args["blueprint_json"] = first_json
+            return run_layout_blueprint_graph(layout_args)
+        return first_json
 
     repair_args = dict(tool_args)
     repair_args["source_text"] = first
@@ -204,7 +209,11 @@ def run_orchestrate_modify(tool_args):
 
     repaired_json = extract_json_candidate(repaired)
     if is_valid_json_object(repaired_json):
-        return repaired
+        if bool(tool_args.get("apply_layout", True)):
+            layout_args = dict(tool_args)
+            layout_args["blueprint_json"] = repaired_json
+            return run_layout_blueprint_graph(layout_args)
+        return repaired_json
 
     return repaired
 
@@ -239,6 +248,178 @@ def run_validate_blueprint_json(tool_args):
     return json.dumps({"valid": len(errors) == 0, "errors": errors}, ensure_ascii=False)
 
 
+def _iter_graph_node_arrays(bp_obj):
+    for key in ("functions", "event_graphs", "events", "macros"):
+        graphs = bp_obj.get(key)
+        if not isinstance(graphs, list):
+            continue
+        for graph in graphs:
+            if isinstance(graph, dict):
+                nodes = graph.get("nodes")
+                if isinstance(nodes, list):
+                    yield key, graph, nodes
+
+
+def _collect_predecessors(nodes):
+    node_ids = set()
+    for node in nodes:
+        if isinstance(node, dict):
+            node_id = node.get("node_id") or node.get("id")
+            if isinstance(node_id, str) and node_id:
+                node_ids.add(node_id)
+
+    predecessors = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        target_id = node.get("node_id") or node.get("id")
+        if not isinstance(target_id, str) or not target_id:
+            continue
+        predecessors.setdefault(target_id, set())
+
+        pins = node.get("pins")
+        if not isinstance(pins, dict):
+            continue
+        for pin_obj in pins.values():
+            if not isinstance(pin_obj, dict):
+                continue
+
+            conn_values = []
+            if "connection" in pin_obj:
+                conn_values.append(pin_obj.get("connection"))
+            if isinstance(pin_obj.get("connections"), list):
+                conn_values.extend(pin_obj.get("connections"))
+
+            for conn in conn_values:
+                src_node = None
+                if isinstance(conn, str):
+                    dot = conn.find(".")
+                    src_node = conn[:dot] if dot > 0 else None
+                elif isinstance(conn, dict):
+                    src_node = conn.get("node_id") or conn.get("source_node") or conn.get("node")
+                    if not src_node and isinstance(conn.get("connection"), str):
+                        inline = conn.get("connection")
+                        dot = inline.find(".")
+                        src_node = inline[:dot] if dot > 0 else None
+
+                if isinstance(src_node, str) and src_node in node_ids and src_node != target_id:
+                    predecessors[target_id].add(src_node)
+
+    return predecessors
+
+
+def _assign_layers(predecessors, ordered_ids):
+    indegree = {nid: len(preds) for nid, preds in predecessors.items()}
+    successors = {nid: [] for nid in predecessors.keys()}
+    for nid, preds in predecessors.items():
+        for pred in preds:
+            if pred in successors:
+                successors[pred].append(nid)
+
+    order_rank = {nid: i for i, nid in enumerate(ordered_ids)}
+    queue = [nid for nid in ordered_ids if indegree.get(nid, 0) == 0]
+    queue.sort(key=lambda nid: order_rank.get(nid, 10**9))
+    layers = {nid: 0 for nid in queue}
+    processed = set()
+
+    while queue:
+        cur = queue.pop(0)
+        if cur in processed:
+            continue
+        processed.add(cur)
+        cur_layer = layers.get(cur, 0)
+        for succ in successors.get(cur, []):
+            next_layer = cur_layer + 1
+            if next_layer > layers.get(succ, 0):
+                layers[succ] = next_layer
+            indegree[succ] = max(0, indegree.get(succ, 0) - 1)
+            if indegree[succ] == 0:
+                queue.append(succ)
+        queue.sort(key=lambda nid: order_rank.get(nid, 10**9))
+
+    # Cycle fallback.
+    for nid in ordered_ids:
+        if nid in layers:
+            continue
+        pred_layers = [layers.get(pred, 0) for pred in predecessors.get(nid, set()) if pred in layers]
+        layers[nid] = (max(pred_layers) + 1) if pred_layers else 0
+
+    return layers
+
+
+def _layout_one_graph(nodes, start_x, start_y, horizontal_spacing, vertical_spacing):
+    id_to_node = {}
+    ordered_ids = []
+    for node in nodes:
+        if isinstance(node, dict):
+            node_id = node.get("node_id") or node.get("id")
+            if isinstance(node_id, str) and node_id:
+                id_to_node[node_id] = node
+                ordered_ids.append(node_id)
+
+    if not ordered_ids:
+        return
+
+    predecessors = _collect_predecessors(nodes)
+    layers = _assign_layers(predecessors, ordered_ids)
+
+    # Group nodes by layer in stable order.
+    layer_to_nodes = {}
+    for nid in ordered_ids:
+        layer_to_nodes.setdefault(layers.get(nid, 0), []).append(nid)
+
+    # Place with simple overlap-free grid per layer.
+    for layer_idx in sorted(layer_to_nodes.keys()):
+        ids = layer_to_nodes[layer_idx]
+        # Try to keep nodes nearer predecessors' row centers.
+        def row_score(node_id):
+            preds = predecessors.get(node_id, set())
+            if not preds:
+                return math.inf
+            pred_rows = []
+            for pred in preds:
+                pred_layer = layers.get(pred, 0)
+                pred_list = layer_to_nodes.get(pred_layer, [])
+                if pred in pred_list:
+                    pred_rows.append(pred_list.index(pred))
+            return sum(pred_rows) / len(pred_rows) if pred_rows else math.inf
+
+        ids.sort(key=lambda nid: (row_score(nid), ordered_ids.index(nid)))
+        x = int(start_x + layer_idx * horizontal_spacing)
+        for row_idx, nid in enumerate(ids):
+            y = int(start_y + row_idx * vertical_spacing)
+            node = id_to_node[nid]
+            node["position"] = {"x": x, "y": y}
+
+
+def run_layout_blueprint_graph(tool_args):
+    source = tool_args.get("blueprint_json") or ""
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("Missing blueprint_json")
+
+    try:
+        bp_obj = json.loads(source)
+    except Exception as exc:
+        raise ValueError(f"Invalid blueprint_json: {exc}")
+
+    if not isinstance(bp_obj, dict):
+        raise ValueError("blueprint_json must be a JSON object")
+
+    horizontal_spacing = int(tool_args.get("horizontal_spacing") or 420)
+    vertical_spacing = int(tool_args.get("vertical_spacing") or 220)
+    start_x = int(tool_args.get("start_x") or 0)
+    start_y = int(tool_args.get("start_y") or 0)
+    graph_gap_y = int(tool_args.get("graph_gap_y") or 700)
+
+    graph_index = 0
+    for _, _, nodes in _iter_graph_node_arrays(bp_obj):
+        graph_start_y = start_y + graph_index * graph_gap_y
+        _layout_one_graph(nodes, start_x, graph_start_y, horizontal_spacing, vertical_spacing)
+        graph_index += 1
+
+    return json.dumps(bp_obj, ensure_ascii=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description="UECopilot MCP sidecar")
     parser.add_argument("--request", required=True, help="Path to MCP JSON-RPC request file")
@@ -264,6 +445,7 @@ def main():
             {"name": "repair_blueprint_json"},
             {"name": "orchestrate_modify_request"},
             {"name": "validate_blueprint_json"},
+            {"name": "layout_blueprint_graph"},
         ]
         print(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}, ensure_ascii=False))
         return 0
@@ -285,6 +467,8 @@ def main():
             content = run_orchestrate_modify(tool_args)
         elif tool_name == "validate_blueprint_json":
             content = run_validate_blueprint_json(tool_args)
+        elif tool_name == "layout_blueprint_graph":
+            content = run_layout_blueprint_graph(tool_args)
         else:
             print(json.dumps(make_error(req_id, -32601, "Unsupported tool name")))
             return 2

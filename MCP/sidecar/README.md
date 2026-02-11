@@ -28,6 +28,7 @@ See `SPEC.md` for full request/response shape.
 - `repair_blueprint_json`
 - `orchestrate_modify_request`
 - `validate_blueprint_json`
+- `layout_blueprint_graph`
 
 See `tools/` for per-tool argument contracts.
 

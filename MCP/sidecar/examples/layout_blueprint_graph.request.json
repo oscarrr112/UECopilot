@@ -1,0 +1,11 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "layout_blueprint_graph",
+    "arguments": {
+      "blueprint_json": "{\"name\":\"BP_Test\",\"parent_class\":\"Actor\",\"functions\":[{\"name\":\"GetValue\",\"nodes\":[{\"node_id\":\"fn_entry\",\"node_type\":\"Function_Entry\"},{\"node_id\":\"get_aaa\",\"node_type\":\"Variable_Get\",\"variable\":\"aaa\"},{\"node_id\":\"branch\",\"node_type\":\"Flow_Branch\",\"pins\":{\"execute\":{\"connection\":\"fn_entry.then\"}}},{\"node_id\":\"fn_result\",\"node_type\":\"Return\",\"pins\":{\"execute\":{\"connection\":\"branch.Then\"}}}]}]}"
+    }
+  }
+}

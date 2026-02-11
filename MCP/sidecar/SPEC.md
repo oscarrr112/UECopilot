@@ -71,7 +71,8 @@ Error:
       { "name": "generate_blueprint_change" },
       { "name": "repair_blueprint_json" },
       { "name": "orchestrate_modify_request" },
-      { "name": "validate_blueprint_json" }
+      { "name": "validate_blueprint_json" },
+      { "name": "layout_blueprint_graph" }
     ]
   }
 }

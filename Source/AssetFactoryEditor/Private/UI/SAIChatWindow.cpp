@@ -1046,6 +1046,22 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 			LogBlueprintDataSummary(CompileResult.BlueprintData, TEXT("BSL compiled"));
 			EnrichBlueprintData(CompileResult.BlueprintData);
 			EnsureTickGraph(CompileResult.BlueprintData);
+			if (const UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get())
+			{
+				if (Settings->bEnableMCPForModify || Settings->bEnableMCPForChatRequests || Settings->bEnableMCPOnlyMode)
+				{
+					FBlueprintData LaidOutData;
+					FString LayoutError;
+					if (TryInvokeMCPLayoutBlueprint(CompileResult.BlueprintData, LaidOutData, LayoutError))
+					{
+						CompileResult.BlueprintData = LaidOutData;
+					}
+					else
+					{
+						UE_LOG(LogSAIChatWindow, Warning, TEXT("MCP layout skipped for BSL response: %s"), *LayoutError);
+					}
+				}
+			}
 			// Validate
 			TArray<FString> ValidationErrors;
 			if (UBlueprintJSONParser::ValidateBlueprintData(CompileResult.BlueprintData, ValidationErrors))
@@ -1136,6 +1152,22 @@ void SAIChatWindow::ProcessAIResponse(const FString& ResponseContent)
 			LogBlueprintDataSummary(ParseResult.BlueprintData, TEXT("JSON parsed"));
 			EnrichBlueprintData(ParseResult.BlueprintData);
 			EnsureTickGraph(ParseResult.BlueprintData);
+			if (const UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get())
+			{
+				if (Settings->bEnableMCPForModify || Settings->bEnableMCPForChatRequests || Settings->bEnableMCPOnlyMode)
+				{
+					FBlueprintData LaidOutData;
+					FString LayoutError;
+					if (TryInvokeMCPLayoutBlueprint(ParseResult.BlueprintData, LaidOutData, LayoutError))
+					{
+						ParseResult.BlueprintData = LaidOutData;
+					}
+					else
+					{
+						UE_LOG(LogSAIChatWindow, Warning, TEXT("MCP layout skipped for JSON response: %s"), *LayoutError);
+					}
+				}
+			}
 			// Validate
 			TArray<FString> ValidationErrors;
 			if (UBlueprintJSONParser::ValidateBlueprintData(ParseResult.BlueprintData, ValidationErrors))
@@ -1857,6 +1889,181 @@ bool SAIChatWindow::TryInvokeMCPValidateBlueprint(const FBlueprintData& Data, TA
 	return true;
 }
 
+bool SAIChatWindow::TryInvokeMCPLayoutBlueprint(const FBlueprintData& Data, FBlueprintData& OutLaidOutData, FString& OutError) const
+{
+	OutError.Empty();
+	OutLaidOutData = Data;
+
+	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
+	if (!Settings)
+	{
+		OutError = TEXT("Missing AI settings");
+		return false;
+	}
+
+	const FString Command = Settings->MCPServerCommand.TrimStartAndEnd();
+	if (Command.IsEmpty())
+	{
+		OutError = TEXT("MCP command is empty");
+		return false;
+	}
+
+	FString ScriptPath = Settings->MCPServerScriptPath.TrimStartAndEnd();
+	if (ScriptPath.IsEmpty())
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UECopilot"));
+		if (Plugin.IsValid())
+		{
+			ScriptPath = FPaths::Combine(Plugin->GetBaseDir(), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+		else
+		{
+			ScriptPath = FPaths::Combine(FPaths::ProjectPluginsDir(), TEXT("UECopilot"), TEXT("MCP"), TEXT("assetfactory_mcp_server.py"));
+		}
+	}
+
+	if (!FPaths::FileExists(ScriptPath))
+	{
+		OutError = FString::Printf(TEXT("MCP script not found: %s"), *ScriptPath);
+		return false;
+	}
+
+	const FString BlueprintJson = UBlueprintJSONParser::SerializeBlueprintData(Data);
+
+	TSharedRef<FJsonObject> ArgsObj = MakeShared<FJsonObject>();
+	ArgsObj->SetStringField(TEXT("blueprint_json"), BlueprintJson);
+	ArgsObj->SetNumberField(TEXT("horizontal_spacing"), 420);
+	ArgsObj->SetNumberField(TEXT("vertical_spacing"), 220);
+	ArgsObj->SetNumberField(TEXT("start_x"), 120);
+	ArgsObj->SetNumberField(TEXT("start_y"), 180);
+	ArgsObj->SetNumberField(TEXT("graph_gap_y"), 700);
+
+	TSharedRef<FJsonObject> ParamsObj = MakeShared<FJsonObject>();
+	ParamsObj->SetStringField(TEXT("name"), TEXT("layout_blueprint_graph"));
+	ParamsObj->SetObjectField(TEXT("arguments"), ArgsObj);
+
+	TSharedRef<FJsonObject> RequestObj = MakeShared<FJsonObject>();
+	RequestObj->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+	RequestObj->SetNumberField(TEXT("id"), 1);
+	RequestObj->SetStringField(TEXT("method"), TEXT("tools/call"));
+	RequestObj->SetObjectField(TEXT("params"), ParamsObj);
+
+	FString RequestJson;
+	{
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestJson);
+		FJsonSerializer::Serialize(RequestObj, Writer);
+	}
+
+	const FString TempDir = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("AssetFactory"), TEXT("MCP"));
+	IFileManager::Get().MakeDirectory(*TempDir, true);
+	const FString RequestPath = FPaths::Combine(TempDir, FString::Printf(TEXT("mcp_layout_%s.json"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+
+	if (!FFileHelper::SaveStringToFile(
+		RequestJson,
+		*RequestPath,
+		FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	{
+		OutError = TEXT("Failed to write MCP layout request");
+		return false;
+	}
+
+	const FString Params = FString::Printf(TEXT("-u \"%s\" --request \"%s\""), *ScriptPath, *RequestPath);
+	int32 ReturnCode = -1;
+	FString StdOut;
+	FString StdErr;
+	FPlatformProcess::ExecProcess(*Command, *Params, &ReturnCode, &StdOut, &StdErr);
+	IFileManager::Get().Delete(*RequestPath, false, true, true);
+
+	if (ReturnCode != 0)
+	{
+		const FString StdErrTrimmed = StdErr.TrimStartAndEnd();
+		const FString StdOutTrimmed = StdOut.TrimStartAndEnd();
+		const FString ProcessError = !StdErrTrimmed.IsEmpty() ? StdErrTrimmed : StdOutTrimmed;
+		OutError = FString::Printf(TEXT("MCP layout process failed (%d): %s"), ReturnCode, *ProcessError);
+		return false;
+	}
+
+	FString Content;
+	FString ParseError;
+	if (!ParseMcpResponseContent(StdOut, Content, ParseError))
+	{
+		OutError = ParseError;
+		return false;
+	}
+
+	const FBlueprintParseResult ParseResult = UBlueprintJSONParser::ParseBlueprintJSON(Content);
+	if (!ParseResult.bSuccess)
+	{
+		OutError = FString::Printf(TEXT("MCP layout returned invalid blueprint JSON: %s"), *ParseResult.ErrorMessage);
+		return false;
+	}
+
+	OutLaidOutData = ParseResult.BlueprintData;
+
+	auto HasAnyNonZeroPosition = [](const FBlueprintData& InData) -> bool
+	{
+		auto GraphHasNonZero = [](const FBlueprintGraphData& Graph) -> bool
+		{
+			for (const FBlueprintNodeData& Node : Graph.Nodes)
+			{
+				if (!FMath::IsNearlyZero(Node.Position.X) || !FMath::IsNearlyZero(Node.Position.Y))
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		for (const FBlueprintGraphData& Graph : InData.Functions)
+		{
+			if (GraphHasNonZero(Graph))
+			{
+				return true;
+			}
+		}
+		for (const FBlueprintGraphData& Graph : InData.EventGraphs)
+		{
+			if (GraphHasNonZero(Graph))
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+
+	if (!HasAnyNonZeroPosition(OutLaidOutData))
+	{
+		const float BaseX = 120.0f;
+		const float BaseY = 180.0f;
+		const float StepX = 420.0f;
+		const float StepY = 220.0f;
+		int32 GraphIndex = 0;
+
+		auto ApplyFallbackLayout = [&](FBlueprintGraphData& Graph)
+		{
+			const float GraphYOffset = BaseY + GraphIndex * 700.0f;
+			for (int32 NodeIdx = 0; NodeIdx < Graph.Nodes.Num(); ++NodeIdx)
+			{
+				FBlueprintNodeData& Node = Graph.Nodes[NodeIdx];
+				Node.Position.X = BaseX + NodeIdx * StepX;
+				Node.Position.Y = GraphYOffset + ((NodeIdx % 3) * StepY);
+			}
+			++GraphIndex;
+		};
+
+		for (FBlueprintGraphData& Graph : OutLaidOutData.Functions)
+		{
+			ApplyFallbackLayout(Graph);
+		}
+		for (FBlueprintGraphData& Graph : OutLaidOutData.EventGraphs)
+		{
+			ApplyFallbackLayout(Graph);
+		}
+	}
+
+	return true;
+}
+
 void SAIChatWindow::SendRequestWithMCPFallback(const FString& ToolName)
 {
 	UAssetFactoryAISettings* Settings = UAssetFactoryAISettings::Get();
@@ -2025,6 +2232,14 @@ bool SAIChatWindow::InvokeMCPToolForTest(
 	FString& OutError) const
 {
 	return TryInvokeMCPTool(InMessages, ToolName, OutResponseContent, OutError);
+}
+
+bool SAIChatWindow::InvokeMCPLayoutForTest(
+	const FBlueprintData& InData,
+	FBlueprintData& OutData,
+	FString& OutError) const
+{
+	return TryInvokeMCPLayoutBlueprint(InData, OutData, OutError);
 }
 #endif
 

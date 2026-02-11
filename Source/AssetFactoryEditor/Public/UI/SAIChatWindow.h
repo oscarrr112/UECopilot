@@ -62,6 +62,12 @@ public:
 		const FString& ToolName,
 		FString& OutResponseContent,
 		FString& OutError) const;
+
+	/** Invoke MCP layout tool directly from tests. */
+	bool InvokeMCPLayoutForTest(
+		const FBlueprintData& InData,
+		FBlueprintData& OutData,
+		FString& OutError) const;
 #endif
 
 private:
@@ -143,6 +149,7 @@ private:
 	void SendModifyRequestWithMCPFallback();
 	bool TryInvokeMCPTool(const TArray<FChatMessage>& Messages, const FString& ToolName, FString& OutResponseContent, FString& OutError) const;
 	bool TryInvokeMCPValidateBlueprint(const FBlueprintData& Data, TArray<FString>& OutValidationErrors, FString& OutError) const;
+	bool TryInvokeMCPLayoutBlueprint(const FBlueprintData& Data, FBlueprintData& OutLaidOutData, FString& OutError) const;
 
 	/** Scroll to bottom of chat */
 	void ScrollToBottom();

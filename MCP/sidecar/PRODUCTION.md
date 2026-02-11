@@ -33,5 +33,7 @@
   - run `tools/list` example
 - Editor flow:
   - run `/modify` MCP automation tests
+- Layout flow:
+  - run MCP tool `layout_blueprint_graph` and verify no overlapping node positions
 - Live provider:
   - run bulk live test set and verify success threshold

@@ -29,7 +29,9 @@ Add to your Claude Code MCP settings (`~/.claude/claude_desktop_config.json` or 
       "command": "node",
       "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
       "env": {
-        "UE_API_BASE": "http://localhost:8559"
+        "UE_API_BASE": "http://localhost:8559",
+        "UE_MCP_PYTHON": "py",
+        "UE_MCP_SIDECAR_SCRIPT": "E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/assetfactory_mcp_server.py"
       }
     }
   }
@@ -45,7 +47,12 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "ue-copilot": {
       "command": "node",
-      "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"]
+      "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
+      "env": {
+        "UE_API_BASE": "http://localhost:8559",
+        "UE_MCP_PYTHON": "py",
+        "UE_MCP_SIDECAR_SCRIPT": "E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/assetfactory_mcp_server.py"
+      }
     }
   }
 }
@@ -115,9 +122,44 @@ List all available asset generators.
 ### health_check
 Check if the UE HTTP server is running.
 
+### chat_completion / generate_blueprint_change
+Proxy to blueprint logic sidecar model request.
+
+### repair_blueprint_json
+Repair malformed blueprint JSON into one valid object.
+
+### orchestrate_modify_request
+Generate blueprint JSON and auto-repair if needed. Now includes layout post-processing by default.
+
+### validate_blueprint_json
+Validate blueprint JSON structure before apply.
+
+### layout_blueprint_graph
+Apply deterministic node positions to functions/event graphs to reduce overlap and wiring chaos.
+
+### apply_blueprint_change
+Apply blueprint logic JSON directly to an existing Blueprint asset.
+
+Execution mode:
+- Editor online: uses `/assetfactory/execute` HTTP path.
+- Editor offline: auto-fallback to `UnrealEditor-Cmd -run=AssetFactoryApplyBlueprint`.
+
+```json
+{
+  "asset_path": "/Game/Blueprints/BP_HelloWorld.BP_HelloWorld",
+  "blueprint_json": "{\"name\":\"BP_HelloWorld\",\"parent_class\":\"Actor\",\"functions\":[]}",
+  "merge": true,
+  "save_asset": true
+}
+```
+
 ## Environment Variables
 
 - `UE_API_BASE`: Base URL for UE API (default: `http://localhost:8559`)
+- `UE_MCP_PYTHON`: Python launcher for sidecar (default: `py`)
+- `UE_MCP_SIDECAR_SCRIPT`: Absolute path to `assetfactory_mcp_server.py`
+- `UE_EDITOR_CMD`: Absolute path to `UnrealEditor-Cmd.exe` (required for offline fallback)
+- `UE_PROJECT_PATH`: Absolute path to `.uproject` (required for offline fallback)
 
 ## Development
 
