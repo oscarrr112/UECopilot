@@ -37,8 +37,11 @@ FGenerationResult FInputMappingContextGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load existing IMC"));
 		}
-		// Clear existing mappings for update
-		IMC->UnmapAll();
+		// Only clear existing mappings if JSON provides new Mappings
+		if (Config->HasField(TEXT("Mappings")))
+		{
+			IMC->UnmapAll();
+		}
 	}
 	else
 	{
@@ -161,13 +164,14 @@ FGenerationResult FInputMappingContextGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, IMC);
 }
 
-TOptional<FString> FInputMappingContextGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+TOptional<FString> FInputMappingContextGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{
 		return FString(TEXT("Invalid configuration object"));
 	}
 
+	// Update: Mappings is optional (no-op if not provided)
 	const TArray<TSharedPtr<FJsonValue>>* MappingsArray = nullptr;
 	if (Config->TryGetArrayField(TEXT("Mappings"), MappingsArray))
 	{

@@ -118,7 +118,7 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
-	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action = EGenerationAction::Create) const override;
 	virtual TArray<FString> GetRequiredFields() const override;
 
 	//~ Extract functionality
@@ -129,6 +129,12 @@ protected:
 	//~ Widget Tree Building
 	/** Recursively build widget tree from JSON */
 	UWidget* BuildWidgetTree(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> WidgetNode, UPanelWidget* Parent, const FString& JsonPath);
+
+	/** Process per-widget updates (Add/Update/Remove) without rebuilding the whole tree */
+	void ProcessWidgetUpdates(UWidgetBlueprint* Blueprint, const TArray<TSharedPtr<FJsonValue>>* UpdatesArray);
+
+	/** Remove a widget and its children from the widget tree */
+	void RemoveWidget(UWidgetBlueprint* Blueprint, UWidget* Widget);
 
 	/** Create a widget instance based on type - uses dynamic class lookup */
 	UWidget* CreateWidget(UWidgetBlueprint* Blueprint, const FString& WidgetType, const FString& WidgetName, TSharedPtr<FJsonObject> Config);
@@ -184,6 +190,8 @@ protected:
 	ESlateSizeRule::Type ParseSizeRule(const FString& SizeString) const;
 
 	//~ Utility
+	/** Resolve ParentClass from name string, defaults to UUserWidget if not found */
+	UClass* ResolveParentClass(const FString& ParentClassName) const;
 	FString GenerateWidgetName(const FString& Prefix) const;
 	bool IsPanelWidget(UClass* WidgetClass) const;
 

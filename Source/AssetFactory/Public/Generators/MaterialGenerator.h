@@ -45,7 +45,7 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
-	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const override;
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action = EGenerationAction::Create) const override;
 	virtual TArray<FString> GetRequiredFields() const override;
 
 protected:

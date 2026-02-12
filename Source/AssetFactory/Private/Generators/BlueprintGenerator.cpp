@@ -39,15 +39,6 @@ FGenerationResult FBlueprintGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Asset does not exist for update"));
 	}
 
-	// Get parent class using utility
-	FString ParentClassName = GetStringField(Config, TEXT("ParentClass"), TEXT("Actor"));
-	UClass* ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UObject::StaticClass(), true);
-	if (!ParentClass)
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
-			FString::Printf(TEXT("Parent class '%s' not found"), *ParentClassName));
-	}
-
 	UBlueprint* Blueprint = nullptr;
 
 	if (bExists)
@@ -60,7 +51,15 @@ FGenerationResult FBlueprintGenerator::Generate(
 	}
 	else
 	{
-		// Create new blueprint
+		// Get parent class (required for creation)
+		FString ParentClassName = GetStringField(Config, TEXT("ParentClass"), TEXT("Actor"));
+		UClass* ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UObject::StaticClass(), true);
+		if (!ParentClass)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
+				FString::Printf(TEXT("Parent class '%s' not found"), *ParentClassName));
+		}
+
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
 		UBlueprintFactory* Factory = NewObject<UBlueprintFactory>();
@@ -201,7 +200,7 @@ bool FBlueprintGenerator::SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr
 	return bSuccess;
 }
 
-TOptional<FString> FBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+TOptional<FString> FBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{

@@ -2,13 +2,17 @@
 
 Creates Enhanced Input Action assets.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, only fields present in the JSON are processed — missing fields are left unchanged. For example, updating only `ValueType` preserves existing Triggers and Modifiers. If `Triggers` is provided, existing triggers are replaced with the new ones.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `ValueType` | string | No | `"Boolean"` | Input value type (case-insensitive) |
-| `Triggers` | array | No | | Array of trigger type name strings |
-| `Modifiers` | array | No | | Array of modifier type name strings |
+| `Triggers` | array | No | | Array of trigger type name strings (if provided, replaces all existing triggers) |
+| `Modifiers` | array | No | | Array of modifier type name strings (if provided, replaces all existing modifiers) |
 
 ### ValueType Values
 - `"Boolean"` - On/off binary input (button press)
@@ -41,5 +45,17 @@ Creates Enhanced Input Action assets.
   "ValueType": "Axis2D",
   "Triggers": ["Down"],
   "Modifiers": ["DeadZone", "Smooth"]
+}
+```
+
+## Update Example (Change ValueType, Keep Triggers/Modifiers)
+
+```json
+{
+  "AssetType": "InputAction",
+  "Name": "IA_Move",
+  "Path": "/Game/Input",
+  "Action": "Update",
+  "ValueType": "Axis3D"
 }
 ```

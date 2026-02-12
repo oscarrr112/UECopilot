@@ -54,7 +54,9 @@ FGenerationResult FMaterialGenerator::Generate(
 
 	// Get template type
 	FString Template = GetStringField(Config, TEXT("Template"), TEXT(""));
-	if (Template.IsEmpty())
+
+	// Template is required for Create
+	if (Template.IsEmpty() && !bExists)
 	{
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Missing 'Template' field"));
 	}
@@ -79,8 +81,11 @@ FGenerationResult FMaterialGenerator::Generate(
 			Package = Material->GetOutermost();
 			Package->FullyLoad();
 
-			// Clear existing expressions
-			ClearMaterialExpressions(Material);
+			// Only clear and rebuild expressions if Template is provided
+			if (!Template.IsEmpty())
+			{
+				ClearMaterialExpressions(Material);
+			}
 		}
 		else
 		{
@@ -98,39 +103,43 @@ FGenerationResult FMaterialGenerator::Generate(
 		Material = NewObject<UMaterial>(Package, *Name, RF_Public | RF_Standalone);
 	}
 
-	// Get parameters
-	TSharedPtr<FJsonObject> Params = GetObjectField(Config, TEXT("Parameters"));
+	// Build material based on template (only if Template is provided)
+	if (!Template.IsEmpty())
+	{
+		// Get parameters
+		TSharedPtr<FJsonObject> Params = GetObjectField(Config, TEXT("Parameters"));
 
-	// Setup material defaults
-	SetupUIMaterialDefaults(Material);
+		// Setup material defaults
+		SetupUIMaterialDefaults(Material);
 
-	// Build material based on template
-	bool bSuccess = false;
-	if (Template.Equals(TEXT("CircularProgress"), ESearchCase::IgnoreCase))
-	{
-		bSuccess = BuildCircularProgressMaterial(Material, Params);
-	}
-	else if (Template.Equals(TEXT("CooldownSweep"), ESearchCase::IgnoreCase))
-	{
-		bSuccess = BuildCooldownSweepMaterial(Material, Params);
-	}
-	else if (Template.Equals(TEXT("GradientFill"), ESearchCase::IgnoreCase))
-	{
-		bSuccess = BuildGradientFillMaterial(Material, Params);
-	}
-	else if (Template.Equals(TEXT("HealthBarFill"), ESearchCase::IgnoreCase))
-	{
-		bSuccess = BuildHealthBarFillMaterial(Material, Params);
-	}
-	else
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
-			FString::Printf(TEXT("Unknown template: %s"), *Template));
-	}
+		// Build material based on template
+		bool bSuccess = false;
+		if (Template.Equals(TEXT("CircularProgress"), ESearchCase::IgnoreCase))
+		{
+			bSuccess = BuildCircularProgressMaterial(Material, Params);
+		}
+		else if (Template.Equals(TEXT("CooldownSweep"), ESearchCase::IgnoreCase))
+		{
+			bSuccess = BuildCooldownSweepMaterial(Material, Params);
+		}
+		else if (Template.Equals(TEXT("GradientFill"), ESearchCase::IgnoreCase))
+		{
+			bSuccess = BuildGradientFillMaterial(Material, Params);
+		}
+		else if (Template.Equals(TEXT("HealthBarFill"), ESearchCase::IgnoreCase))
+		{
+			bSuccess = BuildHealthBarFillMaterial(Material, Params);
+		}
+		else
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
+				FString::Printf(TEXT("Unknown template: %s"), *Template));
+		}
 
-	if (!bSuccess)
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build material"));
+		if (!bSuccess)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build material"));
+		}
 	}
 
 	// Compile and save
@@ -838,35 +847,37 @@ EBlendMode FMaterialGenerator::ParseBlendMode(const FString& BlendString) const
 	return BLEND_Translucent;
 }
 
-TOptional<FString> FMaterialGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+TOptional<FString> FMaterialGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{
 		return FString(TEXT("Invalid configuration object"));
 	}
 
-	if (!Config->HasField(TEXT("Template")))
+	// Template is only required when creating; Update without Template is a no-op on expressions
+	if (Action != EGenerationAction::Update)
 	{
-		return FString(TEXT("Missing required field 'Template'"));
+		if (!Config->HasField(TEXT("Template")))
+		{
+			return FString(TEXT("Missing required field 'Template'"));
+		}
 	}
 
+	// If Template is provided, validate it
 	FString Template;
-	if (!Config->TryGetStringField(TEXT("Template"), Template) || Template.IsEmpty())
+	if (Config->TryGetStringField(TEXT("Template"), Template) && !Template.IsEmpty())
 	{
-		return FString(TEXT("'Template' field must be a non-empty string"));
-	}
+		static TSet<FString> ValidTemplates = {
+			TEXT("CircularProgress"),
+			TEXT("CooldownSweep"),
+			TEXT("GradientFill"),
+			TEXT("HealthBarFill")
+		};
 
-	// Validate template is one of the supported types
-	static TSet<FString> ValidTemplates = {
-		TEXT("CircularProgress"),
-		TEXT("CooldownSweep"),
-		TEXT("GradientFill"),
-		TEXT("HealthBarFill")
-	};
-
-	if (!ValidTemplates.Contains(Template))
-	{
-		return FString::Printf(TEXT("Invalid template '%s'. Valid templates: CircularProgress, CooldownSweep, GradientFill, HealthBarFill"), *Template);
+		if (!ValidTemplates.Contains(Template))
+		{
+			return FString::Printf(TEXT("Invalid template '%s'. Valid templates: CircularProgress, CooldownSweep, GradientFill, HealthBarFill"), *Template);
+		}
 	}
 
 	return TOptional<FString>();

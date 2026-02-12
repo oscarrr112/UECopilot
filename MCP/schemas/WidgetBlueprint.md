@@ -2,11 +2,22 @@
 
 Creates UMG Widget Blueprint assets with a widget tree, slot positioning, styles, and property bindings.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, only fields present in the JSON are processed — missing fields are left unchanged. This enables **field-level patch updates**. Three mutually exclusive update paths:
+
+| JSON Fields Provided | Behavior |
+|---------------------|----------|
+| `RootWidget` | **Full rebuild** — clears entire widget tree and rebuilds from scratch |
+| `WidgetUpdates` | **Element-level patch** — add, update, or remove individual widgets |
+| Neither | **No-op** — widget tree stays unchanged (useful for only updating ParentClass or ClassDefaults) |
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `RootWidget` | object | **Yes** | | Root widget node definition (typically CanvasPanel) |
+| `RootWidget` | object | **Yes** (Create) / No (Update) | | Root widget node definition (typically CanvasPanel) |
+| `WidgetUpdates` | array | No | | Element-level widget patch operations (Update only, see below) |
 | `ParentClass` | string | No | `"UserWidget"` | Parent widget class |
 | `ClassDefaults` | object | No | | CDO properties set via reflection (see ClassDefaults section) |
 
@@ -188,6 +199,99 @@ Widget-level property bindings:
 - Property binding: `"PropertyName": {"Property": "SourceProperty", "Kind": "Property"}`
 - Functions validated against C++ base class and blueprint graphs
 - Auto-sets `IsVariable: true`
+
+## WidgetUpdates (Element-Level Patch)
+
+Used with `Action: "Update"` to modify individual widgets without rebuilding the entire tree.
+
+Each entry in the `WidgetUpdates` array:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `Action` | string | No | `"Update"` (default), `"Add"`, or `"Remove"` |
+| `Name` | string | **Yes** (Update/Remove) | Target widget name |
+| `Parent` | string | **Yes** (Add only) | Name of parent panel widget to add into |
+| `Widget` | object | **Yes** (Add only) | Widget node definition (same format as RootWidget children) |
+| `Style` | object | No (Update) | Style properties to apply |
+| `Properties` | object | No (Update) | Widget properties via reflection |
+| `Slot` | object | No (Update) | Slot/layout configuration |
+| `IsVariable` | bool | No (Update) | Expose as blueprint variable |
+| `Bindings` | object | No (Update) | Property bindings |
+
+### WidgetUpdates Example: Update a Widget
+
+```json
+{
+  "AssetType": "WidgetBlueprint",
+  "Name": "WBP_HUD",
+  "Path": "/Game/UI",
+  "Action": "Update",
+  "WidgetUpdates": [
+    {
+      "Action": "Update",
+      "Name": "ScoreText",
+      "Style": { "Font": { "Size": 48 }, "Color": "#FF0000" },
+      "Properties": { "Text": "Score: 999" }
+    }
+  ]
+}
+```
+
+### WidgetUpdates Example: Add a Widget
+
+```json
+{
+  "AssetType": "WidgetBlueprint",
+  "Name": "WBP_HUD",
+  "Path": "/Game/UI",
+  "Action": "Update",
+  "WidgetUpdates": [
+    {
+      "Action": "Add",
+      "Parent": "Root",
+      "Widget": {
+        "Type": "Image",
+        "Name": "StatusIcon",
+        "Slot": {
+          "Anchors": { "Min": [1, 0], "Max": [1, 0] },
+          "Alignment": [1, 0],
+          "SizeToContent": true
+        }
+      }
+    }
+  ]
+}
+```
+
+### WidgetUpdates Example: Remove a Widget
+
+```json
+{
+  "AssetType": "WidgetBlueprint",
+  "Name": "WBP_HUD",
+  "Path": "/Game/UI",
+  "Action": "Update",
+  "WidgetUpdates": [
+    { "Action": "Remove", "Name": "OldWidget" }
+  ]
+}
+```
+
+### WidgetUpdates Example: Multiple Operations
+
+```json
+{
+  "AssetType": "WidgetBlueprint",
+  "Name": "WBP_HUD",
+  "Path": "/Game/UI",
+  "Action": "Update",
+  "WidgetUpdates": [
+    { "Action": "Remove", "Name": "OldScore" },
+    { "Action": "Update", "Name": "TitleText", "Style": { "Color": "#00FF00" } },
+    { "Action": "Add", "Parent": "Root", "Widget": { "Type": "TextBlock", "Name": "NewScore", "Properties": { "Text": "0" } } }
+  ]
+}
+```
 
 ## Complete Example
 

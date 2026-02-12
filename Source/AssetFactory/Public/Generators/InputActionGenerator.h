@@ -32,6 +32,8 @@ public:
 		TSharedPtr<FJsonObject> Config
 	) override;
 
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action = EGenerationAction::Create) const override;
+
 	//~ Extract functionality
 	virtual bool CanExtract(UObject* Asset) const override;
 	virtual TSharedPtr<FJsonObject> Extract(UObject* Asset, bool bDiffOnly = false) const override;

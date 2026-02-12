@@ -2,12 +2,16 @@
 
 Creates DataTable assets from CSV files with a specified row struct.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, both `RowStruct` and `CSVFilePath` become optional. If `CSVFilePath` is omitted, the existing table data is preserved. If `CSVFilePath` is provided, the table is emptied and re-imported from the new CSV. For row-level updates without full CSV reimport, use the `update_datatable_rows` tool instead.
+
 ## Top-Level Fields (generate_assets)
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `RowStruct` | string | **Yes** | | Name of the UScriptStruct (must derive from FTableRowBase). Supports with or without `F` prefix. |
-| `CSVFilePath` | string | **Yes** | | Absolute path to the CSV file on disk |
+| `RowStruct` | string | **Yes** (Create) / No (Update) | | Name of the UScriptStruct (must derive from FTableRowBase). Supports with or without `F` prefix. |
+| `CSVFilePath` | string | **Yes** (Create) / No (Update) | | Absolute path to the CSV file on disk |
 
 ## CSV Format
 

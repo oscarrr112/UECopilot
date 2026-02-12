@@ -37,8 +37,11 @@ FGenerationResult FCurveFloatGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load existing curve"));
 		}
-		// Clear existing keys for update
-		Curve->FloatCurve.Reset();
+		// Only clear existing keys if JSON provides new Keys
+		if (Config->HasField(TEXT("Keys")))
+		{
+			Curve->FloatCurve.Reset();
+		}
 	}
 	else
 	{

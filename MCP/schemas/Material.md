@@ -2,11 +2,15 @@
 
 Creates UI Material assets from predefined templates. All materials are created with `MD_UI` domain, `Translucent` blend mode, and `Unlit` shading.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, `Template` becomes optional. If `Template` is provided, the material's node graph is cleared and rebuilt from scratch using that template (with optional `Parameters`). If `Template` is omitted, the existing node graph is preserved unchanged and the material is re-saved as-is. Note: `Parameters` are construction-time settings consumed by the template builder, so updating parameters requires providing `Template` as well to trigger a rebuild.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `Template` | string | **Yes** | | Template name (see Available Templates) |
+| `Template` | string | **Yes** (Create) / No (Update) | | Template name (see Available Templates) |
 | `Parameters` | object | No | | Template-specific parameters |
 
 ## Available Templates

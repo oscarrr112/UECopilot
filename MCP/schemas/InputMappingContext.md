@@ -2,11 +2,15 @@
 
 Creates Enhanced Input Mapping Context assets that bind keys to Input Actions.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, only fields present in the JSON are processed. If `Mappings` is omitted, existing mappings are preserved. If `Mappings` is provided, all existing mappings are cleared and replaced with the new ones.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `Mappings` | array | No | | Array of key-to-action mappings |
+| `Mappings` | array | No | | Array of key-to-action mappings (if provided, replaces all existing mappings) |
 
 ## Mappings Array
 

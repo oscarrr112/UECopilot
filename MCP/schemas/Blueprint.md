@@ -2,6 +2,10 @@
 
 Creates Actor-based Blueprint assets with components, variables, interfaces, and default properties.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, only fields present in the JSON are processed — missing fields are left unchanged. Components support element-level actions: each component can have its own `Action` field (`"Create"`, `"Update"`, `"Remove"`, or `"CreateOrUpdate"`), enabling fine-grained modifications without rebuilding the entire blueprint.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |

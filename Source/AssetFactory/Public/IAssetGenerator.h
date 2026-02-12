@@ -53,9 +53,10 @@ public:
 	 * Validate the configuration before generation.
 	 * Called by AssetFactorySubsystem before Generate().
 	 * @param Config - JSON configuration to validate
+	 * @param Action - The generation action (Create, Update, CreateOrUpdate)
 	 * @return Empty optional if valid, error message string if invalid
 	 */
-	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config) const
+	virtual TOptional<FString> ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action = EGenerationAction::Create) const
 	{
 		return TOptional<FString>();  // Default: no validation, always passes
 	}

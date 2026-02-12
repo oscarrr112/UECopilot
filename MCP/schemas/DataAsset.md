@@ -4,11 +4,15 @@ Creates UDataAsset subclass instances with custom properties.
 
 **IMPORTANT:** Cannot create base `UDataAsset` directly. Must specify a concrete C++ or Blueprint subclass.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, `ClassName` becomes optional (the existing asset's class is used). Only properties present in the JSON are updated — missing properties are left unchanged.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `ClassName` | string | **Yes** | | UDataAsset subclass name (e.g. `"MyGameDataAsset"`) |
+| `ClassName` | string | **Yes** (Create) / No (Update) | | UDataAsset subclass name (e.g. `"MyGameDataAsset"`) |
 | `Properties` | object | No | | Asset properties to set via reflection |
 
 ## Properties Format

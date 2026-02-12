@@ -2,11 +2,15 @@
 
 Creates vector curve assets with 3-component (X, Y, Z) keyframes.
 
+## Update Behavior (Action: "Update")
+
+When `Action` is `"Update"`, only fields present in the JSON are processed. If `Keys` is omitted, existing curve keyframes are preserved. If `Keys` is provided, all three curves (X, Y, Z) are reset and rebuilt with the new keyframes.
+
 ## Top-Level Fields
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `Keys` | array | No | | Array of curve keyframes |
+| `Keys` | array | No | | Array of curve keyframes (if provided, replaces all existing keys) |
 
 ## Keys Array
 

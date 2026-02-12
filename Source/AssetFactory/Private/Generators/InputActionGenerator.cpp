@@ -38,9 +38,15 @@ FGenerationResult FInputActionGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load existing input action"));
 		}
-		// Clear existing triggers and modifiers for update
-		InputAction->Triggers.Empty();
-		InputAction->Modifiers.Empty();
+		// Only clear Triggers/Modifiers if the JSON explicitly provides them
+		if (Config->HasField(TEXT("Triggers")))
+		{
+			InputAction->Triggers.Empty();
+		}
+		if (Config->HasField(TEXT("Modifiers")))
+		{
+			InputAction->Modifiers.Empty();
+		}
 	}
 	else
 	{
@@ -66,9 +72,16 @@ FGenerationResult FInputActionGenerator::Generate(
 		FAssetRegistryModule::AssetCreated(InputAction);
 	}
 
-	// Set value type
-	FString ValueTypeStr = GetStringField(Config, TEXT("ValueType"), TEXT("Boolean"));
-	InputAction->ValueType = ParseValueType(ValueTypeStr);
+	// Set value type (only if present in JSON, or if creating new)
+	if (Config->HasField(TEXT("ValueType")))
+	{
+		FString ValueTypeStr = GetStringField(Config, TEXT("ValueType"), TEXT("Boolean"));
+		InputAction->ValueType = ParseValueType(ValueTypeStr);
+	}
+	else if (!bExists)
+	{
+		InputAction->ValueType = EInputActionValueType::Boolean;
+	}
 
 	// Add triggers
 	const TArray<TSharedPtr<FJsonValue>>* TriggersArray = GetArrayField(Config, TEXT("Triggers"));
@@ -194,6 +207,18 @@ UInputModifier* FInputActionGenerator::CreateModifier(UInputAction* Outer, const
 
 	UE_LOG(LogAssetFactory, Warning, TEXT("Unknown modifier type: %s"), *ModifierName);
 	return nullptr;
+}
+
+TOptional<FString> FInputActionGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
+{
+	if (!Config.IsValid())
+	{
+		return FString(TEXT("Invalid configuration object"));
+	}
+
+	// Update: no required fields — all fields are optional for patch updates
+	// Create: ValueType has a default, Triggers/Modifiers are optional
+	return TOptional<FString>();
 }
 
 FString FInputActionGenerator::ValueTypeToString(EInputActionValueType ValueType) const

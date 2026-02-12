@@ -88,7 +88,7 @@ FGenerationResult FGameplayTagGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, FPaths::ProjectConfigDir(), nullptr, Message);
 }
 
-TOptional<FString> FGameplayTagGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+TOptional<FString> FGameplayTagGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{

@@ -109,8 +109,13 @@ FGenerationReport UAssetFactorySubsystem::ValidateAllConfigs(TSharedPtr<FJsonObj
 			continue;
 		}
 
+		// Parse action for validation
+		FString ActionStr;
+		AssetObj->TryGetStringField(TEXT("Action"), ActionStr);
+		EGenerationAction AssetAction = ParseAction(ActionStr);
+
 		// Per-generator validation
-		TOptional<FString> GenError = Generator->ValidateConfig(AssetObj);
+		TOptional<FString> GenError = Generator->ValidateConfig(AssetObj, AssetAction);
 		if (GenError.IsSet())
 		{
 			Report.AddResult(FGenerationResult::MakeFailed(AssetType, Name, Path,
@@ -265,7 +270,7 @@ FGenerationResult UAssetFactorySubsystem::ProcessAssetConfig(TSharedPtr<FJsonObj
 	}
 
 	// Validate configuration before generation
-	TOptional<FString> ValidationError = Generator->ValidateConfig(AssetConfig);
+	TOptional<FString> ValidationError = Generator->ValidateConfig(AssetConfig, Action);
 	if (ValidationError.IsSet())
 	{
 		return FGenerationResult::MakeFailed(AssetType, Name, Path, ValidationError.GetValue());

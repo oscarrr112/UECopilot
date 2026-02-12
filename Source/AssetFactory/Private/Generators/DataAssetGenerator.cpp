@@ -27,27 +27,29 @@ FGenerationResult FDataAssetGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Asset does not exist for update"));
 	}
 
-	// Get class name - ClassName is REQUIRED for DataAsset, must be a subclass
+	// Get class name - required for Create, optional for Update
 	FString ClassName = GetStringField(Config, TEXT("ClassName"), TEXT(""));
-	if (ClassName.IsEmpty())
+	UClass* DataAssetClass = nullptr;
+
+	if (!ClassName.IsEmpty())
+	{
+		DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
+		if (!DataAssetClass)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
+				FString::Printf(TEXT("Class '%s' not found"), *ClassName));
+		}
+
+		if (DataAssetClass == UDataAsset::StaticClass())
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
+				TEXT("Cannot create base UDataAsset. Please specify a UDataAsset subclass in 'ClassName'"));
+		}
+	}
+	else if (!bExists)
 	{
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
 			TEXT("DataAsset requires 'ClassName' field specifying a UDataAsset subclass"));
-	}
-
-	// Find class using utility
-	UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
-	if (!DataAssetClass)
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
-			FString::Printf(TEXT("Class '%s' not found"), *ClassName));
-	}
-
-	// Cannot create base UDataAsset directly
-	if (DataAssetClass == UDataAsset::StaticClass())
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
-			TEXT("Cannot create base UDataAsset. Please specify a UDataAsset subclass in 'ClassName'"));
 	}
 
 	UDataAsset* Asset = nullptr;
@@ -128,34 +130,51 @@ FGenerationResult FDataAssetGenerator::Generate(
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, Asset);
 }
 
-TOptional<FString> FDataAssetGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+TOptional<FString> FDataAssetGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{
 		return FString(TEXT("Invalid configuration object"));
 	}
 
-	if (!Config->HasField(TEXT("ClassName")))
+	// ClassName is only required when creating (Update uses the existing asset's class)
+	if (Action != EGenerationAction::Update)
 	{
-		return FString(TEXT("Missing required field 'ClassName'"));
-	}
+		if (!Config->HasField(TEXT("ClassName")))
+		{
+			return FString(TEXT("Missing required field 'ClassName'"));
+		}
 
-	FString ClassName;
-	if (!Config->TryGetStringField(TEXT("ClassName"), ClassName) || ClassName.IsEmpty())
-	{
-		return FString(TEXT("'ClassName' field must be a non-empty string"));
-	}
+		FString ClassName;
+		if (!Config->TryGetStringField(TEXT("ClassName"), ClassName) || ClassName.IsEmpty())
+		{
+			return FString(TEXT("'ClassName' field must be a non-empty string"));
+		}
 
-	// Validate that the class actually exists
-	UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
-	if (!DataAssetClass)
-	{
-		return FString::Printf(TEXT("DataAsset class '%s' not found"), *ClassName);
-	}
+		// Validate that the class actually exists
+		UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
+		if (!DataAssetClass)
+		{
+			return FString::Printf(TEXT("DataAsset class '%s' not found"), *ClassName);
+		}
 
-	if (DataAssetClass == UDataAsset::StaticClass())
+		if (DataAssetClass == UDataAsset::StaticClass())
+		{
+			return FString(TEXT("Cannot create base UDataAsset. Please specify a UDataAsset subclass in 'ClassName'"));
+		}
+	}
+	else if (Config->HasField(TEXT("ClassName")))
 	{
-		return FString(TEXT("Cannot create base UDataAsset. Please specify a UDataAsset subclass in 'ClassName'"));
+		// If ClassName is provided during Update, still validate it
+		FString ClassName;
+		if (Config->TryGetStringField(TEXT("ClassName"), ClassName) && !ClassName.IsEmpty())
+		{
+			UClass* DataAssetClass = FClassFinderUtils::FindDataAssetClass(ClassName);
+			if (!DataAssetClass)
+			{
+				return FString::Printf(TEXT("DataAsset class '%s' not found"), *ClassName);
+			}
+		}
 	}
 
 	return TOptional<FString>();

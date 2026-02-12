@@ -56,25 +56,6 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Asset does not exist for update"));
 	}
 
-	// Get parent class (default to UserWidget)
-	FString ParentClassName = GetStringField(Config, TEXT("ParentClass"), TEXT("UserWidget"));
-	UClass* ParentClass = nullptr;
-
-	if (ParentClassName == TEXT("UserWidget") || ParentClassName == TEXT("UUserWidget"))
-	{
-		ParentClass = UUserWidget::StaticClass();
-	}
-	else
-	{
-		// Try to find custom parent class using ClassFinderUtils (searches multiple modules)
-		ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UUserWidget::StaticClass(), true);
-		if (!ParentClass)
-		{
-			ParentClass = UUserWidget::StaticClass();
-			UE_LOG(LogAssetFactory, Warning, TEXT("Parent class '%s' not found, using UUserWidget"), *ParentClassName);
-		}
-	}
-
 	UWidgetBlueprint* Blueprint = nullptr;
 
 	if (bExists)
@@ -86,72 +67,89 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load existing widget blueprint"));
 		}
 
-		// Update ParentClass if it has changed
-		if (Blueprint->ParentClass != ParentClass)
+		// Update ParentClass only if explicitly specified in Config
+		if (Config->HasField(TEXT("ParentClass")))
 		{
-			UE_LOG(LogAssetFactory, Log, TEXT("Updating ParentClass for '%s' from '%s' to '%s'"),
-				*Name,
-				Blueprint->ParentClass ? *Blueprint->ParentClass->GetName() : TEXT("null"),
-				ParentClass ? *ParentClass->GetName() : TEXT("null"));
-			Blueprint->ParentClass = ParentClass;
-		}
-
-		// Clear existing widget tree for rebuild (following UE's DeleteWidgets pattern)
-		if (Blueprint->WidgetTree)
-		{
-			Blueprint->WidgetTree->Modify();
-			Blueprint->Modify();
-
-			TArray<UWidget*> AllWidgets;
-			Blueprint->WidgetTree->GetAllWidgets(AllWidgets);
-			Blueprint->WidgetTree->RootWidget = nullptr;
-
-			for (UWidget* Widget : AllWidgets)
+			UClass* ParentClass = ResolveParentClass(GetStringField(Config, TEXT("ParentClass"), TEXT("UserWidget")));
+			if (Blueprint->ParentClass != ParentClass)
 			{
-				if (Widget)
-				{
-					const FName WidgetName = Widget->GetFName();
-
-					// Remove associated bindings
-					for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
-					{
-						if (Blueprint->Bindings[i].ObjectName == Widget->GetName())
-						{
-							Blueprint->Bindings.RemoveAt(i);
-						}
-					}
-
-					// Remove from parent
-					if (UPanelWidget* Parent = Widget->GetParent())
-					{
-						Parent->Modify();
-					}
-					Widget->Modify();
-
-					// Remove from WidgetTree
-					Blueprint->WidgetTree->RemoveWidget(Widget);
-
-					// Remove variable nodes if it was a variable
-					if (Widget->bIsVariable)
-					{
-						FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetName);
-					}
-
-					// Rename to transient package
-					Widget->Rename(nullptr, GetTransientPackage());
-
-					// Notify Blueprint that variable was removed
-					Blueprint->OnVariableRemoved(WidgetName);
-				}
+				UE_LOG(LogAssetFactory, Log, TEXT("Updating ParentClass for '%s' from '%s' to '%s'"),
+					*Name,
+					Blueprint->ParentClass ? *Blueprint->ParentClass->GetName() : TEXT("null"),
+					ParentClass ? *ParentClass->GetName() : TEXT("null"));
+				Blueprint->ParentClass = ParentClass;
 			}
 		}
 
-		// Clear bindings as they reference old widgets
-		Blueprint->Bindings.Empty();
+		// Three mutually exclusive widget tree operation paths:
+		TSharedPtr<FJsonObject> RootWidgetConfig = GetObjectField(Config, TEXT("RootWidget"));
+		const TArray<TSharedPtr<FJsonValue>>* WidgetUpdatesArray = GetArrayField(Config, TEXT("WidgetUpdates"));
+
+		if (RootWidgetConfig.IsValid())
+		{
+			// Path A: RootWidget provided → clear and fully rebuild widget tree (existing behavior)
+			if (Blueprint->WidgetTree)
+			{
+				Blueprint->WidgetTree->Modify();
+				Blueprint->Modify();
+
+				TArray<UWidget*> AllWidgets;
+				Blueprint->WidgetTree->GetAllWidgets(AllWidgets);
+				Blueprint->WidgetTree->RootWidget = nullptr;
+
+				for (UWidget* Widget : AllWidgets)
+				{
+					if (Widget)
+					{
+						const FName WidgetFName = Widget->GetFName();
+
+						for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
+						{
+							if (Blueprint->Bindings[i].ObjectName == Widget->GetName())
+							{
+								Blueprint->Bindings.RemoveAt(i);
+							}
+						}
+
+						if (UPanelWidget* WidgetParent = Widget->GetParent())
+						{
+							WidgetParent->Modify();
+						}
+						Widget->Modify();
+						Blueprint->WidgetTree->RemoveWidget(Widget);
+
+						if (Widget->bIsVariable)
+						{
+							FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetFName);
+						}
+
+						Widget->Rename(nullptr, GetTransientPackage());
+						Blueprint->OnVariableRemoved(WidgetFName);
+					}
+				}
+			}
+			Blueprint->Bindings.Empty();
+
+			// Build new widget tree
+			UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"));
+			if (!RootWidget)
+			{
+				return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build widget tree"));
+			}
+			Blueprint->WidgetTree->RootWidget = RootWidget;
+		}
+		else if (WidgetUpdatesArray)
+		{
+			// Path B: WidgetUpdates provided → element-level operations
+			ProcessWidgetUpdates(Blueprint, WidgetUpdatesArray);
+		}
+		// Path C: Neither provided → widget tree stays unchanged
 	}
 	else
 	{
 		// Create new widget blueprint
+		UClass* ParentClass = ResolveParentClass(GetStringField(Config, TEXT("ParentClass"), TEXT("UserWidget")));
+
 		FString FullPath = Path / Name;
 		if (!FullPath.StartsWith(TEXT("/")))
 		{
@@ -179,24 +177,21 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to create widget blueprint"));
 		}
-	}
 
-	// Get root widget configuration
-	TSharedPtr<FJsonObject> RootWidgetConfig = GetObjectField(Config, TEXT("RootWidget"));
-	if (!RootWidgetConfig.IsValid())
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Missing RootWidget in configuration"));
-	}
+		// New blueprint requires RootWidget
+		TSharedPtr<FJsonObject> RootWidgetConfig = GetObjectField(Config, TEXT("RootWidget"));
+		if (!RootWidgetConfig.IsValid())
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Missing RootWidget in configuration"));
+		}
 
-	// Build widget tree
-	UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"));
-	if (!RootWidget)
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build widget tree"));
+		UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"));
+		if (!RootWidget)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build widget tree"));
+		}
+		Blueprint->WidgetTree->RootWidget = RootWidget;
 	}
-
-	// Set root widget
-	Blueprint->WidgetTree->RootWidget = RootWidget;
 
 	// Compile first to generate the class
 	Blueprint->Modify();
@@ -255,69 +250,10 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 			return nullptr;
 		}
 
-		// Find and remove the widget by name (following UE's DeleteWidgets pattern)
 		UWidget* WidgetToRemove = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
 		if (WidgetToRemove)
 		{
-			Blueprint->WidgetTree->Modify();
-			Blueprint->Modify();
-
-			// Helper lambda to properly delete a widget and its children
-			TFunction<void(UWidget*)> DeleteWidgetRecursive = [&DeleteWidgetRecursive, &Blueprint](UWidget* Widget)
-			{
-				if (!Widget) return;
-
-				const FName WidgetFName = Widget->GetFName();
-
-				// Remove associated bindings
-				for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
-				{
-					if (Blueprint->Bindings[i].ObjectName == Widget->GetName())
-					{
-						Blueprint->Bindings.RemoveAt(i);
-					}
-				}
-
-				// Process children first if it's a panel
-				if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
-				{
-					TArray<UWidget*> Children;
-					for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
-					{
-						Children.Add(Panel->GetChildAt(i));
-					}
-					for (UWidget* Child : Children)
-					{
-						DeleteWidgetRecursive(Child);
-					}
-				}
-
-				// Modify parent
-				if (UPanelWidget* Parent = Widget->GetParent())
-				{
-					Parent->Modify();
-				}
-				Widget->Modify();
-
-				// Remove from WidgetTree
-				Blueprint->WidgetTree->RemoveWidget(Widget);
-
-				// Remove variable nodes if it was a variable
-				if (Widget->bIsVariable)
-				{
-					FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetFName);
-				}
-
-				// Rename to transient package
-				Widget->Rename(nullptr, GetTransientPackage());
-
-				// Notify Blueprint that variable was removed
-				Blueprint->OnVariableRemoved(WidgetFName);
-			};
-
-			// Recursively delete
-			DeleteWidgetRecursive(WidgetToRemove);
-
+			RemoveWidget(Blueprint, WidgetToRemove);
 			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Removed widget '%s'"), *JsonPath, *WidgetName);
 		}
 		else
@@ -1082,6 +1018,22 @@ ESlateSizeRule::Type FWidgetBlueprintGenerator::ParseSizeRule(const FString& Siz
 	return ESlateSizeRule::Automatic;
 }
 
+UClass* FWidgetBlueprintGenerator::ResolveParentClass(const FString& ParentClassName) const
+{
+	if (ParentClassName == TEXT("UserWidget") || ParentClassName == TEXT("UUserWidget"))
+	{
+		return UUserWidget::StaticClass();
+	}
+
+	UClass* ParentClass = FClassFinderUtils::FindClassByName(ParentClassName, UUserWidget::StaticClass(), true);
+	if (!ParentClass)
+	{
+		UE_LOG(LogAssetFactory, Warning, TEXT("Parent class '%s' not found, using UUserWidget"), *ParentClassName);
+		ParentClass = UUserWidget::StaticClass();
+	}
+	return ParentClass;
+}
+
 FString FWidgetBlueprintGenerator::GenerateWidgetName(const FString& Prefix) const
 {
 	return FString::Printf(TEXT("%s_%d"), *Prefix, ++WidgetNameCounter);
@@ -1287,13 +1239,217 @@ void FWidgetBlueprintGenerator::ApplyClassDefaults(UWidgetBlueprint* Blueprint, 
 	}
 }
 
-TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config) const
+void FWidgetBlueprintGenerator::RemoveWidget(UWidgetBlueprint* Blueprint, UWidget* Widget)
+{
+	if (!Blueprint || !Widget) return;
+
+	Blueprint->WidgetTree->Modify();
+	Blueprint->Modify();
+
+	// Recursive lambda to delete widget and all its children
+	TFunction<void(UWidget*)> DeleteWidgetRecursive = [&DeleteWidgetRecursive, &Blueprint](UWidget* W)
+	{
+		if (!W) return;
+
+		const FName WidgetFName = W->GetFName();
+
+		// Remove associated bindings
+		for (int32 i = Blueprint->Bindings.Num() - 1; i >= 0; --i)
+		{
+			if (Blueprint->Bindings[i].ObjectName == W->GetName())
+			{
+				Blueprint->Bindings.RemoveAt(i);
+			}
+		}
+
+		// Process children first if it's a panel
+		if (UPanelWidget* Panel = Cast<UPanelWidget>(W))
+		{
+			TArray<UWidget*> Children;
+			for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
+			{
+				Children.Add(Panel->GetChildAt(i));
+			}
+			for (UWidget* Child : Children)
+			{
+				DeleteWidgetRecursive(Child);
+			}
+		}
+
+		// Modify parent
+		if (UPanelWidget* WidgetParent = W->GetParent())
+		{
+			WidgetParent->Modify();
+		}
+		W->Modify();
+
+		// Remove from WidgetTree
+		Blueprint->WidgetTree->RemoveWidget(W);
+
+		// Remove variable nodes if it was a variable
+		if (W->bIsVariable)
+		{
+			FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, WidgetFName);
+		}
+
+		// Rename to transient package
+		W->Rename(nullptr, GetTransientPackage());
+
+		// Notify Blueprint that variable was removed
+		Blueprint->OnVariableRemoved(WidgetFName);
+	};
+
+	DeleteWidgetRecursive(Widget);
+}
+
+void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
+	UWidgetBlueprint* Blueprint,
+	const TArray<TSharedPtr<FJsonValue>>* UpdatesArray)
+{
+	if (!Blueprint || !UpdatesArray) return;
+
+	for (int32 i = 0; i < UpdatesArray->Num(); ++i)
+	{
+		TSharedPtr<FJsonObject> UpdateObj = (*UpdatesArray)[i]->AsObject();
+		if (!UpdateObj.IsValid())
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("WidgetUpdates[%d]: not a valid JSON object"), i);
+			continue;
+		}
+
+		FString WidgetName = GetStringField(UpdateObj, TEXT("Name"));
+		FString UpdateAction = GetStringField(UpdateObj, TEXT("Action"), TEXT("Update"));
+		FString JsonPath = FString::Printf(TEXT("WidgetUpdates[%d]"), i);
+
+		if (WidgetName.IsEmpty() && !UpdateAction.Equals(TEXT("Add"), ESearchCase::IgnoreCase))
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Missing 'Name' field"), *JsonPath);
+			continue;
+		}
+
+		if (UpdateAction.Equals(TEXT("Remove"), ESearchCase::IgnoreCase))
+		{
+			UWidget* Widget = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+			if (Widget)
+			{
+				RemoveWidget(Blueprint, Widget);
+				UE_LOG(LogAssetFactory, Log, TEXT("[%s] Removed widget '%s'"), *JsonPath, *WidgetName);
+			}
+			else
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget '%s' not found for removal"), *JsonPath, *WidgetName);
+			}
+			continue;
+		}
+
+		if (UpdateAction.Equals(TEXT("Update"), ESearchCase::IgnoreCase))
+		{
+			UWidget* Widget = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+			if (!Widget)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget '%s' not found for update"), *JsonPath, *WidgetName);
+				continue;
+			}
+
+			// Apply Style
+			TSharedPtr<FJsonObject> StyleConfig = GetObjectField(UpdateObj, TEXT("Style"));
+			if (StyleConfig.IsValid())
+			{
+				ApplyStyle(Widget, StyleConfig);
+			}
+
+			// Apply Properties
+			TSharedPtr<FJsonObject> Props = GetObjectField(UpdateObj, TEXT("Properties"));
+			if (Props.IsValid())
+			{
+				SetPropertiesViaReflection(Widget, Props);
+			}
+
+			// Apply Slot
+			TSharedPtr<FJsonObject> SlotConfig = GetObjectField(UpdateObj, TEXT("Slot"));
+			if (SlotConfig.IsValid() && Widget->GetParent())
+			{
+				ConfigureSlot(Widget, Widget->GetParent(), SlotConfig);
+			}
+
+			// Handle IsVariable
+			bool bIsVariable = false;
+			if (UpdateObj->TryGetBoolField(TEXT("IsVariable"), bIsVariable) && bIsVariable)
+			{
+				ExposeAsVariable(Widget, WidgetName);
+			}
+
+			// Handle Bindings
+			TSharedPtr<FJsonObject> Bindings = GetObjectField(UpdateObj, TEXT("Bindings"));
+			if (Bindings.IsValid())
+			{
+				if (!Widget->bIsVariable)
+				{
+					ExposeAsVariable(Widget, WidgetName);
+				}
+				ConfigureBindings(Blueprint, Widget, WidgetName, Bindings);
+			}
+
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Updated widget '%s'"), *JsonPath, *WidgetName);
+			continue;
+		}
+
+		if (UpdateAction.Equals(TEXT("Add"), ESearchCase::IgnoreCase))
+		{
+			FString ParentName = GetStringField(UpdateObj, TEXT("Parent"));
+			if (ParentName.IsEmpty())
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Missing 'Parent' field for Add action"), *JsonPath);
+				continue;
+			}
+
+			UWidget* ParentWidget = Blueprint->WidgetTree->FindWidget(FName(*ParentName));
+			UPanelWidget* Panel = Cast<UPanelWidget>(ParentWidget);
+			if (!Panel)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Parent widget '%s' not found or not a panel"), *JsonPath, *ParentName);
+				continue;
+			}
+
+			// Get the Widget config (nested under "Widget" key)
+			TSharedPtr<FJsonObject> WidgetConfig = GetObjectField(UpdateObj, TEXT("Widget"));
+			if (!WidgetConfig.IsValid())
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Missing 'Widget' field for Add action"), *JsonPath);
+				continue;
+			}
+			BuildWidgetTree(Blueprint, WidgetConfig, Panel, JsonPath);
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Added widget to parent '%s'"), *JsonPath, *ParentName);
+			continue;
+		}
+
+		UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Unknown action '%s'"), *JsonPath, *UpdateAction);
+	}
+}
+
+TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
 	if (!Config.IsValid())
 	{
 		return FString(TEXT("Invalid configuration object"));
 	}
 
+	if (Action == EGenerationAction::Update)
+	{
+		// Update: RootWidget and WidgetUpdates are both optional
+		// If RootWidget is provided, validate its Type field
+		if (Config->HasTypedField<EJson::Object>(TEXT("RootWidget")))
+		{
+			TSharedPtr<FJsonObject> RootWidget = Config->GetObjectField(TEXT("RootWidget"));
+			if (!RootWidget->HasField(TEXT("Type")))
+			{
+				return FString(TEXT("RootWidget must have a 'Type' field"));
+			}
+		}
+		return TOptional<FString>();
+	}
+
+	// Create: RootWidget is required
 	if (!Config->HasTypedField<EJson::Object>(TEXT("RootWidget")))
 	{
 		return FString(TEXT("'RootWidget' must be a JSON object"));
