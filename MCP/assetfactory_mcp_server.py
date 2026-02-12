@@ -32,13 +32,17 @@ def resolve_api_key(endpoint, explicit_api_key):
         return explicit_api_key
 
     endpoint_l = (endpoint or "").lower()
-    candidates = ["ASSETFACTORY_API_KEY"]
-    if "deepseek" in endpoint_l:
-        candidates.insert(0, "DEEPSEEK_API_KEY")
-    elif "open.bigmodel.cn" in endpoint_l or "zhipu" in endpoint_l or "glm" in endpoint_l:
-        candidates.insert(0, "GLM_API_KEY")
-    elif "openai.com" in endpoint_l:
-        candidates.insert(0, "OPENAI_API_KEY")
+    candidates = []
+    endpoint_env_map = (
+        (("deepseek",), "DEEPSEEK_API_KEY"),
+        (("open.bigmodel.cn", "zhipu", "glm"), "GLM_API_KEY"),
+        (("openai.com",), "OPENAI_API_KEY"),
+    )
+    for patterns, env_name in endpoint_env_map:
+        if any(pattern in endpoint_l for pattern in patterns):
+            candidates.append(env_name)
+            break
+    candidates.append("ASSETFACTORY_API_KEY")
 
     for name in candidates:
         value = (os.getenv(name) or "").strip()
@@ -419,6 +423,15 @@ def run_layout_blueprint_graph(tool_args):
 
     return json.dumps(bp_obj, ensure_ascii=False)
 
+TOOL_HANDLERS = {
+    "chat_completion": run_generate,
+    "generate_blueprint_change": run_generate,
+    "repair_blueprint_json": run_repair,
+    "orchestrate_modify_request": run_orchestrate_modify,
+    "validate_blueprint_json": run_validate_blueprint_json,
+    "layout_blueprint_graph": run_layout_blueprint_graph,
+}
+
 
 def main():
     parser = argparse.ArgumentParser(description="UECopilot MCP sidecar")
@@ -439,14 +452,7 @@ def main():
 
     method = req.get("method")
     if method == "tools/list":
-        tools = [
-            {"name": "chat_completion"},
-            {"name": "generate_blueprint_change"},
-            {"name": "repair_blueprint_json"},
-            {"name": "orchestrate_modify_request"},
-            {"name": "validate_blueprint_json"},
-            {"name": "layout_blueprint_graph"},
-        ]
+        tools = [{"name": name} for name in TOOL_HANDLERS.keys()]
         print(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}, ensure_ascii=False))
         return 0
 
@@ -457,21 +463,13 @@ def main():
     params = req.get("params", {})
     tool_name = params.get("name")
     tool_args = params.get("arguments", {})
+    handler = TOOL_HANDLERS.get(tool_name)
+    if handler is None:
+        print(json.dumps(make_error(req_id, -32601, "Unsupported tool name")))
+        return 2
 
     try:
-        if tool_name in ("chat_completion", "generate_blueprint_change"):
-            content = run_generate(tool_args)
-        elif tool_name == "repair_blueprint_json":
-            content = run_repair(tool_args)
-        elif tool_name == "orchestrate_modify_request":
-            content = run_orchestrate_modify(tool_args)
-        elif tool_name == "validate_blueprint_json":
-            content = run_validate_blueprint_json(tool_args)
-        elif tool_name == "layout_blueprint_graph":
-            content = run_layout_blueprint_graph(tool_args)
-        else:
-            print(json.dumps(make_error(req_id, -32601, "Unsupported tool name")))
-            return 2
+        content = handler(tool_args)
     except ValueError as exc:
         print(json.dumps(make_error(req_id, -32000, str(exc))))
         return 3

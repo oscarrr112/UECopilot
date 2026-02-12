@@ -26,13 +26,101 @@
 #include "K2Node_Event.h"
 #include "K2Node_ExecutionSequence.h"
 #include "EditorAssetLibrary.h"
+#include "Misc/ConfigCacheIni.h"
 
 namespace
 {
+	constexpr const TCHAR* DynamicSection = TEXT("AssetFactoryAI.Dynamic");
+
+	FString GetDynamicString(const TCHAR* Key, const TCHAR* DefaultValue)
+	{
+		FString Value;
+		if (GConfig && GConfig->GetString(DynamicSection, Key, Value, GEditorPerProjectIni) && !Value.IsEmpty())
+		{
+			return Value;
+		}
+		return FString(DefaultValue);
+	}
+
+	float GetDynamicFloat(const TCHAR* Key, float DefaultValue)
+	{
+		float Value = DefaultValue;
+		if (GConfig)
+		{
+			GConfig->GetFloat(DynamicSection, Key, Value, GEditorPerProjectIni);
+		}
+		return Value;
+	}
+
+	int32 GetDynamicInt(const TCHAR* Key, int32 DefaultValue)
+	{
+		int32 Value = DefaultValue;
+		if (GConfig)
+		{
+			GConfig->GetInt(DynamicSection, Key, Value, GEditorPerProjectIni);
+		}
+		return Value;
+	}
+
+	bool GetDynamicBool(const TCHAR* Key, bool DefaultValue)
+	{
+		bool Value = DefaultValue;
+		if (GConfig)
+		{
+			GConfig->GetBool(DynamicSection, Key, Value, GEditorPerProjectIni);
+		}
+		return Value;
+	}
+
+	TArray<FString> ParseDelimitedList(const FString& Input, const TCHAR Delimiter)
+	{
+		TArray<FString> Values;
+		const FString Delim(1, &Delimiter);
+		Input.ParseIntoArray(Values, *Delim, true);
+		for (FString& Value : Values)
+		{
+			Value.TrimStartAndEndInline();
+		}
+		Values.RemoveAll([](const FString& Value) { return Value.IsEmpty(); });
+		return Values;
+	}
+
+	FString FormatDynamicMessage(const FString& Pattern, const FString& Arg)
+	{
+		FString Result = Pattern;
+		Result.ReplaceInline(TEXT("%s"), *Arg);
+		return Result;
+	}
+
+	const FString& GetFunctionEntryNodeId()
+	{
+		static const FString Value = GetDynamicString(TEXT("FunctionEntryNodeId"), TEXT("fn_entry"));
+		return Value;
+	}
+
+	const FString& GetFunctionResultNodeId()
+	{
+		static const FString Value = GetDynamicString(TEXT("FunctionResultNodeId"), TEXT("fn_result"));
+		return Value;
+	}
+
+	const FString& GetReceiveTickEventName()
+	{
+		static const FString Value = GetDynamicString(TEXT("ReceiveTickEventName"), TEXT("ReceiveTick"));
+		return Value;
+	}
+
+	const FString& GetEventTickNodeIdPrefix()
+	{
+		static const FString Value = GetDynamicString(TEXT("EventTickNodeIdPrefix"), TEXT("event_tick"));
+		return Value;
+	}
+
 	TArray<FString> CollectEventTickConsumers(const FBlueprintGraphData& GraphData);
 	void EnsureTickNodesAppended(UBlueprint* Blueprint, const FBlueprintGraphData& GraphData, const TArray<FString>& TickConsumers, const TMap<FString, UK2Node*>& NodeMap);
 	UEdGraphPin* FindNodePin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
 	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction = EGPD_MAX);
+	UEdGraphPin* FindExecPinByIndex(UK2Node* Node, EEdGraphPinDirection Direction, int32 Index, const FString& PreferredName = TEXT(""));
 	void RemoveUnlinkedFunctionResultNodes(TMap<FString, UK2Node*>& NodeMap);
 	void LayoutFunctionNodesInDeclaredOrder(const FBlueprintGraphData& GraphData, const TMap<FString, UK2Node*>& NodeMap);
 	UEdGraph* ResolveGraphFromNodeMap(const TMap<FString, UK2Node*>& NodeMap);
@@ -48,6 +136,44 @@ namespace
 		return Result;
 	}
 
+	const TArray<TArray<FString>>& GetPinAliasGroups()
+	{
+		static const TArray<TArray<FString>> Groups = []()
+		{
+			const FString RawGroups = GetDynamicString(
+				TEXT("PinAliasGroups"),
+				TEXT("execute,exec,then,in,input|then,true,out,output|else,false|condition,cond|returnvalue,return,result"));
+
+			TArray<TArray<FString>> ParsedGroups;
+			for (const FString& Group : ParseDelimitedList(RawGroups, '|'))
+			{
+				TArray<FString> Items;
+				for (const FString& Item : ParseDelimitedList(Group, ','))
+				{
+					Items.Add(Item.ToLower());
+				}
+				if (Items.Num() > 0)
+				{
+					ParsedGroups.Add(Items);
+				}
+			}
+			return ParsedGroups;
+		}();
+		return Groups;
+	}
+
+	bool ValueInAliasGroup(const FString& Value, const TArray<FString>& Group)
+	{
+		for (const FString& Item : Group)
+		{
+			if (Value == Item)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool PinNamesEquivalent(const FString& CandidateName, const FString& RequestedName)
 	{
 		const FString Candidate = NormalizePinToken(CandidateName);
@@ -58,46 +184,12 @@ namespace
 			return true;
 		}
 
-		auto InGroup = [](const FString& Value, std::initializer_list<const TCHAR*> Group)
+		for (const TArray<FString>& Group : GetPinAliasGroups())
 		{
-			for (const TCHAR* Item : Group)
+			if (ValueInAliasGroup(Candidate, Group) && ValueInAliasGroup(Requested, Group))
 			{
-				if (Value == Item)
-				{
-					return true;
-				}
+				return true;
 			}
-			return false;
-		};
-
-		if (InGroup(Candidate, { TEXT("execute"), TEXT("exec"), TEXT("then"), TEXT("in"), TEXT("input") }) &&
-			InGroup(Requested, { TEXT("execute"), TEXT("exec"), TEXT("then"), TEXT("in"), TEXT("input") }))
-		{
-			return true;
-		}
-
-		if (InGroup(Candidate, { TEXT("then"), TEXT("true"), TEXT("out"), TEXT("output") }) &&
-			InGroup(Requested, { TEXT("then"), TEXT("true"), TEXT("out"), TEXT("output") }))
-		{
-			return true;
-		}
-
-		if (InGroup(Candidate, { TEXT("else"), TEXT("false") }) &&
-			InGroup(Requested, { TEXT("else"), TEXT("false") }))
-		{
-			return true;
-		}
-
-		if (InGroup(Candidate, { TEXT("condition"), TEXT("cond") }) &&
-			InGroup(Requested, { TEXT("condition"), TEXT("cond") }))
-		{
-			return true;
-		}
-
-		if (InGroup(Candidate, { TEXT("returnvalue"), TEXT("return"), TEXT("result") }) &&
-			InGroup(Requested, { TEXT("returnvalue"), TEXT("return"), TEXT("result") }))
-		{
-			return true;
 		}
 
 		return false;
@@ -106,8 +198,8 @@ namespace
 	bool IsExecLikePinName(const FString& PinName)
 	{
 		const FString Name = NormalizePinToken(PinName);
-		return Name == TEXT("execute") || Name == TEXT("exec") || Name == TEXT("then") ||
-			Name == TEXT("in") || Name == TEXT("input");
+		const TArray<TArray<FString>>& Groups = GetPinAliasGroups();
+		return Groups.Num() > 0 ? ValueInAliasGroup(Name, Groups[0]) : false;
 	}
 
 	struct FLayoutRect
@@ -117,6 +209,44 @@ namespace
 		float W = 300.0f;
 		float H = 180.0f;
 	};
+
+	struct FRightwardFlowLayoutConfig
+	{
+		float NodeWidth = 320.0f;
+		float NodeHeight = 180.0f;
+		float HorizontalSpacing = 380.0f;
+		float VerticalSpacing = 220.0f;
+		float CollisionPadding = 40.0f;
+	};
+
+	struct FDeclaredOrderLayoutConfig
+	{
+		int32 StartX = 160;
+		int32 StartY = 120;
+		int32 StepX = 320;
+		int32 StepY = 180;
+	};
+
+	FRightwardFlowLayoutConfig GetRightwardFlowLayoutConfig()
+	{
+		FRightwardFlowLayoutConfig Config;
+		Config.NodeWidth = GetDynamicFloat(TEXT("Rightward.NodeWidth"), Config.NodeWidth);
+		Config.NodeHeight = GetDynamicFloat(TEXT("Rightward.NodeHeight"), Config.NodeHeight);
+		Config.HorizontalSpacing = GetDynamicFloat(TEXT("Rightward.HorizontalSpacing"), Config.HorizontalSpacing);
+		Config.VerticalSpacing = GetDynamicFloat(TEXT("Rightward.VerticalSpacing"), Config.VerticalSpacing);
+		Config.CollisionPadding = GetDynamicFloat(TEXT("Rightward.CollisionPadding"), Config.CollisionPadding);
+		return Config;
+	}
+
+	FDeclaredOrderLayoutConfig GetDeclaredOrderLayoutConfig()
+	{
+		FDeclaredOrderLayoutConfig Config;
+		Config.StartX = GetDynamicInt(TEXT("Declared.StartX"), Config.StartX);
+		Config.StartY = GetDynamicInt(TEXT("Declared.StartY"), Config.StartY);
+		Config.StepX = GetDynamicInt(TEXT("Declared.StepX"), Config.StepX);
+		Config.StepY = GetDynamicInt(TEXT("Declared.StepY"), Config.StepY);
+		return Config;
+	}
 
 	FLayoutRect MakeRectFromNode(const UK2Node* Node)
 	{
@@ -163,6 +293,105 @@ namespace
 
 		return CandidateY;
 	}
+
+	FEdGraphPinType ParseFunctionPinTypeFromText(const FString& InType)
+	{
+		const FString Normalized = InType.ToLower();
+
+		struct FSimplePinType
+		{
+			FName Category;
+			FName SubCategory;
+		};
+
+		static const TMap<FString, FSimplePinType> SimpleTypes = {
+			{ TEXT("float"), { UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Double } },
+			{ TEXT("double"), { UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Double } },
+			{ TEXT("int"), { UEdGraphSchema_K2::PC_Int, NAME_None } },
+			{ TEXT("bool"), { UEdGraphSchema_K2::PC_Boolean, NAME_None } },
+			{ TEXT("string"), { UEdGraphSchema_K2::PC_String, NAME_None } },
+		};
+
+		FEdGraphPinType PinType;
+		if (const FSimplePinType* Type = SimpleTypes.Find(Normalized))
+		{
+			PinType.PinCategory = Type->Category;
+			PinType.PinSubCategory = Type->SubCategory;
+			return PinType;
+		}
+
+		// Keep previous fallback behavior.
+		PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		return PinType;
+	}
+
+	FString NormalizeClassAlias(const FString& InPath)
+	{
+		FString Out = InPath;
+		Out.TrimStartAndEndInline();
+		return Out.ToLower();
+	}
+
+	const TMap<FString, UClass*>& GetParentClassAliasMap()
+	{
+		static const TMap<FString, UClass*> Aliases = []()
+		{
+			TMap<FString, UClass*> Map = {
+				{ TEXT("actor"), AActor::StaticClass() },
+				{ TEXT("pawn"), APawn::StaticClass() },
+				{ TEXT("character"), ACharacter::StaticClass() },
+				{ TEXT("playercontroller"), APlayerController::StaticClass() },
+				{ TEXT("gamemodebase"), AGameModeBase::StaticClass() },
+				{ TEXT("actorcomponent"), UActorComponent::StaticClass() },
+				{ TEXT("scenecomponent"), USceneComponent::StaticClass() },
+				{ TEXT("widget"), nullptr },
+				{ TEXT("userwidget"), nullptr },
+			};
+
+			// Optional overrides/additions:
+			// ParentClassAliases="ability=/Script/MyGame.BP_Ability_C;npc=/Script/MyGame.BP_NPC_C"
+			for (const FString& PairText : ParseDelimitedList(GetDynamicString(TEXT("ParentClassAliases"), TEXT("")), ';'))
+			{
+				FString Alias;
+				FString ClassPath;
+				if (!PairText.Split(TEXT("="), &Alias, &ClassPath))
+				{
+					continue;
+				}
+
+				Alias = NormalizeClassAlias(Alias);
+				ClassPath.TrimStartAndEndInline();
+				if (Alias.IsEmpty() || ClassPath.IsEmpty())
+				{
+					continue;
+				}
+
+				if (UClass* ResolvedClass = UNodeSpawner::FindClassByPath(ClassPath))
+				{
+					Map.Add(Alias, ResolvedClass);
+				}
+			}
+
+			return Map;
+		}();
+		return Aliases;
+	}
+
+	UClass* ResolveWidgetAliasClass()
+	{
+		return UNodeSpawner::FindClassByPath(TEXT("/Script/UMG.UserWidget"));
+	}
+
+	const TMap<EBlueprintVarType, EPinContainerType>& GetContainerTypeMap()
+	{
+		static const TMap<EBlueprintVarType, EPinContainerType> Map = {
+			{ EBlueprintVarType::Array, EPinContainerType::Array },
+			{ EBlueprintVarType::Set, EPinContainerType::Set },
+			{ EBlueprintVarType::Map, EPinContainerType::Map },
+		};
+		return Map;
+	}
 }
 
 DEFINE_LOG_CATEGORY(LogBlueprintFactory);
@@ -177,7 +406,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	// Validate input
 	if (Data.Name.IsEmpty())
 	{
-		Result.ErrorMessage = TEXT("Blueprint name is required");
+		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNameRequired"), TEXT("Blueprint name is required"));
 		return Result;
 	}
 
@@ -190,7 +419,8 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	UClass* ParentClass = ResolveParentClass(Data.ParentClass);
 	if (!ParentClass)
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Could not resolve parent class: %s"), *Data.ParentClass);
+		const FString Pattern = GetDynamicString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
+		Result.ErrorMessage = FormatDynamicMessage(Pattern, Data.ParentClass);
 		return Result;
 	}
 
@@ -199,7 +429,8 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	FString AssetPath = PackageName + TEXT(".") + SanitizedName;
 	if (UEditorAssetLibrary::DoesAssetExist(AssetPath))
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Blueprint already exists at: %s. Use /modify to modify existing blueprints."), *AssetPath);
+		const FString Pattern = GetDynamicString(TEXT("Factory.Error.BlueprintExists"), TEXT("Blueprint already exists at: %s. Use /modify to modify existing blueprints."));
+		Result.ErrorMessage = FormatDynamicMessage(Pattern, AssetPath);
 		return Result;
 	}
 
@@ -207,7 +438,8 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Failed to create package: %s"), *PackageName);
+		const FString Pattern = GetDynamicString(TEXT("Factory.Error.CreatePackageFailed"), TEXT("Failed to create package: %s"));
+		Result.ErrorMessage = FormatDynamicMessage(Pattern, PackageName);
 		return Result;
 	}
 
@@ -226,7 +458,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 
 	if (!NewBlueprint)
 	{
-		Result.ErrorMessage = TEXT("Failed to create blueprint");
+		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.CreateBlueprintFailed"), TEXT("Failed to create blueprint"));
 		return Result;
 	}
 
@@ -275,9 +507,9 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	if (bAutoLayout)
 	{
 		FLayoutSettings LayoutSettings;
-		LayoutSettings.HorizontalSpacing = 350.0f;  // Wider spacing for readability
-		LayoutSettings.VerticalSpacing = 120.0f;   // Tighter vertical spacing
-		LayoutSettings.bPrioritizeExecFlow = false; // Also consider data flow for pure nodes
+		LayoutSettings.HorizontalSpacing = GetDynamicFloat(TEXT("AutoLayout.HorizontalSpacing"), 350.0f);
+		LayoutSettings.VerticalSpacing = GetDynamicFloat(TEXT("AutoLayout.VerticalSpacing"), 120.0f);
+		LayoutSettings.bPrioritizeExecFlow = GetDynamicBool(TEXT("AutoLayout.PrioritizeExecFlow"), false);
 
 		for (UEdGraph* Graph : NewBlueprint->UbergraphPages)
 		{
@@ -340,7 +572,8 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 	UClass* ParentClass = ResolveParentClass(Data.ParentClass);
 	if (!ParentClass)
 	{
-		Result.ErrorMessage = FString::Printf(TEXT("Could not resolve parent class: %s"), *Data.ParentClass);
+		const FString Pattern = GetDynamicString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
+		Result.ErrorMessage = FormatDynamicMessage(Pattern, Data.ParentClass);
 		return Result;
 	}
 
@@ -361,7 +594,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 
 	if (!NewBlueprint)
 	{
-		Result.ErrorMessage = TEXT("Failed to create preview blueprint");
+		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.CreatePreviewBlueprintFailed"), TEXT("Failed to create preview blueprint"));
 		return Result;
 	}
 
@@ -430,7 +663,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 
 	if (!Blueprint)
 	{
-		Result.ErrorMessage = TEXT("Blueprint is null");
+		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
 		return Result;
 	}
 
@@ -483,7 +716,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 
 	if (!Blueprint)
 	{
-		Result.ErrorMessage = TEXT("Blueprint is null");
+		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
 		return Result;
 	}
 
@@ -687,31 +920,21 @@ UClass* UAIBlueprintFactory::ResolveParentClass(const FString& ParentClassPath)
 		return AActor::StaticClass();
 	}
 
-	// Handle common UI shortcuts without requiring callers to pass full script path.
-	if (ParentClassPath.Equals(TEXT("UserWidget"), ESearchCase::IgnoreCase) ||
-		ParentClassPath.Equals(TEXT("Widget"), ESearchCase::IgnoreCase))
+	const FString Alias = NormalizeClassAlias(ParentClassPath);
+	if (UClass* const* AliasClass = GetParentClassAliasMap().Find(Alias))
 	{
-		if (UClass* WidgetClass = UNodeSpawner::FindClassByPath(TEXT("/Script/UMG.UserWidget")))
+		if (*AliasClass)
 		{
-			return WidgetClass;
+			return *AliasClass;
 		}
-	}
 
-	// Try common shortcuts
-	static TMap<FString, UClass*> CommonClasses = {
-		{TEXT("Actor"), AActor::StaticClass()},
-		{TEXT("Pawn"), APawn::StaticClass()},
-		{TEXT("Character"), ACharacter::StaticClass()},
-		{TEXT("PlayerController"), APlayerController::StaticClass()},
-		{TEXT("GameModeBase"), AGameModeBase::StaticClass()},
-		{TEXT("ActorComponent"), UActorComponent::StaticClass()},
-		{TEXT("SceneComponent"), USceneComponent::StaticClass()},
-	};
-
-	// Check common classes first
-	if (UClass** Found = CommonClasses.Find(ParentClassPath))
-	{
-		return *Found;
+		if (Alias == TEXT("widget") || Alias == TEXT("userwidget"))
+		{
+			if (UClass* WidgetClass = ResolveWidgetAliasClass())
+			{
+				return WidgetClass;
+			}
+		}
 	}
 
 	// Try to load by path
@@ -739,11 +962,7 @@ namespace
 			return;
 		}
 
-		constexpr float NodeWidth = 320.0f;
-		constexpr float NodeHeight = 180.0f;
-		constexpr float HorizontalSpacing = 380.0f;
-		constexpr float VerticalSpacing = 220.0f;
-		constexpr float CollisionPadding = 40.0f;
+		const FRightwardFlowLayoutConfig LayoutConfig = GetRightwardFlowLayoutConfig();
 
 		TSet<UK2Node*> NewNodes;
 		for (const TPair<FString, UK2Node*>& Pair : NodeMap)
@@ -770,13 +989,13 @@ namespace
 			if (!NewNodes.Contains(ExistingNode))
 			{
 				bHasExisting = true;
-				MaxExistingRight = FMath::Max(MaxExistingRight, static_cast<float>(ExistingNode->NodePosX) + NodeWidth);
+				MaxExistingRight = FMath::Max(MaxExistingRight, static_cast<float>(ExistingNode->NodePosX) + LayoutConfig.NodeWidth);
 				MinExistingY = bHasExisting ? FMath::Min(MinExistingY, static_cast<float>(ExistingNode->NodePosY)) : static_cast<float>(ExistingNode->NodePosY);
 				OccupiedRects.Add(MakeRectFromNode(ExistingNode));
 			}
 		}
 
-		const float BaseX = bHasExisting ? (MaxExistingRight + HorizontalSpacing) : 0.0f;
+		const float BaseX = bHasExisting ? (MaxExistingRight + LayoutConfig.HorizontalSpacing) : 0.0f;
 		const float BaseY = bHasExisting ? MinExistingY : 0.0f;
 
 		TMap<FString, int32> DeclOrder;
@@ -890,9 +1109,9 @@ namespace
 			}
 
 			const int32 Layer = LayerById.FindRef(NodeId);
-			const float TargetX = BaseX + Layer * HorizontalSpacing;
+			const float TargetX = BaseX + Layer * LayoutConfig.HorizontalSpacing;
 
-			float PreferredY = BaseY + LayerRowCounters.FindOrAdd(Layer) * VerticalSpacing;
+			float PreferredY = BaseY + LayerRowCounters.FindOrAdd(Layer) * LayoutConfig.VerticalSpacing;
 			TArray<float> SourceYs;
 			for (const FString& PredId : PredById.FindOrAdd(NodeId))
 			{
@@ -930,7 +1149,14 @@ namespace
 				PreferredY = SumY / SourceYs.Num();
 			}
 
-			const float FinalY = FindAvailableY(OccupiedRects, TargetX, PreferredY, NodeWidth, NodeHeight, CollisionPadding, VerticalSpacing);
+			const float FinalY = FindAvailableY(
+				OccupiedRects,
+				TargetX,
+				PreferredY,
+				LayoutConfig.NodeWidth,
+				LayoutConfig.NodeHeight,
+				LayoutConfig.CollisionPadding,
+				LayoutConfig.VerticalSpacing);
 			Node->NodePosX = static_cast<int32>(TargetX);
 			Node->NodePosY = static_cast<int32>(FinalY);
 
@@ -947,9 +1173,9 @@ namespace
 		}
 
 		FLayoutSettings LayoutSettings;
-		LayoutSettings.HorizontalSpacing = 380.0f;
-		LayoutSettings.VerticalSpacing = 180.0f;
-		LayoutSettings.bPrioritizeExecFlow = true;
+		LayoutSettings.HorizontalSpacing = GetDynamicFloat(TEXT("PostLayout.HorizontalSpacing"), 380.0f);
+		LayoutSettings.VerticalSpacing = GetDynamicFloat(TEXT("PostLayout.VerticalSpacing"), 180.0f);
+		LayoutSettings.bPrioritizeExecFlow = GetDynamicBool(TEXT("PostLayout.PrioritizeExecFlow"), true);
 		ULayoutEngine::AutoLayoutGraph(Graph, LayoutSettings);
 	}
 
@@ -1014,7 +1240,7 @@ namespace
 				continue;
 			}
 
-			if (Pair.Key.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase) && !bHasAnyLinkedResultNode)
+			if (Pair.Key.Equals(GetFunctionResultNodeId(), ESearchCase::IgnoreCase) && !bHasAnyLinkedResultNode)
 			{
 				continue;
 			}
@@ -1026,20 +1252,17 @@ namespace
 
 	void LayoutFunctionNodesInDeclaredOrder(const FBlueprintGraphData& GraphData, const TMap<FString, UK2Node*>& NodeMap)
 	{
-		constexpr int32 StartX = 160;
-		constexpr int32 StartY = 120;
-		constexpr int32 StepX = 320;
-		constexpr int32 StepY = 180;
+		const FDeclaredOrderLayoutConfig LayoutConfig = GetDeclaredOrderLayoutConfig();
 
-		int32 NextX = StartX;
+		int32 NextX = LayoutConfig.StartX;
 
-		if (UK2Node* const* EntryPtr = NodeMap.Find(TEXT("fn_entry")))
+		if (UK2Node* const* EntryPtr = NodeMap.Find(GetFunctionEntryNodeId()))
 		{
 			if (UK2Node* EntryNode = *EntryPtr)
 			{
-				EntryNode->NodePosX = StartX;
-				EntryNode->NodePosY = StartY;
-				NextX += StepX;
+				EntryNode->NodePosX = LayoutConfig.StartX;
+				EntryNode->NodePosY = LayoutConfig.StartY;
+				NextX += LayoutConfig.StepX;
 			}
 		}
 
@@ -1053,7 +1276,7 @@ namespace
 			}
 
 			UK2Node* Node = *NodePtr;
-			if (NodeData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase))
+			if (NodeData.NodeId.Equals(GetFunctionEntryNodeId(), ESearchCase::IgnoreCase))
 			{
 				continue;
 			}
@@ -1066,12 +1289,12 @@ namespace
 			}
 
 			Node->NodePosX = NextX;
-			Node->NodePosY = StartY;
-			NextX += StepX;
+			Node->NodePosY = LayoutConfig.StartY;
+			NextX += LayoutConfig.StepX;
 
 			if (NodeData.NodeType == EBlueprintNodeType::Return)
 			{
-				Node->NodePosY = StartY + StepY * ReturnRow;
+				Node->NodePosY = LayoutConfig.StartY + LayoutConfig.StepY * ReturnRow;
 				ReturnRow++;
 			}
 		}
@@ -1111,7 +1334,7 @@ namespace
 		{
 			if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
 			{
-				if (EventNode->EventReference.GetMemberName() == FName(TEXT("ReceiveTick")))
+				if (EventNode->EventReference.GetMemberName() == FName(*GetReceiveTickEventName()))
 				{
 					return EventNode;
 				}
@@ -1130,7 +1353,7 @@ namespace
 			{
 				for (const FBlueprintPinConnection& Conn : Pin.Connections)
 				{
-					if (Conn.SourceNodeId.StartsWith(TEXT("event_tick"), ESearchCase::IgnoreCase))
+					if (Conn.SourceNodeId.StartsWith(GetEventTickNodeIdPrefix(), ESearchCase::IgnoreCase))
 					{
 						if (!Result.Contains(Node.NodeId))
 						{
@@ -1158,7 +1381,11 @@ namespace
 				UEdGraphPin* TickExecPin = TickNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
 				if (!TickExecPin)
 				{
-					TickExecPin = TickNode->FindPin(TEXT("then"), EGPD_Output);
+					TickExecPin = FindExecPin(TickNode, UEdGraphSchema_K2::PN_Then.ToString(), EGPD_Output);
+				}
+				if (!TickExecPin)
+				{
+					TickExecPin = FindExecPin(TickNode, TEXT(""), EGPD_Output);
 				}
 
 				if (!TickExecPin)
@@ -1201,37 +1428,14 @@ namespace
 				SequenceNode->AllocateDefaultPins();
 				SequenceCreator.Finalize();
 
-				UEdGraphPin* SequenceInput = SequenceNode->FindPin(TEXT("execute"), EGPD_Input);
+				UEdGraphPin* SequenceInput = FindExecPin(SequenceNode, TEXT(""), EGPD_Input);
 				if (SequenceInput && TickExecPin)
 				{
 					TickExecPin->MakeLinkTo(SequenceInput);
 				}
 
-				UEdGraphPin* SequenceThen0 = SequenceNode->FindPin(TEXT("then"), EGPD_Output);
-				UEdGraphPin* SequenceThen1 = SequenceNode->FindPin(TEXT("then 1"), EGPD_Output);
-				if (!SequenceThen0)
-				{
-					for (UEdGraphPin* Pin : SequenceNode->Pins)
-					{
-						if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-						{
-							SequenceThen0 = Pin;
-							break;
-						}
-					}
-				}
-
-				if (!SequenceThen1)
-				{
-					for (UEdGraphPin* Pin : SequenceNode->Pins)
-					{
-						if (Pin && Pin->Direction == EGPD_Output && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec && Pin != SequenceThen0)
-						{
-							SequenceThen1 = Pin;
-							break;
-						}
-					}
-				}
+				UEdGraphPin* SequenceThen0 = FindExecPinByIndex(SequenceNode, EGPD_Output, 0, UEdGraphSchema_K2::PN_Then.ToString());
+				UEdGraphPin* SequenceThen1 = FindExecPinByIndex(SequenceNode, EGPD_Output, 1);
 
 				if (!SequenceThen0 || !SequenceThen1)
 				{
@@ -1342,10 +1546,6 @@ namespace
 						if (!ExecOutput)
 						{
 							ExecOutput = FindNodePin(Node, UEdGraphSchema_K2::PN_Then.ToString(), EGPD_Output);
-							if (!ExecOutput)
-							{
-								ExecOutput = FindNodePin(Node, TEXT("then"), EGPD_Output);
-							}
 						}
 
 						if (ExecOutput)
@@ -1510,30 +1710,7 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 	{
 		for (const FBlueprintPinData& Input : GraphData.Inputs)
 		{
-			// Parse type string to get pin type
-			FEdGraphPinType PinType;
-			if (Input.Type == TEXT("float") || Input.Type == TEXT("Float"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-			}
-			else if (Input.Type == TEXT("int") || Input.Type == TEXT("Int"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-			}
-			else if (Input.Type == TEXT("bool") || Input.Type == TEXT("Bool"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
-			}
-			else if (Input.Type == TEXT("string") || Input.Type == TEXT("String"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_String;
-			}
-			else
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-			}
+			FEdGraphPinType PinType = ParseFunctionPinTypeFromText(Input.Type);
 
 			// Create user defined pin on entry node
 			TSharedPtr<FUserPinInfo> PinInfo = MakeShareable(new FUserPinInfo());
@@ -1548,7 +1725,7 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		EntryNode->ReconstructNode();
 
 		// Add Entry node to node map with special ID
-		OutNodeMap.Add(TEXT("fn_entry"), EntryNode);
+		OutNodeMap.Add(GetFunctionEntryNodeId(), EntryNode);
 	}
 
 	// Create Result node if we have outputs and it doesn't exist
@@ -1567,29 +1744,7 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		// Add output parameters to Result node
 		for (const FBlueprintPinData& Output : GraphData.Outputs)
 		{
-			FEdGraphPinType PinType;
-			if (Output.Type == TEXT("float") || Output.Type == TEXT("Float"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-			}
-			else if (Output.Type == TEXT("int") || Output.Type == TEXT("Int"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-			}
-			else if (Output.Type == TEXT("bool") || Output.Type == TEXT("Bool"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
-			}
-			else if (Output.Type == TEXT("string") || Output.Type == TEXT("String"))
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_String;
-			}
-			else
-			{
-				PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-				PinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
-			}
+			FEdGraphPinType PinType = ParseFunctionPinTypeFromText(Output.Type);
 
 			TSharedPtr<FUserPinInfo> PinInfo = MakeShareable(new FUserPinInfo());
 			PinInfo->PinName = FName(*Output.Name);
@@ -1602,14 +1757,14 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		ResultNode->ReconstructNode();
 
 		// Add Result node to node map with special ID
-		OutNodeMap.Add(TEXT("fn_result"), ResultNode);
+		OutNodeMap.Add(GetFunctionResultNodeId(), ResultNode);
 	}
 
-	// Spawn additional nodes (skip fn_entry and fn_result as they're already created)
+	// Spawn additional nodes (skip helper entry/result node IDs as they're already created)
 	for (const FBlueprintNodeData& NodeData : GraphData.Nodes)
 	{
 		// Skip special nodes that are already in the NodeMap
-		if (NodeData.NodeId == TEXT("fn_entry") || NodeData.NodeId == TEXT("fn_result"))
+		if (NodeData.NodeId == GetFunctionEntryNodeId() || NodeData.NodeId == GetFunctionResultNodeId())
 		{
 			continue;
 		}
@@ -1631,53 +1786,40 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 
 FEdGraphPinType UAIBlueprintFactory::GetPinType(EBlueprintVarType VarType, const FString& TypeClass)
 {
-	FEdGraphPinType PinType;
-
-	switch (VarType)
+	struct FPinTypeDescriptor
 	{
-	case EBlueprintVarType::Boolean:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
-		break;
-	case EBlueprintVarType::Integer:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Int;
-		break;
-	case EBlueprintVarType::Float:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Real;
-		PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
-		break;
-	case EBlueprintVarType::String:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_String;
-		break;
-	case EBlueprintVarType::Name:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Name;
-		break;
-	case EBlueprintVarType::Text:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Text;
-		break;
-	case EBlueprintVarType::Vector:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-		PinType.PinSubCategoryObject = TBaseStructure<FVector>::Get();
-		break;
-	case EBlueprintVarType::Rotator:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-		PinType.PinSubCategoryObject = TBaseStructure<FRotator>::Get();
-		break;
-	case EBlueprintVarType::Transform:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-		PinType.PinSubCategoryObject = TBaseStructure<FTransform>::Get();
-		break;
-	case EBlueprintVarType::Object:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
-		if (!TypeClass.IsEmpty())
-		{
-			PinType.PinSubCategoryObject = UNodeSpawner::FindClassByPath(TypeClass);
-		}
-		break;
-	default:
-		PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
-		break;
+		FName Category;
+		FName SubCategory;
+		UObject* SubCategoryObject;
+	};
+
+	static const TMap<EBlueprintVarType, FPinTypeDescriptor> TypeDescriptors = {
+		{ EBlueprintVarType::Boolean, { UEdGraphSchema_K2::PC_Boolean, NAME_None, nullptr } },
+		{ EBlueprintVarType::Integer, { UEdGraphSchema_K2::PC_Int, NAME_None, nullptr } },
+		{ EBlueprintVarType::Float, { UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Float, nullptr } },
+		{ EBlueprintVarType::String, { UEdGraphSchema_K2::PC_String, NAME_None, nullptr } },
+		{ EBlueprintVarType::Name, { UEdGraphSchema_K2::PC_Name, NAME_None, nullptr } },
+		{ EBlueprintVarType::Text, { UEdGraphSchema_K2::PC_Text, NAME_None, nullptr } },
+		{ EBlueprintVarType::Vector, { UEdGraphSchema_K2::PC_Struct, NAME_None, TBaseStructure<FVector>::Get() } },
+		{ EBlueprintVarType::Rotator, { UEdGraphSchema_K2::PC_Struct, NAME_None, TBaseStructure<FRotator>::Get() } },
+		{ EBlueprintVarType::Transform, { UEdGraphSchema_K2::PC_Struct, NAME_None, TBaseStructure<FTransform>::Get() } },
+	};
+
+	FEdGraphPinType PinType;
+	if (const FPinTypeDescriptor* Descriptor = TypeDescriptors.Find(VarType))
+	{
+		PinType.PinCategory = Descriptor->Category;
+		PinType.PinSubCategory = Descriptor->SubCategory;
+		PinType.PinSubCategoryObject = Descriptor->SubCategoryObject;
+		return PinType;
 	}
 
+	// Object/default fallback keeps previous behavior.
+	PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	if (VarType == EBlueprintVarType::Object && !TypeClass.IsEmpty())
+	{
+		PinType.PinSubCategoryObject = UNodeSpawner::FindClassByPath(TypeClass);
+	}
 	return PinType;
 }
 
@@ -1685,23 +1827,16 @@ FEdGraphPinType UAIBlueprintFactory::VarTypeToPinType(const FBlueprintVariableDa
 {
 	FEdGraphPinType PinType = GetPinType(VarData.Type, VarData.TypeClass);
 
-	// Handle container types
-	if (VarData.Type == EBlueprintVarType::Array)
+	if (const EPinContainerType* ContainerType = GetContainerTypeMap().Find(VarData.Type))
 	{
-		PinType.ContainerType = EPinContainerType::Array;
-		// Set element type based on ContainerElementType
-		FEdGraphPinType ElementType = GetPinType(VarData.ContainerElementType, TEXT(""));
-		PinType.PinCategory = ElementType.PinCategory;
-		PinType.PinSubCategory = ElementType.PinSubCategory;
-		PinType.PinSubCategoryObject = ElementType.PinSubCategoryObject;
-	}
-	else if (VarData.Type == EBlueprintVarType::Set)
-	{
-		PinType.ContainerType = EPinContainerType::Set;
-	}
-	else if (VarData.Type == EBlueprintVarType::Map)
-	{
-		PinType.ContainerType = EPinContainerType::Map;
+		PinType.ContainerType = *ContainerType;
+		if (VarData.Type == EBlueprintVarType::Array)
+		{
+			FEdGraphPinType ElementType = GetPinType(VarData.ContainerElementType, TEXT(""));
+			PinType.PinCategory = ElementType.PinCategory;
+			PinType.PinSubCategory = ElementType.PinSubCategory;
+			PinType.PinSubCategoryObject = ElementType.PinSubCategoryObject;
+		}
 	}
 
 	return PinType;
@@ -1714,6 +1849,58 @@ UEdGraphPin* UAIBlueprintFactory::FindPinByName(UK2Node* Node, const FString& Pi
 
 namespace
 {
+	int32 TryParseArgIndex(const FString& PinName)
+	{
+		if (!PinName.StartsWith(TEXT("Arg")))
+		{
+			return INDEX_NONE;
+		}
+
+		const FString IndexStr = PinName.Mid(3);
+		return IndexStr.IsNumeric() ? FCString::Atoi(*IndexStr) : INDEX_NONE;
+	}
+
+	bool IsSkippablePositionalInputPin(const UEdGraphPin* Pin)
+	{
+		if (!Pin)
+		{
+			return true;
+		}
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+		{
+			return true;
+		}
+		return Pin->PinName == TEXT("self") || Pin->PinName == TEXT("WorldContextObject");
+	}
+
+	bool DirectionMatchesPin(const UEdGraphPin* Pin, EEdGraphPinDirection Direction)
+	{
+		return Pin && (Direction == EGPD_MAX || Pin->Direction == Direction);
+	}
+
+	bool IsExecPin(const UEdGraphPin* Pin)
+	{
+		return Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+	}
+
+	TArray<UEdGraphPin*> CollectExecPins(UK2Node* Node, EEdGraphPinDirection Direction)
+	{
+		TArray<UEdGraphPin*> ExecPins;
+		if (!Node)
+		{
+			return ExecPins;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (DirectionMatchesPin(Pin, Direction) && IsExecPin(Pin))
+			{
+				ExecPins.Add(Pin);
+			}
+		}
+		return ExecPins;
+	}
+
 	UEdGraphPin* FindNodePin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction)
 	{
 		if (!Node)
@@ -1724,46 +1911,33 @@ namespace
 		// Exact match first (case-insensitive with alias support).
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			if (Pin && PinNamesEquivalent(Pin->PinName.ToString(), PinName))
+			if (!DirectionMatchesPin(Pin, Direction))
 			{
-				if (Direction == EGPD_MAX || Pin->Direction == Direction)
-				{
-					return Pin;
-				}
+				continue;
+			}
+			if (PinNamesEquivalent(Pin->PinName.ToString(), PinName))
+			{
+				return Pin;
 			}
 		}
 
 		// Handle positional argument names like "Arg0", "Arg1", etc.
-		if (PinName.StartsWith(TEXT("Arg")))
+		const int32 ArgIndex = TryParseArgIndex(PinName);
+		if (ArgIndex != INDEX_NONE)
 		{
-			FString IndexStr = PinName.Mid(3);
-			if (IndexStr.IsNumeric())
+			int32 CurrentIndex = 0;
+			for (UEdGraphPin* Pin : Node->Pins)
 			{
-				int32 ArgIndex = FCString::Atoi(*IndexStr);
-				int32 CurrentIndex = 0;
-
-				for (UEdGraphPin* Pin : Node->Pins)
+				if (!Pin || Pin->Direction != EGPD_Input || IsSkippablePositionalInputPin(Pin))
 				{
-					if (Pin && Pin->Direction == EGPD_Input)
-					{
-						// Skip exec pins
-						if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
-						{
-							continue;
-						}
-						// Skip self/world context pins
-						if (Pin->PinName == TEXT("self") || Pin->PinName == TEXT("WorldContextObject"))
-						{
-							continue;
-						}
-
-						if (CurrentIndex == ArgIndex)
-						{
-							return Pin;
-						}
-						CurrentIndex++;
-					}
+					continue;
 				}
+
+				if (CurrentIndex == ArgIndex)
+				{
+					return Pin;
+				}
+				CurrentIndex++;
 			}
 		}
 
@@ -1771,17 +1945,15 @@ namespace
 		const FString RequestedLower = PinName.ToLower();
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			if (Pin)
+			if (!DirectionMatchesPin(Pin, Direction))
 			{
-				const FString CurrentPinName = Pin->PinName.ToString();
-				const FString CurrentPinLower = CurrentPinName.ToLower();
-				if (CurrentPinLower.Contains(RequestedLower) || RequestedLower.Contains(CurrentPinLower))
-				{
-					if (Direction == EGPD_MAX || Pin->Direction == Direction)
-					{
-						return Pin;
-					}
-				}
+				continue;
+			}
+
+			const FString CurrentPinLower = Pin->PinName.ToString().ToLower();
+			if (CurrentPinLower.Contains(RequestedLower) || RequestedLower.Contains(CurrentPinLower))
+			{
+				return Pin;
 			}
 		}
 
@@ -1790,34 +1962,42 @@ namespace
 
 	UEdGraphPin* FindExecPin(UK2Node* Node, const FString& PinName, EEdGraphPinDirection Direction)
 	{
-		if (!Node)
+		for (UEdGraphPin* Pin : CollectExecPins(Node, Direction))
 		{
-			return nullptr;
-		}
-
-		for (UEdGraphPin* Pin : Node->Pins)
-		{
-			if (!Pin)
-			{
-				continue;
-			}
-
-			if (Direction != EGPD_MAX && Pin->Direction != Direction)
-			{
-				continue;
-			}
-
-			if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-			{
-				continue;
-			}
-
-			if (PinName.IsEmpty() || Pin->PinName.ToString().Equals(PinName, ESearchCase::IgnoreCase))
+			if (PinName.IsEmpty() || PinNamesEquivalent(Pin->PinName.ToString(), PinName))
 			{
 				return Pin;
 			}
 		}
 
 		return nullptr;
+	}
+
+	UEdGraphPin* FindExecPinByIndex(UK2Node* Node, EEdGraphPinDirection Direction, int32 Index, const FString& PreferredName)
+	{
+		if (!Node || Index < 0)
+		{
+			return nullptr;
+		}
+
+		TArray<UEdGraphPin*> ExecPins = CollectExecPins(Node, Direction);
+
+		if (ExecPins.Num() == 0)
+		{
+			return nullptr;
+		}
+
+		if (!PreferredName.IsEmpty())
+		{
+			for (UEdGraphPin* Pin : ExecPins)
+			{
+				if (PinNamesEquivalent(Pin->PinName.ToString(), PreferredName))
+				{
+					return Pin;
+				}
+			}
+		}
+
+		return ExecPins.IsValidIndex(Index) ? ExecPins[Index] : nullptr;
 	}
 }

@@ -21,8 +21,259 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectIterator.h"
+#include "Misc/ConfigCacheIni.h"
 
 DEFINE_LOG_CATEGORY(LogNodeSpawner);
+
+namespace
+{
+	using FSpawnHandler = FNodeSpawnResult(*)(UEdGraph*, const FBlueprintNodeData&, UBlueprint*);
+	using FSimpleFlowNodeFactory = UK2Node*(*)(UEdGraph*);
+	constexpr const TCHAR* DynamicSection = TEXT("AssetFactoryAI.Dynamic");
+
+	FString GetDynamicString(const TCHAR* Key, const TCHAR* DefaultValue)
+	{
+		FString Value;
+		if (GConfig && GConfig->GetString(DynamicSection, Key, Value, GEditorPerProjectIni) && !Value.IsEmpty())
+		{
+			return Value;
+		}
+		return FString(DefaultValue);
+	}
+
+	TArray<FString> ParseCSV(const FString& Input)
+	{
+		TArray<FString> Values;
+		Input.ParseIntoArray(Values, TEXT(","), true);
+		for (FString& Value : Values)
+		{
+			Value.TrimStartAndEndInline();
+		}
+		Values.RemoveAll([](const FString& Value) { return Value.IsEmpty(); });
+		return Values;
+	}
+
+	FString GetDynamicError(const TCHAR* Key, const TCHAR* DefaultMessage)
+	{
+		return GetDynamicString(Key, DefaultMessage);
+	}
+
+	const TMap<EBlueprintNodeType, FString>& GetMathOperationNames()
+	{
+		static const TMap<EBlueprintNodeType, FString> Names = {
+			{ EBlueprintNodeType::Math_Add, TEXT("Add") },
+			{ EBlueprintNodeType::Math_Subtract, TEXT("Subtract") },
+			{ EBlueprintNodeType::Math_Multiply, TEXT("Multiply") },
+			{ EBlueprintNodeType::Math_Divide, TEXT("Divide") },
+		};
+		return Names;
+	}
+
+	const TMap<EBlueprintNodeType, FString>& GetComparisonOperationNames()
+	{
+		static const TMap<EBlueprintNodeType, FString> Names = {
+			{ EBlueprintNodeType::Compare_Equal, TEXT("EqualEqual") },
+			{ EBlueprintNodeType::Compare_NotEqual, TEXT("NotEqual") },
+			{ EBlueprintNodeType::Compare_Greater, TEXT("Greater") },
+			{ EBlueprintNodeType::Compare_Less, TEXT("Less") },
+			{ EBlueprintNodeType::Compare_GreaterEqual, TEXT("GreaterEqual") },
+			{ EBlueprintNodeType::Compare_LessEqual, TEXT("LessEqual") },
+		};
+		return Names;
+	}
+
+	const TMap<EBlueprintNodeType, FString>& GetLogicFunctionPaths()
+	{
+		static const TMap<EBlueprintNodeType, FString> Paths = {
+			{ EBlueprintNodeType::Logic_And, TEXT("/Script/Engine.KismetMathLibrary.BooleanAND") },
+			{ EBlueprintNodeType::Logic_Or, TEXT("/Script/Engine.KismetMathLibrary.BooleanOR") },
+			{ EBlueprintNodeType::Logic_Not, TEXT("/Script/Engine.KismetMathLibrary.Not_PreBool") },
+		};
+		return Paths;
+	}
+
+	const TMap<EBlueprintNodeType, FString>& GetArrayFunctionPaths()
+	{
+		static const TMap<EBlueprintNodeType, FString> Paths = {
+			{ EBlueprintNodeType::Array_Add, TEXT("/Script/Engine.KismetArrayLibrary.Array_Add") },
+			{ EBlueprintNodeType::Array_Remove, TEXT("/Script/Engine.KismetArrayLibrary.Array_RemoveItem") },
+			{ EBlueprintNodeType::Array_Get, TEXT("/Script/Engine.KismetArrayLibrary.Array_Get") },
+			{ EBlueprintNodeType::Array_Set, TEXT("/Script/Engine.KismetArrayLibrary.Array_Set") },
+			{ EBlueprintNodeType::Array_Length, TEXT("/Script/Engine.KismetArrayLibrary.Array_Length") },
+			{ EBlueprintNodeType::Array_Clear, TEXT("/Script/Engine.KismetArrayLibrary.Array_Clear") },
+		};
+		return Paths;
+	}
+
+	const TArray<FString>& GetDefaultNumericSuffixes()
+	{
+		static const TArray<FString> Suffixes = {
+			TEXT("IntInt"),
+			TEXT("DoubleDouble"),
+			TEXT("FloatFloat")
+		};
+		return Suffixes;
+	}
+
+	const TArray<FString>& GetDefaultFunctionLibraries()
+	{
+		static const TArray<FString> Libraries = []()
+		{
+			const FString Raw = GetDynamicString(
+				TEXT("NodeSpawner.FunctionLibraries"),
+				TEXT("/Script/Engine.KismetSystemLibrary,/Script/Engine.KismetMathLibrary,/Script/Engine.KismetStringLibrary,/Script/Engine.KismetTextLibrary,/Script/Engine.KismetArrayLibrary,/Script/Engine.GameplayStatics,/Script/Engine.KismetMaterialLibrary,/Script/Engine.KismetRenderingLibrary,/Script/Engine.KismetInputLibrary"));
+			return ParseCSV(Raw);
+		}();
+		return Libraries;
+	}
+
+	const TMap<EBlueprintNodeType, FName>& GetActorEventNames()
+	{
+		static const TMap<EBlueprintNodeType, FName> EventNames = []()
+		{
+			TMap<EBlueprintNodeType, FName> Mapped;
+			Mapped.Add(EBlueprintNodeType::Event_BeginPlay, FName(*GetDynamicString(TEXT("NodeSpawner.Event.BeginPlay"), TEXT("ReceiveBeginPlay"))));
+			Mapped.Add(EBlueprintNodeType::Event_Tick, FName(*GetDynamicString(TEXT("NodeSpawner.Event.Tick"), TEXT("ReceiveTick"))));
+			return Mapped;
+		}();
+		return EventNames;
+	}
+
+	const TMap<EBlueprintNodeType, TArray<FString>>& GetFlowFunctionCandidates()
+	{
+		static const TMap<EBlueprintNodeType, TArray<FString>> Candidates = []()
+		{
+			TMap<EBlueprintNodeType, TArray<FString>> Mapped;
+			Mapped.Add(EBlueprintNodeType::Flow_Delay, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.DelayCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.Delay"))));
+			Mapped.Add(EBlueprintNodeType::Flow_DoOnce, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.DoOnceCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.DoOnce"))));
+			Mapped.Add(EBlueprintNodeType::Flow_ForLoop, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.ForLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.ForLoop,/Script/Engine.KismetMathLibrary.ForLoop"))));
+			Mapped.Add(EBlueprintNodeType::Flow_WhileLoop, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.WhileLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"))));
+			return Mapped;
+		}();
+		return Candidates;
+	}
+
+	UK2Node* CreateBranchFlowNode(UEdGraph* Graph)
+	{
+		FGraphNodeCreator<UK2Node_IfThenElse> NodeCreator(*Graph);
+		UK2Node_IfThenElse* BranchNode = NodeCreator.CreateNode();
+		BranchNode->AllocateDefaultPins();
+		NodeCreator.Finalize();
+		return BranchNode;
+	}
+
+	UK2Node* CreateSequenceFlowNode(UEdGraph* Graph)
+	{
+		FGraphNodeCreator<UK2Node_ExecutionSequence> NodeCreator(*Graph);
+		UK2Node_ExecutionSequence* SequenceNode = NodeCreator.CreateNode();
+		SequenceNode->AllocateDefaultPins();
+		NodeCreator.Finalize();
+		return SequenceNode;
+	}
+
+	const TMap<EBlueprintNodeType, FSimpleFlowNodeFactory>& GetSimpleFlowNodeFactories()
+	{
+		static const TMap<EBlueprintNodeType, FSimpleFlowNodeFactory> Factories = {
+			{ EBlueprintNodeType::Flow_Branch, &CreateBranchFlowNode },
+			{ EBlueprintNodeType::Flow_Sequence, &CreateSequenceFlowNode },
+		};
+		return Factories;
+	}
+
+	const TMap<EBlueprintNodeType, FString>& GetFlowFallbackErrors()
+	{
+		static const TMap<EBlueprintNodeType, FString> Errors = []()
+		{
+			TMap<EBlueprintNodeType, FString> Mapped;
+			Mapped.Add(EBlueprintNodeType::Flow_ForLoop, GetDynamicError(TEXT("NodeSpawner.Error.ForLoopNotFound"), TEXT("ForLoop function not found - use ForLoopWithBreak macro instead")));
+			Mapped.Add(EBlueprintNodeType::Flow_WhileLoop, GetDynamicError(TEXT("NodeSpawner.Error.WhileLoopNotFound"), TEXT("WhileLoop not directly available - implement using Branch in a loop")));
+			return Mapped;
+		}();
+		return Errors;
+	}
+
+	void RegisterManyHandlers(TMap<EBlueprintNodeType, FSpawnHandler>& InHandlers, const TArray<EBlueprintNodeType>& Types, FSpawnHandler Handler)
+	{
+		for (EBlueprintNodeType Type : Types)
+		{
+			InHandlers.Add(Type, Handler);
+		}
+	}
+
+	const TMap<EBlueprintNodeType, FSpawnHandler>& GetNodeSpawnHandlers()
+	{
+		static TMap<EBlueprintNodeType, FSpawnHandler> Handlers;
+		if (Handlers.Num() == 0)
+		{
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Event_BeginPlay,
+				EBlueprintNodeType::Event_Tick,
+				EBlueprintNodeType::Event_Custom,
+				EBlueprintNodeType::Event_Input,
+			}, &UNodeSpawner::SpawnEventNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Flow_Branch,
+				EBlueprintNodeType::Flow_Sequence,
+				EBlueprintNodeType::Flow_ForLoop,
+				EBlueprintNodeType::Flow_ForEachLoop,
+				EBlueprintNodeType::Flow_WhileLoop,
+				EBlueprintNodeType::Flow_DoOnce,
+				EBlueprintNodeType::Flow_Gate,
+				EBlueprintNodeType::Flow_Delay,
+			}, &UNodeSpawner::SpawnFlowControlNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::CallFunction,
+				EBlueprintNodeType::PureFunction,
+			}, &UNodeSpawner::SpawnFunctionCallNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Variable_Get,
+				EBlueprintNodeType::Variable_Set,
+				EBlueprintNodeType::Variable_GetLocal,
+				EBlueprintNodeType::Variable_SetLocal,
+			}, &UNodeSpawner::SpawnVariableNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Math_Add,
+				EBlueprintNodeType::Math_Subtract,
+				EBlueprintNodeType::Math_Multiply,
+				EBlueprintNodeType::Math_Divide,
+			}, &UNodeSpawner::SpawnMathNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Compare_Equal,
+				EBlueprintNodeType::Compare_NotEqual,
+				EBlueprintNodeType::Compare_Greater,
+				EBlueprintNodeType::Compare_Less,
+				EBlueprintNodeType::Compare_GreaterEqual,
+				EBlueprintNodeType::Compare_LessEqual,
+			}, &UNodeSpawner::SpawnComparisonNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Logic_And,
+				EBlueprintNodeType::Logic_Or,
+				EBlueprintNodeType::Logic_Not,
+			}, &UNodeSpawner::SpawnLogicNode);
+
+			Handlers.Add(EBlueprintNodeType::Cast, &UNodeSpawner::SpawnCastNode);
+
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Array_Add,
+				EBlueprintNodeType::Array_Remove,
+				EBlueprintNodeType::Array_Get,
+				EBlueprintNodeType::Array_Set,
+				EBlueprintNodeType::Array_Length,
+				EBlueprintNodeType::Array_Clear,
+			}, &UNodeSpawner::SpawnArrayNode);
+
+			Handlers.Add(EBlueprintNodeType::Return, &UNodeSpawner::SpawnReturnNode);
+		}
+
+		return Handlers;
+	}
+}
 
 FNodeSpawnResult UNodeSpawner::SpawnNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
 {
@@ -30,85 +281,18 @@ FNodeSpawnResult UNodeSpawner::SpawnNode(UEdGraph* Graph, const FBlueprintNodeDa
 
 	if (!Graph || !Blueprint)
 	{
-		Result.ErrorMessage = TEXT("Invalid graph or blueprint");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.InvalidGraphOrBlueprint"), TEXT("Invalid graph or blueprint"));
 		return Result;
 	}
 
-	switch (NodeData.NodeType)
+	const TMap<EBlueprintNodeType, FSpawnHandler>& Handlers = GetNodeSpawnHandlers();
+	if (const FSpawnHandler* Handler = Handlers.Find(NodeData.NodeType))
 	{
-	// Events
-	case EBlueprintNodeType::Event_BeginPlay:
-	case EBlueprintNodeType::Event_Tick:
-	case EBlueprintNodeType::Event_Custom:
-	case EBlueprintNodeType::Event_Input:
-		return SpawnEventNode(Graph, NodeData, Blueprint);
-
-	// Flow Control
-	case EBlueprintNodeType::Flow_Branch:
-	case EBlueprintNodeType::Flow_Sequence:
-	case EBlueprintNodeType::Flow_ForLoop:
-	case EBlueprintNodeType::Flow_ForEachLoop:
-	case EBlueprintNodeType::Flow_WhileLoop:
-	case EBlueprintNodeType::Flow_DoOnce:
-	case EBlueprintNodeType::Flow_Gate:
-	case EBlueprintNodeType::Flow_Delay:
-		return SpawnFlowControlNode(Graph, NodeData, Blueprint);
-
-	// Functions
-	case EBlueprintNodeType::CallFunction:
-	case EBlueprintNodeType::PureFunction:
-		return SpawnFunctionCallNode(Graph, NodeData, Blueprint);
-
-	// Variables
-	case EBlueprintNodeType::Variable_Get:
-	case EBlueprintNodeType::Variable_Set:
-	case EBlueprintNodeType::Variable_GetLocal:
-	case EBlueprintNodeType::Variable_SetLocal:
-		return SpawnVariableNode(Graph, NodeData, Blueprint);
-
-	// Math
-	case EBlueprintNodeType::Math_Add:
-	case EBlueprintNodeType::Math_Subtract:
-	case EBlueprintNodeType::Math_Multiply:
-	case EBlueprintNodeType::Math_Divide:
-		return SpawnMathNode(Graph, NodeData, Blueprint);
-
-	// Comparison
-	case EBlueprintNodeType::Compare_Equal:
-	case EBlueprintNodeType::Compare_NotEqual:
-	case EBlueprintNodeType::Compare_Greater:
-	case EBlueprintNodeType::Compare_Less:
-	case EBlueprintNodeType::Compare_GreaterEqual:
-	case EBlueprintNodeType::Compare_LessEqual:
-		return SpawnComparisonNode(Graph, NodeData, Blueprint);
-
-	// Logic
-	case EBlueprintNodeType::Logic_And:
-	case EBlueprintNodeType::Logic_Or:
-	case EBlueprintNodeType::Logic_Not:
-		return SpawnLogicNode(Graph, NodeData, Blueprint);
-
-	// Cast
-	case EBlueprintNodeType::Cast:
-		return SpawnCastNode(Graph, NodeData, Blueprint);
-
-	// Array
-	case EBlueprintNodeType::Array_Add:
-	case EBlueprintNodeType::Array_Remove:
-	case EBlueprintNodeType::Array_Get:
-	case EBlueprintNodeType::Array_Set:
-	case EBlueprintNodeType::Array_Length:
-	case EBlueprintNodeType::Array_Clear:
-		return SpawnArrayNode(Graph, NodeData, Blueprint);
-
-	// Return node for functions
-	case EBlueprintNodeType::Return:
-		return SpawnReturnNode(Graph, NodeData, Blueprint);
-
-	default:
-		Result.ErrorMessage = FString::Printf(TEXT("Unsupported node type: %d"), static_cast<int32>(NodeData.NodeType));
-		return Result;
+		return (*Handler)(Graph, NodeData, Blueprint);
 	}
+
+	Result.ErrorMessage = FString::Printf(TEXT("Unsupported node type: %d"), static_cast<int32>(NodeData.NodeType));
+	return Result;
 }
 
 FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
@@ -118,20 +302,13 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 	UK2Node* Node = nullptr;
 	FName EventFunctionName;
 
-	// Determine event function name based on node type
-	switch (NodeData.NodeType)
+	if (const FName* BuiltInEventName = GetActorEventNames().Find(NodeData.NodeType))
 	{
-	case EBlueprintNodeType::Event_BeginPlay:
-		EventFunctionName = FName(TEXT("ReceiveBeginPlay"));
-		break;
-	case EBlueprintNodeType::Event_Tick:
-		EventFunctionName = FName(TEXT("ReceiveTick"));
-		break;
-	case EBlueprintNodeType::Event_Custom:
-		// Custom events are handled separately
-		break;
-	default:
-		Result.ErrorMessage = TEXT("Unknown event type");
+		EventFunctionName = *BuiltInEventName;
+	}
+	else if (NodeData.NodeType != EBlueprintNodeType::Event_Custom)
+	{
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownEventType"), TEXT("Unknown event type"));
 		return Result;
 	}
 
@@ -158,23 +335,10 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 	switch (NodeData.NodeType)
 	{
 	case EBlueprintNodeType::Event_BeginPlay:
-	{
-		UFunction* BeginPlayFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
-		if (BeginPlayFunc)
-		{
-			UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
-			EventNode->EventReference.SetExternalMember(EventFunctionName, AActor::StaticClass());
-			EventNode->bOverrideFunction = true;
-			EventNode->AllocateDefaultPins();
-			Node = EventNode;
-		}
-		break;
-	}
-
 	case EBlueprintNodeType::Event_Tick:
 	{
-		UFunction* TickFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
-		if (TickFunc)
+		UFunction* EventFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
+		if (EventFunc)
 		{
 			UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
 			EventNode->EventReference.SetExternalMember(EventFunctionName, AActor::StaticClass());
@@ -222,7 +386,7 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 	}
 	else
 	{
-		Result.ErrorMessage = TEXT("Failed to create event node");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FailedCreateEventNode"), TEXT("Failed to create event node"));
 	}
 
 	return Result;
@@ -242,20 +406,8 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 	}
 	else
 	{
-		// Simple function name - try common libraries
-		TArray<FString> LibrariesToTry = {
-			TEXT("/Script/Engine.KismetSystemLibrary"),
-			TEXT("/Script/Engine.KismetMathLibrary"),
-			TEXT("/Script/Engine.KismetStringLibrary"),
-			TEXT("/Script/Engine.KismetTextLibrary"),
-			TEXT("/Script/Engine.KismetArrayLibrary"),
-			TEXT("/Script/Engine.GameplayStatics"),
-			TEXT("/Script/Engine.KismetMaterialLibrary"),
-			TEXT("/Script/Engine.KismetRenderingLibrary"),
-			TEXT("/Script/Engine.KismetInputLibrary"),
-		};
-
-		for (const FString& Library : LibrariesToTry)
+		// Simple function name - try configured default libraries
+		for (const FString& Library : GetDefaultFunctionLibraries())
 		{
 			FString FullPath = FString::Printf(TEXT("%s.%s"), *Library, *FunctionRef);
 			Function = FindFunctionByPath(FullPath);
@@ -290,98 +442,43 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	FNodeSpawnResult Result;
 
 	UK2Node* Node = nullptr;
-
-	switch (NodeData.NodeType)
+	if (const FSimpleFlowNodeFactory* NodeFactory = GetSimpleFlowNodeFactories().Find(NodeData.NodeType))
 	{
-	case EBlueprintNodeType::Flow_Branch:
-	{
-		UK2Node_IfThenElse* BranchNode = CreateNode<UK2Node_IfThenElse>(Graph);
-		BranchNode->AllocateDefaultPins();
-		Node = BranchNode;
-		break;
+		Node = (*NodeFactory)(Graph);
 	}
-
-	case EBlueprintNodeType::Flow_Sequence:
+	else if (const TArray<FString>* CandidatePaths = GetFlowFunctionCandidates().Find(NodeData.NodeType))
 	{
-		UK2Node_ExecutionSequence* SeqNode = CreateNode<UK2Node_ExecutionSequence>(Graph);
-		SeqNode->AllocateDefaultPins();
-		Node = SeqNode;
-		break;
-	}
-
-	case EBlueprintNodeType::Flow_Delay:
-	{
-		// Delay is a latent function
-		UFunction* DelayFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.Delay"));
-		if (DelayFunc)
+		UFunction* ResolvedFunction = nullptr;
+		for (const FString& Path : *CandidatePaths)
 		{
-			UK2Node_CallFunction* DelayNode = CreateNode<UK2Node_CallFunction>(Graph);
-			DelayNode->SetFromFunction(DelayFunc);
-			DelayNode->AllocateDefaultPins();
-			Node = DelayNode;
+			ResolvedFunction = FindFunctionByPath(Path);
+			if (ResolvedFunction)
+			{
+				break;
+			}
 		}
-		break;
-	}
 
-	case EBlueprintNodeType::Flow_DoOnce:
-	{
-		// DoOnce is typically a macro
-		UFunction* DoOnceFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.DoOnce"));
-		if (DoOnceFunc)
+		if (ResolvedFunction)
 		{
-			UK2Node_CallFunction* DoOnceNode = CreateNode<UK2Node_CallFunction>(Graph);
-			DoOnceNode->SetFromFunction(DoOnceFunc);
-			DoOnceNode->AllocateDefaultPins();
-			Node = DoOnceNode;
+			UK2Node_CallFunction* FlowNode = CreateNode<UK2Node_CallFunction>(Graph);
+			FlowNode->SetFromFunction(ResolvedFunction);
+			FlowNode->AllocateDefaultPins();
+			Node = FlowNode;
 		}
-		break;
-	}
-
-	case EBlueprintNodeType::Flow_ForLoop:
-	{
-		// ForLoop is a macro in the standard library
-		UFunction* ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.ForLoop"));
-		if (!ForLoopFunc)
+		else if (const FString* FallbackMessage = GetFlowFallbackErrors().Find(NodeData.NodeType))
 		{
-			// Try alternative path
-			ForLoopFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetMathLibrary.ForLoop"));
-		}
-		if (ForLoopFunc)
-		{
-			UK2Node_CallFunction* ForLoopNode = CreateNode<UK2Node_CallFunction>(Graph);
-			ForLoopNode->SetFromFunction(ForLoopFunc);
-			ForLoopNode->AllocateDefaultPins();
-			Node = ForLoopNode;
+			Result.ErrorMessage = *FallbackMessage;
+			return Result;
 		}
 		else
 		{
-			Result.ErrorMessage = TEXT("ForLoop function not found - use ForLoopWithBreak macro instead");
+			Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FlowFunctionNotFound"), TEXT("Flow control function not found"));
 			return Result;
 		}
-		break;
 	}
-
-	case EBlueprintNodeType::Flow_WhileLoop:
+	else
 	{
-		// WhileLoop is typically implemented as a macro
-		UFunction* WhileFunc = FindFunctionByPath(TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"));
-		if (WhileFunc)
-		{
-			UK2Node_CallFunction* WhileNode = CreateNode<UK2Node_CallFunction>(Graph);
-			WhileNode->SetFromFunction(WhileFunc);
-			WhileNode->AllocateDefaultPins();
-			Node = WhileNode;
-		}
-		else
-		{
-			Result.ErrorMessage = TEXT("WhileLoop not directly available - implement using Branch in a loop");
-			return Result;
-		}
-		break;
-	}
-
-	default:
-		Result.ErrorMessage = TEXT("Flow control node type not yet implemented");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FlowNodeTypeNotImplemented"), TEXT("Flow control node type not yet implemented"));
 		return Result;
 	}
 
@@ -393,7 +490,7 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	}
 	else
 	{
-		Result.ErrorMessage = TEXT("Failed to create flow control node");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FailedCreateFlowNode"), TEXT("Failed to create flow control node"));
 	}
 
 	return Result;
@@ -435,7 +532,7 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 
 	if (VariableName.IsEmpty())
 	{
-		Result.ErrorMessage = TEXT("Variable name is empty");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.VariableNameEmpty"), TEXT("Variable name is empty"));
 		return Result;
 	}
 
@@ -488,7 +585,7 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 	}
 	else
 	{
-		Result.ErrorMessage = TEXT("Failed to create variable node");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FailedCreateVariableNode"), TEXT("Failed to create variable node"));
 	}
 
 	return Result;
@@ -498,26 +595,13 @@ FNodeSpawnResult UNodeSpawner::SpawnMathNode(UEdGraph* Graph, const FBlueprintNo
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionName;
-
-	switch (NodeData.NodeType)
+	const FString* FunctionNamePtr = GetMathOperationNames().Find(NodeData.NodeType);
+	if (!FunctionNamePtr)
 	{
-	case EBlueprintNodeType::Math_Add:
-		FunctionName = TEXT("Add");
-		break;
-	case EBlueprintNodeType::Math_Subtract:
-		FunctionName = TEXT("Subtract");
-		break;
-	case EBlueprintNodeType::Math_Multiply:
-		FunctionName = TEXT("Multiply");
-		break;
-	case EBlueprintNodeType::Math_Divide:
-		FunctionName = TEXT("Divide");
-		break;
-	default:
-		Result.ErrorMessage = TEXT("Unknown math operation");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownMathOperation"), TEXT("Unknown math operation"));
 		return Result;
 	}
+	const FString& FunctionName = *FunctionNamePtr;
 
 	// Use specific operand type if provided by compiler, otherwise fall back to default order
 	UFunction* Function = nullptr;
@@ -536,13 +620,7 @@ FNodeSpawnResult UNodeSpawner::SpawnMathNode(UEdGraph* Graph, const FBlueprintNo
 	if (!Function)
 	{
 		// Prefer integer operations when no guidance provided; fall back to double/float
-		TArray<FString> FunctionSuffixes = {
-			TEXT("IntInt"),
-			TEXT("DoubleDouble"),
-			TEXT("FloatFloat")
-		};
-
-		for (const FString& Suffix : FunctionSuffixes)
+		for (const FString& Suffix : GetDefaultNumericSuffixes())
 		{
 			Function = TryFindMathFunction(Suffix);
 			if (Function)
@@ -574,32 +652,13 @@ FNodeSpawnResult UNodeSpawner::SpawnComparisonNode(UEdGraph* Graph, const FBluep
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionName;
-
-	switch (NodeData.NodeType)
+	const FString* FunctionNamePtr = GetComparisonOperationNames().Find(NodeData.NodeType);
+	if (!FunctionNamePtr)
 	{
-	case EBlueprintNodeType::Compare_Equal:
-		FunctionName = TEXT("EqualEqual");
-		break;
-	case EBlueprintNodeType::Compare_NotEqual:
-		FunctionName = TEXT("NotEqual");
-		break;
-	case EBlueprintNodeType::Compare_Greater:
-		FunctionName = TEXT("Greater");
-		break;
-	case EBlueprintNodeType::Compare_Less:
-		FunctionName = TEXT("Less");
-		break;
-	case EBlueprintNodeType::Compare_GreaterEqual:
-		FunctionName = TEXT("GreaterEqual");
-		break;
-	case EBlueprintNodeType::Compare_LessEqual:
-		FunctionName = TEXT("LessEqual");
-		break;
-	default:
-		Result.ErrorMessage = TEXT("Unknown comparison operation");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownComparisonOperation"), TEXT("Unknown comparison operation"));
 		return Result;
 	}
+	const FString& FunctionName = *FunctionNamePtr;
 
 	// Use specific operand type if provided by compiler, otherwise fall back to default order
 	UFunction* Function = nullptr;
@@ -619,14 +678,9 @@ FNodeSpawnResult UNodeSpawner::SpawnComparisonNode(UEdGraph* Graph, const FBluep
 	if (!Function)
 	{
 		// Fall back to trying common types
-		TArray<FString> FunctionPaths = {
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_IntInt"), *FunctionName),
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_DoubleDouble"), *FunctionName),
-			FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_FloatFloat"), *FunctionName)
-		};
-
-		for (const FString& Path : FunctionPaths)
+		for (const FString& Suffix : GetDefaultNumericSuffixes())
 		{
+			const FString Path = FString::Printf(TEXT("/Script/Engine.KismetMathLibrary.%s_%s"), *FunctionName, *Suffix);
 			Function = FindFunctionByPath(Path);
 			if (Function)
 			{
@@ -658,23 +712,13 @@ FNodeSpawnResult UNodeSpawner::SpawnLogicNode(UEdGraph* Graph, const FBlueprintN
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionPath;
-
-	switch (NodeData.NodeType)
+	const FString* FunctionPathPtr = GetLogicFunctionPaths().Find(NodeData.NodeType);
+	if (!FunctionPathPtr)
 	{
-	case EBlueprintNodeType::Logic_And:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.BooleanAND");
-		break;
-	case EBlueprintNodeType::Logic_Or:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.BooleanOR");
-		break;
-	case EBlueprintNodeType::Logic_Not:
-		FunctionPath = TEXT("/Script/Engine.KismetMathLibrary.Not_PreBool");
-		break;
-	default:
-		Result.ErrorMessage = TEXT("Unknown logic operation");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownLogicOperation"), TEXT("Unknown logic operation"));
 		return Result;
 	}
+	const FString& FunctionPath = *FunctionPathPtr;
 
 	UFunction* Function = FindFunctionByPath(FunctionPath);
 	if (!Function)
@@ -722,32 +766,13 @@ FNodeSpawnResult UNodeSpawner::SpawnArrayNode(UEdGraph* Graph, const FBlueprintN
 {
 	FNodeSpawnResult Result;
 
-	FString FunctionPath;
-
-	switch (NodeData.NodeType)
+	const FString* FunctionPathPtr = GetArrayFunctionPaths().Find(NodeData.NodeType);
+	if (!FunctionPathPtr)
 	{
-	case EBlueprintNodeType::Array_Add:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_Add");
-		break;
-	case EBlueprintNodeType::Array_Remove:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_RemoveItem");
-		break;
-	case EBlueprintNodeType::Array_Get:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_Get");
-		break;
-	case EBlueprintNodeType::Array_Set:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_Set");
-		break;
-	case EBlueprintNodeType::Array_Length:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_Length");
-		break;
-	case EBlueprintNodeType::Array_Clear:
-		FunctionPath = TEXT("/Script/Engine.KismetArrayLibrary.Array_Clear");
-		break;
-	default:
-		Result.ErrorMessage = TEXT("Unknown array operation");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownArrayOperation"), TEXT("Unknown array operation"));
 		return Result;
 	}
+	const FString& FunctionPath = *FunctionPathPtr;
 
 	UFunction* Function = FindFunctionByPath(FunctionPath);
 	if (!Function)
@@ -770,37 +795,23 @@ FNodeSpawnResult UNodeSpawner::SpawnArrayNode(UEdGraph* Graph, const FBlueprintN
 
 UFunction* UNodeSpawner::FindFunctionByPath(const FString& FunctionPath)
 {
-	// Path format: /Script/ModuleName.ClassName.FunctionName
-	// or: /Script/ModuleName.ClassName:FunctionName
-
-	FString Path = FunctionPath;
-
-	// Try to find directly as a function member reference
-	int32 LastDotIndex;
-	if (Path.FindLastChar('.', LastDotIndex))
+	const TCHAR Separators[] = { TEXT('.'), TEXT(':') };
+	for (const TCHAR Separator : Separators)
 	{
-		FString ClassPath = Path.Left(LastDotIndex);
-		FString FunctionName = Path.Mid(LastDotIndex + 1);
-
-		// Find the class
-		UClass* Class = FindClassByPath(ClassPath);
-		if (Class)
+		int32 SeparatorIndex = INDEX_NONE;
+		if (!FunctionPath.FindLastChar(Separator, SeparatorIndex))
 		{
-			return Class->FindFunctionByName(FName(*FunctionName));
+			continue;
 		}
-	}
 
-	// Try colon separator
-	int32 ColonIndex;
-	if (Path.FindLastChar(':', ColonIndex))
-	{
-		FString ClassPath = Path.Left(ColonIndex);
-		FString FunctionName = Path.Mid(ColonIndex + 1);
-
-		UClass* Class = FindClassByPath(ClassPath);
-		if (Class)
+		const FString ClassPath = FunctionPath.Left(SeparatorIndex);
+		const FString FunctionName = FunctionPath.Mid(SeparatorIndex + 1);
+		if (UClass* Class = FindClassByPath(ClassPath))
 		{
-			return Class->FindFunctionByName(FName(*FunctionName));
+			if (UFunction* Function = Class->FindFunctionByName(FName(*FunctionName)))
+			{
+				return Function;
+			}
 		}
 	}
 
@@ -810,30 +821,36 @@ UFunction* UNodeSpawner::FindFunctionByPath(const FString& FunctionPath)
 
 UClass* UNodeSpawner::FindClassByPath(const FString& ClassPath)
 {
-	// Try to find by path
-	UClass* Class = FindObject<UClass>(nullptr, *ClassPath);
+	TArray<FString> Candidates;
+	Candidates.Add(ClassPath);
 
-	if (!Class)
+	// Blueprint generated classes often need the _C suffix when not using /Script paths.
+	if (!ClassPath.StartsWith(TEXT("/Script/")) && !ClassPath.EndsWith(TEXT("_C")))
 	{
-		// Try loading
-		Class = LoadObject<UClass>(nullptr, *ClassPath);
+		Candidates.Add(ClassPath + TEXT("_C"));
 	}
 
-	if (!Class)
+	TSet<FString> Seen;
+	for (const FString& Candidate : Candidates)
 	{
-		// Try common variations
-		FString ModifiedPath = ClassPath;
-
-		// Handle blueprint classes
-		if (!ModifiedPath.StartsWith(TEXT("/Script/")))
+		if (Seen.Contains(Candidate))
 		{
-			// Try as blueprint class
-			ModifiedPath = ClassPath + TEXT("_C");
-			Class = LoadObject<UClass>(nullptr, *ModifiedPath);
+			continue;
+		}
+		Seen.Add(Candidate);
+
+		if (UClass* FoundClass = FindObject<UClass>(nullptr, *Candidate))
+		{
+			return FoundClass;
+		}
+
+		if (UClass* LoadedClass = LoadObject<UClass>(nullptr, *Candidate))
+		{
+			return LoadedClass;
 		}
 	}
 
-	return Class;
+	return nullptr;
 }
 
 void UNodeSpawner::SetNodePosition(UK2Node* Node, const FNodePosition& Position)
@@ -863,7 +880,7 @@ FNodeSpawnResult UNodeSpawner::SpawnReturnNode(UEdGraph* Graph, const FBlueprint
 	if (!EntryNode)
 	{
 		// Not a function graph, return nodes don't apply
-		Result.ErrorMessage = TEXT("Return node can only be used in function graphs");
+		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.ReturnNodeOnlyInFunctionGraph"), TEXT("Return node can only be used in function graphs"));
 		return Result;
 	}
 

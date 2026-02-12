@@ -778,174 +778,227 @@ bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* 
 		return false;
 	}
 
-	// Handle ByteProperty BEFORE NumericProperty (FByteProperty inherits FNumericProperty)
-	if (FByteProperty* ByteProp = CastField<FByteProperty>(Property))
-	{
-		if (UEnum* Enum = ByteProp->Enum)
+	using FPropertyHandler = TFunction<bool(FProperty*, void*, TSharedPtr<FJsonValue>)>;
+	const TArray<FPropertyHandler> Handlers = {
+		// ByteProperty before NumericProperty (FByteProperty inherits FNumericProperty)
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
 		{
+			FByteProperty* ByteProp = CastField<FByteProperty>(InProperty);
+			if (!ByteProp)
+			{
+				return false;
+			}
+
+			if (UEnum* Enum = ByteProp->Enum)
+			{
+				FString EnumValueStr;
+				if (InJsonValue->TryGetString(EnumValueStr))
+				{
+					int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
+					if (EnumValue == INDEX_NONE)
+					{
+						EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
+					}
+					if (EnumValue != INDEX_NONE)
+					{
+						ByteProp->SetIntPropertyValue(InValuePtr, EnumValue);
+						return true;
+					}
+				}
+			}
+
+			double Value = 0.0;
+			if (InJsonValue->TryGetNumber(Value))
+			{
+				ByteProp->SetIntPropertyValue(InValuePtr, static_cast<int64>(Value));
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FNumericProperty* NumericProp = CastField<FNumericProperty>(InProperty);
+			if (!NumericProp)
+			{
+				return false;
+			}
+
+			double Value = 0.0;
+			if (InJsonValue->TryGetNumber(Value))
+			{
+				if (NumericProp->IsFloatingPoint())
+				{
+					NumericProp->SetFloatingPointPropertyValue(InValuePtr, Value);
+				}
+				else
+				{
+					NumericProp->SetIntPropertyValue(InValuePtr, static_cast<int64>(Value));
+				}
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FBoolProperty* BoolProp = CastField<FBoolProperty>(InProperty);
+			if (!BoolProp)
+			{
+				return false;
+			}
+
+			bool Value = false;
+			if (InJsonValue->TryGetBool(Value))
+			{
+				BoolProp->SetPropertyValue(InValuePtr, Value);
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FStrProperty* StrProp = CastField<FStrProperty>(InProperty);
+			if (!StrProp)
+			{
+				return false;
+			}
+
+			FString Value;
+			if (InJsonValue->TryGetString(Value))
+			{
+				StrProp->SetPropertyValue(InValuePtr, Value);
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FNameProperty* NameProp = CastField<FNameProperty>(InProperty);
+			if (!NameProp)
+			{
+				return false;
+			}
+
+			FString Value;
+			if (InJsonValue->TryGetString(Value))
+			{
+				NameProp->SetPropertyValue(InValuePtr, FName(*Value));
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FTextProperty* TextProp = CastField<FTextProperty>(InProperty);
+			if (!TextProp)
+			{
+				return false;
+			}
+
+			FString Value;
+			if (InJsonValue->TryGetString(Value))
+			{
+				TextProp->SetPropertyValue(InValuePtr, FText::FromString(Value));
+				return true;
+			}
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FEnumProperty* EnumProp = CastField<FEnumProperty>(InProperty);
+			if (!EnumProp)
+			{
+				return false;
+			}
+
 			FString EnumValueStr;
-			if (JsonValue->TryGetString(EnumValueStr))
+			if (!InJsonValue->TryGetString(EnumValueStr))
 			{
-				int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
-				if (EnumValue == INDEX_NONE)
-				{
-					EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
-				}
-				if (EnumValue != INDEX_NONE)
-				{
-					ByteProp->SetIntPropertyValue(ValuePtr, EnumValue);
-					return true;
-				}
+				return false;
 			}
-			// Also accept numeric value for byte enums
-			double Value = 0.0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-				return true;
-			}
-		}
-		else
-		{
-			// Plain byte, treat as number
-			double Value = 0.0;
-			if (JsonValue->TryGetNumber(Value))
-			{
-				ByteProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-				return true;
-			}
-		}
-	}
-	// Handle numeric types (int, float, double, etc.)
-	else if (FNumericProperty* NumericProp = CastField<FNumericProperty>(Property))
-	{
-		double Value = 0.0;
-		if (JsonValue->TryGetNumber(Value))
-		{
-			if (NumericProp->IsFloatingPoint())
-			{
-				NumericProp->SetFloatingPointPropertyValue(ValuePtr, Value);
-			}
-			else
-			{
-				NumericProp->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
-			}
-			return true;
-		}
-	}
-	// Handle bool
-	else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
-	{
-		bool Value = false;
-		if (JsonValue->TryGetBool(Value))
-		{
-			BoolProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-	// Handle FString
-	else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			StrProp->SetPropertyValue(ValuePtr, Value);
-			return true;
-		}
-	}
-	// Handle FName
-	else if (FNameProperty* NameProp = CastField<FNameProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			NameProp->SetPropertyValue(ValuePtr, FName(*Value));
-			return true;
-		}
-	}
-	// Handle FText
-	else if (FTextProperty* TextProp = CastField<FTextProperty>(Property))
-	{
-		FString Value;
-		if (JsonValue->TryGetString(Value))
-		{
-			TextProp->SetPropertyValue(ValuePtr, FText::FromString(Value));
-			return true;
-		}
-	}
-	// Handle Enum (FEnumProperty)
-	else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
-	{
-		FString EnumValueStr;
-		if (JsonValue->TryGetString(EnumValueStr))
-		{
+
 			UEnum* Enum = EnumProp->GetEnum();
 			int64 EnumValue = Enum->GetValueByNameString(EnumValueStr);
 			if (EnumValue == INDEX_NONE)
 			{
-				// Try with enum prefix
 				EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + EnumValueStr);
 			}
 			if (EnumValue != INDEX_NONE)
 			{
-				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, EnumValue);
+				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(InValuePtr, EnumValue);
 				return true;
 			}
-			else
+
+			UE_LOG(LogAssetFactory, Warning, TEXT("Invalid enum value '%s' for property '%s'"),
+				*EnumValueStr, *InProperty->GetName());
+			return false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FStructProperty* StructProp = CastField<FStructProperty>(InProperty);
+			return StructProp ? FPropertySetterUtils::SetStructPropertyFromJson(StructProp, InValuePtr, InJsonValue) : false;
+		},
+		[](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
+		{
+			FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(InProperty);
+			if (!ObjProp)
 			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("Invalid enum value '%s' for property '%s'"),
-					*EnumValueStr, *Property->GetName());
+				return false;
 			}
-		}
-	}
-	// Handle Struct types
-	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
-	{
-		return SetStructPropertyFromJson(StructProp, ValuePtr, JsonValue);
-	}
-	// Handle Object references (UObject*, TSoftObjectPtr, TSubclassOf)
-	else if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
-	{
-		FString ObjectPath;
-		if (JsonValue->TryGetString(ObjectPath))
+
+			FString ObjectPath;
+			return InJsonValue->TryGetString(ObjectPath) ? FPropertySetterUtils::SetObjectReferenceFromPath(ObjProp, InValuePtr, ObjectPath) : false;
+		},
+		[Object](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
 		{
-			return SetObjectReferenceFromPath(ObjProp, ValuePtr, ObjectPath);
-		}
-	}
-	// Handle Soft Object Ptr
-	else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
-	{
-		FString ObjectPath;
-		if (JsonValue->TryGetString(ObjectPath))
+			FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(InProperty);
+			if (!SoftObjProp)
+			{
+				return false;
+			}
+
+			FString ObjectPath;
+			return InJsonValue->TryGetString(ObjectPath) ? FPropertySetterUtils::SetSoftObjectProperty(Object, SoftObjProp, ObjectPath) : false;
+		},
+		[Object](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
 		{
-			return SetSoftObjectProperty(Object, SoftObjProp, ObjectPath);
-		}
-	}
-	// Handle TSubclassOf
-	else if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
-	{
-		FString ClassPath;
-		if (JsonValue->TryGetString(ClassPath))
+			FClassProperty* ClassProp = CastField<FClassProperty>(InProperty);
+			if (!ClassProp)
+			{
+				return false;
+			}
+
+			FString ClassPath;
+			return InJsonValue->TryGetString(ClassPath) ? FPropertySetterUtils::SetClassProperty(Object, ClassProp, ClassPath) : false;
+		},
+		[Object](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
 		{
-			return SetClassProperty(Object, ClassProp, ClassPath);
-		}
-	}
-	// Handle TArray
-	else if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Property))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* ArrayValues;
-		if (JsonValue->TryGetArray(ArrayValues))
+			FArrayProperty* ArrayProp = CastField<FArrayProperty>(InProperty);
+			if (!ArrayProp)
+			{
+				return false;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+			return InJsonValue->TryGetArray(ArrayValues) ? FPropertySetterUtils::SetArrayProperty(Object, ArrayProp, *ArrayValues) : false;
+		},
+		[Object](FProperty* InProperty, void* InValuePtr, TSharedPtr<FJsonValue> InJsonValue) -> bool
 		{
-			return SetArrayProperty(Object, ArrayProp, *ArrayValues);
-		}
-	}
-	// Handle TMap
-	else if (FMapProperty* MapProp = CastField<FMapProperty>(Property))
+			FMapProperty* MapProp = CastField<FMapProperty>(InProperty);
+			if (!MapProp)
+			{
+				return false;
+			}
+
+			const TSharedPtr<FJsonObject>* MapObject = nullptr;
+			return InJsonValue->TryGetObject(MapObject) ? FPropertySetterUtils::SetMapProperty(Object, MapProp, *MapObject) : false;
+		},
+	};
+
+	for (const FPropertyHandler& Handler : Handlers)
 	{
-		const TSharedPtr<FJsonObject>* MapObject;
-		if (JsonValue->TryGetObject(MapObject))
+		if (Handler(Property, ValuePtr, JsonValue))
 		{
-			return SetMapProperty(Object, MapProp, *MapObject);
+			return true;
 		}
 	}
 

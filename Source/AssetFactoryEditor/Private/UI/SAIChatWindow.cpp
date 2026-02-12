@@ -244,41 +244,48 @@ namespace
 		}
 
 		const FString ParentClassPath = NormalizeSkillText(Blueprint->ParentClass->GetPathName());
-		if (ParentClassPath.Contains(TEXT("userwidget")) || ParentClassPath.Contains(TEXT("widget")))
+
+		static const TMap<FString, TArray<FString>> BucketKeywords = {
+			{TEXT("widget"), {TEXT("userwidget"), TEXT("widget")}},
+			{TEXT("character"), {TEXT("character"), TEXT("pawn")}},
+			{TEXT("gameframework"), {TEXT("gamemode"), TEXT("gamestate"), TEXT("playercontroller"), TEXT("playerstate")}},
+			{TEXT("actor"), {TEXT("actorcomponent"), TEXT("scenecomponent"), TEXT("component"), TEXT("actor")}},
+		};
+
+		for (const TPair<FString, TArray<FString>>& Pair : BucketKeywords)
 		{
-			return TEXT("widget");
+			for (const FString& Keyword : Pair.Value)
+			{
+				if (ParentClassPath.Contains(Keyword))
+				{
+					return Pair.Key;
+				}
+			}
 		}
-		if (ParentClassPath.Contains(TEXT("character")) || ParentClassPath.Contains(TEXT("pawn")))
-		{
-			return TEXT("character");
-		}
-		if (ParentClassPath.Contains(TEXT("gamemode")) || ParentClassPath.Contains(TEXT("gamestate")) ||
-			ParentClassPath.Contains(TEXT("playercontroller")) || ParentClassPath.Contains(TEXT("playerstate")))
-		{
-			return TEXT("gameframework");
-		}
-		if (ParentClassPath.Contains(TEXT("actorcomponent")) || ParentClassPath.Contains(TEXT("scenecomponent")) ||
-			ParentClassPath.Contains(TEXT("component")) || ParentClassPath.Contains(TEXT("actor")))
-		{
-			return TEXT("actor");
-		}
+
 		return TEXT("unknown");
 	}
 
 	FString ResolveSkillNeedBucket(const FString& Requirement)
 	{
 		const FString Req = NormalizeSkillText(Requirement);
-		if (Req.Contains(TEXT("function")) || Req.Contains(TEXT("return")) || Req.Contains(TEXT("branch")) ||
-			Req.Contains(TEXT("if")) || Req.Contains(TEXT("compare")) || Req.Contains(TEXT("output")))
+
+		static const TMap<FString, TArray<FString>> NeedKeywords = {
+			{TEXT("function"), {TEXT("function"), TEXT("return"), TEXT("branch"), TEXT("if"), TEXT("compare"), TEXT("output")}},
+			{TEXT("event"), {TEXT("tick"), TEXT("beginplay"), TEXT("event"), TEXT("trigger"), TEXT("overlap"), TEXT("onclick"), TEXT("pressed"), TEXT("released")}},
+		};
+
+		for (const TPair<FString, TArray<FString>>& Pair : NeedKeywords)
 		{
-			return TEXT("function");
+			for (const FString& Keyword : Pair.Value)
+			{
+				if (Req.Contains(Keyword))
+				{
+					return Pair.Key;
+				}
+			}
 		}
-		if (Req.Contains(TEXT("tick")) || Req.Contains(TEXT("beginplay")) || Req.Contains(TEXT("event")) ||
-			Req.Contains(TEXT("trigger")) || Req.Contains(TEXT("overlap")) || Req.Contains(TEXT("onclick")) ||
-			Req.Contains(TEXT("pressed")) || Req.Contains(TEXT("released")))
-		{
-			return TEXT("event");
-		}
+
 		return TEXT("mixed");
 	}
 
@@ -288,35 +295,27 @@ namespace
 		const FString NeedBucket = ResolveSkillNeedBucket(Requirement);
 		TArray<FString> SkillIds;
 
-		if (NeedBucket == TEXT("function"))
+		static const TMap<FString, TArray<FString>> NeedSkills = {
+			{TEXT("function"), {TEXT("ue-bp-function-logic")}},
+			{TEXT("event"), {TEXT("ue-bp-event-graph-logic")}},
+			{TEXT("mixed"), {TEXT("ue-bp-function-logic"), TEXT("ue-bp-event-graph-logic")}},
+		};
+
+		static const TMap<FString, TArray<FString>> ParentSkills = {
+			{TEXT("actor"), {TEXT("ue-bp-actor-interaction")}},
+			{TEXT("character"), {TEXT("ue-bp-character-gameplay")}},
+			{TEXT("widget"), {TEXT("ue-bp-widget-ui-logic")}},
+			{TEXT("gameframework"), {TEXT("ue-bp-gameframework-rules")}},
+		};
+
+		if (const TArray<FString>* NeedSkillList = NeedSkills.Find(NeedBucket))
 		{
-			SkillIds.Add(TEXT("ue-bp-function-logic"));
-		}
-		else if (NeedBucket == TEXT("event"))
-		{
-			SkillIds.Add(TEXT("ue-bp-event-graph-logic"));
-		}
-		else
-		{
-			SkillIds.Add(TEXT("ue-bp-function-logic"));
-			SkillIds.Add(TEXT("ue-bp-event-graph-logic"));
+			SkillIds.Append(*NeedSkillList);
 		}
 
-		if (ParentBucket == TEXT("actor"))
+		if (const TArray<FString>* ParentSkillList = ParentSkills.Find(ParentBucket))
 		{
-			SkillIds.Add(TEXT("ue-bp-actor-interaction"));
-		}
-		else if (ParentBucket == TEXT("character"))
-		{
-			SkillIds.Add(TEXT("ue-bp-character-gameplay"));
-		}
-		else if (ParentBucket == TEXT("widget"))
-		{
-			SkillIds.Add(TEXT("ue-bp-widget-ui-logic"));
-		}
-		else if (ParentBucket == TEXT("gameframework"))
-		{
-			SkillIds.Add(TEXT("ue-bp-gameframework-rules"));
+			SkillIds.Append(*ParentSkillList);
 		}
 
 		TArray<FString> UniqueSkills;
@@ -399,6 +398,85 @@ namespace
 
 		Prompt += TEXT("Apply these skill constraints while producing blueprint JSON.\n");
 		return Prompt;
+	}
+
+	FString GetDefaultBlueprintSchemaHintTemplate()
+	{
+		return TEXT("\nPlease return JSON following this pattern:\n")
+			TEXT("{\n")
+			TEXT("  \"name\": \"BP_Name\",\n")
+			TEXT("  \"parent_class\": \"Actor\",\n")
+			TEXT("  \"functions\": [\n")
+			TEXT("    {\n")
+			TEXT("      \"name\": \"GetLocation\",\n")
+			TEXT("      \"outputs\": [{\"name\": \"ReturnValue\", \"type\": \"int\"}],\n")
+			TEXT("      \"nodes\": [\n")
+			TEXT("        {\"node_id\": \"get_aaa\", \"node_type\": \"Variable_Get\", \"variable\": \"aaa\"},\n")
+			TEXT("        {\"node_id\": \"cmp_gt\", \"node_type\": \"Compare_Greater\", \"pins\": {\"A\": {\"connection\": \"get_aaa.aaa\"}, \"B\": {\"value\": \"0\"}}},\n")
+			TEXT("        {\"node_id\": \"branch\", \"node_type\": \"Flow_Branch\", \"pins\": {\"execute\": {\"connection\": \"fn_entry.then\"}, \"Condition\": {\"connection\": \"cmp_gt.ReturnValue\"}}},\n")
+			TEXT("        {\"node_id\": \"return_true\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Then\"}, \"ReturnValue\": {\"connection\": \"get_aaa.aaa\"}}},\n")
+			TEXT("        {\"node_id\": \"fn_result_else\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Else\"}, \"ReturnValue\": {\"value\": \"0\"}}}\n")
+			TEXT("      ]\n")
+			TEXT("    }\n")
+			TEXT("  ],\n")
+			TEXT("  \"event_graphs\": [\n")
+			TEXT("    {\n")
+			TEXT("      \"name\": \"Tick\",\n")
+			TEXT("      \"nodes\": [\n")
+			TEXT("        {\n")
+			TEXT("          \"node_id\": \"math_subtract\",\n")
+			TEXT("          \"node_type\": \"Math_Subtract\",\n")
+			TEXT("          \"pins\": {\n")
+			TEXT("            \"A\": {\"connection\": \"get_health.Health\"},\n")
+			TEXT("            \"B\": {\"value\": \"1\"}\n")
+			TEXT("          }\n")
+			TEXT("        },\n")
+			TEXT("        {\n")
+			TEXT("          \"node_id\": \"set_health\",\n")
+			TEXT("          \"node_type\": \"Variable_Set\",\n")
+			TEXT("          \"pins\": {\n")
+			TEXT("            \"execute\": {\"connection\": \"event_tick.then\"},\n")
+			TEXT("            \"Health\": {\"connection\": \"math_subtract.ReturnValue\"}\n")
+			TEXT("          }\n")
+			TEXT("        }\n")
+			TEXT("      ]\n")
+			TEXT("    }\n")
+			TEXT("  ]\n")
+			TEXT("}\n")
+			TEXT("Rules:\n")
+			TEXT("- Function logic must be represented with graph nodes in functions[].nodes.\n")
+			TEXT("- In function graphs, use the built-in entry node id \"fn_entry\" for exec flow.\n")
+			TEXT("- Prefer \"inputs\"/\"outputs\" for function signatures.\n")
+			TEXT("- Use \"ReturnValue\" as return pin name for non-void functions.\n")
+			TEXT("- Do NOT use field \"body\".\n")
+			TEXT("- Return JSON only, no markdown.");
+	}
+
+	FString LoadBlueprintSchemaHintTemplate()
+	{
+		TArray<FString> CandidatePaths;
+		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UECopilot")))
+		{
+			CandidatePaths.Add(FPaths::Combine(Plugin->GetBaseDir(), TEXT("Skills"), TEXT("prompts"), TEXT("blueprint_schema_hint.txt")));
+		}
+
+		// Optional project override path.
+		CandidatePaths.Add(FPaths::Combine(FPaths::ProjectDir(), TEXT("Config"), TEXT("UECopilot"), TEXT("blueprint_schema_hint.txt")));
+
+		FString Loaded;
+		for (const FString& Path : CandidatePaths)
+		{
+			if (FPaths::FileExists(Path) && FFileHelper::LoadFileToString(Loaded, *Path))
+			{
+				const FString Trimmed = Loaded.TrimStartAndEnd();
+				if (!Trimmed.IsEmpty())
+				{
+					return TEXT("\n") + Trimmed;
+				}
+			}
+		}
+
+		return GetDefaultBlueprintSchemaHintTemplate();
 	}
 
 	FString ChatRoleToString(EChatMessageRole Role)
@@ -1353,7 +1431,7 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 	ParseQuickCommand(Command, Cmd, Args);
 	bSchemaCorrectionRetried = false;
 
-	if (Cmd.Equals(TEXT("generate"), ESearchCase::IgnoreCase))
+	const auto HandleGenerate = [&]()
 	{
 		FString Prompt = Args.IsEmpty()
 			? TEXT("Generate a blueprint based on my description.")
@@ -1366,8 +1444,9 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 
 		bIsProcessing = true;
 		SendRequestWithMCPFallback(TEXT("chat_completion"));
-	}
-	else if (Cmd.Equals(TEXT("apply"), ESearchCase::IgnoreCase))
+	};
+
+	const auto HandleApply = [&]()
 	{
 		// Apply the pending blueprint
 		if (!PendingBlueprintData.IsSet())
@@ -1504,11 +1583,12 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 			else
 			{
 				AddMessage(EChatMessageRole::System,
-					FString::Printf(TEXT("Failed to create blueprint: %s"), *Result.ErrorMessage));
+				FString::Printf(TEXT("Failed to create blueprint: %s"), *Result.ErrorMessage));
 			}
 		}
-	}
-	else if (Cmd.Equals(TEXT("explain"), ESearchCase::IgnoreCase))
+	};
+
+	const auto HandleExplain = [&]()
 	{
 		// Get selected blueprint
 		UBlueprint* SelectedBP = GetSelectedBlueprint();
@@ -1532,8 +1612,9 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 
 		bIsProcessing = true;
 		SendRequestWithMCPFallback(TEXT("chat_completion"));
-	}
-	else if (Cmd.Equals(TEXT("modify"), ESearchCase::IgnoreCase))
+	};
+
+	const auto HandleModify = [&]()
 	{
 		// Get selected blueprint
 		UBlueprint* SelectedBP = GetSelectedBlueprint();
@@ -1568,15 +1649,17 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 
 		bIsProcessing = true;
 		SendModifyRequestWithMCPFallback();
-	}
-	else if (Cmd.Equals(TEXT("clear"), ESearchCase::IgnoreCase))
+	};
+
+	const auto HandleClear = [&]()
 	{
 		PendingBlueprintData.Reset();
 		BlueprintBeingModified.Reset();
 		bIsModifyMode = false;
 		AddMessage(EChatMessageRole::System, TEXT("Pending blueprint data and modify mode cleared."));
-	}
-	else if (Cmd.Equals(TEXT("help"), ESearchCase::IgnoreCase))
+	};
+
+	const auto HandleHelp = [&]()
 	{
 		AddMessage(EChatMessageRole::Assistant,
 			TEXT("Available commands:\n\n")
@@ -1592,6 +1675,21 @@ void SAIChatWindow::ExecuteQuickCommand(const FString& Command)
 			TEXT("  /clear - Clear pending data and modify mode\n")
 			TEXT("  /help - Show this help message\n\n")
 			TEXT("You can also describe what you want in natural language!"));
+	};
+
+	const TMap<FString, TFunction<void()>> CommandHandlers = {
+		{TEXT("generate"), HandleGenerate},
+		{TEXT("apply"), HandleApply},
+		{TEXT("explain"), HandleExplain},
+		{TEXT("modify"), HandleModify},
+		{TEXT("clear"), HandleClear},
+		{TEXT("help"), HandleHelp},
+	};
+
+	const FString NormalizedCmd = Cmd.ToLower();
+	if (const TFunction<void()>* Handler = CommandHandlers.Find(NormalizedCmd))
+	{
+		(*Handler)();
 	}
 	else
 	{
@@ -2477,52 +2575,10 @@ FString SAIChatWindow::GetBlueprintSummaryForAI(UBlueprint* Blueprint) const
 #undef LOCTEXT_NAMESPACE
 FString SAIChatWindow::GetBlueprintSchemaHint()
 {
-	return TEXT("\nPlease return JSON following this pattern:\n")
-		TEXT("{\n")
-		TEXT("  \"name\": \"BP_Name\",\n")
-		TEXT("  \"parent_class\": \"Actor\",\n")
-		TEXT("  \"functions\": [\n")
-		TEXT("    {\n")
-		TEXT("      \"name\": \"GetLocation\",\n")
-		TEXT("      \"outputs\": [{\"name\": \"ReturnValue\", \"type\": \"int\"}],\n")
-		TEXT("      \"nodes\": [\n")
-		TEXT("        {\"node_id\": \"get_aaa\", \"node_type\": \"Variable_Get\", \"variable\": \"aaa\"},\n")
-		TEXT("        {\"node_id\": \"cmp_gt\", \"node_type\": \"Compare_Greater\", \"pins\": {\"A\": {\"connection\": \"get_aaa.aaa\"}, \"B\": {\"value\": \"0\"}}},\n")
-		TEXT("        {\"node_id\": \"branch\", \"node_type\": \"Flow_Branch\", \"pins\": {\"execute\": {\"connection\": \"fn_entry.then\"}, \"Condition\": {\"connection\": \"cmp_gt.ReturnValue\"}}},\n")
-		TEXT("        {\"node_id\": \"return_true\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Then\"}, \"ReturnValue\": {\"connection\": \"get_aaa.aaa\"}}},\n")
-		TEXT("        {\"node_id\": \"fn_result_else\", \"node_type\": \"Return\", \"pins\": {\"execute\": {\"connection\": \"branch.Else\"}, \"ReturnValue\": {\"value\": \"0\"}}}\n")
-		TEXT("      ]\n")
-		TEXT("    }\n")
-		TEXT("  ],\n")
-		TEXT("  \"event_graphs\": [\n")
-		TEXT("    {\n")
-		TEXT("      \"name\": \"Tick\",\n")
-		TEXT("      \"nodes\": [\n")
-		TEXT("        {\n")
-		TEXT("          \"node_id\": \"math_subtract\",\n")
-		TEXT("          \"node_type\": \"Math_Subtract\",\n")
-		TEXT("          \"pins\": {\n")
-		TEXT("            \"A\": {\"connection\": \"get_health.Health\"},\n")
-		TEXT("            \"B\": {\"value\": \"1\"}\n")
-		TEXT("          }\n")
-		TEXT("        },\n")
-		TEXT("        {\n")
-		TEXT("          \"node_id\": \"set_health\",\n")
-		TEXT("          \"node_type\": \"Variable_Set\",\n")
-		TEXT("          \"pins\": {\n")
-		TEXT("            \"execute\": {\"connection\": \"event_tick.then\"},\n")
-		TEXT("            \"Health\": {\"connection\": \"math_subtract.ReturnValue\"}\n")
-		TEXT("          }\n")
-		TEXT("        }\n")
-		TEXT("      ]\n")
-		TEXT("    }\n")
-		TEXT("  ]\n")
-		TEXT("}\n")
-		TEXT("Rules:\n")
-		TEXT("- Function logic must be represented with graph nodes in functions[].nodes.\n")
-		TEXT("- In function graphs, use the built-in entry node id \"fn_entry\" for exec flow.\n")
-		TEXT("- Prefer \"inputs\"/\"outputs\" for function signatures.\n")
-		TEXT("- Use \"ReturnValue\" as return pin name for non-void functions.\n")
-		TEXT("- Do NOT use field \"body\".\n")
-		TEXT("- Return JSON only, no markdown.");
+	static FString CachedTemplate;
+	if (CachedTemplate.IsEmpty())
+	{
+		CachedTemplate = LoadBlueprintSchemaHintTemplate();
+	}
+	return CachedTemplate;
 }

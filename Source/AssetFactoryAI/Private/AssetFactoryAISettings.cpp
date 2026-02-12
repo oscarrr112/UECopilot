@@ -5,6 +5,80 @@
 
 #define LOCTEXT_NAMESPACE "AssetFactoryAISettings"
 
+namespace
+{
+	struct FProviderDescriptor
+	{
+		FString DefaultEndpoint;
+		FString UAssetFactoryAISettings::*ApiKeyMember = nullptr;
+		FString UAssetFactoryAISettings::*ApiKeyEnvMember = nullptr;
+		FString UAssetFactoryAISettings::*ModelMember = nullptr;
+		bool bEndpointFromOllama = false;
+		bool bEndpointFromCustom = false;
+		bool bNoApiKey = false;
+	};
+
+	const FProviderDescriptor& GetProviderDescriptor(EAIServiceProvider Provider)
+	{
+		static const FProviderDescriptor DeepseekDesc{
+			TEXT("https://api.deepseek.com/v1/chat/completions"),
+			&UAssetFactoryAISettings::DeepseekAPIKey,
+			&UAssetFactoryAISettings::DeepseekAPIKeyEnvVar,
+			&UAssetFactoryAISettings::DeepseekModel,
+			false,
+			false,
+			false
+		};
+		static const FProviderDescriptor OllamaDesc{
+			TEXT(""),
+			nullptr,
+			nullptr,
+			&UAssetFactoryAISettings::OllamaModel,
+			true,
+			false,
+			true
+		};
+		static const FProviderDescriptor GlmDesc{
+			TEXT("https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+			&UAssetFactoryAISettings::GLMAPIKey,
+			&UAssetFactoryAISettings::GLMAPIKeyEnvVar,
+			&UAssetFactoryAISettings::GLMModel,
+			false,
+			false,
+			false
+		};
+		static const FProviderDescriptor OpenAIDesc{
+			TEXT("https://api.openai.com/v1/chat/completions"),
+			&UAssetFactoryAISettings::OpenAIAPIKey,
+			&UAssetFactoryAISettings::OpenAIAPIKeyEnvVar,
+			&UAssetFactoryAISettings::OpenAIModel,
+			false,
+			false,
+			false
+		};
+		static const FProviderDescriptor CustomDesc{
+			TEXT(""),
+			&UAssetFactoryAISettings::CustomAPIKey,
+			&UAssetFactoryAISettings::CustomAPIKeyEnvVar,
+			&UAssetFactoryAISettings::CustomModel,
+			false,
+			true,
+			false
+		};
+		static const FProviderDescriptor UnknownDesc{};
+
+		switch (Provider)
+		{
+		case EAIServiceProvider::Deepseek: return DeepseekDesc;
+		case EAIServiceProvider::Ollama: return OllamaDesc;
+		case EAIServiceProvider::GLM: return GlmDesc;
+		case EAIServiceProvider::OpenAI: return OpenAIDesc;
+		case EAIServiceProvider::Custom: return CustomDesc;
+		default: return UnknownDesc;
+		}
+	}
+}
+
 UAssetFactoryAISettings::UAssetFactoryAISettings()
 {
 }
@@ -26,21 +100,16 @@ FText UAssetFactoryAISettings::GetSectionDescription() const
 
 FString UAssetFactoryAISettings::GetEndpointURL() const
 {
-	switch (ServiceProvider)
+	const FProviderDescriptor& Desc = GetProviderDescriptor(ServiceProvider);
+	if (Desc.bEndpointFromOllama)
 	{
-	case EAIServiceProvider::Deepseek:
-		return TEXT("https://api.deepseek.com/v1/chat/completions");
-	case EAIServiceProvider::Ollama:
 		return OllamaEndpoint;
-	case EAIServiceProvider::GLM:
-		return TEXT("https://open.bigmodel.cn/api/paas/v4/chat/completions");
-	case EAIServiceProvider::OpenAI:
-		return TEXT("https://api.openai.com/v1/chat/completions");
-	case EAIServiceProvider::Custom:
-		return CustomEndpoint;
-	default:
-		return TEXT("");
 	}
+	if (Desc.bEndpointFromCustom)
+	{
+		return CustomEndpoint;
+	}
+	return Desc.DefaultEndpoint;
 }
 
 FString UAssetFactoryAISettings::GetAPIKey() const
@@ -51,21 +120,13 @@ FString UAssetFactoryAISettings::GetAPIKey() const
 		return EnvApiKey;
 	}
 
-	switch (ServiceProvider)
+	const FProviderDescriptor& Desc = GetProviderDescriptor(ServiceProvider);
+	if (Desc.bNoApiKey || Desc.ApiKeyMember == nullptr)
 	{
-	case EAIServiceProvider::Deepseek:
-		return DeepseekAPIKey;
-	case EAIServiceProvider::Ollama:
-		return TEXT(""); // Ollama typically doesn't require API key
-	case EAIServiceProvider::GLM:
-		return GLMAPIKey;
-	case EAIServiceProvider::OpenAI:
-		return OpenAIAPIKey;
-	case EAIServiceProvider::Custom:
-		return CustomAPIKey;
-	default:
 		return TEXT("");
 	}
+
+	return this->*(Desc.ApiKeyMember);
 }
 
 bool UAssetFactoryAISettings::TryGetEnvironmentAPIKey(FString& OutApiKey) const
@@ -92,34 +153,10 @@ bool UAssetFactoryAISettings::TryGetEnvironmentAPIKey(FString& OutApiKey) const
 		return false;
 	};
 
-	switch (ServiceProvider)
+	const FProviderDescriptor& Desc = GetProviderDescriptor(ServiceProvider);
+	if (Desc.ApiKeyEnvMember && TrySetFrom(this->*(Desc.ApiKeyEnvMember)))
 	{
-	case EAIServiceProvider::Deepseek:
-		if (TrySetFrom(DeepseekAPIKeyEnvVar))
-		{
-			return true;
-		}
-		break;
-	case EAIServiceProvider::GLM:
-		if (TrySetFrom(GLMAPIKeyEnvVar))
-		{
-			return true;
-		}
-		break;
-	case EAIServiceProvider::OpenAI:
-		if (TrySetFrom(OpenAIAPIKeyEnvVar))
-		{
-			return true;
-		}
-		break;
-	case EAIServiceProvider::Custom:
-		if (TrySetFrom(CustomAPIKeyEnvVar))
-		{
-			return true;
-		}
-		break;
-	default:
-		break;
+		return true;
 	}
 
 	return TrySetFrom(GenericAPIKeyEnvVar);
@@ -127,21 +164,13 @@ bool UAssetFactoryAISettings::TryGetEnvironmentAPIKey(FString& OutApiKey) const
 
 FString UAssetFactoryAISettings::GetModelName() const
 {
-	switch (ServiceProvider)
+	const FProviderDescriptor& Desc = GetProviderDescriptor(ServiceProvider);
+	if (Desc.ModelMember == nullptr)
 	{
-	case EAIServiceProvider::Deepseek:
-		return DeepseekModel;
-	case EAIServiceProvider::Ollama:
-		return OllamaModel;
-	case EAIServiceProvider::GLM:
-		return GLMModel;
-	case EAIServiceProvider::OpenAI:
-		return OpenAIModel;
-	case EAIServiceProvider::Custom:
-		return CustomModel;
-	default:
 		return TEXT("");
 	}
+
+	return this->*(Desc.ModelMember);
 }
 
 #undef LOCTEXT_NAMESPACE

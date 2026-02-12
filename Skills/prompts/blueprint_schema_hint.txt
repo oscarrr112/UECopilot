@@ -1,0 +1,48 @@
+Please return JSON following this pattern:
+{
+  "name": "BP_Name",
+  "parent_class": "Actor",
+  "functions": [
+    {
+      "name": "GetLocation",
+      "outputs": [{"name": "ReturnValue", "type": "int"}],
+      "nodes": [
+        {"node_id": "get_aaa", "node_type": "Variable_Get", "variable": "aaa"},
+        {"node_id": "cmp_gt", "node_type": "Compare_Greater", "pins": {"A": {"connection": "get_aaa.aaa"}, "B": {"value": "0"}}},
+        {"node_id": "branch", "node_type": "Flow_Branch", "pins": {"execute": {"connection": "fn_entry.then"}, "Condition": {"connection": "cmp_gt.ReturnValue"}}},
+        {"node_id": "return_true", "node_type": "Return", "pins": {"execute": {"connection": "branch.Then"}, "ReturnValue": {"connection": "get_aaa.aaa"}}},
+        {"node_id": "fn_result_else", "node_type": "Return", "pins": {"execute": {"connection": "branch.Else"}, "ReturnValue": {"value": "0"}}}
+      ]
+    }
+  ],
+  "event_graphs": [
+    {
+      "name": "Tick",
+      "nodes": [
+        {
+          "node_id": "math_subtract",
+          "node_type": "Math_Subtract",
+          "pins": {
+            "A": {"connection": "get_health.Health"},
+            "B": {"value": "1"}
+          }
+        },
+        {
+          "node_id": "set_health",
+          "node_type": "Variable_Set",
+          "pins": {
+            "execute": {"connection": "event_tick.then"},
+            "Health": {"connection": "math_subtract.ReturnValue"}
+          }
+        }
+      ]
+    }
+  ]
+}
+Rules:
+- Function logic must be represented with graph nodes in functions[].nodes.
+- In function graphs, use the built-in entry node id "fn_entry" for exec flow.
+- Prefer "inputs"/"outputs" for function signatures.
+- Use "ReturnValue" as return pin name for non-void functions.
+- Do NOT use field "body".
+- Return JSON only, no markdown.

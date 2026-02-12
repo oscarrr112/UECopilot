@@ -100,14 +100,7 @@ private:
 
 private:
 	/** Route handles for cleanup */
-	FHttpRouteHandle GenerateRouteHandle;
-	FHttpRouteHandle ExtractRouteHandle;
-	FHttpRouteHandle DeleteRouteHandle;
-	FHttpRouteHandle QueryRouteHandle;
-	FHttpRouteHandle GeneratorsRouteHandle;
-	FHttpRouteHandle HealthRouteHandle;
-	FHttpRouteHandle ContextRouteHandle;
-	FHttpRouteHandle ExecuteRouteHandle;
+	TArray<FHttpRouteHandle> RouteHandles;
 
 	/** Server state */
 	bool bIsRunning = false;

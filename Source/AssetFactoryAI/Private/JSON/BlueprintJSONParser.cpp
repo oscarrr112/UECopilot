@@ -18,6 +18,31 @@ namespace
 		return Normalized;
 	}
 
+	bool IsFunctionBoundaryHelperNode(const FString& NormalizedNodeTypeKey, const FString& NodeId)
+	{
+		static const TSet<FString> BoundaryTypeAliases = {
+			TEXT("functionentry"),
+			TEXT("fnentry"),
+			TEXT("fnentrythen"),
+			TEXT("entry"),
+			TEXT("k2nodefunctionentry"),
+			TEXT("functionterminator"),
+			TEXT("endgraph"),
+			TEXT("functionresult"),
+			TEXT("fnresult"),
+			TEXT("result"),
+			TEXT("k2nodefunctionresult"),
+		};
+
+		if (BoundaryTypeAliases.Contains(NormalizedNodeTypeKey))
+		{
+			return true;
+		}
+
+		return NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
+			NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
+	}
+
 	EBlueprintNodeType InferNodeTypeFromData(const FBlueprintNodeData& NodeData)
 	{
 		const FString NodeIdKey = NormalizeNodeTypeKey(NodeData.NodeId);
@@ -1100,20 +1125,7 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 
 	if (OutData.NodeType == EBlueprintNodeType::Unknown)
 	{
-		const bool bIsFunctionBoundaryHelper =
-			NormalizedNodeTypeKey == TEXT("functionentry") ||
-			NormalizedNodeTypeKey == TEXT("fnentry") ||
-			NormalizedNodeTypeKey == TEXT("fnentrythen") ||
-			NormalizedNodeTypeKey == TEXT("entry") ||
-			NormalizedNodeTypeKey == TEXT("k2nodefunctionentry") ||
-			NormalizedNodeTypeKey == TEXT("functionterminator") ||
-			NormalizedNodeTypeKey == TEXT("endgraph") ||
-			NormalizedNodeTypeKey == TEXT("functionresult") ||
-			NormalizedNodeTypeKey == TEXT("fnresult") ||
-			NormalizedNodeTypeKey == TEXT("result") ||
-			NormalizedNodeTypeKey == TEXT("k2nodefunctionresult") ||
-			OutData.NodeId.Equals(TEXT("fn_entry"), ESearchCase::IgnoreCase) ||
-			OutData.NodeId.Equals(TEXT("fn_result"), ESearchCase::IgnoreCase);
+		const bool bIsFunctionBoundaryHelper = IsFunctionBoundaryHelperNode(NormalizedNodeTypeKey, OutData.NodeId);
 		if (bIsFunctionBoundaryHelper)
 		{
 			return true;
@@ -1241,75 +1253,85 @@ EBlueprintVarType UBlueprintJSONParser::StringToVarType(const FString& TypeStrin
 
 FString UBlueprintJSONParser::NodeTypeToString(EBlueprintNodeType Type)
 {
-	switch (Type)
+	static const TMap<EBlueprintNodeType, FString> TypeNameMap = {
+		{EBlueprintNodeType::Event_BeginPlay, TEXT("BeginPlay")},
+		{EBlueprintNodeType::Event_Tick, TEXT("Tick")},
+		{EBlueprintNodeType::Event_Custom, TEXT("CustomEvent")},
+		{EBlueprintNodeType::Event_Input, TEXT("InputEvent")},
+		{EBlueprintNodeType::Flow_Branch, TEXT("Branch")},
+		{EBlueprintNodeType::Flow_Sequence, TEXT("Sequence")},
+		{EBlueprintNodeType::Flow_ForLoop, TEXT("ForLoop")},
+		{EBlueprintNodeType::Flow_ForEachLoop, TEXT("ForEachLoop")},
+		{EBlueprintNodeType::Flow_WhileLoop, TEXT("WhileLoop")},
+		{EBlueprintNodeType::Flow_Switch, TEXT("Switch")},
+		{EBlueprintNodeType::Flow_DoOnce, TEXT("DoOnce")},
+		{EBlueprintNodeType::Flow_Gate, TEXT("Gate")},
+		{EBlueprintNodeType::Flow_Delay, TEXT("Delay")},
+		{EBlueprintNodeType::CallFunction, TEXT("CallFunction")},
+		{EBlueprintNodeType::PureFunction, TEXT("PureFunction")},
+		{EBlueprintNodeType::Variable_Get, TEXT("Get")},
+		{EBlueprintNodeType::Variable_Set, TEXT("Set")},
+		{EBlueprintNodeType::Math_Add, TEXT("Add")},
+		{EBlueprintNodeType::Math_Subtract, TEXT("Subtract")},
+		{EBlueprintNodeType::Math_Multiply, TEXT("Multiply")},
+		{EBlueprintNodeType::Math_Divide, TEXT("Divide")},
+		{EBlueprintNodeType::Compare_Equal, TEXT("Equal")},
+		{EBlueprintNodeType::Compare_NotEqual, TEXT("NotEqual")},
+		{EBlueprintNodeType::Compare_Greater, TEXT("Greater")},
+		{EBlueprintNodeType::Compare_Less, TEXT("Less")},
+		{EBlueprintNodeType::Compare_GreaterEqual, TEXT("GreaterEqual")},
+		{EBlueprintNodeType::Compare_LessEqual, TEXT("LessEqual")},
+		{EBlueprintNodeType::Logic_And, TEXT("And")},
+		{EBlueprintNodeType::Logic_Or, TEXT("Or")},
+		{EBlueprintNodeType::Logic_Not, TEXT("Not")},
+		{EBlueprintNodeType::Cast, TEXT("Cast")},
+		{EBlueprintNodeType::MakeStruct, TEXT("MakeStruct")},
+		{EBlueprintNodeType::BreakStruct, TEXT("BreakStruct")},
+		{EBlueprintNodeType::Array_Add, TEXT("ArrayAdd")},
+		{EBlueprintNodeType::Array_Remove, TEXT("ArrayRemove")},
+		{EBlueprintNodeType::Array_Get, TEXT("ArrayGet")},
+		{EBlueprintNodeType::Array_Set, TEXT("ArraySet")},
+		{EBlueprintNodeType::Array_Length, TEXT("ArrayLength")},
+		{EBlueprintNodeType::Array_Clear, TEXT("ArrayClear")},
+		{EBlueprintNodeType::Literal, TEXT("Literal")},
+		{EBlueprintNodeType::Comment, TEXT("Comment")},
+		{EBlueprintNodeType::Reroute, TEXT("Reroute")},
+		{EBlueprintNodeType::Return, TEXT("Return")},
+	};
+
+	if (const FString* Found = TypeNameMap.Find(Type))
 	{
-	case EBlueprintNodeType::Event_BeginPlay: return TEXT("BeginPlay");
-	case EBlueprintNodeType::Event_Tick: return TEXT("Tick");
-	case EBlueprintNodeType::Event_Custom: return TEXT("CustomEvent");
-	case EBlueprintNodeType::Event_Input: return TEXT("InputEvent");
-	case EBlueprintNodeType::Flow_Branch: return TEXT("Branch");
-	case EBlueprintNodeType::Flow_Sequence: return TEXT("Sequence");
-	case EBlueprintNodeType::Flow_ForLoop: return TEXT("ForLoop");
-	case EBlueprintNodeType::Flow_ForEachLoop: return TEXT("ForEachLoop");
-	case EBlueprintNodeType::Flow_WhileLoop: return TEXT("WhileLoop");
-	case EBlueprintNodeType::Flow_Switch: return TEXT("Switch");
-	case EBlueprintNodeType::Flow_DoOnce: return TEXT("DoOnce");
-	case EBlueprintNodeType::Flow_Gate: return TEXT("Gate");
-	case EBlueprintNodeType::Flow_Delay: return TEXT("Delay");
-	case EBlueprintNodeType::CallFunction: return TEXT("CallFunction");
-	case EBlueprintNodeType::PureFunction: return TEXT("PureFunction");
-	case EBlueprintNodeType::Variable_Get: return TEXT("Get");
-	case EBlueprintNodeType::Variable_Set: return TEXT("Set");
-	case EBlueprintNodeType::Math_Add: return TEXT("Add");
-	case EBlueprintNodeType::Math_Subtract: return TEXT("Subtract");
-	case EBlueprintNodeType::Math_Multiply: return TEXT("Multiply");
-	case EBlueprintNodeType::Math_Divide: return TEXT("Divide");
-	case EBlueprintNodeType::Compare_Equal: return TEXT("Equal");
-	case EBlueprintNodeType::Compare_NotEqual: return TEXT("NotEqual");
-	case EBlueprintNodeType::Compare_Greater: return TEXT("Greater");
-	case EBlueprintNodeType::Compare_Less: return TEXT("Less");
-	case EBlueprintNodeType::Compare_GreaterEqual: return TEXT("GreaterEqual");
-	case EBlueprintNodeType::Compare_LessEqual: return TEXT("LessEqual");
-	case EBlueprintNodeType::Logic_And: return TEXT("And");
-	case EBlueprintNodeType::Logic_Or: return TEXT("Or");
-	case EBlueprintNodeType::Logic_Not: return TEXT("Not");
-	case EBlueprintNodeType::Cast: return TEXT("Cast");
-	case EBlueprintNodeType::MakeStruct: return TEXT("MakeStruct");
-	case EBlueprintNodeType::BreakStruct: return TEXT("BreakStruct");
-	case EBlueprintNodeType::Array_Add: return TEXT("ArrayAdd");
-	case EBlueprintNodeType::Array_Remove: return TEXT("ArrayRemove");
-	case EBlueprintNodeType::Array_Get: return TEXT("ArrayGet");
-	case EBlueprintNodeType::Array_Set: return TEXT("ArraySet");
-	case EBlueprintNodeType::Array_Length: return TEXT("ArrayLength");
-	case EBlueprintNodeType::Array_Clear: return TEXT("ArrayClear");
-	case EBlueprintNodeType::Literal: return TEXT("Literal");
-	case EBlueprintNodeType::Comment: return TEXT("Comment");
-	case EBlueprintNodeType::Reroute: return TEXT("Reroute");
-	case EBlueprintNodeType::Return: return TEXT("Return");
-	default: return TEXT("Unknown");
+		return *Found;
 	}
+
+	return TEXT("Unknown");
 }
 
 FString UBlueprintJSONParser::VarTypeToString(EBlueprintVarType Type)
 {
-	switch (Type)
+	static const TMap<EBlueprintVarType, FString> VarTypeNameMap = {
+		{EBlueprintVarType::Boolean, TEXT("boolean")},
+		{EBlueprintVarType::Integer, TEXT("integer")},
+		{EBlueprintVarType::Float, TEXT("float")},
+		{EBlueprintVarType::String, TEXT("string")},
+		{EBlueprintVarType::Name, TEXT("name")},
+		{EBlueprintVarType::Text, TEXT("text")},
+		{EBlueprintVarType::Vector, TEXT("vector")},
+		{EBlueprintVarType::Rotator, TEXT("rotator")},
+		{EBlueprintVarType::Transform, TEXT("transform")},
+		{EBlueprintVarType::Object, TEXT("object")},
+		{EBlueprintVarType::Class, TEXT("class")},
+		{EBlueprintVarType::Struct, TEXT("struct")},
+		{EBlueprintVarType::Enum, TEXT("enum")},
+		{EBlueprintVarType::Array, TEXT("array")},
+		{EBlueprintVarType::Set, TEXT("set")},
+		{EBlueprintVarType::Map, TEXT("map")},
+	};
+
+	if (const FString* Found = VarTypeNameMap.Find(Type))
 	{
-	case EBlueprintVarType::Boolean: return TEXT("boolean");
-	case EBlueprintVarType::Integer: return TEXT("integer");
-	case EBlueprintVarType::Float: return TEXT("float");
-	case EBlueprintVarType::String: return TEXT("string");
-	case EBlueprintVarType::Name: return TEXT("name");
-	case EBlueprintVarType::Text: return TEXT("text");
-	case EBlueprintVarType::Vector: return TEXT("vector");
-	case EBlueprintVarType::Rotator: return TEXT("rotator");
-	case EBlueprintVarType::Transform: return TEXT("transform");
-	case EBlueprintVarType::Object: return TEXT("object");
-	case EBlueprintVarType::Class: return TEXT("class");
-	case EBlueprintVarType::Struct: return TEXT("struct");
-	case EBlueprintVarType::Enum: return TEXT("enum");
-	case EBlueprintVarType::Array: return TEXT("array");
-	case EBlueprintVarType::Set: return TEXT("set");
-	case EBlueprintVarType::Map: return TEXT("map");
-	default: return TEXT("object");
+		return *Found;
 	}
+
+	return TEXT("object");
 }

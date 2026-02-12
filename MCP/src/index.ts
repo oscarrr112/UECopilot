@@ -523,96 +523,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools };
 });
 
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
-  try {
-    let result: unknown;
+const applyBlueprintChangeHandler: ToolHandler = async (rawArgs) => {
+  const a = (rawArgs as {
+    asset_path: string;
+    blueprint_json: string;
+    merge?: boolean;
+    save_asset?: boolean;
+  }) || { asset_path: "", blueprint_json: "" };
 
-    switch (name) {
-      case "generate_assets":
-        result = await callUEApi("/generate", "POST", {
-          Assets: (args as { assets: unknown[] }).assets,
-        });
-        break;
+  const merge = a.merge ?? true;
+  const saveAsset = a.save_asset ?? true;
+  const escapedAssetPath = JSON.stringify(a.asset_path ?? "");
+  const escapedBlueprintJson = JSON.stringify(a.blueprint_json ?? "");
 
-      case "get_generator_schema": {
-        const schema = await loadSchema((args as { asset_type: string }).asset_type);
-        return {
-          content: [
-            {
-              type: "text",
-              text: schema,
-            },
-          ],
-        };
-      }
+  const editorOnline = await isEditorHttpAvailable();
+  if (!editorOnline) {
+    return applyBlueprintChangeOffline({
+      asset_path: a.asset_path,
+      blueprint_json: a.blueprint_json,
+      merge,
+      save_asset: saveAsset,
+    });
+  }
 
-      case "extract_assets":
-        result = await callUEApi("/extract", "POST", {
-          Assets: (args as { assets: string[] }).assets,
-          DiffOnly: (args as { diffOnly?: boolean }).diffOnly ?? true,
-        });
-        break;
-
-      case "delete_assets":
-        result = await callUEApi("/delete", "POST", {
-          Assets: (args as { assets: string[] }).assets,
-        });
-        break;
-
-      case "query_asset":
-        result = await callUEApi("/query", "POST", {
-          Asset: (args as { asset: string }).asset,
-          Path: (args as { path: string }).path,
-        });
-        break;
-
-      case "list_generators":
-        result = await callUEApi("/generators", "GET");
-        break;
-
-      case "health_check":
-        result = await callUEApi("/health", "GET");
-        break;
-
-      case "get_editor_context":
-        result = await callUEApi("/context", "GET");
-        break;
-
-      case "execute_python":
-        result = await callUEApi("/execute", "POST", {
-          Code: (args as { code: string }).code,
-          Description: (args as { description?: string }).description,
-        });
-        break;
-
-      case "apply_blueprint_change": {
-        const a = (args as {
-          asset_path: string;
-          blueprint_json: string;
-          merge?: boolean;
-          save_asset?: boolean;
-        }) || { asset_path: "", blueprint_json: "" };
-
-        const merge = a.merge ?? true;
-        const saveAsset = a.save_asset ?? true;
-        const escapedAssetPath = JSON.stringify(a.asset_path ?? "");
-        const escapedBlueprintJson = JSON.stringify(a.blueprint_json ?? "");
-
-        const editorOnline = await isEditorHttpAvailable();
-        if (!editorOnline) {
-          result = await applyBlueprintChangeOffline({
-            asset_path: a.asset_path,
-            blueprint_json: a.blueprint_json,
-            merge,
-            save_asset: saveAsset,
-          });
-          break;
-        }
-
-        const pythonCode = `
+  const pythonCode = `
 import json
 import unreal
 
@@ -673,33 +609,66 @@ summary = {
 print(json.dumps(summary, ensure_ascii=False))
 `;
 
-        result = await callUEApi("/execute", "POST", {
-          Code: pythonCode,
-          Description: "Apply Blueprint Change via MCP",
-        });
-        break;
-      }
+  return callUEApi("/execute", "POST", {
+    Code: pythonCode,
+    Description: "Apply Blueprint Change via MCP",
+  });
+};
 
-      case "chat_completion":
-      case "generate_blueprint_change":
-      case "repair_blueprint_json":
-      case "orchestrate_modify_request":
-      case "validate_blueprint_json":
-      case "layout_blueprint_graph":
-        result = await callSidecarTool(name, (args as Record<string, unknown>) || {});
-        break;
+const toolHandlers: Record<string, ToolHandler> = {
+  generate_assets: async (args) => callUEApi("/generate", "POST", { Assets: (args as { assets: unknown[] }).assets }),
+  get_generator_schema: async (args) => loadSchema((args as { asset_type: string }).asset_type),
+  extract_assets: async (args) =>
+    callUEApi("/extract", "POST", {
+      Assets: (args as { assets: string[] }).assets,
+      DiffOnly: (args as { diffOnly?: boolean }).diffOnly ?? true,
+    }),
+  delete_assets: async (args) => callUEApi("/delete", "POST", { Assets: (args as { assets: string[] }).assets }),
+  query_asset: async (args) =>
+    callUEApi("/query", "POST", {
+      Asset: (args as { asset: string }).asset,
+      Path: (args as { path: string }).path,
+    }),
+  list_generators: async () => callUEApi("/generators", "GET"),
+  health_check: async () => callUEApi("/health", "GET"),
+  get_editor_context: async () => callUEApi("/context", "GET"),
+  execute_python: async (args) =>
+    callUEApi("/execute", "POST", {
+      Code: (args as { code: string }).code,
+      Description: (args as { description?: string }).description,
+    }),
+  apply_blueprint_change: applyBlueprintChangeHandler,
+};
 
-      default:
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Unknown tool: ${name}`,
-            },
-          ],
-          isError: true,
-        };
+for (const sidecarToolName of [
+  "chat_completion",
+  "generate_blueprint_change",
+  "repair_blueprint_json",
+  "orchestrate_modify_request",
+  "validate_blueprint_json",
+  "layout_blueprint_graph",
+]) {
+  toolHandlers[sidecarToolName] = async (args) => callSidecarTool(sidecarToolName, args);
+}
+
+// Handle tool calls
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+
+  try {
+    const handler = toolHandlers[name];
+    if (!handler) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Unknown tool: ${name}`,
+          },
+        ],
+        isError: true,
+      };
     }
+    const result = await handler(((args as Record<string, unknown>) || {}));
 
     return {
       content: [

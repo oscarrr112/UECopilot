@@ -28,6 +28,19 @@
 // Python execution
 #include "IPythonScriptPlugin.h"
 
+namespace
+{
+	struct FRouteBindingSpec
+	{
+		const TCHAR* Path = TEXT("");
+		EHttpServerRequestVerbs Verb = EHttpServerRequestVerbs::VERB_NONE;
+		FHttpRequestHandler Handler;
+		const TCHAR* LogMethod = TEXT("");
+		const TCHAR* Description = TEXT("");
+		bool bJsonContentType = false;
+	};
+}
+
 FAssetFactoryHttpServer::FAssetFactoryHttpServer()
 {
 }
@@ -55,62 +68,77 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		return false;
 	}
 
-	// Register routes
-	// POST /assetfactory/generate
-	GenerateRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/generate")),
+	TArray<FRouteBindingSpec> RouteSpecs;
+	RouteSpecs.Add({
+		TEXT("/assetfactory/generate"),
 		EHttpServerRequestVerbs::VERB_POST,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleGenerate)
-	);
-
-	// POST /assetfactory/extract
-	ExtractRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/extract")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleGenerate),
+		TEXT("POST"),
+		TEXT("Generate assets from JSON"),
+		true
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/extract"),
 		EHttpServerRequestVerbs::VERB_POST,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExtract)
-	);
-
-	// POST /assetfactory/delete
-	DeleteRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/delete")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExtract),
+		TEXT("POST"),
+		TEXT("Extract asset configuration as JSON"),
+		true
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/delete"),
 		EHttpServerRequestVerbs::VERB_POST,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleDelete)
-	);
-
-	// POST /assetfactory/query
-	QueryRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/query")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleDelete),
+		TEXT("POST"),
+		TEXT("Delete assets"),
+		true
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/query"),
 		EHttpServerRequestVerbs::VERB_POST,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleQuery)
-	);
-
-	// GET /assetfactory/generators
-	GeneratorsRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/generators")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleQuery),
+		TEXT("POST"),
+		TEXT("Query extracted JSON by path"),
+		true
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/generators"),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleListGenerators)
-	);
-
-	// GET /assetfactory/health
-	HealthRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/health")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleListGenerators),
+		TEXT("GET "),
+		TEXT("List available asset generators"),
+		false
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/health"),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleHealth)
-	);
-
-	// GET /assetfactory/context
-	ContextRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/context")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleHealth),
+		TEXT("GET "),
+		TEXT("Health check"),
+		false
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/context"),
 		EHttpServerRequestVerbs::VERB_GET,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleContext)
-	);
-
-	// POST /assetfactory/execute
-	ExecuteRouteHandle = HttpRouter->BindRoute(
-		FHttpPath(TEXT("/assetfactory/execute")),
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleContext),
+		TEXT("GET "),
+		TEXT("Get current editor state (selected actors, assets, level, open editors)"),
+		false
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/execute"),
 		EHttpServerRequestVerbs::VERB_POST,
-		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExecute)
-	);
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExecute),
+		TEXT("POST"),
+		TEXT("Execute Python code in the editor with undo support"),
+		true
+	});
+
+	RouteHandles.Reset();
+	for (const FRouteBindingSpec& Spec : RouteSpecs)
+	{
+		RouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Spec.Path), Spec.Verb, Spec.Handler));
+	}
 
 	// Start listeners
 	HttpServerModule.StartAllListeners();
@@ -122,14 +150,10 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 	WriteServiceDiscoveryFile();
 
 	UE_LOG(LogAssetFactory, Display, TEXT("AssetFactory HTTP Server started on port %d"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/generate"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/extract"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/delete"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/query"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/generators"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/health"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  GET  http://localhost:%d/assetfactory/context"), Port);
-	UE_LOG(LogAssetFactory, Display, TEXT("  POST http://localhost:%d/assetfactory/execute"), Port);
+	for (const FRouteBindingSpec& Spec : RouteSpecs)
+	{
+		UE_LOG(LogAssetFactory, Display, TEXT("  %s http://localhost:%d%s"), Spec.LogMethod, Port, Spec.Path);
+	}
 	UE_LOG(LogAssetFactory, Display, TEXT("  Service discovery: %s"), *GetServiceDiscoveryFilePath());
 
 	return true;
@@ -148,15 +172,12 @@ void FAssetFactoryHttpServer::Stop()
 	// Unbind routes
 	if (HttpRouter.IsValid())
 	{
-		HttpRouter->UnbindRoute(GenerateRouteHandle);
-		HttpRouter->UnbindRoute(ExtractRouteHandle);
-		HttpRouter->UnbindRoute(DeleteRouteHandle);
-		HttpRouter->UnbindRoute(QueryRouteHandle);
-		HttpRouter->UnbindRoute(GeneratorsRouteHandle);
-		HttpRouter->UnbindRoute(HealthRouteHandle);
-		HttpRouter->UnbindRoute(ContextRouteHandle);
-		HttpRouter->UnbindRoute(ExecuteRouteHandle);
+		for (const FHttpRouteHandle& Handle : RouteHandles)
+		{
+			HttpRouter->UnbindRoute(Handle);
+		}
 	}
+	RouteHandles.Reset();
 
 	bIsRunning = false;
 	CurrentPort = 0;
@@ -920,6 +941,15 @@ FString FAssetFactoryHttpServer::GetServiceDiscoveryFilePath()
 
 void FAssetFactoryHttpServer::WriteServiceDiscoveryFile()
 {
+	TArray<FRouteBindingSpec> RouteSpecs;
+	RouteSpecs.Add({TEXT("/assetfactory/health"), EHttpServerRequestVerbs::VERB_GET, FHttpRequestHandler(), TEXT("GET"), TEXT("Health check"), false});
+	RouteSpecs.Add({TEXT("/assetfactory/generators"), EHttpServerRequestVerbs::VERB_GET, FHttpRequestHandler(), TEXT("GET"), TEXT("List available asset generators"), false});
+	RouteSpecs.Add({TEXT("/assetfactory/generate"), EHttpServerRequestVerbs::VERB_POST, FHttpRequestHandler(), TEXT("POST"), TEXT("Generate assets from JSON"), true});
+	RouteSpecs.Add({TEXT("/assetfactory/extract"), EHttpServerRequestVerbs::VERB_POST, FHttpRequestHandler(), TEXT("POST"), TEXT("Extract asset configuration as JSON"), true});
+	RouteSpecs.Add({TEXT("/assetfactory/delete"), EHttpServerRequestVerbs::VERB_POST, FHttpRequestHandler(), TEXT("POST"), TEXT("Delete assets"), true});
+	RouteSpecs.Add({TEXT("/assetfactory/context"), EHttpServerRequestVerbs::VERB_GET, FHttpRequestHandler(), TEXT("GET"), TEXT("Get current editor state (selected actors, assets, level, open editors)"), false});
+	RouteSpecs.Add({TEXT("/assetfactory/execute"), EHttpServerRequestVerbs::VERB_POST, FHttpRequestHandler(), TEXT("POST"), TEXT("Execute Python code in the editor with undo support"), true});
+
 	TSharedPtr<FJsonObject> ServiceInfo = MakeShared<FJsonObject>();
 
 	// Basic info
@@ -930,71 +960,16 @@ void FAssetFactoryHttpServer::WriteServiceDiscoveryFile()
 
 	// Endpoints
 	TArray<TSharedPtr<FJsonValue>> EndpointsArray;
-
-	// Health endpoint
+	for (const FRouteBindingSpec& Spec : RouteSpecs)
 	{
 		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("GET"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/health"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Health check"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Generators endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("GET"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/generators"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("List available asset generators"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Generate endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/generate"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Generate assets from JSON"));
-		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Extract endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/extract"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Extract asset configuration as JSON"));
-		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Delete endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/delete"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Delete assets"));
-		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Context endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("GET"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/context"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Get current editor state (selected actors, assets, level, open editors)"));
-		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
-	}
-
-	// Execute endpoint
-	{
-		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
-		Endpoint->SetStringField(TEXT("method"), TEXT("POST"));
-		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/execute"));
-		Endpoint->SetStringField(TEXT("description"), TEXT("Execute Python code in the editor with undo support"));
-		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		Endpoint->SetStringField(TEXT("method"), FString(Spec.LogMethod).TrimStartAndEnd());
+		Endpoint->SetStringField(TEXT("path"), Spec.Path);
+		Endpoint->SetStringField(TEXT("description"), Spec.Description);
+		if (Spec.bJsonContentType)
+		{
+			Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		}
 		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
 	}
 
