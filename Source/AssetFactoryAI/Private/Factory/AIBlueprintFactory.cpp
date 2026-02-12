@@ -26,52 +26,12 @@
 #include "K2Node_Event.h"
 #include "K2Node_ExecutionSequence.h"
 #include "EditorAssetLibrary.h"
-#include "Misc/ConfigCacheIni.h"
+#include "DynamicConfigUtils.h"
+
+namespace DC = AssetFactoryAI::DynamicConfig;
 
 namespace
 {
-	constexpr const TCHAR* DynamicSection = TEXT("AssetFactoryAI.Dynamic");
-
-	FString GetDynamicString(const TCHAR* Key, const TCHAR* DefaultValue)
-	{
-		FString Value;
-		if (GConfig && GConfig->GetString(DynamicSection, Key, Value, GEditorPerProjectIni) && !Value.IsEmpty())
-		{
-			return Value;
-		}
-		return FString(DefaultValue);
-	}
-
-	float GetDynamicFloat(const TCHAR* Key, float DefaultValue)
-	{
-		float Value = DefaultValue;
-		if (GConfig)
-		{
-			GConfig->GetFloat(DynamicSection, Key, Value, GEditorPerProjectIni);
-		}
-		return Value;
-	}
-
-	int32 GetDynamicInt(const TCHAR* Key, int32 DefaultValue)
-	{
-		int32 Value = DefaultValue;
-		if (GConfig)
-		{
-			GConfig->GetInt(DynamicSection, Key, Value, GEditorPerProjectIni);
-		}
-		return Value;
-	}
-
-	bool GetDynamicBool(const TCHAR* Key, bool DefaultValue)
-	{
-		bool Value = DefaultValue;
-		if (GConfig)
-		{
-			GConfig->GetBool(DynamicSection, Key, Value, GEditorPerProjectIni);
-		}
-		return Value;
-	}
-
 	TArray<FString> ParseDelimitedList(const FString& Input, const TCHAR Delimiter)
 	{
 		TArray<FString> Values;
@@ -94,25 +54,25 @@ namespace
 
 	const FString& GetFunctionEntryNodeId()
 	{
-		static const FString Value = GetDynamicString(TEXT("FunctionEntryNodeId"), TEXT("fn_entry"));
+		static const FString Value = DC::GetString(TEXT("FunctionEntryNodeId"), TEXT("fn_entry"));
 		return Value;
 	}
 
 	const FString& GetFunctionResultNodeId()
 	{
-		static const FString Value = GetDynamicString(TEXT("FunctionResultNodeId"), TEXT("fn_result"));
+		static const FString Value = DC::GetString(TEXT("FunctionResultNodeId"), TEXT("fn_result"));
 		return Value;
 	}
 
 	const FString& GetReceiveTickEventName()
 	{
-		static const FString Value = GetDynamicString(TEXT("ReceiveTickEventName"), TEXT("ReceiveTick"));
+		static const FString Value = DC::GetString(TEXT("ReceiveTickEventName"), TEXT("ReceiveTick"));
 		return Value;
 	}
 
 	const FString& GetEventTickNodeIdPrefix()
 	{
-		static const FString Value = GetDynamicString(TEXT("EventTickNodeIdPrefix"), TEXT("event_tick"));
+		static const FString Value = DC::GetString(TEXT("EventTickNodeIdPrefix"), TEXT("event_tick"));
 		return Value;
 	}
 
@@ -140,7 +100,7 @@ namespace
 	{
 		static const TArray<TArray<FString>> Groups = []()
 		{
-			const FString RawGroups = GetDynamicString(
+			const FString RawGroups = DC::GetString(
 				TEXT("PinAliasGroups"),
 				TEXT("execute,exec,then,in,input|then,true,out,output|else,false|condition,cond|returnvalue,return,result"));
 
@@ -230,21 +190,21 @@ namespace
 	FRightwardFlowLayoutConfig GetRightwardFlowLayoutConfig()
 	{
 		FRightwardFlowLayoutConfig Config;
-		Config.NodeWidth = GetDynamicFloat(TEXT("Rightward.NodeWidth"), Config.NodeWidth);
-		Config.NodeHeight = GetDynamicFloat(TEXT("Rightward.NodeHeight"), Config.NodeHeight);
-		Config.HorizontalSpacing = GetDynamicFloat(TEXT("Rightward.HorizontalSpacing"), Config.HorizontalSpacing);
-		Config.VerticalSpacing = GetDynamicFloat(TEXT("Rightward.VerticalSpacing"), Config.VerticalSpacing);
-		Config.CollisionPadding = GetDynamicFloat(TEXT("Rightward.CollisionPadding"), Config.CollisionPadding);
+		Config.NodeWidth = DC::GetFloat(TEXT("Rightward.NodeWidth"), Config.NodeWidth);
+		Config.NodeHeight = DC::GetFloat(TEXT("Rightward.NodeHeight"), Config.NodeHeight);
+		Config.HorizontalSpacing = DC::GetFloat(TEXT("Rightward.HorizontalSpacing"), Config.HorizontalSpacing);
+		Config.VerticalSpacing = DC::GetFloat(TEXT("Rightward.VerticalSpacing"), Config.VerticalSpacing);
+		Config.CollisionPadding = DC::GetFloat(TEXT("Rightward.CollisionPadding"), Config.CollisionPadding);
 		return Config;
 	}
 
 	FDeclaredOrderLayoutConfig GetDeclaredOrderLayoutConfig()
 	{
 		FDeclaredOrderLayoutConfig Config;
-		Config.StartX = GetDynamicInt(TEXT("Declared.StartX"), Config.StartX);
-		Config.StartY = GetDynamicInt(TEXT("Declared.StartY"), Config.StartY);
-		Config.StepX = GetDynamicInt(TEXT("Declared.StepX"), Config.StepX);
-		Config.StepY = GetDynamicInt(TEXT("Declared.StepY"), Config.StepY);
+		Config.StartX = DC::GetInt(TEXT("Declared.StartX"), Config.StartX);
+		Config.StartY = DC::GetInt(TEXT("Declared.StartY"), Config.StartY);
+		Config.StepX = DC::GetInt(TEXT("Declared.StepX"), Config.StepX);
+		Config.StepY = DC::GetInt(TEXT("Declared.StepY"), Config.StepY);
 		return Config;
 	}
 
@@ -351,7 +311,7 @@ namespace
 
 			// Optional overrides/additions:
 			// ParentClassAliases="ability=/Script/MyGame.BP_Ability_C;npc=/Script/MyGame.BP_NPC_C"
-			for (const FString& PairText : ParseDelimitedList(GetDynamicString(TEXT("ParentClassAliases"), TEXT("")), ';'))
+			for (const FString& PairText : ParseDelimitedList(DC::GetString(TEXT("ParentClassAliases"), TEXT("")), ';'))
 			{
 				FString Alias;
 				FString ClassPath;
@@ -406,7 +366,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	// Validate input
 	if (Data.Name.IsEmpty())
 	{
-		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNameRequired"), TEXT("Blueprint name is required"));
+		Result.ErrorMessage = DC::GetString(TEXT("Factory.Error.BlueprintNameRequired"), TEXT("Blueprint name is required"));
 		return Result;
 	}
 
@@ -419,7 +379,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	UClass* ParentClass = ResolveParentClass(Data.ParentClass);
 	if (!ParentClass)
 	{
-		const FString Pattern = GetDynamicString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
+		const FString Pattern = DC::GetString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
 		Result.ErrorMessage = FormatDynamicMessage(Pattern, Data.ParentClass);
 		return Result;
 	}
@@ -429,7 +389,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	FString AssetPath = PackageName + TEXT(".") + SanitizedName;
 	if (UEditorAssetLibrary::DoesAssetExist(AssetPath))
 	{
-		const FString Pattern = GetDynamicString(TEXT("Factory.Error.BlueprintExists"), TEXT("Blueprint already exists at: %s. Use /modify to modify existing blueprints."));
+		const FString Pattern = DC::GetString(TEXT("Factory.Error.BlueprintExists"), TEXT("Blueprint already exists at: %s. Use /modify to modify existing blueprints."));
 		Result.ErrorMessage = FormatDynamicMessage(Pattern, AssetPath);
 		return Result;
 	}
@@ -438,7 +398,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
-		const FString Pattern = GetDynamicString(TEXT("Factory.Error.CreatePackageFailed"), TEXT("Failed to create package: %s"));
+		const FString Pattern = DC::GetString(TEXT("Factory.Error.CreatePackageFailed"), TEXT("Failed to create package: %s"));
 		Result.ErrorMessage = FormatDynamicMessage(Pattern, PackageName);
 		return Result;
 	}
@@ -458,7 +418,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 
 	if (!NewBlueprint)
 	{
-		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.CreateBlueprintFailed"), TEXT("Failed to create blueprint"));
+		Result.ErrorMessage = DC::GetString(TEXT("Factory.Error.CreateBlueprintFailed"), TEXT("Failed to create blueprint"));
 		return Result;
 	}
 
@@ -507,9 +467,9 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	if (bAutoLayout)
 	{
 		FLayoutSettings LayoutSettings;
-		LayoutSettings.HorizontalSpacing = GetDynamicFloat(TEXT("AutoLayout.HorizontalSpacing"), 350.0f);
-		LayoutSettings.VerticalSpacing = GetDynamicFloat(TEXT("AutoLayout.VerticalSpacing"), 120.0f);
-		LayoutSettings.bPrioritizeExecFlow = GetDynamicBool(TEXT("AutoLayout.PrioritizeExecFlow"), false);
+		LayoutSettings.HorizontalSpacing = DC::GetFloat(TEXT("AutoLayout.HorizontalSpacing"), 350.0f);
+		LayoutSettings.VerticalSpacing = DC::GetFloat(TEXT("AutoLayout.VerticalSpacing"), 120.0f);
+		LayoutSettings.bPrioritizeExecFlow = DC::GetBool(TEXT("AutoLayout.PrioritizeExecFlow"), false);
 
 		for (UEdGraph* Graph : NewBlueprint->UbergraphPages)
 		{
@@ -572,7 +532,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 	UClass* ParentClass = ResolveParentClass(Data.ParentClass);
 	if (!ParentClass)
 	{
-		const FString Pattern = GetDynamicString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
+		const FString Pattern = DC::GetString(TEXT("Factory.Error.ResolveParentClass"), TEXT("Could not resolve parent class: %s"));
 		Result.ErrorMessage = FormatDynamicMessage(Pattern, Data.ParentClass);
 		return Result;
 	}
@@ -594,7 +554,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 
 	if (!NewBlueprint)
 	{
-		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.CreatePreviewBlueprintFailed"), TEXT("Failed to create preview blueprint"));
+		Result.ErrorMessage = DC::GetString(TEXT("Factory.Error.CreatePreviewBlueprintFailed"), TEXT("Failed to create preview blueprint"));
 		return Result;
 	}
 
@@ -663,7 +623,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 
 	if (!Blueprint)
 	{
-		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
+		Result.ErrorMessage = DC::GetString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
 		return Result;
 	}
 
@@ -716,7 +676,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 
 	if (!Blueprint)
 	{
-		Result.ErrorMessage = GetDynamicString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
+		Result.ErrorMessage = DC::GetString(TEXT("Factory.Error.BlueprintNull"), TEXT("Blueprint is null"));
 		return Result;
 	}
 
@@ -1173,9 +1133,9 @@ namespace
 		}
 
 		FLayoutSettings LayoutSettings;
-		LayoutSettings.HorizontalSpacing = GetDynamicFloat(TEXT("PostLayout.HorizontalSpacing"), 380.0f);
-		LayoutSettings.VerticalSpacing = GetDynamicFloat(TEXT("PostLayout.VerticalSpacing"), 180.0f);
-		LayoutSettings.bPrioritizeExecFlow = GetDynamicBool(TEXT("PostLayout.PrioritizeExecFlow"), true);
+		LayoutSettings.HorizontalSpacing = DC::GetFloat(TEXT("PostLayout.HorizontalSpacing"), 380.0f);
+		LayoutSettings.VerticalSpacing = DC::GetFloat(TEXT("PostLayout.VerticalSpacing"), 180.0f);
+		LayoutSettings.bPrioritizeExecFlow = DC::GetBool(TEXT("PostLayout.PrioritizeExecFlow"), true);
 		ULayoutEngine::AutoLayoutGraph(Graph, LayoutSettings);
 	}
 

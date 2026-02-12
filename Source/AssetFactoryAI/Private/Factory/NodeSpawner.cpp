@@ -21,25 +21,16 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectIterator.h"
-#include "Misc/ConfigCacheIni.h"
+#include "DynamicConfigUtils.h"
 
 DEFINE_LOG_CATEGORY(LogNodeSpawner);
+
+namespace DC = AssetFactoryAI::DynamicConfig;
 
 namespace
 {
 	using FSpawnHandler = FNodeSpawnResult(*)(UEdGraph*, const FBlueprintNodeData&, UBlueprint*);
 	using FSimpleFlowNodeFactory = UK2Node*(*)(UEdGraph*);
-	constexpr const TCHAR* DynamicSection = TEXT("AssetFactoryAI.Dynamic");
-
-	FString GetDynamicString(const TCHAR* Key, const TCHAR* DefaultValue)
-	{
-		FString Value;
-		if (GConfig && GConfig->GetString(DynamicSection, Key, Value, GEditorPerProjectIni) && !Value.IsEmpty())
-		{
-			return Value;
-		}
-		return FString(DefaultValue);
-	}
 
 	TArray<FString> ParseCSV(const FString& Input)
 	{
@@ -55,7 +46,7 @@ namespace
 
 	FString GetDynamicError(const TCHAR* Key, const TCHAR* DefaultMessage)
 	{
-		return GetDynamicString(Key, DefaultMessage);
+		return DC::GetString(Key, DefaultMessage);
 	}
 
 	const TMap<EBlueprintNodeType, FString>& GetMathOperationNames()
@@ -119,7 +110,7 @@ namespace
 	{
 		static const TArray<FString> Libraries = []()
 		{
-			const FString Raw = GetDynamicString(
+			const FString Raw = DC::GetString(
 				TEXT("NodeSpawner.FunctionLibraries"),
 				TEXT("/Script/Engine.KismetSystemLibrary,/Script/Engine.KismetMathLibrary,/Script/Engine.KismetStringLibrary,/Script/Engine.KismetTextLibrary,/Script/Engine.KismetArrayLibrary,/Script/Engine.GameplayStatics,/Script/Engine.KismetMaterialLibrary,/Script/Engine.KismetRenderingLibrary,/Script/Engine.KismetInputLibrary"));
 			return ParseCSV(Raw);
@@ -132,8 +123,8 @@ namespace
 		static const TMap<EBlueprintNodeType, FName> EventNames = []()
 		{
 			TMap<EBlueprintNodeType, FName> Mapped;
-			Mapped.Add(EBlueprintNodeType::Event_BeginPlay, FName(*GetDynamicString(TEXT("NodeSpawner.Event.BeginPlay"), TEXT("ReceiveBeginPlay"))));
-			Mapped.Add(EBlueprintNodeType::Event_Tick, FName(*GetDynamicString(TEXT("NodeSpawner.Event.Tick"), TEXT("ReceiveTick"))));
+			Mapped.Add(EBlueprintNodeType::Event_BeginPlay, FName(*DC::GetString(TEXT("NodeSpawner.Event.BeginPlay"), TEXT("ReceiveBeginPlay"))));
+			Mapped.Add(EBlueprintNodeType::Event_Tick, FName(*DC::GetString(TEXT("NodeSpawner.Event.Tick"), TEXT("ReceiveTick"))));
 			return Mapped;
 		}();
 		return EventNames;
@@ -144,10 +135,10 @@ namespace
 		static const TMap<EBlueprintNodeType, TArray<FString>> Candidates = []()
 		{
 			TMap<EBlueprintNodeType, TArray<FString>> Mapped;
-			Mapped.Add(EBlueprintNodeType::Flow_Delay, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.DelayCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.Delay"))));
-			Mapped.Add(EBlueprintNodeType::Flow_DoOnce, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.DoOnceCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.DoOnce"))));
-			Mapped.Add(EBlueprintNodeType::Flow_ForLoop, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.ForLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.ForLoop,/Script/Engine.KismetMathLibrary.ForLoop"))));
-			Mapped.Add(EBlueprintNodeType::Flow_WhileLoop, ParseCSV(GetDynamicString(TEXT("NodeSpawner.Flow.WhileLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"))));
+			Mapped.Add(EBlueprintNodeType::Flow_Delay, ParseCSV(DC::GetString(TEXT("NodeSpawner.Flow.DelayCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.Delay"))));
+			Mapped.Add(EBlueprintNodeType::Flow_DoOnce, ParseCSV(DC::GetString(TEXT("NodeSpawner.Flow.DoOnceCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.DoOnce"))));
+			Mapped.Add(EBlueprintNodeType::Flow_ForLoop, ParseCSV(DC::GetString(TEXT("NodeSpawner.Flow.ForLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.ForLoop,/Script/Engine.KismetMathLibrary.ForLoop"))));
+			Mapped.Add(EBlueprintNodeType::Flow_WhileLoop, ParseCSV(DC::GetString(TEXT("NodeSpawner.Flow.WhileLoopCandidates"), TEXT("/Script/Engine.KismetSystemLibrary.WhileLoop"))));
 			return Mapped;
 		}();
 		return Candidates;
