@@ -134,6 +134,9 @@ FGenerationResult FBlueprintGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to set DefaultProperties (check log for details)"));
 		}
+		// Recompile to serialize CDO values into Blueprint asset data,
+		// otherwise PIE instances won't pick up the changes
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 	}
 
 	// Save
