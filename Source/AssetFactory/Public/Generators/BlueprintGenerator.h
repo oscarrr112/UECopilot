@@ -7,28 +7,36 @@
 #include "EdGraph/EdGraphPin.h"
 
 /**
- * Generator for Blueprint classes
+ * Generator for Blueprint assets with ANY UObject-derived parent class.
+ *
+ * Supports: Actor, Character, Pawn, GameplayEffect, GameplayAbility,
+ *           AnimInstance, BTTaskNode, UserWidget, and any other Blueprint-creatable class.
  *
  * JSON Config:
  * {
  *   "AssetType": "Blueprint",
+ *   "Name": "GE_DamageBase",
+ *   "Path": "/Game/GAS/GameplayEffects",
+ *   "ParentClass": "GameplayEffect",   // Any UObject subclass name
+ *   "DefaultProperties": {              // Optional: CDO default values
+ *     "DurationPolicy": "Instant"
+ *   }
+ * }
+ *
+ * Actor-specific fields (Components, Interfaces) are also supported:
+ * {
+ *   "AssetType": "Blueprint",
  *   "Name": "BP_Enemy",
  *   "Path": "/Game/Blueprints",
- *   "ParentClass": "Character",      // Actor, Pawn, Character, PlayerController, etc.
- *   "Interfaces": ["IDamageable"],   // Optional: interfaces to implement
- *   "Variables": [                   // Optional: blueprint variables
- *     {"Name": "Health", "Type": "Float", "DefaultValue": "100.0"},
- *     {"Name": "bIsAlive", "Type": "Boolean", "DefaultValue": "true"}
+ *   "ParentClass": "Character",
+ *   "Interfaces": ["IDamageable"],
+ *   "Variables": [
+ *     {"Name": "Health", "Type": "Float", "DefaultValue": "100.0"}
  *   ],
- *   "Components": [                  // Optional: components (Actor blueprints only)
+ *   "Components": [
  *     {"Name": "Mesh", "Class": "StaticMeshComponent", "bIsRoot": true,
- *      "Properties": {"StaticMesh": "/Game/Meshes/SM_Cube"}},
- *     {"Name": "Collision", "Class": "BoxComponent", "AttachTo": "Mesh",
- *      "Properties": {"BoxExtent": [50, 50, 50]}}
- *   ],
- *   "DefaultProperties": {           // Optional: CDO default values
- *     "MaxHealth": 100.0
- *   }
+ *      "Properties": {"StaticMesh": "/Game/Meshes/SM_Cube"}}
+ *   ]
  * }
  */
 class ASSETFACTORY_API FBlueprintGenerator : public IAssetGenerator

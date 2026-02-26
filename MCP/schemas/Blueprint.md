@@ -1,6 +1,13 @@
 # Blueprint Generator Schema
 
-Creates Actor-based Blueprint assets with components, variables, interfaces, and default properties.
+Creates Blueprint assets from **any UObject-derived parent class**. This includes but is not limited to:
+- **Actor-based**: Actor, Pawn, Character, PlayerController, GameModeBase, etc.
+- **GAS (Gameplay Ability System)**: GameplayEffect, GameplayAbility, AttributeSet, AbilitySystemComponent, GameplayCueNotify_Static, etc.
+- **Animation**: AnimInstance, AnimNotify, AnimNotifyState, etc.
+- **AI**: BTTaskNode, BTDecorator, BTService, AIController, etc.
+- **Other**: UserWidget, ActorComponent, SceneComponent, DataAsset subclasses, and any other Blueprint-creatable class.
+
+Simply set `ParentClass` to the desired class name. Components are only applicable to Actor-based blueprints; Variables and DefaultProperties work for all parent classes.
 
 ## Update Behavior (Action: "Update")
 
@@ -10,7 +17,7 @@ When `Action` is `"Update"`, only fields present in the JSON are processed — m
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `ParentClass` | string | No | `"Actor"` | Parent class name (e.g. `"Actor"`, `"Character"`, `"Pawn"`) |
+| `ParentClass` | string | No | `"Actor"` | Parent class name — supports ANY UObject subclass (e.g. `"Actor"`, `"Character"`, `"GameplayEffect"`, `"GameplayAbility"`, `"AnimInstance"`, `"BTTaskNode"`) |
 | `Components` | array | No | | Array of component definitions (Actor-based blueprints only) |
 | `Variables` | array | No | | Array of blueprint variable definitions |
 | `Interfaces` | array | No | | Array of interface class name strings |
@@ -91,7 +98,35 @@ Struct types (both simple and typed format) accept:
 
 In typed format, any `F`-prefixed struct name works (e.g., `"FVector"`, `"FRotator"`, `"FTransform"`, `"FLinearColor"`, `"FColor"`, `"FMargin"`).
 
-## Complete Example
+## GameplayEffect Example
+
+```json
+{
+  "AssetType": "Blueprint",
+  "Name": "GE_DamageBase",
+  "Path": "/Game/GAS/GameplayEffects",
+  "ParentClass": "GameplayEffect",
+  "DefaultProperties": {
+    "DurationPolicy": "Instant"
+  }
+}
+```
+
+## GameplayAbility Example
+
+```json
+{
+  "AssetType": "Blueprint",
+  "Name": "GA_FireBall",
+  "Path": "/Game/GAS/Abilities",
+  "ParentClass": "GameplayAbility",
+  "DefaultProperties": {
+    "InstancingPolicy": "InstancedPerActor"
+  }
+}
+```
+
+## Actor Blueprint Example
 
 ```json
 {

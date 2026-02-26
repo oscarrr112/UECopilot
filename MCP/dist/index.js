@@ -168,7 +168,7 @@ async function callSidecarTool(toolName, args) {
 const tools = [
     {
         name: "generate_assets",
-        description: "Generate Unreal Engine assets from JSON configuration. Supports Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
+        description: "Generate Unreal Engine assets from JSON configuration. Supports Blueprint (any parent class: Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, BTTaskNode, etc.), WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate.",
         inputSchema: {
             type: "object",
             properties: {
@@ -180,7 +180,7 @@ const tools = [
                         properties: {
                             AssetType: {
                                 type: "string",
-                                description: "Type of asset: Blueprint, WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
+                                description: "Type of asset: Blueprint (any parent class including GameplayEffect, GameplayAbility, Actor, Character, AnimInstance, etc.), WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
                             },
                             Name: {
                                 type: "string",
