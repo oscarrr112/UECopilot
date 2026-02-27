@@ -1437,9 +1437,20 @@ TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObj
 	if (Action == EGenerationAction::Update)
 	{
 		// Update: RootWidget and WidgetUpdates are both optional
-		// If RootWidget is provided, validate its Type field
+		// If RootWidget is provided, require explicit RebuildTree confirmation to prevent accidental full tree destruction
 		if (Config->HasTypedField<EJson::Object>(TEXT("RootWidget")))
 		{
+			bool bRebuildTree = false;
+			Config->TryGetBoolField(TEXT("RebuildTree"), bRebuildTree);
+			if (!bRebuildTree)
+			{
+				return FString(TEXT(
+					"Action 'Update' with 'RootWidget' will DESTROY the entire existing widget tree and rebuild from scratch. "
+					"Use 'WidgetUpdates' array for safe incremental changes (add/update/remove individual widgets), "
+					"or set '\"RebuildTree\": true' to confirm full rebuild."
+				));
+			}
+
 			TSharedPtr<FJsonObject> RootWidget = Config->GetObjectField(TEXT("RootWidget"));
 			if (!RootWidget->HasField(TEXT("Type")))
 			{
