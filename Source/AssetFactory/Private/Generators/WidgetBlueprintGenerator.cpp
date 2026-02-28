@@ -838,24 +838,17 @@ void FWidgetBlueprintGenerator::ApplyStyle(UWidget* Widget, TSharedPtr<FJsonObje
 	}
 
 	// Handle Font - for TextBlock and similar widgets
+	// Delegates to PropertySetterUtils which handles Size + reflection fallback for all other fields
 	if (StyleConfig->HasTypedField<EJson::Object>(TEXT("Font")))
 	{
 		TSharedPtr<FJsonObject> FontConfig = StyleConfig->GetObjectField(TEXT("Font"));
 		if (FontConfig.IsValid())
 		{
 			FProperty* FontProp = WidgetClass->FindPropertyByName(TEXT("Font"));
-			if (FStructProperty* StructProp = CastField<FStructProperty>(FontProp))
+			if (FontProp)
 			{
-				void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Widget);
-				FSlateFontInfo* FontPtr = static_cast<FSlateFontInfo*>(ValuePtr);
-
-				double Size = 0;
-				if (FontConfig->TryGetNumberField(TEXT("Size"), Size))
-				{
-					FontPtr->Size = static_cast<int32>(Size);
-				}
-
-				// Font family would need asset loading - handled separately if needed
+				TSharedRef<FJsonValueObject> FontJsonValue = MakeShared<FJsonValueObject>(FontConfig);
+				FPropertySetterUtils::SetPropertyFromJson(Widget, FontProp, FontJsonValue);
 			}
 		}
 	}

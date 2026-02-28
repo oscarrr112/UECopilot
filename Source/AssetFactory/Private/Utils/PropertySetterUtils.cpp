@@ -1146,25 +1146,97 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 			return true;
 		});
 
-		// FSlateFontInfo
+		// FSlateFontInfo - handle known fields, then fallback to reflection for the rest
 		SafeAdd(FindStructByName(TEXT("SlateFontInfo")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			const TSharedPtr<FJsonObject>* FontObj;
 			if (JsonValue->TryGetObject(FontObj))
 			{
-				*static_cast<FSlateFontInfo*>(ValuePtr) = ParseFont(*FontObj);
+				FSlateFontInfo* Font = static_cast<FSlateFontInfo*>(ValuePtr);
+
+				// Handle Size with convenient numeric format
+				double Size = 0;
+				if ((*FontObj)->TryGetNumberField(TEXT("Size"), Size))
+				{
+					Font->Size = static_cast<float>(Size);
+				}
+
+				// Remaining fields: fallback to generic struct reflection
+				static UScriptStruct* Struct = FSlateFontInfo::StaticStruct();
+				static const FName SizeName = TEXT("Size");
+				for (const auto& Pair : (*FontObj)->Values)
+				{
+					if (Pair.Key == SizeName) continue; // already handled
+					if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
+					{
+						void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
+						SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+					}
+				}
+
 				return true;
 			}
 			return false;
 		});
 
-		// FSlateBrush
+		// FSlateBrush - handle known fields, then fallback to reflection for the rest
 		SafeAdd(FindStructByName(TEXT("SlateBrush")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
 			const TSharedPtr<FJsonObject>* BrushObj;
 			if (JsonValue->TryGetObject(BrushObj))
 			{
-				*static_cast<FSlateBrush*>(ValuePtr) = ParseBrush(*BrushObj);
+				FSlateBrush* Brush = static_cast<FSlateBrush*>(ValuePtr);
+
+				// Handle Image/ResourceObject with convenient string path format
+				FString ImagePath;
+				if ((*BrushObj)->TryGetStringField(TEXT("Image"), ImagePath) ||
+					(*BrushObj)->TryGetStringField(TEXT("ResourceObject"), ImagePath))
+				{
+					UObject* Resource = LoadObject<UTexture2D>(nullptr, *ImagePath);
+					if (!Resource) Resource = LoadObject<UMaterialInterface>(nullptr, *ImagePath);
+					if (!Resource) Resource = LoadObject<UObject>(nullptr, *ImagePath);
+					if (Resource) Brush->SetResourceObject(Resource);
+				}
+
+				// Handle Tint with convenient color format (hex, named, array)
+				if ((*BrushObj)->HasField(TEXT("Tint")))
+				{
+					Brush->TintColor = FSlateColor(ParseColor((*BrushObj)->TryGetField(TEXT("Tint"))));
+				}
+
+				// Handle ImageSize with convenient array format
+				const TArray<TSharedPtr<FJsonValue>>* ImageSizeArray = nullptr;
+				if ((*BrushObj)->TryGetArrayField(TEXT("ImageSize"), ImageSizeArray) && ImageSizeArray->Num() >= 2)
+				{
+					Brush->ImageSize = ParseVector2D(*ImageSizeArray);
+				}
+
+				// Handle DrawAs with convenient string format
+				FString DrawAs;
+				if ((*BrushObj)->TryGetStringField(TEXT("DrawAs"), DrawAs))
+				{
+					if (DrawAs == TEXT("Box")) Brush->DrawAs = ESlateBrushDrawType::Box;
+					else if (DrawAs == TEXT("Image")) Brush->DrawAs = ESlateBrushDrawType::Image;
+					else if (DrawAs == TEXT("Border")) Brush->DrawAs = ESlateBrushDrawType::Border;
+					else if (DrawAs == TEXT("NoDrawType")) Brush->DrawAs = ESlateBrushDrawType::NoDrawType;
+				}
+
+				// Remaining fields: fallback to generic struct reflection
+				static UScriptStruct* Struct = FSlateBrush::StaticStruct();
+				static const TSet<FName> HandledFields = {
+					TEXT("Image"), TEXT("ResourceObject"), TEXT("Tint"),
+					TEXT("ImageSize"), TEXT("DrawAs")
+				};
+				for (const auto& Pair : (*BrushObj)->Values)
+				{
+					if (HandledFields.Contains(FName(*Pair.Key))) continue;
+					if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
+					{
+						void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
+						SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+					}
+				}
+
 				return true;
 			}
 			return false;
