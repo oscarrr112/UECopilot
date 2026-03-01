@@ -467,6 +467,100 @@ bool FCompiler::CompileStatement(
 		return true;
 	}
 
+	case EStatementType::MultiAssignment:
+	{
+		// (a, b) = FunctionCall() - multi-return value assignment
+		if (!Stmt.AssignValue.IsValid()) return true;
+		if (Stmt.AssignValue->Type != EExpressionType::FunctionCall) return true;
+
+		FBlueprintNodeData CallNode;
+		CallNode.NodeId = GenerateNodeId(TEXT("call_multi"));
+		CallNode.NodeType = EBlueprintNodeType::CallFunction;
+		CallNode.FunctionReference = Stmt.AssignValue->Name;
+		CallNode.Position = {400.0f, 0.0f};
+
+		// Connect execute pin from previous node
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = InOutLastExecNodeId;
+			Conn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(Conn);
+			CallNode.Pins.Add(ExecPin);
+		}
+
+		// Compile function arguments with reflected pin names
+		TArray<FString> ParamNames;
+		bool bHasNames = TryResolveParamNames(Stmt.AssignValue->Name, ParamNames);
+		int32 ArgIndex = 0;
+		for (const TSharedPtr<FExpression>& Arg : Stmt.AssignValue->Arguments)
+		{
+			if (!Arg) continue;
+			FString PinName = (bHasNames && ParamNames.IsValidIndex(ArgIndex))
+				? ParamNames[ArgIndex] : FString::Printf(TEXT("Arg%d"), ArgIndex);
+			FString ArgNodeId;
+			FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+			FBlueprintPinData ArgPin;
+			ArgPin.Name = PinName;
+			ArgPin.Direction = EBlueprintPinDirection::Input;
+			if (!ArgNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ArgNodeId;
+				Conn.SourcePinName = ArgPinName;
+				ArgPin.Connections.Add(Conn);
+			}
+			else if (Arg->Type == EExpressionType::Literal_String)
+			{
+				ArgPin.DefaultValue = Arg->StringValue;
+			}
+			else if (Arg->Type == EExpressionType::Literal_Int)
+			{
+				ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+			}
+			else if (Arg->Type == EExpressionType::Literal_Float)
+			{
+				ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+			}
+			else if (Arg->Type == EExpressionType::Literal_Bool)
+			{
+				ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
+			}
+			CallNode.Pins.Add(ArgPin);
+			ArgIndex++;
+		}
+
+		OutNodes.Add(CallNode);
+
+		// Resolve out param names via reflection, map assignment targets to output pins
+		TArray<FString> OutParamNames;
+		if (UFunction* Func = FindObject<UFunction>(nullptr, *Stmt.AssignValue->Name))
+		{
+			for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
+			{
+				if ((It->PropertyFlags & CPF_OutParm) && !(It->PropertyFlags & CPF_ReturnParm))
+				{
+					OutParamNames.Add(It->GetName());
+				}
+			}
+		}
+
+		for (int32 i = 0; i < Stmt.MultiAssignTargets.Num(); i++)
+		{
+			FString OutPinName = OutParamNames.IsValidIndex(i)
+				? OutParamNames[i]
+				: FString::Printf(TEXT("Out%d"), i);
+			VariableNodeMap.Add(Stmt.MultiAssignTargets[i], {CallNode.NodeId, OutPinName});
+		}
+
+		InOutLastExecNodeId = CallNode.NodeId;
+		InOutLastExecPinName = TEXT("then");
+		return true;
+	}
+
 	case EStatementType::ExpressionStmt:
 	{
 		// Expression as statement - likely a function call
@@ -1178,8 +1272,52 @@ FString FCompiler::CompileExpression(
 			OutNodeId = NotNode.NodeId;
 			return TEXT("ReturnValue");
 		}
-		// Negate would need a multiply by -1
-		break;
+		else  // EUnaryOp::Negate
+		{
+			// Blueprint has no dedicated negate node; implement as Multiply * (-1)
+			FBlueprintNodeData MulNode;
+			MulNode.NodeId = GenerateNodeId(TEXT("negate"));
+			MulNode.NodeType = EBlueprintNodeType::Math_Multiply;
+			MulNode.OperandType = TEXT("DoubleDouble");
+			MulNode.Position = {300.0f, 50.0f};
+
+			// A pin = operand
+			if (Expr.Left.IsValid())
+			{
+				FString OpNodeId;
+				FString OpPinName = CompileExpression(*Expr.Left, OutNodes, OpNodeId);
+				FBlueprintPinData APin;
+				APin.Name = TEXT("A");
+				APin.Direction = EBlueprintPinDirection::Input;
+				if (!OpNodeId.IsEmpty())
+				{
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = OpNodeId;
+					Conn.SourcePinName = OpPinName;
+					APin.Connections.Add(Conn);
+				}
+				else if (Expr.Left->Type == EExpressionType::Literal_Int)
+				{
+					APin.DefaultValue = FString::SanitizeFloat(static_cast<double>(Expr.Left->IntValue));
+				}
+				else if (Expr.Left->Type == EExpressionType::Literal_Float)
+				{
+					APin.DefaultValue = FString::SanitizeFloat(Expr.Left->FloatValue);
+				}
+				MulNode.Pins.Add(APin);
+			}
+
+			// B pin = -1
+			FBlueprintPinData BPin;
+			BPin.Name = TEXT("B");
+			BPin.Direction = EBlueprintPinDirection::Input;
+			BPin.DefaultValue = TEXT("-1.0");
+			MulNode.Pins.Add(BPin);
+
+			OutNodes.Add(MulNode);
+			OutNodeId = MulNode.NodeId;
+			return TEXT("ReturnValue");
+		}
 	}
 
 	case EExpressionType::MemberAccess:
@@ -1211,6 +1349,52 @@ FString FCompiler::CompileExpression(
 		OutNodes.Add(GetNode);
 		OutNodeId = GetNode.NodeId;
 		return TEXT("ReturnValue");
+	}
+
+	case EExpressionType::Self:
+	{
+		// EBlueprintNodeType::Self does not exist; use PureFunction with FunctionReference "Self"
+		FBlueprintNodeData SelfNode;
+		SelfNode.NodeId = GenerateNodeId(TEXT("self"));
+		SelfNode.NodeType = EBlueprintNodeType::PureFunction;
+		SelfNode.FunctionReference = TEXT("Self");
+		SelfNode.Position = {200.0f, 100.0f};
+
+		OutNodes.Add(SelfNode);
+		OutNodeId = SelfNode.NodeId;
+		return TEXT("self");
+	}
+
+	case EExpressionType::Cast:
+	{
+		FBlueprintNodeData CastNode;
+		CastNode.NodeId = GenerateNodeId(TEXT("cast"));
+		CastNode.NodeType = EBlueprintNodeType::Cast;
+		CastNode.TargetClass = Expr.CastType.SubType;  // e.g. "PlayerCharacter"
+		CastNode.Position = {300.0f, 100.0f};
+
+		// Compile the object being cast
+		if (Expr.Left.IsValid())
+		{
+			FString ObjNodeId;
+			FString ObjPinName = CompileExpression(*Expr.Left, OutNodes, ObjNodeId);
+			if (!ObjNodeId.IsEmpty())
+			{
+				FBlueprintPinData ObjPin;
+				ObjPin.Name = TEXT("Object");
+				ObjPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ObjNodeId;
+				Conn.SourcePinName = ObjPinName;
+				ObjPin.Connections.Add(Conn);
+				CastNode.Pins.Add(ObjPin);
+			}
+		}
+
+		OutNodes.Add(CastNode);
+		OutNodeId = CastNode.NodeId;
+		// Cast success output pin name is "As<ClassName>"
+		return FString::Printf(TEXT("As%s"), *Expr.CastType.SubType);
 	}
 
 	default:
