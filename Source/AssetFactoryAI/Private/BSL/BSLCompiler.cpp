@@ -744,6 +744,11 @@ bool FCompiler::CompileStatement(
 			{
 				FirstPin.DefaultValue = FString::FromInt(Stmt.LoopStart->IntValue);
 			}
+			else
+			{
+				Warning(TEXT("For loop start expression could not be resolved, defaulting FirstIndex to 0"));
+				FirstPin.DefaultValue = TEXT("0");
+			}
 			ForNode.Pins.Add(FirstPin);
 		}
 
@@ -765,6 +770,11 @@ bool FCompiler::CompileStatement(
 			else if (Stmt.LoopEnd->Type == EExpressionType::Literal_Int)
 			{
 				LastPin.DefaultValue = FString::FromInt(Stmt.LoopEnd->IntValue);
+			}
+			else
+			{
+				Warning(TEXT("For loop end expression could not be resolved, defaulting LastIndex to 0"));
+				LastPin.DefaultValue = TEXT("0");
 			}
 			ForNode.Pins.Add(LastPin);
 		}
@@ -819,6 +829,10 @@ bool FCompiler::CompileStatement(
 				Conn.SourcePinName = CollPinName;
 				ArrPin.Connections.Add(Conn);
 				ForEachNode.Pins.Add(ArrPin);
+			}
+			else
+			{
+				Warning(TEXT("ForEach loop collection expression could not be resolved - Array pin will be unconnected"));
 			}
 		}
 
