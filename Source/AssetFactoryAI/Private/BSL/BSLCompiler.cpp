@@ -654,6 +654,189 @@ bool FCompiler::CompileStatement(
 		return true;
 	}
 
+	case EStatementType::While:
+	{
+		FBlueprintNodeData WhileNode;
+		WhileNode.NodeId = GenerateNodeId(TEXT("while"));
+		WhileNode.NodeType = EBlueprintNodeType::Flow_WhileLoop;
+		WhileNode.Position = {400.0f, 0.0f};
+
+		// 连接 execute
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection ExecConn;
+			ExecConn.SourceNodeId = InOutLastExecNodeId;
+			ExecConn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(ExecConn);
+			WhileNode.Pins.Add(ExecPin);
+		}
+
+		// 编译条件
+		if (Stmt.Condition.IsValid())
+		{
+			FString CondNodeId;
+			FString CondPinName = CompileExpression(*Stmt.Condition, OutNodes, CondNodeId);
+			if (!CondNodeId.IsEmpty())
+			{
+				FBlueprintPinData CondPin;
+				CondPin.Name = TEXT("Condition");
+				CondPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection CondConn;
+				CondConn.SourceNodeId = CondNodeId;
+				CondConn.SourcePinName = CondPinName;
+				CondPin.Connections.Add(CondConn);
+				WhileNode.Pins.Add(CondPin);
+			}
+		}
+
+		OutNodes.Add(WhileNode);
+
+		// 编译循环体
+		FString BodyLastNodeId = WhileNode.NodeId;
+		FString BodyLastPinName = TEXT("LoopBody");
+		CompileStatements(Stmt.LoopBody, OutNodes, BodyLastNodeId, BodyLastPinName);
+
+		// While 之后的语句从 Completed 继续
+		InOutLastExecNodeId = WhileNode.NodeId;
+		InOutLastExecPinName = TEXT("Completed");
+		return true;
+	}
+
+	case EStatementType::For:
+	{
+		FBlueprintNodeData ForNode;
+		ForNode.NodeId = GenerateNodeId(TEXT("for"));
+		ForNode.NodeType = EBlueprintNodeType::Flow_ForLoop;
+		ForNode.Position = {400.0f, 0.0f};
+
+		// 连接 execute
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = InOutLastExecNodeId;
+			Conn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(Conn);
+			ForNode.Pins.Add(ExecPin);
+		}
+
+		// 编译 FirstIndex
+		if (Stmt.LoopStart.IsValid())
+		{
+			FString StartNodeId;
+			FString StartPinName = CompileExpression(*Stmt.LoopStart, OutNodes, StartNodeId);
+			FBlueprintPinData FirstPin;
+			FirstPin.Name = TEXT("FirstIndex");
+			FirstPin.Direction = EBlueprintPinDirection::Input;
+			if (!StartNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = StartNodeId;
+				Conn.SourcePinName = StartPinName;
+				FirstPin.Connections.Add(Conn);
+			}
+			else if (Stmt.LoopStart->Type == EExpressionType::Literal_Int)
+			{
+				FirstPin.DefaultValue = FString::FromInt(Stmt.LoopStart->IntValue);
+			}
+			ForNode.Pins.Add(FirstPin);
+		}
+
+		// 编译 LastIndex
+		if (Stmt.LoopEnd.IsValid())
+		{
+			FString EndNodeId;
+			FString EndPinName = CompileExpression(*Stmt.LoopEnd, OutNodes, EndNodeId);
+			FBlueprintPinData LastPin;
+			LastPin.Name = TEXT("LastIndex");
+			LastPin.Direction = EBlueprintPinDirection::Input;
+			if (!EndNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = EndNodeId;
+				Conn.SourcePinName = EndPinName;
+				LastPin.Connections.Add(Conn);
+			}
+			else if (Stmt.LoopEnd->Type == EExpressionType::Literal_Int)
+			{
+				LastPin.DefaultValue = FString::FromInt(Stmt.LoopEnd->IntValue);
+			}
+			ForNode.Pins.Add(LastPin);
+		}
+
+		OutNodes.Add(ForNode);
+
+		// 将循环变量映射到 ForNode 的 Index 输出 pin
+		VariableNodeMap.Add(Stmt.LoopVariable, ForNode.NodeId);
+
+		// 编译循环体
+		FString ForBodyLastNodeId = ForNode.NodeId;
+		FString ForBodyLastPinName = TEXT("LoopBody");
+		CompileStatements(Stmt.LoopBody, OutNodes, ForBodyLastNodeId, ForBodyLastPinName);
+
+		InOutLastExecNodeId = ForNode.NodeId;
+		InOutLastExecPinName = TEXT("Completed");
+		return true;
+	}
+
+	case EStatementType::ForEach:
+	{
+		FBlueprintNodeData ForEachNode;
+		ForEachNode.NodeId = GenerateNodeId(TEXT("foreach"));
+		ForEachNode.NodeType = EBlueprintNodeType::Flow_ForEachLoop;
+		ForEachNode.Position = {400.0f, 0.0f};
+
+		// 连接 execute
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = InOutLastExecNodeId;
+			Conn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(Conn);
+			ForEachNode.Pins.Add(ExecPin);
+		}
+
+		// 编译集合表达式，连接到 Array pin
+		if (Stmt.LoopCollection.IsValid())
+		{
+			FString CollNodeId;
+			FString CollPinName = CompileExpression(*Stmt.LoopCollection, OutNodes, CollNodeId);
+			if (!CollNodeId.IsEmpty())
+			{
+				FBlueprintPinData ArrPin;
+				ArrPin.Name = TEXT("Array");
+				ArrPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = CollNodeId;
+				Conn.SourcePinName = CollPinName;
+				ArrPin.Connections.Add(Conn);
+				ForEachNode.Pins.Add(ArrPin);
+			}
+		}
+
+		OutNodes.Add(ForEachNode);
+
+		// 将循环变量映射到 ForEachNode 的 ArrayElement 输出 pin
+		VariableNodeMap.Add(Stmt.LoopVariable, ForEachNode.NodeId);
+
+		// 编译循环体
+		FString FEBodyLastNodeId = ForEachNode.NodeId;
+		FString FEBodyLastPinName = TEXT("LoopBody");
+		CompileStatements(Stmt.LoopBody, OutNodes, FEBodyLastNodeId, FEBodyLastPinName);
+
+		InOutLastExecNodeId = ForEachNode.NodeId;
+		InOutLastExecPinName = TEXT("Completed");
+		return true;
+	}
+
 	default:
 		Warning(FString::Printf(TEXT("Unsupported statement type: %d"), static_cast<int32>(Stmt.Type)));
 		return true;
