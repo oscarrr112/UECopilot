@@ -1416,6 +1416,54 @@ void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
 			continue;
 		}
 
+		if (UpdateAction.Equals(TEXT("Move"), ESearchCase::IgnoreCase))
+		{
+			UWidget* Widget = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+			if (!Widget)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Widget '%s' not found for Move"), *JsonPath, *WidgetName);
+				continue;
+			}
+
+			FString NewParentName = GetStringField(UpdateObj, TEXT("NewParent"));
+			if (NewParentName.IsEmpty())
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Missing 'NewParent' field for Move action"), *JsonPath);
+				continue;
+			}
+
+			UWidget* NewParentWidget = Blueprint->WidgetTree->FindWidget(FName(*NewParentName));
+			UPanelWidget* NewPanel = Cast<UPanelWidget>(NewParentWidget);
+			if (!NewPanel)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] NewParent '%s' not found or not a panel"), *JsonPath, *NewParentName);
+				continue;
+			}
+
+			// Detach from current parent (widget stays in WidgetTree, all properties preserved)
+			UPanelWidget* OldParent = Widget->GetParent();
+			if (OldParent)
+			{
+				OldParent->RemoveChild(Widget);
+			}
+
+			// Attach to new parent
+			NewPanel->AddChild(Widget);
+
+			// Apply new slot config if provided
+			TSharedPtr<FJsonObject> NewSlotConfig = GetObjectField(UpdateObj, TEXT("NewSlot"));
+			if (NewSlotConfig.IsValid())
+			{
+				ConfigureSlot(Widget, NewPanel, NewSlotConfig);
+			}
+
+			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Moved widget '%s' from '%s' to '%s'"),
+				*JsonPath, *WidgetName,
+				OldParent ? *OldParent->GetName() : TEXT("(none)"),
+				*NewParentName);
+			continue;
+		}
+
 		UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Unknown action '%s'"), *JsonPath, *UpdateAction);
 	}
 }

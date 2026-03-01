@@ -32,10 +32,12 @@ Each entry in the `WidgetUpdates` array:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `Action` | string | No | `"Update"` (default), `"Add"`, or `"Remove"` |
-| `Name` | string | **Yes** (Update/Remove) | Target widget name |
+| `Action` | string | No | `"Update"` (default), `"Add"`, `"Remove"`, or `"Move"` |
+| `Name` | string | **Yes** (Update/Remove/Move) | Target widget name |
 | `Parent` | string | **Yes** (Add only) | Name of parent panel widget to add into |
 | `Widget` | object | **Yes** (Add only) | Widget node definition (same format as RootWidget children) |
+| `NewParent` | string | **Yes** (Move only) | Name of destination panel widget |
+| `NewSlot` | object | No (Move only) | New slot config after move. If omitted, slot is default for the new parent type |
 | `Style` | object | No (Update) | Style properties to apply |
 | `Properties` | object | No (Update) | Widget properties via reflection |
 | `Slot` | object | No (Update) | Slot/layout configuration |
@@ -100,6 +102,34 @@ Each entry in the `WidgetUpdates` array:
   ]
 }
 ```
+
+### WidgetUpdates Example: Move a Widget
+
+**IMPORTANT:** Use `"Move"` instead of `"Remove"` + `"Add"` when repositioning an existing widget to a different parent. Move preserves ALL widget properties, children, IsVariable flags, and bindings automatically — no risk of data loss.
+
+```json
+{
+  "AssetType": "WidgetBlueprint",
+  "Name": "WBP_HUD",
+  "Path": "/Game/UI",
+  "Action": "Update",
+  "WidgetUpdates": [
+    {
+      "Action": "Move",
+      "Name": "SkillBar",
+      "NewParent": "RightPanel",
+      "NewSlot": {
+        "Padding": [0, 4, 0, 4],
+        "HAlign": "Fill"
+      }
+    }
+  ]
+}
+```
+
+> **Why Move instead of Remove + Add?**
+> `Remove` + `Add` requires you to reconstruct the widget's full JSON — any missed property silently corrupts the widget.
+> `Move` detaches the widget from its current parent and re-attaches it to the new parent as-is. Zero reconstruction, zero data loss.
 
 ### WidgetUpdates Example: Multiple Operations
 
