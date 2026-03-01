@@ -1205,13 +1205,15 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 
 	if (!Func) return false;
 
-	// 遍历参数（跳过 ReturnParm 和 OutParm，只取输入参数）
+	// Iterate parameters: skip return, output, and hidden pins (WorldContextObject etc.)
 	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
 	{
-		if (!(It->PropertyFlags & CPF_ReturnParm) && !(It->PropertyFlags & CPF_OutParm))
-		{
-			OutNames.Add(It->GetName());
-		}
+		if (It->PropertyFlags & CPF_ReturnParm) continue;
+		if (It->PropertyFlags & CPF_OutParm) continue;
+		// Skip hidden parameters (WorldContextObject and similar)
+		if (It->HasMetaData(TEXT("WorldContext"))) continue;
+		if (It->HasMetaData(TEXT("HidePin"))) continue;
+		OutNames.Add(It->GetName());
 	}
 	return OutNames.Num() > 0;
 }

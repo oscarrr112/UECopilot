@@ -115,7 +115,7 @@ private:
 	/** Check if a name is a function output parameter */
 	bool IsFunctionOutputParameter(const FString& Name) const;
 
-	/** 通过 UE 反射解析函数参数 pin 名列表，失败则返回 false */
+	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found. */
 	static bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
 };
 
