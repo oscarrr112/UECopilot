@@ -584,6 +584,24 @@ bool FCompiler::CompileStatement(
 			}
 
 			// 尝试用反射解析 pin 名
+
+			// If this is a method call (Stmt.Expression->Object is set), connect the Target pin
+			if (Stmt.Expression->Object.IsValid())
+			{
+				FString TargetNodeId;
+				FString TargetPinName = CompileExpression(*Stmt.Expression->Object, OutNodes, TargetNodeId);
+				if (!TargetNodeId.IsEmpty())
+				{
+					FBlueprintPinData TargetPin;
+					TargetPin.Name = TEXT("self");
+					TargetPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection Conn;
+					Conn.SourceNodeId = TargetNodeId;
+					Conn.SourcePinName = TargetPinName;
+					TargetPin.Connections.Add(Conn);
+					CallNode.Pins.Add(TargetPin);
+				}
+			}
 			TArray<FString> ParamNames;
 			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames);
 
@@ -1031,6 +1049,24 @@ FString FCompiler::CompileExpression(
 		CallNode.Position = {300.0f, 100.0f};
 
 		// 用反射解析 pin 名
+
+		// If this is a method call (Expr.Object is set), connect the Target pin
+		if (Expr.Object.IsValid())
+		{
+			FString TargetNodeId;
+			FString TargetPinName = CompileExpression(*Expr.Object, OutNodes, TargetNodeId);
+			if (!TargetNodeId.IsEmpty())
+			{
+				FBlueprintPinData TargetPin;
+				TargetPin.Name = TEXT("self");
+				TargetPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = TargetNodeId;
+				Conn.SourcePinName = TargetPinName;
+				TargetPin.Connections.Add(Conn);
+				CallNode.Pins.Add(TargetPin);
+			}
+		}
 		TArray<FString> ParamNames;
 		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames);
 

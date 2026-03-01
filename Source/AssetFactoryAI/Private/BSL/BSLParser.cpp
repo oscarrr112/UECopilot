@@ -647,7 +647,17 @@ TSharedPtr<FExpression> FParser::ParsePostfix()
 			Consume(ETokenType::RightParen, TEXT("Expected ')'"));
 
 			TSharedPtr<FExpression> Call = MakeShared<FExpression>(EExpressionType::FunctionCall);
-			Call->Name = Expr->Name;
+			if (Expr->Type == EExpressionType::MemberAccess)
+			{
+				// Method call: obj.method(args) — preserve target object and method name
+				Call->Name = Expr->MemberName;
+				Call->Object = Expr->Object;
+			}
+			else
+			{
+				// Plain function call: FunctionName(args)
+				Call->Name = Expr->Name;
+			}
 			Call->Arguments = Args;
 			Expr = Call;
 		}
