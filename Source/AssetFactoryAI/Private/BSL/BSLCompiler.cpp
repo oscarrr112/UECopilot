@@ -182,7 +182,7 @@ bool FCompiler::CompileFunction(const FFunction& Func, FBlueprintGraphData& OutG
 
 		// Map input parameters to fn_entry node
 		// When we reference parameter A, we get it from fn_entry.A
-		VariableNodeMap.Add(Input.Name, TEXT("fn_entry"));
+		VariableNodeMap.Add(Input.Name, {TEXT("fn_entry"), Input.Name});
 	}
 
 	for (const FVariable& Output : Func.Outputs)
@@ -325,10 +325,25 @@ bool FCompiler::CompileStatement(
 	{
 	case EStatementType::VariableDecl:
 	{
-		// Local variable declaration - for now just record it
-		// TODO: Create local variable in function
-		Warning(FString::Printf(TEXT("Local variable '%s' - locals not fully supported yet"),
-			*Stmt.DeclaredVariable.Name));
+		// Compile the initial value expression and register in VariableNodeMap
+		if (Stmt.DeclaredVariable.DefaultValue.IsValid())
+		{
+			FString ValNodeId;
+			FString ValPinName = CompileExpression(*Stmt.DeclaredVariable.DefaultValue, OutNodes, ValNodeId);
+
+			if (!ValNodeId.IsEmpty())
+			{
+				// Map the variable name to the node that produces its value
+				VariableNodeMap.Add(Stmt.DeclaredVariable.Name, {ValNodeId, ValPinName});
+			}
+			else
+			{
+				// Literal initial value: cannot create a node reference
+				Warning(FString::Printf(
+					TEXT("Local variable '%s' initialized with a literal - use a blueprint variable for persistence"),
+					*Stmt.DeclaredVariable.Name));
+			}
+		}
 		return true;
 	}
 
@@ -782,7 +797,7 @@ bool FCompiler::CompileStatement(
 		OutNodes.Add(ForNode);
 
 		// 将循环变量映射到 ForNode 的 Index 输出 pin
-		VariableNodeMap.Add(Stmt.LoopVariable, ForNode.NodeId);
+		VariableNodeMap.Add(Stmt.LoopVariable, {ForNode.NodeId, TEXT("Index")});
 
 		// 编译循环体
 		FString ForBodyLastNodeId = ForNode.NodeId;
@@ -839,7 +854,7 @@ bool FCompiler::CompileStatement(
 		OutNodes.Add(ForEachNode);
 
 		// 将循环变量映射到 ForEachNode 的 ArrayElement 输出 pin
-		VariableNodeMap.Add(Stmt.LoopVariable, ForEachNode.NodeId);
+		VariableNodeMap.Add(Stmt.LoopVariable, {ForEachNode.NodeId, TEXT("ArrayElement")});
 
 		// 编译循环体
 		FString FEBodyLastNodeId = ForEachNode.NodeId;
@@ -893,15 +908,11 @@ FString FCompiler::CompileExpression(
 			}
 		}
 
-		// Check if this is a function input parameter (mapped to fn_entry)
-		if (FString* MappedNodeId = VariableNodeMap.Find(Expr.Name))
+		// Check if this variable is mapped (function input parameter, loop variable, or local variable)
+		if (TPair<FString, FString>* Mapped = VariableNodeMap.Find(Expr.Name))
 		{
-			if (*MappedNodeId == TEXT("fn_entry"))
-			{
-				// Function parameter - reference from fn_entry node
-				OutNodeId = *MappedNodeId;
-				return Expr.Name;
-			}
+			OutNodeId = Mapped->Key;
+			return Mapped->Value;  // Directly return the stored pin name
 		}
 
 		// For regular variables, always create a new Get node for each reference

@@ -106,7 +106,7 @@ private:
 
 	// Context for current compilation
 	const FFunction* CurrentFunction = nullptr;
-	TMap<FString, FString> VariableNodeMap;  // Variable name -> Get node ID
+	TMap<FString, TPair<FString, FString>> VariableNodeMap;  // Variable name -> (node ID, pin name)
 	TMap<FString, EType> VariableTypeMap;    // Variable name -> Type
 
 	// For function output parameters: maps output name -> (node id, pin name)
