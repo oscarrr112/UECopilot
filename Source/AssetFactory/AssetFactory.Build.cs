@@ -39,6 +39,8 @@ public class AssetFactory : ModuleRules
 			"MaterialEditor",
 			// HTTP Server
 			"HTTPServer",
+			// Image compression for viewport screenshot
+			"ImageWrapper",
 			// Settings
 			"DeveloperSettings",
 			// GAS (Gameplay Ability System) - GameplayTags is always available

@@ -27,6 +27,11 @@
 #include "EditorModeRegistry.h"
 // Python execution
 #include "IPythonScriptPlugin.h"
+// Viewport screenshot
+#include "LevelEditorViewport.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Misc/Base64.h"
 #include "Engine/DataTable.h"
 #include "Utils/PropertySetterUtils.h"
 #include "DataTableEditorUtils.h"
@@ -127,6 +132,14 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleContext),
 		TEXT("GET "),
 		TEXT("Get current editor state (selected actors, assets, level, open editors)"),
+		false
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/screenshot"),
+		EHttpServerRequestVerbs::VERB_GET,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleGetViewportScreenshot),
+		TEXT("GET "),
+		TEXT("Capture Level Viewport as base64 JPEG"),
 		false
 	});
 	RouteSpecs.Add({
@@ -1349,6 +1362,114 @@ bool FAssetFactoryHttpServer::HandleQuery(const FHttpServerRequest& Request, con
 	ResponseJson->SetBoolField(TEXT("success"), true);
 	ResponseJson->SetStringField(TEXT("asset"), AssetPath);
 	ResponseJson->SetObjectField(TEXT("results"), Results);
+
+	SendJsonResponse(OnComplete, 200, ResponseJson);
+	return true;
+}
+
+bool FAssetFactoryHttpServer::HandleGetViewportScreenshot(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Find best Level Viewport: prefer perspective, fall back to first available
+	FLevelEditorViewportClient* ViewportClient = nullptr;
+	for (FLevelEditorViewportClient* Client : GEditor->GetLevelViewportClients())
+	{
+		if (Client && Client->Viewport)
+		{
+			if (Client->IsPerspective())
+			{
+				ViewportClient = Client;
+				break;
+			}
+			if (!ViewportClient)
+			{
+				ViewportClient = Client;
+			}
+		}
+	}
+
+	if (!ViewportClient || !ViewportClient->Viewport)
+	{
+		SendErrorResponse(OnComplete, 503, "No Level Viewport available");
+		return true;
+	}
+
+	FViewport* Viewport = ViewportClient->Viewport;
+	FIntPoint ViewportSize = Viewport->GetSizeXY();
+
+	if (ViewportSize.X <= 0 || ViewportSize.Y <= 0)
+	{
+		SendErrorResponse(OnComplete, 503, "Viewport has zero size");
+		return true;
+	}
+
+	TArray<FColor> Bitmap;
+	if (!Viewport->ReadPixels(Bitmap))
+	{
+		SendErrorResponse(OnComplete, 500, "Failed to read viewport pixels");
+		return true;
+	}
+
+	if (Bitmap.Num() != ViewportSize.X * ViewportSize.Y)
+	{
+		SendErrorResponse(OnComplete, 500, "Pixel buffer size mismatch");
+		return true;
+	}
+
+	// Nearest-neighbour downsample to max 1280px on longest side
+	const int32 MaxDim = 1280;
+	if (ViewportSize.X > MaxDim || ViewportSize.Y > MaxDim)
+	{
+		float Scale = FMath::Min((float)MaxDim / ViewportSize.X, (float)MaxDim / ViewportSize.Y);
+		int32 NewWidth  = FMath::Max(1, FMath::RoundToInt(ViewportSize.X * Scale));
+		int32 NewHeight = FMath::Max(1, FMath::RoundToInt(ViewportSize.Y * Scale));
+
+		TArray<FColor> Scaled;
+		Scaled.SetNumUninitialized(NewWidth * NewHeight);
+		for (int32 Y = 0; Y < NewHeight; ++Y)
+		{
+			for (int32 X = 0; X < NewWidth; ++X)
+			{
+				int32 SrcX = FMath::Clamp(FMath::RoundToInt(X / Scale), 0, ViewportSize.X - 1);
+				int32 SrcY = FMath::Clamp(FMath::RoundToInt(Y / Scale), 0, ViewportSize.Y - 1);
+				Scaled[Y * NewWidth + X] = Bitmap[SrcY * ViewportSize.X + SrcX];
+			}
+		}
+		Bitmap = MoveTemp(Scaled);
+		ViewportSize.X = NewWidth;
+		ViewportSize.Y = NewHeight;
+	}
+
+	// Compress to JPEG
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper");
+	TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::JPEG);
+	if (!ImageWrapper.IsValid())
+	{
+		SendErrorResponse(OnComplete, 500, "Failed to create JPEG encoder");
+		return true;
+	}
+
+	ImageWrapper->SetRaw(Bitmap.GetData(), Bitmap.Num() * sizeof(FColor),
+		ViewportSize.X, ViewportSize.Y, ERGBFormat::BGRA, 8);
+	TArray64<uint8> CompressedData = ImageWrapper->GetCompressed(85);
+
+	if (CompressedData.Num() == 0)
+	{
+		SendErrorResponse(OnComplete, 500, "JPEG compression produced empty output");
+		return true;
+	}
+
+	// Base64 encode
+	FString Base64 = FBase64::Encode(CompressedData.GetData(), (int32)CompressedData.Num());
+
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+	ResponseJson->SetBoolField(TEXT("success"), true);
+	ResponseJson->SetStringField(TEXT("data"), Base64);
+	ResponseJson->SetStringField(TEXT("mimeType"), TEXT("image/jpeg"));
+	ResponseJson->SetNumberField(TEXT("width"), ViewportSize.X);
+	ResponseJson->SetNumberField(TEXT("height"), ViewportSize.Y);
+
+	UE_LOG(LogAssetFactory, Log, TEXT("Viewport screenshot captured: %dx%d, %lld bytes compressed, %d chars base64"),
+		ViewportSize.X, ViewportSize.Y, CompressedData.Num(), Base64.Len());
 
 	SendJsonResponse(OnComplete, 200, ResponseJson);
 	return true;

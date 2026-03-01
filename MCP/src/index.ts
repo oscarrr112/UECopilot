@@ -532,6 +532,15 @@ const tools: Tool[] = [
       required: ["blueprint_json"],
     },
   },
+  {
+    name: "get_viewport_screenshot",
+    description:
+      "Capture the current Level Editor Viewport as a JPEG image. Returns the screenshot so you can visually analyze the scene, inspect actor placement, check materials/lighting, or understand the current state of the level. The image is downsampled to max 1280px on the longest side.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
 ];
 
 // Create MCP server
@@ -644,6 +653,39 @@ print(json.dumps(summary, ensure_ascii=False))
   });
 };
 
+const viewportScreenshotHandler: ToolHandler = async () => {
+  const result = (await callUEApi("/screenshot", "GET")) as {
+    success?: boolean;
+    data?: string;
+    mimeType?: string;
+    width?: number;
+    height?: number;
+    error?: string;
+  };
+
+  if (!result?.success || !result.data) {
+    const errMsg = result?.error ?? "Screenshot failed (no data returned)";
+    return {
+      content: [{ type: "text", text: `Error: ${errMsg}` }],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [
+      {
+        type: "image",
+        data: result.data,
+        mimeType: result.mimeType ?? "image/jpeg",
+      },
+      {
+        type: "text",
+        text: `Viewport screenshot captured: ${result.width ?? "?"}x${result.height ?? "?"} px`,
+      },
+    ],
+  };
+};
+
 const toolHandlers: Record<string, ToolHandler> = {
   generate_assets: async (args) => callUEApi("/generate", "POST", { Assets: (args as { assets: unknown[] }).assets }),
   get_generator_schema: async (args) => loadSchema((args as { asset_type: string }).asset_type),
@@ -667,6 +709,7 @@ const toolHandlers: Record<string, ToolHandler> = {
       Description: (args as { description?: string }).description,
     }),
   apply_blueprint_change: applyBlueprintChangeHandler,
+  get_viewport_screenshot: viewportScreenshotHandler,
   update_datatable_rows: async (args) => {
     const {
       asset,
@@ -719,6 +762,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
     const result = await handler(((args as Record<string, unknown>) || {}));
+
+    // If the handler already returned a full MCP response (has a content array), pass it through directly
+    if (result && typeof result === "object" && Array.isArray((result as { content?: unknown }).content)) {
+      return result as { content: unknown[]; isError?: boolean };
+    }
 
     return {
       content: [

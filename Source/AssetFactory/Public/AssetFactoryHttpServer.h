@@ -22,6 +22,7 @@ class UAssetFactorySubsystem;
  *   GET  /assetfactory/health - Health check
  *   GET  /assetfactory/context - Get current editor state (selected actors, assets, level, etc.)
  *   POST /assetfactory/execute - Execute Python code in the editor
+ *   GET  /assetfactory/screenshot - Capture Level Viewport as base64 JPEG
  *
  * Service Discovery:
  *   On startup, writes service info to {ProjectDir}/Saved/AssetFactory/service.json
@@ -85,6 +86,9 @@ private:
 
 	/** Handle GET /context request - returns current editor state */
 	bool HandleContext(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
+	/** Handle GET /screenshot request - capture Level Viewport as base64 JPEG */
+	bool HandleGetViewportScreenshot(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	/** Handle POST /execute request - execute Python code in the editor */
 	bool HandleExecute(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
