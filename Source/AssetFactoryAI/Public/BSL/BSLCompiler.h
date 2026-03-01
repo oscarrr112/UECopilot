@@ -120,6 +120,14 @@ private:
 
 	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found. */
 	static bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+
+	/** Compile the Object expression of a method call and connect it to the 'self' Target pin.
+	 *  Emits a Warning if the object cannot be compiled. */
+	void TryConnectTargetPin(
+		FBlueprintNodeData& CallNode,
+		const TSharedPtr<FExpression>& ObjectExpr,
+		const FString& FunctionName,
+		TArray<FBlueprintNodeData>& OutNodes);
 };
 
 } // namespace BSL
