@@ -477,37 +477,51 @@ bool FCompiler::CompileStatement(
 				CallNode.Pins.Add(ExecPin);
 			}
 
-			// Compile arguments
+			// 尝试用反射解析 pin 名
+			TArray<FString> ParamNames;
+			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames);
+
 			int32 ArgIndex = 0;
 			for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
 			{
 				if (!Arg) continue;
 
+				FString PinName = (bHasReflectedNames && ParamNames.IsValidIndex(ArgIndex))
+					? ParamNames[ArgIndex]
+					: FString::Printf(TEXT("Arg%d"), ArgIndex);
+
 				FString ArgNodeId;
 				FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
 
-				// For string literal arguments, use default value instead of connection
-				if (Arg->Type == EExpressionType::Literal_String)
-				{
-					FBlueprintPinData ArgPin;
-					ArgPin.Name = TEXT("InString");  // Common name for PrintString
-					ArgPin.Direction = EBlueprintPinDirection::Input;
-					ArgPin.DefaultValue = Arg->StringValue;
-					CallNode.Pins.Add(ArgPin);
-				}
-				else if (!ArgNodeId.IsEmpty())
-				{
-					FBlueprintPinData ArgPin;
-					ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
-					ArgPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinData ArgPin;
+				ArgPin.Name = PinName;
+				ArgPin.Direction = EBlueprintPinDirection::Input;
 
+				if (!ArgNodeId.IsEmpty())
+				{
 					FBlueprintPinConnection ArgConn;
 					ArgConn.SourceNodeId = ArgNodeId;
 					ArgConn.SourcePinName = ArgPinName;
 					ArgPin.Connections.Add(ArgConn);
-					CallNode.Pins.Add(ArgPin);
+				}
+				else if (Arg->Type == EExpressionType::Literal_String)
+				{
+					ArgPin.DefaultValue = Arg->StringValue;
+				}
+				else if (Arg->Type == EExpressionType::Literal_Int)
+				{
+					ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+				}
+				else if (Arg->Type == EExpressionType::Literal_Float)
+				{
+					ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+				}
+				else if (Arg->Type == EExpressionType::Literal_Bool)
+				{
+					ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
 				}
 
+				CallNode.Pins.Add(ArgPin);
 				ArgIndex++;
 			}
 
@@ -717,11 +731,18 @@ FString FCompiler::CompileExpression(
 		CallNode.FunctionReference = Expr.Name;
 		CallNode.Position = {300.0f, 100.0f};
 
-		// Add argument connections
+		// 用反射解析 pin 名
+		TArray<FString> ParamNames;
+		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames);
+
 		int32 ArgIndex = 0;
 		for (const TSharedPtr<FExpression>& Arg : Expr.Arguments)
 		{
 			if (!Arg) continue;
+
+			FString PinName = (bHasReflectedNames && ParamNames.IsValidIndex(ArgIndex))
+				? ParamNames[ArgIndex]
+				: FString::Printf(TEXT("Arg%d"), ArgIndex);
 
 			FString ArgNodeId;
 			FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
@@ -729,7 +750,7 @@ FString FCompiler::CompileExpression(
 			if (!ArgNodeId.IsEmpty())
 			{
 				FBlueprintPinData ArgPin;
-				ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
+				ArgPin.Name = PinName;
 				ArgPin.Direction = EBlueprintPinDirection::Input;
 
 				FBlueprintPinConnection Conn;
@@ -741,8 +762,29 @@ FString FCompiler::CompileExpression(
 			else if (Arg->Type == EExpressionType::Literal_String)
 			{
 				FBlueprintPinData ArgPin;
-				ArgPin.Name = FString::Printf(TEXT("Arg%d"), ArgIndex);
+				ArgPin.Name = PinName;
 				ArgPin.DefaultValue = Arg->StringValue;
+				CallNode.Pins.Add(ArgPin);
+			}
+			else if (Arg->Type == EExpressionType::Literal_Int)
+			{
+				FBlueprintPinData ArgPin;
+				ArgPin.Name = PinName;
+				ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+				CallNode.Pins.Add(ArgPin);
+			}
+			else if (Arg->Type == EExpressionType::Literal_Float)
+			{
+				FBlueprintPinData ArgPin;
+				ArgPin.Name = PinName;
+				ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+				CallNode.Pins.Add(ArgPin);
+			}
+			else if (Arg->Type == EExpressionType::Literal_Bool)
+			{
+				FBlueprintPinData ArgPin;
+				ArgPin.Name = PinName;
+				ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
 				CallNode.Pins.Add(ArgPin);
 			}
 
@@ -1134,6 +1176,44 @@ bool FCompiler::IsFunctionOutputParameter(const FString& Name) const
 	}
 
 	return false;
+}
+
+bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames)
+{
+	OutNames.Empty();
+
+	// 尝试直接路径查找（e.g. "/Script/Engine.KismetSystemLibrary:PrintString"）
+	UFunction* Func = FindObject<UFunction>(nullptr, *FunctionRef);
+
+	// 如果直接查找失败，遍历常见库类
+	if (!Func)
+	{
+		TArray<UClass*> CandidateClasses = {
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary")),
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetMathLibrary")),
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.GameplayStatics")),
+		};
+		for (UClass* Cls : CandidateClasses)
+		{
+			if (Cls)
+			{
+				Func = Cls->FindFunctionByName(*FunctionRef);
+				if (Func) break;
+			}
+		}
+	}
+
+	if (!Func) return false;
+
+	// 遍历参数（跳过 ReturnParm 和 OutParm，只取输入参数）
+	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
+	{
+		if (!(It->PropertyFlags & CPF_ReturnParm) && !(It->PropertyFlags & CPF_OutParm))
+		{
+			OutNames.Add(It->GetName());
+		}
+	}
+	return OutNames.Num() > 0;
 }
 
 } // namespace BSL

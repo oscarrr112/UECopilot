@@ -114,6 +114,9 @@ private:
 
 	/** Check if a name is a function output parameter */
 	bool IsFunctionOutputParameter(const FString& Name) const;
+
+	/** 通过 UE 反射解析函数参数 pin 名列表，失败则返回 false */
+	static bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
 };
 
 } // namespace BSL
