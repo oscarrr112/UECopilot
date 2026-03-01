@@ -471,12 +471,18 @@ bool FCompiler::CompileStatement(
 	{
 		// (a, b) = FunctionCall() - multi-return value assignment
 		if (!Stmt.AssignValue.IsValid()) return true;
-		if (Stmt.AssignValue->Type != EExpressionType::FunctionCall) return true;
+		if (Stmt.AssignValue->Type != EExpressionType::FunctionCall)
+		{
+			Warning(TEXT("MultiAssignment: right-hand side must be a function call"));
+			return true;
+		}
 
 		FBlueprintNodeData CallNode;
 		CallNode.NodeId = GenerateNodeId(TEXT("call_multi"));
 		CallNode.NodeType = EBlueprintNodeType::CallFunction;
 		CallNode.FunctionReference = Stmt.AssignValue->Name;
+		// Note: method call target (AssignValue->Object) is not yet supported here;
+		// it will be handled as part of Task 10 (method call parser fix).
 		CallNode.Position = {400.0f, 0.0f};
 
 		// Connect execute pin from previous node
@@ -537,16 +543,7 @@ bool FCompiler::CompileStatement(
 
 		// Resolve out param names via reflection, map assignment targets to output pins
 		TArray<FString> OutParamNames;
-		if (UFunction* Func = FindObject<UFunction>(nullptr, *Stmt.AssignValue->Name))
-		{
-			for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
-			{
-				if ((It->PropertyFlags & CPF_OutParm) && !(It->PropertyFlags & CPF_ReturnParm))
-				{
-					OutParamNames.Add(It->GetName());
-				}
-			}
-		}
+		TryResolveOutParamNames(Stmt.AssignValue->Name, OutParamNames);
 
 		for (int32 i = 0; i < Stmt.MultiAssignTargets.Num(); i++)
 		{
@@ -1274,11 +1271,20 @@ FString FCompiler::CompileExpression(
 		}
 		else  // EUnaryOp::Negate
 		{
+			if (!Expr.Left.IsValid())
+			{
+				Warning(TEXT("Negate expression has no operand"));
+				OutNodeId.Empty();
+				return TEXT("");
+			}
+
 			// Blueprint has no dedicated negate node; implement as Multiply * (-1)
 			FBlueprintNodeData MulNode;
 			MulNode.NodeId = GenerateNodeId(TEXT("negate"));
 			MulNode.NodeType = EBlueprintNodeType::Math_Multiply;
-			MulNode.OperandType = TEXT("DoubleDouble");
+			// Determine operand type based on the expression type of the operand
+			EType NegateOpType = GetExpressionType(Expr.Left.Get());
+			MulNode.OperandType = (NegateOpType == EType::Int) ? TEXT("IntInt") : TEXT("DoubleDouble");
 			MulNode.Position = {300.0f, 50.0f};
 
 			// A pin = operand
@@ -1367,6 +1373,13 @@ FString FCompiler::CompileExpression(
 
 	case EExpressionType::Cast:
 	{
+		if (Expr.CastType.SubType.IsEmpty())
+		{
+			Warning(TEXT("Cast expression has no target type"));
+			OutNodeId.Empty();
+			return TEXT("");
+		}
+
 		FBlueprintNodeData CastNode;
 		CastNode.NodeId = GenerateNodeId(TEXT("cast"));
 		CastNode.NodeType = EBlueprintNodeType::Cast;
@@ -1606,6 +1619,35 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 		if (It->HasMetaData(TEXT("WorldContext"))) continue;
 		if (It->HasMetaData(TEXT("HidePin"))) continue;
 		OutNames.Add(It->GetName());
+	}
+	return OutNames.Num() > 0;
+}
+
+bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames)
+{
+	OutNames.Empty();
+
+	UFunction* Func = FindObject<UFunction>(nullptr, *FunctionRef);
+	if (!Func)
+	{
+		TArray<UClass*> CandidateClasses = {
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary")),
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetMathLibrary")),
+			FindObject<UClass>(nullptr, TEXT("/Script/Engine.GameplayStatics")),
+		};
+		for (UClass* Cls : CandidateClasses)
+		{
+			if (Cls) { Func = Cls->FindFunctionByName(*FunctionRef); if (Func) break; }
+		}
+	}
+	if (!Func) return false;
+
+	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
+	{
+		if ((It->PropertyFlags & CPF_OutParm) && !(It->PropertyFlags & CPF_ReturnParm))
+		{
+			OutNames.Add(It->GetName());
+		}
 	}
 	return OutNames.Num() > 0;
 }

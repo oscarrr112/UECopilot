@@ -117,6 +117,9 @@ private:
 
 	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found. */
 	static bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+
+	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found. */
+	static bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
 };
 
 } // namespace BSL
