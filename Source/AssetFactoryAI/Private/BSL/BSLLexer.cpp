@@ -9,7 +9,7 @@ namespace BSL
 
 bool FToken::IsKeyword() const
 {
-	return Type >= ETokenType::Blueprint && Type <= ETokenType::Cast;
+	return Type >= ETokenType::Blueprint && Type <= ETokenType::Default;
 }
 
 bool FToken::IsOperator() const
@@ -55,6 +55,9 @@ FString FToken::TokenTypeToString(ETokenType Type)
 	case ETokenType::Continue: return TEXT("continue");
 	case ETokenType::Self: return TEXT("self");
 	case ETokenType::Cast: return TEXT("Cast");
+	case ETokenType::Switch: return TEXT("switch");
+	case ETokenType::Case: return TEXT("case");
+	case ETokenType::Default: return TEXT("default");
 	case ETokenType::Plus: return TEXT("+");
 	case ETokenType::Minus: return TEXT("-");
 	case ETokenType::Star: return TEXT("*");
@@ -460,6 +463,9 @@ ETokenType FLexer::CheckKeyword(const FString& Identifier)
 		{TEXT("true"), ETokenType::True},
 		{TEXT("false"), ETokenType::False},
 		{TEXT("Cast"), ETokenType::Cast},
+		{TEXT("switch"), ETokenType::Switch},
+		{TEXT("case"), ETokenType::Case},
+		{TEXT("default"), ETokenType::Default},
 	};
 
 	if (const ETokenType* Found = Keywords.Find(Identifier))

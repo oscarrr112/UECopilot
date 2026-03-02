@@ -215,7 +215,17 @@ enum class EStatementType : uint8
 
 	// Other
 	ExpressionStmt,		// FunctionCall() as statement
-	Block				// { statements }
+	Block,				// { statements }
+	Switch				// switch (x) { case v: {} default: {} }
+};
+
+/**
+ * One arm of a switch statement
+ */
+struct FSwitchCase
+{
+	TSharedPtr<FExpression> Value;              // nullptr = default case
+	TArray<TSharedPtr<FStatement>> Body;
 };
 
 /**
@@ -253,6 +263,9 @@ struct FStatement
 
 	// Return values
 	TArray<TSharedPtr<FExpression>> ReturnValues;
+
+	// Switch statement
+	TArray<FSwitchCase> SwitchCases;
 
 	// Source location
 	int32 Line = 0;

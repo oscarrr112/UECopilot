@@ -12,6 +12,7 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_SwitchInteger.h"
 #include "K2Node_CommutativeAssociativeBinaryOperator.h"
 #include "K2Node_MakeArray.h"
 #include "K2Node_FunctionResult.h"
@@ -162,11 +163,21 @@ namespace
 		return SequenceNode;
 	}
 
+	UK2Node* CreateSwitchIntegerFlowNode(UEdGraph* Graph)
+	{
+		FGraphNodeCreator<UK2Node_SwitchInteger> NodeCreator(*Graph);
+		UK2Node_SwitchInteger* SwitchNode = NodeCreator.CreateNode();
+		SwitchNode->AllocateDefaultPins();
+		NodeCreator.Finalize();
+		return SwitchNode;
+	}
+
 	const TMap<EBlueprintNodeType, FSimpleFlowNodeFactory>& GetSimpleFlowNodeFactories()
 	{
 		static const TMap<EBlueprintNodeType, FSimpleFlowNodeFactory> Factories = {
 			{ EBlueprintNodeType::Flow_Branch, &CreateBranchFlowNode },
 			{ EBlueprintNodeType::Flow_Sequence, &CreateSequenceFlowNode },
+			{ EBlueprintNodeType::Flow_Switch, &CreateSwitchIntegerFlowNode },
 		};
 		return Factories;
 	}
@@ -212,6 +223,7 @@ namespace
 				EBlueprintNodeType::Flow_DoOnce,
 				EBlueprintNodeType::Flow_Gate,
 				EBlueprintNodeType::Flow_Delay,
+				EBlueprintNodeType::Flow_Switch,
 			}, &UNodeSpawner::SpawnFlowControlNode);
 
 			RegisterManyHandlers(Handlers, {

@@ -960,6 +960,70 @@ bool FCompiler::CompileStatement(
 		return true;
 	}
 
+	case EStatementType::Switch:
+	{
+		FBlueprintNodeData SwitchNode;
+		SwitchNode.NodeId = GenerateNodeId(TEXT("switch"));
+		SwitchNode.NodeType = EBlueprintNodeType::Flow_Switch;
+		SwitchNode.Position = {400.0f, 0.0f};
+
+		// Connect execute
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = InOutLastExecNodeId;
+			Conn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(Conn);
+			SwitchNode.Pins.Add(ExecPin);
+		}
+
+		// Connect Selection pin (the switch condition value)
+		if (Stmt.Condition.IsValid())
+		{
+			FString SelNodeId;
+			FString SelPinName = CompileExpression(*Stmt.Condition, OutNodes, SelNodeId);
+			if (!SelNodeId.IsEmpty())
+			{
+				FBlueprintPinData SelPin;
+				SelPin.Name = TEXT("Selection");
+				SelPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = SelNodeId;
+				Conn.SourcePinName = SelPinName;
+				SelPin.Connections.Add(Conn);
+				SwitchNode.Pins.Add(SelPin);
+			}
+			else
+			{
+				Warning(TEXT("Switch condition could not be compiled - Selection pin unconnected"));
+			}
+		}
+
+		OutNodes.Add(SwitchNode);
+
+		// Compile each case branch
+		int32 CaseIndex = 0;
+		for (const FSwitchCase& SwitchCase : Stmt.SwitchCases)
+		{
+			FString CasePinName = SwitchCase.Value.IsValid()
+				? FString::Printf(TEXT("Case_%d"), CaseIndex)
+				: TEXT("Default");
+
+			FString CaseLastNodeId = SwitchNode.NodeId;
+			FString CaseLastPinName = CasePinName;
+			CompileStatements(SwitchCase.Body, OutNodes, CaseLastNodeId, CaseLastPinName);
+
+			if (SwitchCase.Value.IsValid()) CaseIndex++;
+		}
+
+		InOutLastExecNodeId.Empty();
+		InOutLastExecPinName.Empty();
+		return true;
+	}
+
 	default:
 		Warning(FString::Printf(TEXT("Unsupported statement type: %d"), static_cast<int32>(Stmt.Type)));
 		return true;

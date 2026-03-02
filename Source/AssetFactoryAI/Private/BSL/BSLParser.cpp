@@ -280,6 +280,10 @@ TSharedPtr<FStatement> FParser::ParseStatement()
 	{
 		return ParseFor();
 	}
+	if (Check(ETokenType::Switch))
+	{
+		return ParseSwitch();
+	}
 	if (Check(ETokenType::Return))
 	{
 		return ParseReturn();
@@ -459,6 +463,50 @@ TSharedPtr<FStatement> FParser::ParseFor()
 
 	Stmt->LoopBody = ParseBlock();
 
+	return Stmt;
+}
+
+TSharedPtr<FStatement> FParser::ParseSwitch()
+{
+	Consume(ETokenType::Switch, TEXT("Expected 'switch'"));
+	TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::Switch);
+	Stmt->Line = Previous().Line;
+
+	Consume(ETokenType::LeftParen, TEXT("Expected '(' after 'switch'"));
+	Stmt->Condition = ParseExpression();
+	Consume(ETokenType::RightParen, TEXT("Expected ')' after switch condition"));
+	Consume(ETokenType::LeftBrace, TEXT("Expected '{' to start switch body"));
+
+	while (!Check(ETokenType::RightBrace) && !IsAtEnd())
+	{
+		FSwitchCase SwitchCase;
+
+		if (Check(ETokenType::Case))
+		{
+			Advance();  // consume 'case'
+			SwitchCase.Value = ParseExpression();
+			Consume(ETokenType::Colon, TEXT("Expected ':' after case value"));
+		}
+		else if (Check(ETokenType::Default))
+		{
+			Advance();  // consume 'default'
+			SwitchCase.Value = nullptr;  // nullptr = default case
+			Consume(ETokenType::Colon, TEXT("Expected ':' after 'default'"));
+		}
+		else
+		{
+			break;
+		}
+
+		if (Check(ETokenType::LeftBrace))
+		{
+			SwitchCase.Body = ParseBlock();
+		}
+
+		Stmt->SwitchCases.Add(SwitchCase);
+	}
+
+	Consume(ETokenType::RightBrace, TEXT("Expected '}' to end switch"));
 	return Stmt;
 }
 

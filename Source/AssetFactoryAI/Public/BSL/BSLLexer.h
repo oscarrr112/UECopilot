@@ -40,6 +40,9 @@ enum class ETokenType : uint8
 	Continue,
 	Self,
 	Cast,
+	Switch,
+	Case,
+	Default,
 
 	// Operators
 	Plus,			// +
