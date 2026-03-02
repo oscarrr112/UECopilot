@@ -1,0 +1,514 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "BSL/BlueprintDecompiler.h"
+
+// UE Blueprint 核心
+#include "Engine/Blueprint.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+
+// K2 节点类型
+#include "K2Node_Event.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_IfThenElse.h"
+#include "K2Node_VariableGet.h"
+#include "K2Node_VariableSet.h"
+
+// 用于识别 exec pin 的类型分类字符串
+#include "EdGraphSchema_K2.h"
+
+namespace BSL
+{
+
+// ============================================================
+// 公共静态入口
+// ============================================================
+
+FDecompileResult FBlueprintDecompiler::Decompile(UBlueprint* BP)
+{
+	FDecompileResult Result;
+
+	if (!BP)
+	{
+		Result.Errors.Add(TEXT("Null Blueprint passed to FBlueprintDecompiler::Decompile"));
+		return Result;
+	}
+
+	Result.Blueprint.Name = BP->GetName();
+	if (BP->ParentClass)
+	{
+		Result.Blueprint.ParentClass = BP->ParentClass->GetName();
+	}
+
+	// ----------------------------------------------------------
+	// 1. 成员变量：从 NewVariables 列表还原
+	// ----------------------------------------------------------
+	for (const FBPVariableDescription& VarDesc : BP->NewVariables)
+	{
+		FVariable Var;
+		Var.Name = VarDesc.VarName.ToString();
+
+		// 映射 UE pin 类型分类 -> BSL EType
+		const FName Cat = VarDesc.VarType.PinCategory;
+		if      (Cat == UEdGraphSchema_K2::PC_Boolean) Var.Type.Type = EType::Bool;
+		else if (Cat == UEdGraphSchema_K2::PC_Int)     Var.Type.Type = EType::Int;
+		else if (Cat == UEdGraphSchema_K2::PC_Float)   Var.Type.Type = EType::Float;
+		else if (Cat == UEdGraphSchema_K2::PC_Double)  Var.Type.Type = EType::Float;
+		else if (Cat == UEdGraphSchema_K2::PC_String)  Var.Type.Type = EType::String;
+		else if (Cat == UEdGraphSchema_K2::PC_Name)    Var.Type.Type = EType::Name;
+		else if (Cat == UEdGraphSchema_K2::PC_Text)    Var.Type.Type = EType::Text;
+		else if (Cat == UEdGraphSchema_K2::PC_Object)
+		{
+			Var.Type.Type = EType::Object;
+			if (VarDesc.VarType.PinSubCategoryObject.IsValid())
+				Var.Type.SubType = VarDesc.VarType.PinSubCategoryObject->GetName();
+		}
+		else if (Cat == UEdGraphSchema_K2::PC_Class)
+		{
+			Var.Type.Type = EType::Class;
+			if (VarDesc.VarType.PinSubCategoryObject.IsValid())
+				Var.Type.SubType = VarDesc.VarType.PinSubCategoryObject->GetName();
+		}
+		else
+		{
+			Var.Type.Type    = EType::Unknown;
+			Var.Type.SubType = Cat.ToString();
+		}
+
+		// 默认值：若有则生成字符串字面量
+		if (!VarDesc.DefaultValue.IsEmpty())
+		{
+			Var.DefaultValue = FExpression::MakeString(VarDesc.DefaultValue);
+		}
+
+		Result.Blueprint.Variables.Add(Var);
+	}
+
+	// ----------------------------------------------------------
+	// 2. EventGraph（UbergraphPages）：找所有 Event 节点
+	// ----------------------------------------------------------
+	for (UEdGraph* Graph : BP->UbergraphPages)
+	{
+		if (!Graph) continue;
+
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+			if (!EventNode) continue;
+
+			FFunction Func;
+			Func.bIsEvent = true;
+			Func.Name     = EventNode->EventReference.GetMemberName().ToString();
+
+			// 如果 Name 为空（自定义事件），回退到节点名称
+			if (Func.Name.IsEmpty())
+			{
+				Func.Name = EventNode->GetNodeTitle(ENodeTitleType::MenuTitle).ToString();
+			}
+
+			// 收集事件输出参数 pin（非 exec，非 self，direction=Output）
+			for (UEdGraphPin* Pin : EventNode->Pins)
+			{
+				if (Pin->Direction != EGPD_Output) continue;
+				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+
+				FVariable OutParam;
+				OutParam.Name = Pin->GetName();
+				// 类型映射（与上面成员变量相同逻辑）
+				const FName PinCat = Pin->PinType.PinCategory;
+				if      (PinCat == UEdGraphSchema_K2::PC_Boolean) OutParam.Type.Type = EType::Bool;
+				else if (PinCat == UEdGraphSchema_K2::PC_Int)     OutParam.Type.Type = EType::Int;
+				else if (PinCat == UEdGraphSchema_K2::PC_Float)   OutParam.Type.Type = EType::Float;
+				else if (PinCat == UEdGraphSchema_K2::PC_Double)  OutParam.Type.Type = EType::Float;
+				else if (PinCat == UEdGraphSchema_K2::PC_String)  OutParam.Type.Type = EType::String;
+				else if (PinCat == UEdGraphSchema_K2::PC_Name)    OutParam.Type.Type = EType::Name;
+				else if (PinCat == UEdGraphSchema_K2::PC_Text)    OutParam.Type.Type = EType::Text;
+				else                                              OutParam.Type.Type = EType::Unknown;
+				Func.Inputs.Add(OutParam);
+			}
+
+			// 沿 "then" pin 执行链生成函数体
+			FBlueprintDecompiler Decompiler;
+			UEdGraphPin* ThenPin = EventNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+			if (ThenPin)
+			{
+				Func.Body = Decompiler.WalkExecChain(ThenPin);
+			}
+
+			Result.Warnings.Append(Decompiler.Warnings);
+			Result.Blueprint.Functions.Add(Func);
+		}
+	}
+
+	// ----------------------------------------------------------
+	// 3. FunctionGraphs：每个图一个 FFunction
+	// ----------------------------------------------------------
+	for (UEdGraph* Graph : BP->FunctionGraphs)
+	{
+		if (!Graph) continue;
+
+		FFunction Func;
+		Func.bIsEvent = false;
+		Func.Name     = Graph->GetName();
+
+		FBlueprintDecompiler Decompiler;
+		Decompiler.DecompileGraph(Graph, Func);
+		Result.Warnings.Append(Decompiler.Warnings);
+		Result.Blueprint.Functions.Add(Func);
+	}
+
+	Result.bSuccess = true;
+	return Result;
+}
+
+// ============================================================
+// 私有：反编译函数图
+// ============================================================
+
+void FBlueprintDecompiler::DecompileGraph(UEdGraph* Graph, FFunction& OutFunc)
+{
+	if (!Graph) return;
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UK2Node_FunctionEntry* EntryNode = Cast<UK2Node_FunctionEntry>(Node);
+		if (!EntryNode) continue;
+
+		// 收集函数输入参数（FunctionEntry 的输出 pin 即调用者传入的参数）
+		for (UEdGraphPin* Pin : EntryNode->Pins)
+		{
+			if (Pin->Direction != EGPD_Output) continue;
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			if (Pin->GetName() == TEXT("self")) continue;
+
+			FVariable InParam;
+			InParam.Name = Pin->GetName();
+			const FName PinCat = Pin->PinType.PinCategory;
+			if      (PinCat == UEdGraphSchema_K2::PC_Boolean) InParam.Type.Type = EType::Bool;
+			else if (PinCat == UEdGraphSchema_K2::PC_Int)     InParam.Type.Type = EType::Int;
+			else if (PinCat == UEdGraphSchema_K2::PC_Float)   InParam.Type.Type = EType::Float;
+			else if (PinCat == UEdGraphSchema_K2::PC_Double)  InParam.Type.Type = EType::Float;
+			else if (PinCat == UEdGraphSchema_K2::PC_String)  InParam.Type.Type = EType::String;
+			else if (PinCat == UEdGraphSchema_K2::PC_Name)    InParam.Type.Type = EType::Name;
+			else if (PinCat == UEdGraphSchema_K2::PC_Text)    InParam.Type.Type = EType::Text;
+			else                                              InParam.Type.Type = EType::Unknown;
+
+			OutFunc.Inputs.Add(InParam);
+		}
+
+		// 从入口的 "then" pin 开始遍历执行链
+		UEdGraphPin* ThenPin = EntryNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (ThenPin)
+		{
+			OutFunc.Body = WalkExecChain(ThenPin);
+		}
+		return; // 一个图只有一个 FunctionEntry
+	}
+}
+
+// ============================================================
+// 私有：沿执行链遍历，生成语句列表
+// ============================================================
+
+TArray<TSharedPtr<FStatement>> FBlueprintDecompiler::WalkExecChain(UEdGraphPin* ExecPin)
+{
+	TArray<TSharedPtr<FStatement>> Stmts;
+	if (!ExecPin || ExecPin->LinkedTo.Num() == 0) return Stmts;
+
+	UEdGraphNode* NextNode = ExecPin->LinkedTo[0]->GetOwningNode();
+
+	// 防止循环图造成死循环
+	TSet<UEdGraphNode*> Visited;
+
+	while (NextNode && !Visited.Contains(NextNode))
+	{
+		Visited.Add(NextNode);
+
+		TSharedPtr<FStatement> Stmt = NodeToStatement(NextNode);
+		if (Stmt.IsValid())
+		{
+			Stmts.Add(Stmt);
+		}
+
+		// If 语句本身已经在 NodeToStatement 内部递归处理了两条分支，
+		// 执行链在 If 节点后通常没有 "then" pin（Branch 节点本身没有主线继续）
+		// 所以这里只处理非 Branch 节点的线性继续
+		if (Cast<UK2Node_IfThenElse>(NextNode))
+		{
+			// Branch 节点没有主线继续，停止遍历
+			break;
+		}
+
+		// 查找当前节点的 "then" exec 输出 pin，继续遍历
+		UEdGraphPin* ThenPin = NextNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
+		if (!ThenPin || ThenPin->LinkedTo.Num() == 0)
+		{
+			break;
+		}
+		NextNode = ThenPin->LinkedTo[0]->GetOwningNode();
+	}
+
+	return Stmts;
+}
+
+// ============================================================
+// 私有：单节点 -> FStatement
+// ============================================================
+
+TSharedPtr<FStatement> FBlueprintDecompiler::NodeToStatement(UEdGraphNode* Node)
+{
+	if (!Node) return nullptr;
+
+	// ----------------------------------------------------------
+	// 函数调用节点（CallFunction）
+	// ----------------------------------------------------------
+	if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+	{
+		TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::ExpressionStmt);
+
+		TSharedPtr<FExpression> CallExpr = MakeShared<FExpression>(EExpressionType::FunctionCall);
+		CallExpr->Name = CallNode->FunctionReference.GetMemberName().ToString();
+
+		// 收集数据输入 pin（跳过 exec pin 和 self pin）
+		for (UEdGraphPin* Pin : CallNode->Pins)
+		{
+			if (Pin->Direction != EGPD_Input) continue;
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			if (Pin->GetName() == TEXT("self")) continue;
+
+			TSharedPtr<FExpression> ArgExpr;
+			if (Pin->LinkedTo.Num() > 0)
+			{
+				// 追溯到连接的源 pin
+				ArgExpr = PinToExpression(Pin->LinkedTo[0]);
+			}
+			else if (!Pin->DefaultValue.IsEmpty())
+			{
+				// 未连接但有默认值：直接生成字面量
+				ArgExpr = PinToExpression(Pin);
+			}
+
+			if (ArgExpr.IsValid())
+			{
+				CallExpr->Arguments.Add(ArgExpr);
+			}
+		}
+
+		Stmt->Expression = CallExpr;
+		return Stmt;
+	}
+
+	// ----------------------------------------------------------
+	// 条件分支节点（Branch / IfThenElse）
+	// ----------------------------------------------------------
+	if (UK2Node_IfThenElse* BranchNode = Cast<UK2Node_IfThenElse>(Node))
+	{
+		TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::If);
+
+		// 条件 pin 固定名为 "Condition"
+		UEdGraphPin* CondPin = BranchNode->FindPin(TEXT("Condition"), EGPD_Input);
+		if (CondPin && CondPin->LinkedTo.Num() > 0)
+		{
+			Stmt->Condition = PinToExpression(CondPin->LinkedTo[0]);
+		}
+		else if (CondPin)
+		{
+			// 未连接时使用默认值（通常是 false）
+			Stmt->Condition = FExpression::MakeBool(CondPin->DefaultValue.ToBool());
+		}
+
+		// "True" 分支
+		UEdGraphPin* TruePin = BranchNode->FindPin(TEXT("True"), EGPD_Output);
+		if (TruePin)
+		{
+			Stmt->ThenBody = WalkExecChain(TruePin);
+		}
+
+		// "False" 分支
+		UEdGraphPin* FalsePin = BranchNode->FindPin(TEXT("False"), EGPD_Output);
+		if (FalsePin)
+		{
+			Stmt->ElseBody = WalkExecChain(FalsePin);
+		}
+
+		return Stmt;
+	}
+
+	// ----------------------------------------------------------
+	// 变量赋值节点（VariableSet）
+	// ----------------------------------------------------------
+	if (UK2Node_VariableSet* SetNode = Cast<UK2Node_VariableSet>(Node))
+	{
+		TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::Assignment);
+		Stmt->AssignTarget = SetNode->GetVarName().ToString();
+
+		// 值 pin 与变量同名
+		UEdGraphPin* ValuePin = SetNode->FindPin(SetNode->GetVarName(), EGPD_Input);
+		if (ValuePin && ValuePin->LinkedTo.Num() > 0)
+		{
+			Stmt->AssignValue = PinToExpression(ValuePin->LinkedTo[0]);
+		}
+		else if (ValuePin && !ValuePin->DefaultValue.IsEmpty())
+		{
+			Stmt->AssignValue = PinToExpression(ValuePin);
+		}
+
+		return Stmt;
+	}
+
+	// ----------------------------------------------------------
+	// FunctionReturn 节点：Return 语句
+	// ----------------------------------------------------------
+	// UK2Node_FunctionResult 是函数的返回节点
+	if (Node->GetClass()->GetName() == TEXT("K2Node_FunctionResult"))
+	{
+		TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::Return);
+
+		// 收集所有非 exec 输入 pin 作为返回值
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->Direction != EGPD_Input) continue;
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+
+			TSharedPtr<FExpression> RetExpr;
+			if (Pin->LinkedTo.Num() > 0)
+			{
+				RetExpr = PinToExpression(Pin->LinkedTo[0]);
+			}
+			else if (!Pin->DefaultValue.IsEmpty())
+			{
+				RetExpr = PinToExpression(Pin);
+			}
+			if (RetExpr.IsValid())
+			{
+				Stmt->ReturnValues.Add(RetExpr);
+			}
+		}
+
+		return Stmt;
+	}
+
+	// ----------------------------------------------------------
+	// 兜底：无法识别的节点 -> RawNode 逃生舱
+	// ----------------------------------------------------------
+	TSharedPtr<FStatement> RawStmt = MakeShared<FStatement>(EStatementType::RawNode);
+	RawStmt->RawNodeType = Node->GetClass()->GetName();
+	// 将节点注释（如有）作为辅助信息写入 RawNodeParamsJson
+	if (!Node->NodeComment.IsEmpty())
+	{
+		RawStmt->RawNodeParamsJson = FString::Printf(TEXT("{\"comment\":\"%s\"}"), *Node->NodeComment);
+	}
+
+	Warnings.Add(FString::Printf(TEXT("Unrecognized node type '%s' (title: %s), emitted as @node"),
+		*Node->GetClass()->GetName(),
+		*Node->GetNodeTitle(ENodeTitleType::MenuTitle).ToString()));
+
+	return RawStmt;
+}
+
+// ============================================================
+// 私有：Pin -> FExpression
+// ============================================================
+
+TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataPin)
+{
+	if (!DataPin) return nullptr;
+
+	UEdGraphNode* SourceNode = DataPin->GetOwningNode();
+	const FString PinCatStr  = DataPin->PinType.PinCategory.ToString();
+
+	// ----------------------------------------------------------
+	// 1. 变量 Get 节点
+	// ----------------------------------------------------------
+	if (UK2Node_VariableGet* GetNode = Cast<UK2Node_VariableGet>(SourceNode))
+	{
+		return FExpression::MakeVariable(GetNode->GetVarName().ToString());
+	}
+
+	// ----------------------------------------------------------
+	// 2. 另一个函数调用的返回值（作为参数传入）
+	// ----------------------------------------------------------
+	if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(SourceNode))
+	{
+		TSharedPtr<FExpression> CallExpr = MakeShared<FExpression>(EExpressionType::FunctionCall);
+		CallExpr->Name = CallNode->FunctionReference.GetMemberName().ToString();
+
+		// 递归收集该调用节点的输入参数
+		for (UEdGraphPin* Pin : CallNode->Pins)
+		{
+			if (Pin->Direction != EGPD_Input) continue;
+			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			if (Pin->GetName() == TEXT("self")) continue;
+
+			TSharedPtr<FExpression> ArgExpr;
+			if (Pin->LinkedTo.Num() > 0)
+			{
+				ArgExpr = PinToExpression(Pin->LinkedTo[0]);
+			}
+			else if (!Pin->DefaultValue.IsEmpty())
+			{
+				ArgExpr = PinToExpression(Pin);
+			}
+			if (ArgExpr.IsValid())
+			{
+				CallExpr->Arguments.Add(ArgExpr);
+			}
+		}
+
+		return CallExpr;
+	}
+
+	// ----------------------------------------------------------
+	// 3. Self 节点
+	// ----------------------------------------------------------
+	if (SourceNode->GetClass()->GetName() == TEXT("K2Node_Self"))
+	{
+		return MakeShared<FExpression>(EExpressionType::Self);
+	}
+
+	// ----------------------------------------------------------
+	// 4. 字面量：通过 pin 的 DefaultValue 或 pin 本身的值
+	//    （当 pin 没有连接，直接读取默认值）
+	// ----------------------------------------------------------
+	const FString& DefVal = DataPin->DefaultValue;
+	if (!DefVal.IsEmpty())
+	{
+		if (PinCatStr == TEXT("bool"))
+		{
+			return FExpression::MakeBool(DataPin->DefaultValue.ToBool());
+		}
+		if (PinCatStr == TEXT("int") || PinCatStr == TEXT("int64") || PinCatStr == TEXT("byte"))
+		{
+			return FExpression::MakeInt(FCString::Atoi(*DefVal));
+		}
+		if (PinCatStr == TEXT("float") || PinCatStr == TEXT("double") || PinCatStr == TEXT("real"))
+		{
+			return FExpression::MakeFloat(FCString::Atof(*DefVal));
+		}
+		if (PinCatStr == TEXT("string") || PinCatStr == TEXT("name") || PinCatStr == TEXT("text"))
+		{
+			return FExpression::MakeString(DefVal);
+		}
+	}
+
+	// DefaultTextValue 用于 FText
+	if (!DataPin->DefaultTextValue.IsEmpty())
+	{
+		return FExpression::MakeString(DataPin->DefaultTextValue.ToString());
+	}
+
+	// ----------------------------------------------------------
+	// 5. 兜底：返回一个注释变量，记录警告
+	// ----------------------------------------------------------
+	Warnings.Add(FString::Printf(
+		TEXT("Cannot convert pin '%s' (category='%s') on node '%s' to expression; using placeholder"),
+		*DataPin->GetName(),
+		*PinCatStr,
+		*SourceNode->GetClass()->GetName()));
+
+	return FExpression::MakeVariable(FString::Printf(TEXT("/* unknown_pin_%s */"), *DataPin->GetName()));
+}
+
+} // namespace BSL
