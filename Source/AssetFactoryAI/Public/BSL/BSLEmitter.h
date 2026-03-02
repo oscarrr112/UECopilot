@@ -45,7 +45,7 @@ private:
 	FString EmitBlock(const TArray<TSharedPtr<FStatement>>& Stmts, int32 Indent);
 
 	/** 序列化变量类型信息 */
-	FString EmitTypeInfo(const FTypeInfo& TypeInfo);
+	FString EmitTypeInfo(const FTypeInfo& TypeInfo) const;
 
 	/** 序列化变量声明（var name: type [= default]） */
 	FString EmitVariableDecl(const FVariable& Var, int32 Indent);

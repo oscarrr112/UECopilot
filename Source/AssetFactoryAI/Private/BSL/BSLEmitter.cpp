@@ -63,7 +63,9 @@ FString FEmitter::EmitFunction(const FFunction& Func)
 	}
 	else if (Func.bIsPure)
 	{
-		Keyword = TEXT("pure function");
+		// Note: BSLParser 暂不支持 'pure' 修饰符，降级为普通 function
+		// 纯函数语义通过 bIsPure 在 AST 中保留
+		Keyword = TEXT("function");
 	}
 	else
 	{
@@ -278,15 +280,18 @@ FString FEmitter::EmitStatement(const FStatement& Stmt, int32 Indent)
 	// ----------------------------------------------------------
 	case EStatementType::For:
 		{
-			FString StartStr = Stmt.LoopStart.IsValid()
-				? EmitExpression(*Stmt.LoopStart)
-				: TEXT("0");
-			FString EndStr = Stmt.LoopEnd.IsValid()
-				? EmitExpression(*Stmt.LoopEnd)
-				: TEXT("0");
-
-			FString Out = FString::Printf(TEXT("%sfor %s in %s..%s {\n"),
-				*Pad, *Stmt.LoopVariable, *StartStr, *EndStr);
+			// 避免浮点字面量与 .. 粘连（如 1.0..10 → 1.0. 被 Lexer 误识别为浮点）
+			auto SafeRange = [](const FString& S, EExpressionType T) -> FString {
+				if (T == EExpressionType::Literal_Float) return TEXT("(") + S + TEXT(")");
+				return S;
+			};
+			FString StartStr = Stmt.LoopStart.IsValid() ? EmitExpression(*Stmt.LoopStart) : TEXT("0");
+			FString EndStr   = Stmt.LoopEnd.IsValid()   ? EmitExpression(*Stmt.LoopEnd)   : TEXT("0");
+			EExpressionType StartType = Stmt.LoopStart.IsValid() ? Stmt.LoopStart->Type : EExpressionType::Literal_Int;
+			EExpressionType EndType   = Stmt.LoopEnd.IsValid()   ? Stmt.LoopEnd->Type   : EExpressionType::Literal_Int;
+			StartStr = SafeRange(StartStr, StartType);
+			EndStr   = SafeRange(EndStr,   EndType);
+			FString Out = FString::Printf(TEXT("%sfor %s in %s..%s {\n"), *Pad, *Stmt.LoopVariable, *StartStr, *EndStr);
 			Out += EmitBlock(Stmt.LoopBody, Indent + 1);
 			return Out + Pad + TEXT("}\n");
 		}
@@ -343,6 +348,19 @@ FString FEmitter::EmitStatement(const FStatement& Stmt, int32 Indent)
 			FString Out = Pad + TEXT("{\n");
 			Out += EmitBlock(Stmt.Statements, Indent + 1);
 			return Out + Pad + TEXT("}\n");
+		}
+
+	// ----------------------------------------------------------
+	// @node("NodeType", { json params }) 逃生舱
+	// ----------------------------------------------------------
+	case EStatementType::RawNode:
+		{
+			// 对节点类型名中的特殊字符（引号、反斜杠）进行转义，保证 round-trip 时 Lexer 能正确解析
+			FString SafeType = Stmt.RawNodeType
+				.Replace(TEXT("\\"), TEXT("\\\\"))
+				.Replace(TEXT("\""), TEXT("\\\""));
+			FString ParamsStr = Stmt.RawNodeParamsJson.IsEmpty() ? TEXT("{}") : Stmt.RawNodeParamsJson;
+			return Pad + FString::Printf(TEXT("@node(\"%s\", %s)\n"), *SafeType, *ParamsStr);
 		}
 
 	default:
@@ -537,37 +555,9 @@ FString FEmitter::EmitExpression(const FExpression& Expr)
 // 辅助函数
 // ============================================================
 
-FString FEmitter::EmitTypeInfo(const FTypeInfo& TypeInfo)
+FString FEmitter::EmitTypeInfo(const FTypeInfo& TypeInfo) const
 {
-	// 直接复用 FTypeInfo::ToString() 的逻辑，但由于 ToString 可能定义在
-	// 另一个 .cpp 中，这里重新实现以保持 Emitter 独立性
-	switch (TypeInfo.Type)
-	{
-	case EType::Void:      return TEXT("void");
-	case EType::Bool:      return TEXT("bool");
-	case EType::Int:       return TEXT("int");
-	case EType::Float:     return TEXT("float");
-	case EType::String:    return TEXT("string");
-	case EType::Name:      return TEXT("name");
-	case EType::Text:      return TEXT("text");
-	case EType::Vector:    return TEXT("vector");
-	case EType::Rotator:   return TEXT("rotator");
-	case EType::Transform: return TEXT("transform");
-	case EType::Object:
-		if (!TypeInfo.SubType.IsEmpty())
-			return FString::Printf(TEXT("object<%s>"), *TypeInfo.SubType);
-		return TEXT("object");
-	case EType::Class:
-		if (!TypeInfo.SubType.IsEmpty())
-			return FString::Printf(TEXT("class<%s>"), *TypeInfo.SubType);
-		return TEXT("class");
-	case EType::Array:
-		if (!TypeInfo.SubType.IsEmpty())
-			return FString::Printf(TEXT("array<%s>"), *TypeInfo.SubType);
-		return TEXT("array");
-	default:
-		return TEXT("unknown");
-	}
+	return TypeInfo.ToString();
 }
 
 FString FEmitter::EmitVariableDecl(const FVariable& Var, int32 Indent)

@@ -18,6 +18,8 @@
 
 // 用于识别 exec pin 的类型分类字符串
 #include "EdGraphSchema_K2.h"
+#include "K2Node_FunctionResult.h"
+#include "K2Node_Self.h"
 
 namespace BSL
 {
@@ -113,6 +115,7 @@ FDecompileResult FBlueprintDecompiler::Decompile(UBlueprint* BP)
 			{
 				if (Pin->Direction != EGPD_Output) continue;
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+				if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
 
 				FVariable OutParam;
 				OutParam.Name = Pin->GetName();
@@ -181,7 +184,7 @@ void FBlueprintDecompiler::DecompileGraph(UEdGraph* Graph, FFunction& OutFunc)
 		{
 			if (Pin->Direction != EGPD_Output) continue;
 			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
-			if (Pin->GetName() == TEXT("self")) continue;
+			if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
 
 			FVariable InParam;
 			InParam.Name = Pin->GetName();
@@ -276,7 +279,7 @@ TSharedPtr<FStatement> FBlueprintDecompiler::NodeToStatement(UEdGraphNode* Node)
 		{
 			if (Pin->Direction != EGPD_Input) continue;
 			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
-			if (Pin->GetName() == TEXT("self")) continue;
+			if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
 
 			TSharedPtr<FExpression> ArgExpr;
 			if (Pin->LinkedTo.Num() > 0)
@@ -320,14 +323,14 @@ TSharedPtr<FStatement> FBlueprintDecompiler::NodeToStatement(UEdGraphNode* Node)
 		}
 
 		// "True" 分支
-		UEdGraphPin* TruePin = BranchNode->FindPin(TEXT("True"), EGPD_Output);
+		UEdGraphPin* TruePin = BranchNode->FindPin(UEdGraphSchema_K2::PN_Then, EGPD_Output);
 		if (TruePin)
 		{
 			Stmt->ThenBody = WalkExecChain(TruePin);
 		}
 
-		// "False" 分支
-		UEdGraphPin* FalsePin = BranchNode->FindPin(TEXT("False"), EGPD_Output);
+		// "False" 分支（使用 FindPin 而非 GetElsePin，避免 GetElsePin 内部的 check() 在损坏蓝图时 crash）
+		UEdGraphPin* FalsePin = BranchNode->FindPin(UEdGraphSchema_K2::PN_Else, EGPD_Output);
 		if (FalsePin)
 		{
 			Stmt->ElseBody = WalkExecChain(FalsePin);
@@ -362,12 +365,12 @@ TSharedPtr<FStatement> FBlueprintDecompiler::NodeToStatement(UEdGraphNode* Node)
 	// FunctionReturn 节点：Return 语句
 	// ----------------------------------------------------------
 	// UK2Node_FunctionResult 是函数的返回节点
-	if (Node->GetClass()->GetName() == TEXT("K2Node_FunctionResult"))
+	if (UK2Node_FunctionResult* ResultNode = Cast<UK2Node_FunctionResult>(Node))
 	{
 		TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::Return);
 
 		// 收集所有非 exec 输入 pin 作为返回值
-		for (UEdGraphPin* Pin : Node->Pins)
+		for (UEdGraphPin* Pin : ResultNode->Pins)
 		{
 			if (Pin->Direction != EGPD_Input) continue;
 			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
@@ -416,7 +419,9 @@ TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataP
 {
 	if (!DataPin) return nullptr;
 
-	UEdGraphNode* SourceNode = DataPin->GetOwningNode();
+	// 使用 GetOwningNodeUnchecked() 以支持对损坏 pin 的防御性检查（GetOwningNode 内部有 check() 断言）
+	UEdGraphNode* SourceNode = DataPin->GetOwningNodeUnchecked();
+	if (!SourceNode) return nullptr;
 	const FString PinCatStr  = DataPin->PinType.PinCategory.ToString();
 
 	// ----------------------------------------------------------
@@ -440,7 +445,7 @@ TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataP
 		{
 			if (Pin->Direction != EGPD_Input) continue;
 			if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
-			if (Pin->GetName() == TEXT("self")) continue;
+			if (Pin->PinName == UEdGraphSchema_K2::PN_Self) continue;
 
 			TSharedPtr<FExpression> ArgExpr;
 			if (Pin->LinkedTo.Num() > 0)
@@ -463,7 +468,7 @@ TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataP
 	// ----------------------------------------------------------
 	// 3. Self 节点
 	// ----------------------------------------------------------
-	if (SourceNode->GetClass()->GetName() == TEXT("K2Node_Self"))
+	if (UK2Node_Self* SelfNode = Cast<UK2Node_Self>(SourceNode))
 	{
 		return MakeShared<FExpression>(EExpressionType::Self);
 	}

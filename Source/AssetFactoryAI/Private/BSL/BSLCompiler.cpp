@@ -596,7 +596,7 @@ bool FCompiler::CompileStatement(
 		}
 		else
 		{
-			UE_LOG(LogAssetFactoryAI, Warning, TEXT("ArraySet: 数组变量 '%s' 未在 VariableNodeMap 中找到"), *Stmt.AssignTarget);
+			Warning(FString::Printf(TEXT("ArraySet: 数组变量 '%s' 未在 VariableNodeMap 中找到"), *Stmt.AssignTarget));
 		}
 		SetNode.Pins.Add(ArrayPin);
 
@@ -619,6 +619,13 @@ bool FCompiler::CompileStatement(
 			else if (Stmt.AssignIndexExpr->Type == EExpressionType::Literal_Int)
 			{
 				IndexPinData.DefaultValue = FString::FromInt(Stmt.AssignIndexExpr->IntValue);
+			}
+			else if (Stmt.AssignIndexExpr->Type == EExpressionType::Literal_Float)
+			{
+				// Array_Set 的 Index pin 期望整数类型。浮点索引语义上无意义，截断并发出警告
+				Warning(FString::Printf(TEXT("ArraySet: 浮点数作为数组索引将被截断为整数 (%.6f → %d)"),
+					Stmt.AssignIndexExpr->FloatValue, static_cast<int32>(Stmt.AssignIndexExpr->FloatValue)));
+				IndexPinData.DefaultValue = FString::FromInt(static_cast<int32>(Stmt.AssignIndexExpr->FloatValue));
 			}
 			SetNode.Pins.Add(IndexPinData);
 		}

@@ -396,6 +396,11 @@ TSharedPtr<FStatement> FParser::ParseAssignment()
 				Error(TEXT("Array set: expected a simple variable as array target"));
 				return nullptr;
 			}
+			if (!LHS->Right.IsValid())
+			{
+				Error(TEXT("Array set: missing index expression"));
+				return nullptr;
+			}
 			Stmt->AssignIndexExpr = LHS->Right;
 		}
 		else
@@ -965,7 +970,10 @@ TSharedPtr<FStatement> FParser::ParseRawNode()
 		return nullptr;
 	}
 
-	Consume(ETokenType::LeftParen, TEXT("Expected '(' after '@node'"));
+	if (Consume(ETokenType::LeftParen, TEXT("Expected '(' after '@node'")).Type == ETokenType::Error)
+	{
+		return nullptr;
+	}
 
 	// 消费节点类型字符串
 	FToken NodeTypeToken = Consume(ETokenType::String, TEXT("Expected node type string after '@node('"));
@@ -1037,13 +1045,32 @@ TSharedPtr<FStatement> FParser::ParseRawNode()
 					Advance();
 					JsonText += TEXT("false");
 				}
+				else if (T.Type == ETokenType::LeftBracket)
+				{
+					Advance();
+					JsonText += TEXT("[");
+				}
+				else if (T.Type == ETokenType::RightBracket)
+				{
+					Advance();
+					JsonText += TEXT("]");
+				}
 				else if (T.Type == ETokenType::Identifier)
 				{
-					// JSON 的键名如果没有引号，添加引号
 					Advance();
-					JsonText += TEXT("\"");
-					JsonText += T.Value;
-					JsonText += TEXT("\"");
+					if (T.Value == TEXT("null"))
+					{
+						// JSON 关键字 null：不加引号直接输出
+						// （true/false 已由 Lexer 归类为 ETokenType::True/False 关键字，不会到达此分支）
+						JsonText += T.Value;
+					}
+					else
+					{
+						// 未知标识符：当作字符串输出
+						JsonText += TEXT("\"");
+						JsonText += T.Value;
+						JsonText += TEXT("\"");
+					}
 				}
 				else
 				{
@@ -1056,7 +1083,10 @@ TSharedPtr<FStatement> FParser::ParseRawNode()
 		}
 	}
 
-	Consume(ETokenType::RightParen, TEXT("Expected ')' to close @node"));
+	if (Consume(ETokenType::RightParen, TEXT("Expected ')' to close @node")).Type == ETokenType::Error)
+	{
+		return nullptr;
+	}
 	return Stmt;
 }
 
