@@ -1441,6 +1441,63 @@ FString FCompiler::CompileExpression(
 		return TEXT("self");
 	}
 
+	case EExpressionType::StructLiteral:
+	{
+		FBlueprintNodeData MakeNode;
+		MakeNode.NodeId = GenerateNodeId(TEXT("make_struct"));
+		MakeNode.NodeType = EBlueprintNodeType::MakeStruct;
+		MakeNode.VariableName = Expr.StructTypeName;  // "Vector" / "Rotator" / "Transform"
+		MakeNode.Position = {300.0f, 100.0f};
+
+		// Determine field pin names by struct type
+		TArray<FString> FieldNames;
+		if (Expr.StructTypeName == TEXT("Vector"))
+			FieldNames = {TEXT("X"), TEXT("Y"), TEXT("Z")};
+		else if (Expr.StructTypeName == TEXT("Rotator"))
+			FieldNames = {TEXT("Pitch"), TEXT("Yaw"), TEXT("Roll")};
+		else if (Expr.StructTypeName == TEXT("Transform"))
+			FieldNames = {TEXT("Translation"), TEXT("Rotation"), TEXT("Scale3D")};
+
+		for (int32 i = 0; i < Expr.StructFields.Num(); i++)
+		{
+			const TSharedPtr<FExpression>& FieldExpr = Expr.StructFields[i];
+			if (!FieldExpr) continue;
+
+			FString FieldPinName = FieldNames.IsValidIndex(i)
+				? FieldNames[i]
+				: FString::Printf(TEXT("Field%d"), i);
+
+			FString FieldNodeId;
+			FString FieldPinOut = CompileExpression(*FieldExpr, OutNodes, FieldNodeId);
+
+			FBlueprintPinData FieldPin;
+			FieldPin.Name = FieldPinName;
+			FieldPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!FieldNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = FieldNodeId;
+				Conn.SourcePinName = FieldPinOut;
+				FieldPin.Connections.Add(Conn);
+			}
+			else if (FieldExpr->Type == EExpressionType::Literal_Float)
+			{
+				FieldPin.DefaultValue = FString::SanitizeFloat(FieldExpr->FloatValue);
+			}
+			else if (FieldExpr->Type == EExpressionType::Literal_Int)
+			{
+				FieldPin.DefaultValue = FString::SanitizeFloat(static_cast<double>(FieldExpr->IntValue));
+			}
+
+			MakeNode.Pins.Add(FieldPin);
+		}
+
+		OutNodes.Add(MakeNode);
+		OutNodeId = MakeNode.NodeId;
+		return TEXT("ReturnValue");
+	}
+
 	case EExpressionType::Cast:
 	{
 		if (Expr.CastType.SubType.IsEmpty())

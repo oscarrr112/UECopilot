@@ -89,6 +89,11 @@ public:
 	static FNodeSpawnResult SpawnCastNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
 
 	/**
+	 * Spawn a MakeStruct node (Vector, Rotator, Transform, etc.)
+	 */
+	static FNodeSpawnResult SpawnMakeStructNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
+
+	/**
 	 * Spawn an array operation node
 	 */
 	static FNodeSpawnResult SpawnArrayNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);

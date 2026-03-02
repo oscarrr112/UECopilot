@@ -778,6 +778,29 @@ TSharedPtr<FExpression> FParser::ParsePrimary()
 		return Expr;
 	}
 
+	// Identifier — check for struct literals first: Vector(...) / Rotator(...) / Transform(...)
+	if (Check(ETokenType::Identifier))
+	{
+		const FString IdName = Peek().Value;
+		if (IdName == TEXT("Vector") || IdName == TEXT("Rotator") || IdName == TEXT("Transform"))
+		{
+			Advance();  // consume identifier
+
+			if (Check(ETokenType::LeftParen))
+			{
+				Advance();  // consume '('
+				TSharedPtr<FExpression> StructExpr = MakeShared<FExpression>(EExpressionType::StructLiteral);
+				StructExpr->StructTypeName = IdName;
+				StructExpr->StructFields = ParseArguments();
+				Consume(ETokenType::RightParen, TEXT("Expected ')' after struct fields"));
+				return StructExpr;
+			}
+
+			// Not a struct literal — identifier was already consumed, treat it as a plain variable
+			return FExpression::MakeVariable(IdName);
+		}
+	}
+
 	// Identifier
 	if (Match(ETokenType::Identifier))
 	{

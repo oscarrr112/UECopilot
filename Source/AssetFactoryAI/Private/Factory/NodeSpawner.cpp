@@ -12,6 +12,7 @@
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "K2Node_DynamicCast.h"
+#include "K2Node_MakeStruct.h"
 #include "K2Node_SwitchInteger.h"
 #include "K2Node_CommutativeAssociativeBinaryOperator.h"
 #include "K2Node_MakeArray.h"
@@ -261,6 +262,7 @@ namespace
 			}, &UNodeSpawner::SpawnLogicNode);
 
 			Handlers.Add(EBlueprintNodeType::Cast, &UNodeSpawner::SpawnCastNode);
+			Handlers.Add(EBlueprintNodeType::MakeStruct, &UNodeSpawner::SpawnMakeStructNode);
 
 			RegisterManyHandlers(Handlers, {
 				EBlueprintNodeType::Array_Add,
@@ -762,6 +764,46 @@ FNodeSpawnResult UNodeSpawner::SpawnCastNode(UEdGraph* Graph, const FBlueprintNo
 	Result.bSuccess = true;
 	Result.Node = CastNode;
 
+	return Result;
+}
+
+FNodeSpawnResult UNodeSpawner::SpawnMakeStructNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
+{
+	FNodeSpawnResult Result;
+
+	// NodeData.VariableName holds the struct type name ("Vector", "Rotator", "Transform")
+	if (NodeData.VariableName.IsEmpty())
+	{
+		Result.ErrorMessage = TEXT("MakeStruct: VariableName (struct type) is empty");
+		return Result;
+	}
+
+	// Find the UScriptStruct by name, trying common UE paths
+	UScriptStruct* StructType = nullptr;
+	TArray<FString> CandidatePaths = {
+		FString::Printf(TEXT("/Script/CoreUObject.%s"), *NodeData.VariableName),
+		FString::Printf(TEXT("/Script/Engine.%s"), *NodeData.VariableName),
+		NodeData.VariableName,
+	};
+	for (const FString& Path : CandidatePaths)
+	{
+		StructType = FindObject<UScriptStruct>(nullptr, *Path);
+		if (StructType) break;
+	}
+
+	if (!StructType)
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("MakeStruct: struct type '%s' not found"), *NodeData.VariableName);
+		return Result;
+	}
+
+	UK2Node_MakeStruct* MakeNode = CreateNode<UK2Node_MakeStruct>(Graph);
+	MakeNode->StructType = StructType;
+	MakeNode->AllocateDefaultPins();
+	SetNodePosition(MakeNode, NodeData.Position);
+
+	Result.bSuccess = true;
+	Result.Node = MakeNode;
 	return Result;
 }
 

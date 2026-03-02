@@ -107,7 +107,8 @@ enum class EExpressionType : uint8
 
 	// Special
 	Self,				// 'self' keyword
-	Cast				// Cast<Type>(expr)
+	Cast,				// Cast<Type>(expr)
+	StructLiteral,		// Vector(x, y, z) / Rotator(p, y, r) / Transform(...)
 };
 
 /**
@@ -175,6 +176,10 @@ struct FExpression
 
 	// Cast
 	FTypeInfo CastType;
+
+	// StructLiteral
+	FString StructTypeName;							// "Vector", "Rotator", "Transform"
+	TArray<TSharedPtr<FExpression>> StructFields;	// constructor arguments
 
 	// Source location for error reporting
 	int32 Line = 0;
