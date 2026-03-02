@@ -2,7 +2,7 @@
   "mcpServers": {
     "ue-copilot": {
       "command": "node",
-      "args": ["E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
+      "args": ["--watch", "E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
       "env": {
         "UE_API_BASE": "http://localhost:8559"
       }

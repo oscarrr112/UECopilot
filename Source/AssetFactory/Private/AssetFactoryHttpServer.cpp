@@ -36,9 +36,13 @@
 #include "Utils/PropertySetterUtils.h"
 #include "DataTableEditorUtils.h"
 #include "UObject/SavePackage.h"
-// BSL decompiler + emitter
+// BSL decompiler + emitter + compiler
 #include "BSL/BlueprintDecompiler.h"
 #include "BSL/BSLEmitter.h"
+#include "BSL/BSLCompiler.h"
+// Blueprint AI factory + JSON parser (for apply_bsl)
+#include "Factory/AIBlueprintFactory.h"
+#include "JSON/BlueprintJSONParser.h"
 
 namespace
 {
@@ -153,13 +157,6 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		TEXT("Execute Python code in the editor with undo support"),
 		true
 	});
-
-	RouteHandles.Reset();
-	for (const FRouteBindingSpec& Spec : RouteSpecs)
-	{
-		RouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Spec.Path), Spec.Verb, Spec.Handler));
-	}
-
 	RouteSpecs.Add({
 		TEXT("/assetfactory/datatable/rows"),
 		EHttpServerRequestVerbs::VERB_POST,
@@ -176,6 +173,20 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		TEXT("Decompile Blueprint asset to BSL text"),
 		true
 	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/apply_bsl"),
+		EHttpServerRequestVerbs::VERB_POST,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleApplyBSL),
+		TEXT("POST"),
+		TEXT("Compile BSL source and apply to Blueprint asset"),
+		true
+	});
+
+	RouteHandles.Reset();
+	for (const FRouteBindingSpec& Spec : RouteSpecs)
+	{
+		RouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Spec.Path), Spec.Verb, Spec.Handler));
+	}
 
 	// Start listeners
 	HttpServerModule.StartAllListeners();
@@ -1602,5 +1613,183 @@ bool FAssetFactoryHttpServer::HandleExtractBSL(const FHttpServerRequest& Request
 		StatusCode = bNotFound ? 404 : 422;
 	}
 	SendJsonResponse(OnComplete, StatusCode, ResponseJson);
+	return true;
+}
+
+bool FAssetFactoryHttpServer::HandleApplyBSL(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Parse request body
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
+
+	if (RequestBody.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Request body is empty"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> JsonObject;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
+	if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+	{
+		SendErrorResponse(OnComplete, 400, FString::Printf(TEXT("Invalid JSON: %s"), *Reader->GetErrorMessage()));
+		return true;
+	}
+
+	// Extract required fields
+	FString AssetPath;
+	if (!JsonObject->TryGetStringField(TEXT("Asset"), AssetPath) || AssetPath.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Missing required field: 'Asset'"));
+		return true;
+	}
+
+	FString BslSource;
+	if (!JsonObject->TryGetStringField(TEXT("BSL"), BslSource) || BslSource.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Missing required field: 'BSL'"));
+		return true;
+	}
+
+	// Optional fields
+	bool bMerge = false;
+	JsonObject->TryGetBoolField(TEXT("Merge"), bMerge);
+
+	bool bSave = true;
+	JsonObject->TryGetBoolField(TEXT("Save"), bSave);
+
+	// Step 1: Compile BSL source (thread-safe, can run anywhere)
+	BSL::FCompileResult CompileResult = BSL::FCompiler::Compile(BslSource);
+
+	if (!CompileResult.bSuccess)
+	{
+		TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+		ResponseJson->SetBoolField(TEXT("success"), false);
+		ResponseJson->SetStringField(TEXT("asset"), AssetPath);
+		ResponseJson->SetBoolField(TEXT("saved"), false);
+
+		TArray<TSharedPtr<FJsonValue>> BslErrorsArray;
+		for (const FString& E : CompileResult.Errors)
+		{
+			BslErrorsArray.Add(MakeShared<FJsonValueString>(E));
+		}
+		ResponseJson->SetArrayField(TEXT("bslErrors"), BslErrorsArray);
+
+		TArray<TSharedPtr<FJsonValue>> BslWarningsArray;
+		for (const FString& W : CompileResult.Warnings)
+		{
+			BslWarningsArray.Add(MakeShared<FJsonValueString>(W));
+		}
+		ResponseJson->SetArrayField(TEXT("bslWarnings"), BslWarningsArray);
+
+		SendJsonResponse(OnComplete, 422, ResponseJson);
+		return true;
+	}
+
+	// Step 2: Apply compiled blueprint data on game thread
+	bool bSuccess = false;
+	bool bSaved = false;
+	bool bNotFound = false;
+	FString ApplyError;
+	TArray<FString> ApplyWarnings;
+
+	auto DoApply = [&]()
+	{
+		// Resolve asset path: support both "/Game/BP" and "/Game/BP.BP" forms
+		UBlueprint* BP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetPath));
+		if (!BP)
+		{
+			FString Name = FPaths::GetBaseFilename(AssetPath);
+			if (!Name.IsEmpty())
+			{
+				FString FullPath = FString::Printf(TEXT("%s.%s"), *AssetPath, *Name);
+				BP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *FullPath));
+			}
+		}
+
+		if (!BP)
+		{
+			bNotFound = true;
+			ApplyError = FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath);
+			return;
+		}
+
+		// Apply the compiled blueprint data
+		FBlueprintGenerationResult ApplyResult = UAIBlueprintFactory::ModifyBlueprint(BP, CompileResult.BlueprintData, bMerge);
+		if (!ApplyResult.bSuccess)
+		{
+			ApplyError = ApplyResult.ErrorMessage.IsEmpty()
+				? TEXT("ModifyBlueprint failed with unknown error")
+				: ApplyResult.ErrorMessage;
+			return;
+		}
+
+		bSuccess = true;
+		ApplyWarnings = ApplyResult.Warnings;
+		BP->MarkPackageDirty();
+
+		if (bSave)
+		{
+			UPackage* Package = BP->GetOutermost();
+			FString PackageFileName = FPackageName::LongPackageNameToFilename(
+				Package->GetName(), FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.SaveFlags = SAVE_NoError;
+			FSavePackageResultStruct SaveResult = UPackage::Save(Package, BP, *PackageFileName, SaveArgs);
+			bSaved = SaveResult.IsSuccessful();
+		}
+	};
+
+	if (IsInGameThread())
+	{
+		DoApply();
+	}
+	else
+	{
+		FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [&]()
+		{
+			DoApply();
+			CompletionEvent->Trigger();
+		});
+		CompletionEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+	}
+
+	// Build response
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+	ResponseJson->SetBoolField(TEXT("success"), bSuccess);
+	ResponseJson->SetStringField(TEXT("asset"), AssetPath);
+	ResponseJson->SetBoolField(TEXT("saved"), bSaved);
+
+	TArray<TSharedPtr<FJsonValue>> BslWarningsArray;
+	for (const FString& W : CompileResult.Warnings)
+	{
+		BslWarningsArray.Add(MakeShared<FJsonValueString>(W));
+	}
+	ResponseJson->SetArrayField(TEXT("bslWarnings"), BslWarningsArray);
+
+	TArray<TSharedPtr<FJsonValue>> WarningsArray;
+	for (const FString& W : ApplyWarnings)
+	{
+		WarningsArray.Add(MakeShared<FJsonValueString>(W));
+	}
+	ResponseJson->SetArrayField(TEXT("warnings"), WarningsArray);
+
+	if (!bSuccess)
+	{
+		ResponseJson->SetStringField(TEXT("error"), ApplyError);
+		int32 StatusCode = bNotFound ? 404 : 422;
+		SendJsonResponse(OnComplete, StatusCode, ResponseJson);
+	}
+	else
+	{
+		SendJsonResponse(OnComplete, 200, ResponseJson);
+	}
 	return true;
 }

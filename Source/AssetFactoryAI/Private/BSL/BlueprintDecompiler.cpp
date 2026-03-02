@@ -21,6 +21,31 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Self.h"
 
+// 文件本地辅助：将 Pin 的 DefaultValue / DefaultTextValue 直接转换为字面量表达式
+// 不追溯连接，不查所属节点，因此不会引发递归
+static TSharedPtr<BSL::FExpression> MakeLiteralFromPin(UEdGraphPin* Pin)
+{
+	if (!Pin) return nullptr;
+	const FString& DV = Pin->DefaultValue;
+	const FString PinCat = Pin->PinType.PinCategory.ToString();
+
+	if (!DV.IsEmpty())
+	{
+		if (PinCat == TEXT("bool"))
+			return BSL::FExpression::MakeBool(DV.ToBool());
+		if (PinCat == TEXT("int") || PinCat == TEXT("int64") || PinCat == TEXT("byte"))
+			return BSL::FExpression::MakeInt(FCString::Atoi(*DV));
+		if (PinCat == TEXT("float") || PinCat == TEXT("double") || PinCat == TEXT("real"))
+			return BSL::FExpression::MakeFloat(FCString::Atof(*DV));
+		if (PinCat == TEXT("string") || PinCat == TEXT("name") || PinCat == TEXT("text"))
+			return BSL::FExpression::MakeString(DV);
+	}
+	if (!Pin->DefaultTextValue.IsEmpty())
+		return BSL::FExpression::MakeString(Pin->DefaultTextValue.ToString());
+
+	return nullptr;
+}
+
 namespace BSL
 {
 
@@ -462,9 +487,9 @@ TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataP
 			{
 				ArgExpr = PinToExpression(Pin->LinkedTo[0]);
 			}
-			else if (!Pin->DefaultValue.IsEmpty())
+			else
 			{
-				ArgExpr = PinToExpression(Pin);
+				ArgExpr = MakeLiteralFromPin(Pin);
 			}
 			if (ArgExpr.IsValid())
 			{
@@ -484,34 +509,11 @@ TSharedPtr<FExpression> FBlueprintDecompiler::PinToExpression(UEdGraphPin* DataP
 	}
 
 	// ----------------------------------------------------------
-	// 4. 字面量：通过 pin 的 DefaultValue 或 pin 本身的值
-	//    （当 pin 没有连接，直接读取默认值）
+	// 4. 字面量：通过 pin 的 DefaultValue / DefaultTextValue 直接转换
 	// ----------------------------------------------------------
-	const FString& DefVal = DataPin->DefaultValue;
-	if (!DefVal.IsEmpty())
+	if (TSharedPtr<FExpression> Lit = MakeLiteralFromPin(DataPin))
 	{
-		if (PinCatStr == TEXT("bool"))
-		{
-			return FExpression::MakeBool(DataPin->DefaultValue.ToBool());
-		}
-		if (PinCatStr == TEXT("int") || PinCatStr == TEXT("int64") || PinCatStr == TEXT("byte"))
-		{
-			return FExpression::MakeInt(FCString::Atoi(*DefVal));
-		}
-		if (PinCatStr == TEXT("float") || PinCatStr == TEXT("double") || PinCatStr == TEXT("real"))
-		{
-			return FExpression::MakeFloat(FCString::Atof(*DefVal));
-		}
-		if (PinCatStr == TEXT("string") || PinCatStr == TEXT("name") || PinCatStr == TEXT("text"))
-		{
-			return FExpression::MakeString(DefVal);
-		}
-	}
-
-	// DefaultTextValue 用于 FText
-	if (!DataPin->DefaultTextValue.IsEmpty())
-	{
-		return FExpression::MakeString(DataPin->DefaultTextValue.ToString());
+		return Lit;
 	}
 
 	// ----------------------------------------------------------

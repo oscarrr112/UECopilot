@@ -100,6 +100,9 @@ private:
 	/** Handle POST /extract_bsl request - decompile Blueprint to BSL text */
 	bool HandleExtractBSL(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
+	/** Handle POST /apply_bsl request - compile BSL source and apply to Blueprint */
+	bool HandleApplyBSL(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
 	/** Send JSON response */
 	void SendJsonResponse(const FHttpResultCallback& OnComplete, int32 StatusCode, TSharedPtr<FJsonObject> JsonResponse);
 

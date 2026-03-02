@@ -69,8 +69,8 @@ async function loadSchema(assetType: string): Promise<string> {
 
 async function isEditorHttpAvailable(): Promise<boolean> {
   try {
-    const health = (await callUEApi("/health", "GET")) as { success?: boolean };
-    return health?.success === true;
+    const health = (await callUEApi("/health", "GET")) as { status?: string; success?: boolean };
+    return health?.status === "ok" || health?.success === true;
   } catch {
     return false;
   }
@@ -559,6 +559,34 @@ const tools: Tool[] = [
       required: ["assets"],
     },
   },
+  {
+    name: "apply_blueprint_as_bsl",
+    description:
+      "Compile BSL (Blueprint Script Language) source code and apply it to an existing Unreal Engine Blueprint asset. BSL is a human-readable scripting language that compiles to Blueprint graphs. Use extract_blueprint_as_bsl first to see existing BSL syntax, then modify and apply back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        asset: {
+          type: "string",
+          description:
+            "Blueprint asset path (e.g., /Game/Blueprints/BP_Player or /Game/Blueprints/BP_Player.BP_Player)",
+        },
+        bsl: {
+          type: "string",
+          description: "BSL source code to compile and apply",
+        },
+        merge: {
+          type: "boolean",
+          description: "Merge with existing graph (true) or replace (false, default)",
+        },
+        save: {
+          type: "boolean",
+          description: "Save the asset after applying (default true)",
+        },
+      },
+      required: ["asset", "bsl"],
+    },
+  },
 ];
 
 // Create MCP server
@@ -786,6 +814,23 @@ const toolHandlers: Record<string, ToolHandler> = {
     });
 
     return parts.join("\n\n");
+  },
+  apply_blueprint_as_bsl: async (args) => {
+    const { asset, bsl, merge, save } = args as {
+      asset: string;
+      bsl: string;
+      merge?: boolean;
+      save?: boolean;
+    };
+    if (!asset || !bsl) {
+      throw new Error("'asset' and 'bsl' are required.");
+    }
+    return callUEApi("/apply_bsl", "POST", {
+      Asset: asset,
+      BSL: bsl,
+      Merge: merge ?? false,
+      Save: save ?? true,
+    });
   },
 };
 

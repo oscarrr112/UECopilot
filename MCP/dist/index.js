@@ -59,7 +59,7 @@ async function loadSchema(assetType) {
 async function isEditorHttpAvailable() {
     try {
         const health = (await callUEApi("/health", "GET"));
-        return health?.success === true;
+        return health?.status === "ok" || health?.success === true;
     }
     catch {
         return false;
@@ -487,6 +487,49 @@ const tools = [
             properties: {},
         },
     },
+    {
+        name: "extract_blueprint_as_bsl",
+        description: "Decompile an existing Unreal Engine Blueprint asset into BSL (Blueprint Script Language) text. Returns the BSL source that represents the Blueprint's event graph and functions. Useful for reading, understanding, or editing Blueprint logic as text.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                assets: {
+                    type: "array",
+                    description: "Array of Blueprint asset paths to decompile (e.g., /Game/Blueprints/BP_Player)",
+                    items: {
+                        type: "string",
+                    },
+                },
+            },
+            required: ["assets"],
+        },
+    },
+    {
+        name: "apply_blueprint_as_bsl",
+        description: "Compile BSL (Blueprint Script Language) source code and apply it to an existing Unreal Engine Blueprint asset. BSL is a human-readable scripting language that compiles to Blueprint graphs. Use extract_blueprint_as_bsl first to see existing BSL syntax, then modify and apply back.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset: {
+                    type: "string",
+                    description: "Blueprint asset path (e.g., /Game/Blueprints/BP_Player or /Game/Blueprints/BP_Player.BP_Player)",
+                },
+                bsl: {
+                    type: "string",
+                    description: "BSL source code to compile and apply",
+                },
+                merge: {
+                    type: "boolean",
+                    description: "Merge with existing graph (true) or replace (false, default)",
+                },
+                save: {
+                    type: "boolean",
+                    description: "Save the asset after applying (default true)",
+                },
+            },
+            required: ["asset", "bsl"],
+        },
+    },
 ];
 // Create MCP server
 const server = new Server({
@@ -634,6 +677,43 @@ const toolHandlers = {
             Asset: asset,
             Rows: rowUpdates,
             DeleteRows: deleteRows,
+        });
+    },
+    extract_blueprint_as_bsl: async (args) => {
+        const { assets } = args;
+        if (!assets || assets.length === 0) {
+            throw new Error("'assets' must be a non-empty array of Blueprint paths.");
+        }
+        // Decompile each asset and collect results
+        const rawResults = await Promise.all(assets.map((assetPath) => callUEApi("/extract_bsl", "POST", { Asset: assetPath })));
+        // Format output: each asset gets a section with path header + BSL block
+        // Use assets[i] as fallback for r.asset in case of connection failure (callUEApi
+        // returns {success:false, error:"..."} without an 'asset' field when offline)
+        const parts = rawResults.map((raw, i) => {
+            const r = raw;
+            const displayPath = r.asset ?? assets[i];
+            const header = `// === ${displayPath} ===`;
+            if (!r.success) {
+                const errList = (r.errors ?? (r.error ? [r.error] : [])).join("\n");
+                return `${header}\n// Decompile failed:\n${errList}`;
+            }
+            const warnBlock = r.warnings && r.warnings.length > 0
+                ? r.warnings.map((w) => `// WARNING: ${w}`).join("\n") + "\n"
+                : "";
+            return `${header}\n${warnBlock}${r.bsl ?? ""}`;
+        });
+        return parts.join("\n\n");
+    },
+    apply_blueprint_as_bsl: async (args) => {
+        const { asset, bsl, merge, save } = args;
+        if (!asset || !bsl) {
+            throw new Error("'asset' and 'bsl' are required.");
+        }
+        return callUEApi("/apply_bsl", "POST", {
+            Asset: asset,
+            BSL: bsl,
+            Merge: merge ?? false,
+            Save: save ?? true,
         });
     },
 };
