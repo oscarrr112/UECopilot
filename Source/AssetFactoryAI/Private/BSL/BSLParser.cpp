@@ -264,6 +264,10 @@ FTypeInfo FParser::ParseType()
 
 TSharedPtr<FStatement> FParser::ParseStatement()
 {
+	if (Match(ETokenType::At))
+	{
+		return ParseRawNode();
+	}
 	if (Check(ETokenType::Var))
 	{
 		return ParseVarDecl();
@@ -947,6 +951,113 @@ void FParser::Synchronize()
 			break;
 		}
 	}
+}
+
+TSharedPtr<FStatement> FParser::ParseRawNode()
+{
+	// 已消费 '@'，此处解析 @node("NodeType", { params })
+	// 消费 "node" 关键字（作为 Identifier）
+	FToken NodeKeyword = Consume(ETokenType::Identifier, TEXT("Expected 'node' after '@'"));
+	if (NodeKeyword.Type == ETokenType::Error) return nullptr;
+	if (NodeKeyword.Value != TEXT("node"))
+	{
+		Error(NodeKeyword, TEXT("Expected 'node' after '@'"));
+		return nullptr;
+	}
+
+	Consume(ETokenType::LeftParen, TEXT("Expected '(' after '@node'"));
+
+	// 消费节点类型字符串
+	FToken NodeTypeToken = Consume(ETokenType::String, TEXT("Expected node type string after '@node('"));
+	if (NodeTypeToken.Type == ETokenType::Error) return nullptr;
+
+	TSharedPtr<FStatement> Stmt = MakeShared<FStatement>(EStatementType::RawNode);
+	Stmt->Line = NodeTypeToken.Line;
+	Stmt->RawNodeType = NodeTypeToken.Value;
+
+	// 可选的参数对象：, { key: val, ... }
+	if (Check(ETokenType::Comma))
+	{
+		Advance(); // 消费 ','
+
+		if (Check(ETokenType::LeftBrace))
+		{
+			// 从 token 流重建 JSON 文本
+			FString JsonText;
+			int32 Depth = 0;
+			bool bDone = false;
+
+			while (!IsAtEnd() && !bDone)
+			{
+				FToken T = Peek();
+				if (T.Type == ETokenType::LeftBrace)
+				{
+					Advance();
+					Depth++;
+					JsonText += TEXT("{");
+				}
+				else if (T.Type == ETokenType::RightBrace)
+				{
+					Advance();
+					Depth--;
+					JsonText += TEXT("}");
+					if (Depth == 0) bDone = true;
+				}
+				else if (T.Type == ETokenType::String)
+				{
+					Advance();
+					JsonText += TEXT("\"");
+					// 对字符串内部的引号进行转义
+					FString Escaped = T.Value.Replace(TEXT("\\"), TEXT("\\\\")).Replace(TEXT("\""), TEXT("\\\""));
+					JsonText += Escaped;
+					JsonText += TEXT("\"");
+				}
+				else if (T.Type == ETokenType::Colon)
+				{
+					Advance();
+					JsonText += TEXT(":");
+				}
+				else if (T.Type == ETokenType::Comma)
+				{
+					Advance();
+					JsonText += TEXT(",");
+				}
+				else if (T.Type == ETokenType::Integer || T.Type == ETokenType::Float)
+				{
+					Advance();
+					JsonText += T.Value;
+				}
+				else if (T.Type == ETokenType::True)
+				{
+					Advance();
+					JsonText += TEXT("true");
+				}
+				else if (T.Type == ETokenType::False)
+				{
+					Advance();
+					JsonText += TEXT("false");
+				}
+				else if (T.Type == ETokenType::Identifier)
+				{
+					// JSON 的键名如果没有引号，添加引号
+					Advance();
+					JsonText += TEXT("\"");
+					JsonText += T.Value;
+					JsonText += TEXT("\"");
+				}
+				else
+				{
+					// 跳过未知 token（防止死循环需退出）
+					Advance();
+				}
+			}
+
+			Stmt->RawNodeParamsJson = JsonText;
+		}
+	}
+
+	Consume(ETokenType::RightParen, TEXT("Expected ')' to close @node"));
+	return Stmt;
 }
 
 } // namespace BSL

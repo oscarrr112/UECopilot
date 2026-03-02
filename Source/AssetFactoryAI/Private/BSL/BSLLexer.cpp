@@ -85,6 +85,7 @@ FString FToken::TokenTypeToString(ETokenType Type)
 	case ETokenType::Comma: return TEXT(",");
 	case ETokenType::Colon: return TEXT(":");
 	case ETokenType::Semicolon: return TEXT(";");
+	case ETokenType::At: return TEXT("@");
 	case ETokenType::Newline: return TEXT("Newline");
 	case ETokenType::Error: return TEXT("Error");
 	default: return TEXT("Unknown");
@@ -154,6 +155,7 @@ FToken FLexer::NextToken()
 	case ',': return MakeToken(ETokenType::Comma, TEXT(","));
 	case ':': return MakeToken(ETokenType::Colon, TEXT(":"));
 	case ';': return MakeToken(ETokenType::Semicolon, TEXT(";"));
+	case '@': return MakeToken(ETokenType::At, TEXT("@"));
 
 	case '-':
 		if (Match('>')) return MakeToken(ETokenType::Arrow, TEXT("->"));

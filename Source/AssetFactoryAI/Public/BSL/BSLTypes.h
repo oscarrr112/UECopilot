@@ -222,7 +222,8 @@ enum class EStatementType : uint8
 	// Other
 	ExpressionStmt,		// FunctionCall() as statement
 	Block,				// { statements }
-	Switch				// switch (x) { case v: {} default: {} }
+	Switch,				// switch (x) { case v: {} default: {} }
+	RawNode,			// @node("Timeline", {...})
 };
 
 /**
@@ -273,6 +274,10 @@ struct FStatement
 
 	// Switch statement
 	TArray<FSwitchCase> SwitchCases;
+
+	// RawNode (escape hatch): @node("Timeline", {...})
+	FString RawNodeType;
+	FString RawNodeParamsJson;
 
 	// Source location
 	int32 Line = 0;

@@ -2,6 +2,9 @@
 
 #include "BSL/BSLCompiler.h"
 #include "AssetFactoryAI.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Dom/JsonObject.h"
 
 namespace BSL
 {
@@ -1145,6 +1148,65 @@ bool FCompiler::CompileStatement(
 
 		InOutLastExecNodeId.Empty();
 		InOutLastExecPinName.Empty();
+		return true;
+	}
+
+	case EStatementType::RawNode:
+	{
+		// @node("NodeType", { params }) 逃生舱：直接将节点类型和参数透传给 NodeSpawner
+		FBlueprintNodeData RawNode;
+		RawNode.NodeId = GenerateNodeId(TEXT("raw"));
+		RawNode.NodeType = EBlueprintNodeType::PureFunction;
+		RawNode.FunctionReference = Stmt.RawNodeType;
+		RawNode.Position = {400.0f, 0.0f};
+
+		// 连接执行引脚
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection Conn;
+			Conn.SourceNodeId = InOutLastExecNodeId;
+			Conn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(Conn);
+			RawNode.Pins.Add(ExecPin);
+		}
+
+		// 如果有 JSON params，解析并添加为 DefaultValue pins
+		if (!Stmt.RawNodeParamsJson.IsEmpty())
+		{
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Stmt.RawNodeParamsJson);
+			TSharedPtr<FJsonObject> JsonParams;
+			if (FJsonSerializer::Deserialize(Reader, JsonParams) && JsonParams.IsValid())
+			{
+				for (const auto& Pair : JsonParams->Values)
+				{
+					FBlueprintPinData ParamPin;
+					ParamPin.Name = Pair.Key;
+					ParamPin.Direction = EBlueprintPinDirection::Input;
+					FString StrVal;
+					if (Pair.Value->TryGetString(StrVal))
+					{
+						ParamPin.DefaultValue = StrVal;
+					}
+					else
+					{
+						// 数字、bool 等转为字符串
+						ParamPin.DefaultValue = Pair.Value->AsString();
+					}
+					RawNode.Pins.Add(ParamPin);
+				}
+			}
+			else
+			{
+				Warning(FString::Printf(TEXT("@node '%s': failed to parse params JSON: %s"), *Stmt.RawNodeType, *Stmt.RawNodeParamsJson));
+			}
+		}
+
+		OutNodes.Add(RawNode);
+		InOutLastExecNodeId = RawNode.NodeId;
+		InOutLastExecPinName = TEXT("then");
 		return true;
 	}
 

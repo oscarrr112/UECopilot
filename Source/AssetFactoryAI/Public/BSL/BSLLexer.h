@@ -74,6 +74,7 @@ enum class ETokenType : uint8
 	Comma,			// ,
 	Colon,			// :
 	Semicolon,		// ;
+	At,				// @
 
 	// Special
 	Newline,

@@ -72,6 +72,7 @@ private:
 	TSharedPtr<FStatement> ParseWhile();
 	TSharedPtr<FStatement> ParseFor();
 	TSharedPtr<FStatement> ParseSwitch();
+	TSharedPtr<FStatement> ParseRawNode();
 	TSharedPtr<FStatement> ParseReturn();
 	TSharedPtr<FStatement> ParseExpressionStatement();
 	TArray<TSharedPtr<FStatement>> ParseBlock();
