@@ -208,6 +208,7 @@ enum class EStatementType : uint8
 	VariableDecl,		// var x: int = 0
 	Assignment,			// x = expr
 	MultiAssignment,	// (a, b) = FuncCall()
+	ArraySet,			// arr[i] = expr
 
 	// Control flow
 	If,					// if (cond) { } else { }
@@ -247,6 +248,7 @@ struct FStatement
 	FString AssignTarget;
 	TArray<FString> MultiAssignTargets;
 	TSharedPtr<FExpression> AssignValue;
+	TSharedPtr<FExpression> AssignIndexExpr;  // 索引表达式（用于 ArraySet）
 
 	// If statement
 	TSharedPtr<FExpression> Condition;

@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BSL/BSLCompiler.h"
+#include "AssetFactoryAI.h"
 
 namespace BSL
 {
@@ -554,6 +555,113 @@ bool FCompiler::CompileStatement(
 		}
 
 		InOutLastExecNodeId = CallNode.NodeId;
+		InOutLastExecPinName = TEXT("then");
+		return true;
+	}
+
+	case EStatementType::ArraySet:
+	{
+		// arr[index] = value → Array_Set 节点
+		FBlueprintNodeData SetNode;
+		SetNode.NodeId = GenerateNodeId(TEXT("array_set"));
+		SetNode.NodeType = EBlueprintNodeType::Array_Set;
+		SetNode.Position = {400.0f, 0.0f};
+
+		// 连接上一个执行节点的 execute 引脚
+		if (!InOutLastExecNodeId.IsEmpty())
+		{
+			FBlueprintPinData ExecPin;
+			ExecPin.Name = TEXT("execute");
+			ExecPin.Direction = EBlueprintPinDirection::Input;
+			FBlueprintPinConnection ExecConn;
+			ExecConn.SourceNodeId = InOutLastExecNodeId;
+			ExecConn.SourcePinName = InOutLastExecPinName;
+			ExecPin.Connections.Add(ExecConn);
+			SetNode.Pins.Add(ExecPin);
+		}
+
+		// TargetArray pin：连接数组变量
+		FBlueprintPinData ArrayPin;
+		ArrayPin.Name = TEXT("TargetArray");
+		ArrayPin.Direction = EBlueprintPinDirection::Input;
+		if (const TPair<FString, FString>* Pair = VariableNodeMap.Find(Stmt.AssignTarget))
+		{
+			FBlueprintPinConnection ArrayConn;
+			ArrayConn.SourceNodeId = Pair->Key;
+			ArrayConn.SourcePinName = Pair->Value;
+			ArrayPin.Connections.Add(ArrayConn);
+		}
+		else
+		{
+			UE_LOG(LogAssetFactoryAI, Warning, TEXT("ArraySet: 数组变量 '%s' 未在 VariableNodeMap 中找到"), *Stmt.AssignTarget);
+		}
+		SetNode.Pins.Add(ArrayPin);
+
+		// Index pin：编译索引表达式
+		if (Stmt.AssignIndexExpr.IsValid())
+		{
+			FBlueprintPinData IndexPinData;
+			IndexPinData.Name = TEXT("Index");
+			IndexPinData.Direction = EBlueprintPinDirection::Input;
+
+			FString IndexNodeId;
+			FString IndexPinName = CompileExpression(*Stmt.AssignIndexExpr, OutNodes, IndexNodeId);
+			if (!IndexNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection IdxConn;
+				IdxConn.SourceNodeId = IndexNodeId;
+				IdxConn.SourcePinName = IndexPinName;
+				IndexPinData.Connections.Add(IdxConn);
+			}
+			else if (Stmt.AssignIndexExpr->Type == EExpressionType::Literal_Int)
+			{
+				IndexPinData.DefaultValue = FString::FromInt(Stmt.AssignIndexExpr->IntValue);
+			}
+			SetNode.Pins.Add(IndexPinData);
+		}
+
+		// Item pin：编译要设置的值
+		if (Stmt.AssignValue.IsValid())
+		{
+			FBlueprintPinData ItemPinData;
+			ItemPinData.Name = TEXT("Item");
+			ItemPinData.Direction = EBlueprintPinDirection::Input;
+
+			FString ValNodeId;
+			FString ValPinName = CompileExpression(*Stmt.AssignValue, OutNodes, ValNodeId);
+			if (!ValNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection ValConn;
+				ValConn.SourceNodeId = ValNodeId;
+				ValConn.SourcePinName = ValPinName;
+				ItemPinData.Connections.Add(ValConn);
+			}
+			else
+			{
+				// 处理字面量默认值
+				switch (Stmt.AssignValue->Type)
+				{
+				case EExpressionType::Literal_Bool:
+					ItemPinData.DefaultValue = Stmt.AssignValue->BoolValue ? TEXT("true") : TEXT("false");
+					break;
+				case EExpressionType::Literal_Int:
+					ItemPinData.DefaultValue = FString::FromInt(Stmt.AssignValue->IntValue);
+					break;
+				case EExpressionType::Literal_Float:
+					ItemPinData.DefaultValue = FString::SanitizeFloat(Stmt.AssignValue->FloatValue);
+					break;
+				case EExpressionType::Literal_String:
+					ItemPinData.DefaultValue = Stmt.AssignValue->StringValue;
+					break;
+				default:
+					break;
+				}
+			}
+			SetNode.Pins.Add(ItemPinData);
+		}
+
+		OutNodes.Add(SetNode);
+		InOutLastExecNodeId = SetNode.NodeId;
 		InOutLastExecPinName = TEXT("then");
 		return true;
 	}
@@ -1549,6 +1657,24 @@ FString FCompiler::CompileExpression(
 		else if (Expr.StructTypeName == TEXT("Transform"))
 			FieldNames = {TEXT("Translation"), TEXT("Rotation"), TEXT("Scale3D")};
 
+		// 问题 5：未知 StructTypeName 时发出警告
+		if (FieldNames.IsEmpty() && !Expr.StructFields.IsEmpty())
+		{
+			UE_LOG(LogAssetFactoryAI, Warning, TEXT("StructLiteral: unknown struct type '%s', field pin names will be auto-generated as Field0, Field1, ..."), *Expr.StructTypeName);
+		}
+
+		// 问题 6：参数数量不匹配时发出警告
+		const int32 ExpectedFieldCount =
+			Expr.StructTypeName == TEXT("Vector") ? 3 :
+			Expr.StructTypeName == TEXT("Rotator") ? 3 :
+			Expr.StructTypeName == TEXT("Transform") ? 3 : 0;
+
+		if (ExpectedFieldCount > 0 && Expr.StructFields.Num() != ExpectedFieldCount)
+		{
+			UE_LOG(LogAssetFactoryAI, Warning, TEXT("StructLiteral: '%s' expects %d fields, got %d"),
+				*Expr.StructTypeName, ExpectedFieldCount, Expr.StructFields.Num());
+		}
+
 		for (int32 i = 0; i < Expr.StructFields.Num(); i++)
 		{
 			const TSharedPtr<FExpression>& FieldExpr = Expr.StructFields[i];
@@ -1579,6 +1705,12 @@ FString FCompiler::CompileExpression(
 			else if (FieldExpr->Type == EExpressionType::Literal_Int)
 			{
 				FieldPin.DefaultValue = FString::SanitizeFloat(static_cast<double>(FieldExpr->IntValue));
+			}
+			else
+			{
+				// 问题 7：字段表达式类型不支持默认值时发出警告
+				UE_LOG(LogAssetFactoryAI, Warning, TEXT("StructLiteral: field '%s' of '%s' has unsupported expression type for default value, pin will be left unconnected"),
+					*FieldPinName, *Expr.StructTypeName);
 			}
 
 			MakeNode.Pins.Add(FieldPin);

@@ -378,6 +378,22 @@ TSharedPtr<FStatement> FParser::ParseAssignment()
 			Stmt->Expression = LHS;  // Store LHS expression
 			Stmt->AssignTarget = LHS->MemberName;
 		}
+		else if (LHS->Type == EExpressionType::ArrayAccess)
+		{
+			// arr[i] = value → ArraySet 语句
+			// LHS->Left 是数组变量表达式，LHS->Right 是索引表达式
+			Stmt->Type = EStatementType::ArraySet;
+			if (LHS->Left.IsValid() && LHS->Left->Type == EExpressionType::Variable)
+			{
+				Stmt->AssignTarget = LHS->Left->Name;
+			}
+			else
+			{
+				Error(TEXT("Array set: expected a simple variable as array target"));
+				return nullptr;
+			}
+			Stmt->AssignIndexExpr = LHS->Right;
+		}
 		else
 		{
 			Error(TEXT("Invalid assignment target"));

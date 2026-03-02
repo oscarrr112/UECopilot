@@ -797,9 +797,11 @@ FNodeSpawnResult UNodeSpawner::SpawnMakeStructNode(UEdGraph* Graph, const FBluep
 		return Result;
 	}
 
-	UK2Node_MakeStruct* MakeNode = CreateNode<UK2Node_MakeStruct>(Graph);
+	FGraphNodeCreator<UK2Node_MakeStruct> NodeCreator(*Graph);
+	UK2Node_MakeStruct* MakeNode = NodeCreator.CreateNode();
 	MakeNode->StructType = StructType;
 	MakeNode->AllocateDefaultPins();
+	NodeCreator.Finalize();
 	SetNodePosition(MakeNode, NodeData.Position);
 
 	Result.bSuccess = true;
