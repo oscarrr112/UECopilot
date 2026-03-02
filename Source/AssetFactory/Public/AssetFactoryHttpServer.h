@@ -23,6 +23,7 @@ class UAssetFactorySubsystem;
  *   GET  /assetfactory/context - Get current editor state (selected actors, assets, level, etc.)
  *   POST /assetfactory/execute - Execute Python code in the editor
  *   GET  /assetfactory/screenshot - Capture Level Viewport as base64 JPEG
+ *   POST /assetfactory/extract_bsl - Decompile Blueprint asset to BSL text
  *
  * Service Discovery:
  *   On startup, writes service info to {ProjectDir}/Saved/AssetFactory/service.json
@@ -95,6 +96,9 @@ private:
 
 	/** Handle POST /datatable/rows request - update specific rows in a DataTable */
 	bool HandleUpdateDataTableRows(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
+
+	/** Handle POST /extract_bsl request - decompile Blueprint to BSL text */
+	bool HandleExtractBSL(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete);
 
 	/** Send JSON response */
 	void SendJsonResponse(const FHttpResultCallback& OnComplete, int32 StatusCode, TSharedPtr<FJsonObject> JsonResponse);

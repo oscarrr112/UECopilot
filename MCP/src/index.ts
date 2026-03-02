@@ -541,6 +541,24 @@ const tools: Tool[] = [
       properties: {},
     },
   },
+  {
+    name: "extract_blueprint_as_bsl",
+    description:
+      "Decompile an existing Unreal Engine Blueprint asset into BSL (Blueprint Script Language) text. Returns the BSL source that represents the Blueprint's event graph and functions. Useful for reading, understanding, or editing Blueprint logic as text.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        assets: {
+          type: "array",
+          description: "Array of Blueprint asset paths to decompile (e.g., /Game/Blueprints/BP_Player)",
+          items: {
+            type: "string",
+          },
+        },
+      },
+      required: ["assets"],
+    },
+  },
 ];
 
 // Create MCP server
@@ -730,6 +748,44 @@ const toolHandlers: Record<string, ToolHandler> = {
       Rows: rowUpdates,
       DeleteRows: deleteRows,
     });
+  },
+  extract_blueprint_as_bsl: async (args) => {
+    const { assets } = args as { assets: string[] };
+    if (!assets || assets.length === 0) {
+      throw new Error("'assets' must be a non-empty array of Blueprint paths.");
+    }
+
+    // Decompile each asset and collect results
+    const rawResults = await Promise.all(
+      assets.map((assetPath) => callUEApi("/extract_bsl", "POST", { Asset: assetPath }))
+    );
+
+    // Format output: each asset gets a section with path header + BSL block
+    // Use assets[i] as fallback for r.asset in case of connection failure (callUEApi
+    // returns {success:false, error:"..."} without an 'asset' field when offline)
+    const parts = rawResults.map((raw, i) => {
+      const r = raw as {
+        success?: boolean;
+        asset?: string;
+        bsl?: string;
+        warnings?: string[];
+        errors?: string[];
+        error?: string;
+      };
+      const displayPath = r.asset ?? assets[i];
+      const header = `// === ${displayPath} ===`;
+      if (!r.success) {
+        const errList = (r.errors ?? (r.error ? [r.error] : [])).join("\n");
+        return `${header}\n// Decompile failed:\n${errList}`;
+      }
+      const warnBlock =
+        r.warnings && r.warnings.length > 0
+          ? r.warnings.map((w) => `// WARNING: ${w}`).join("\n") + "\n"
+          : "";
+      return `${header}\n${warnBlock}${r.bsl ?? ""}`;
+    });
+
+    return parts.join("\n\n");
   },
 };
 
