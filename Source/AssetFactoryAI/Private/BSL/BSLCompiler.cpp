@@ -623,9 +623,15 @@ bool FCompiler::CompileStatement(
 			else if (Stmt.AssignIndexExpr->Type == EExpressionType::Literal_Float)
 			{
 				// Array_Set 的 Index pin 期望整数类型。浮点索引语义上无意义，截断并发出警告
+				// 使用 double 中间值：double 有 52 位尾数，可精确表示 INT32_MAX/MIN，避免 float 精度不足导致的 UB
+				const double ClampedD = FMath::Clamp(
+					static_cast<double>(Stmt.AssignIndexExpr->FloatValue),
+					static_cast<double>(TNumericLimits<int32>::Min()),
+					static_cast<double>(TNumericLimits<int32>::Max()));
+				const int32 IndexInt = static_cast<int32>(ClampedD);
 				Warning(FString::Printf(TEXT("ArraySet: 浮点数作为数组索引将被截断为整数 (%.6f → %d)"),
-					Stmt.AssignIndexExpr->FloatValue, static_cast<int32>(Stmt.AssignIndexExpr->FloatValue)));
-				IndexPinData.DefaultValue = FString::FromInt(static_cast<int32>(Stmt.AssignIndexExpr->FloatValue));
+					Stmt.AssignIndexExpr->FloatValue, IndexInt));
+				IndexPinData.DefaultValue = FString::FromInt(IndexInt);
 			}
 			SetNode.Pins.Add(IndexPinData);
 		}

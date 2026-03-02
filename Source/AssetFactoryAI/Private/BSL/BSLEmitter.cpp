@@ -61,14 +61,10 @@ FString FEmitter::EmitFunction(const FFunction& Func)
 	{
 		Keyword = TEXT("event");
 	}
-	else if (Func.bIsPure)
-	{
-		// Note: BSLParser 暂不支持 'pure' 修饰符，降级为普通 function
-		// 纯函数语义通过 bIsPure 在 AST 中保留
-		Keyword = TEXT("function");
-	}
 	else
 	{
+		// BSLParser 暂不支持 'pure' 修饰符，纯函数与普通函数均输出 function
+		// pure 语义通过 FFunction::bIsPure 在 AST 中保留（round-trip 时会丢失）
 		Keyword = TEXT("function");
 	}
 

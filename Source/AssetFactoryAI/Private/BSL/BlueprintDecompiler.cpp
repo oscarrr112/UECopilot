@@ -220,7 +220,8 @@ TArray<TSharedPtr<FStatement>> FBlueprintDecompiler::WalkExecChain(UEdGraphPin* 
 	TArray<TSharedPtr<FStatement>> Stmts;
 	if (!ExecPin || ExecPin->LinkedTo.Num() == 0) return Stmts;
 
-	UEdGraphNode* NextNode = ExecPin->LinkedTo[0]->GetOwningNode();
+	// 使用 GetOwningNodeUnchecked() 防御损坏的 pin（GetOwningNode 内部有 check() 断言）
+	UEdGraphNode* NextNode = ExecPin->LinkedTo[0]->GetOwningNodeUnchecked();
 
 	// 防止循环图造成死循环
 	TSet<UEdGraphNode*> Visited;
@@ -250,7 +251,8 @@ TArray<TSharedPtr<FStatement>> FBlueprintDecompiler::WalkExecChain(UEdGraphPin* 
 		{
 			break;
 		}
-		NextNode = ThenPin->LinkedTo[0]->GetOwningNode();
+		// 使用 GetOwningNodeUnchecked() 保持与 PinToExpression 的防御性一致
+		NextNode = ThenPin->LinkedTo[0]->GetOwningNodeUnchecked();
 	}
 
 	return Stmts;
@@ -401,7 +403,15 @@ TSharedPtr<FStatement> FBlueprintDecompiler::NodeToStatement(UEdGraphNode* Node)
 	// 将节点注释（如有）作为辅助信息写入 RawNodeParamsJson
 	if (!Node->NodeComment.IsEmpty())
 	{
-		RawStmt->RawNodeParamsJson = FString::Printf(TEXT("{\"comment\":\"%s\"}"), *Node->NodeComment);
+		// 对注释中的特殊字符进行 JSON 转义（顺序：先 \ 后 "，再处理控制字符）
+		FString SafeComment = Node->NodeComment
+			.Replace(TEXT("\\"), TEXT("\\\\"))
+			.Replace(TEXT("\""), TEXT("\\\""))
+			.Replace(TEXT("\r\n"), TEXT("\\n"))  // Windows CRLF（先处理，避免被后续替换截断）
+			.Replace(TEXT("\n"), TEXT("\\n"))
+			.Replace(TEXT("\r"), TEXT("\\r"))
+			.Replace(TEXT("\t"), TEXT("\\t"));
+		RawStmt->RawNodeParamsJson = FString::Printf(TEXT("{\"comment\":\"%s\"}"), *SafeComment);
 	}
 
 	Warnings.Add(FString::Printf(TEXT("Unrecognized node type '%s' (title: %s), emitted as @node"),
