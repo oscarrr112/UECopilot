@@ -563,9 +563,25 @@ bool FCompiler::CompileStatement(
 		// Expression as statement - likely a function call
 		if (Stmt.Expression.IsValid() && Stmt.Expression->Type == EExpressionType::FunctionCall)
 		{
+			// Map array method names to dedicated Array_* node types when called on an object
+			static const TMap<FString, EBlueprintNodeType> ArrayMethodNodeTypes = {
+				{TEXT("Add"),    EBlueprintNodeType::Array_Add},
+				{TEXT("Remove"), EBlueprintNodeType::Array_Remove},
+				{TEXT("Clear"),  EBlueprintNodeType::Array_Clear},
+			};
+
+			EBlueprintNodeType CallNodeType = EBlueprintNodeType::CallFunction;
+			if (Stmt.Expression->Object.IsValid())
+			{
+				if (const EBlueprintNodeType* MappedType = ArrayMethodNodeTypes.Find(Stmt.Expression->Name))
+				{
+					CallNodeType = *MappedType;
+				}
+			}
+
 			FBlueprintNodeData CallNode;
 			CallNode.NodeId = GenerateNodeId(TEXT("call"));
-			CallNode.NodeType = EBlueprintNodeType::CallFunction;
+			CallNode.NodeType = CallNodeType;
 			CallNode.FunctionReference = Stmt.Expression->Name;
 			CallNode.Position = {400.0f, 0.0f};
 
@@ -1093,7 +1109,23 @@ FString FCompiler::CompileExpression(
 		// Pure function call
 		FBlueprintNodeData CallNode;
 		CallNode.NodeId = GenerateNodeId(TEXT("pure"));
-		CallNode.NodeType = EBlueprintNodeType::PureFunction;
+
+		// Map array accessor methods to dedicated Array_* node types
+		static const TMap<FString, EBlueprintNodeType> ArrayAccessorNodeTypes = {
+			{TEXT("Length"), EBlueprintNodeType::Array_Length},
+			{TEXT("Get"),    EBlueprintNodeType::Array_Get},
+		};
+
+		EBlueprintNodeType PureCallNodeType = EBlueprintNodeType::PureFunction;
+		if (Expr.Object.IsValid())
+		{
+			if (const EBlueprintNodeType* MappedType = ArrayAccessorNodeTypes.Find(Expr.Name))
+			{
+				PureCallNodeType = *MappedType;
+			}
+		}
+
+		CallNode.NodeType = PureCallNodeType;
 		CallNode.FunctionReference = Expr.Name;
 		CallNode.Position = {300.0f, 100.0f};
 
@@ -1394,6 +1426,65 @@ FString FCompiler::CompileExpression(
 			OutNodeId = MulNode.NodeId;
 			return TEXT("ReturnValue");
 		}
+	}
+
+	case EExpressionType::ArrayAccess:
+	{
+		// arr[index] -> Array_Get node
+		FBlueprintNodeData GetNode;
+		GetNode.NodeId = GenerateNodeId(TEXT("arr_get"));
+		GetNode.NodeType = EBlueprintNodeType::Array_Get;
+		GetNode.Position = {300.0f, 100.0f};
+
+		// TargetArray pin (Expr.Left = the array)
+		if (Expr.Left.IsValid())
+		{
+			FString ArrNodeId;
+			FString ArrPinName = CompileExpression(*Expr.Left, OutNodes, ArrNodeId);
+			if (!ArrNodeId.IsEmpty())
+			{
+				FBlueprintPinData ArrPin;
+				ArrPin.Name = TEXT("TargetArray");
+				ArrPin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = ArrNodeId;
+				Conn.SourcePinName = ArrPinName;
+				ArrPin.Connections.Add(Conn);
+				GetNode.Pins.Add(ArrPin);
+			}
+			else
+			{
+				Warning(TEXT("ArrayAccess: array expression could not be compiled"));
+			}
+		}
+
+		// Index pin (Expr.Right = the index expression)
+		if (Expr.Right.IsValid())
+		{
+			FString IdxNodeId;
+			FString IdxPinName = CompileExpression(*Expr.Right, OutNodes, IdxNodeId);
+			FBlueprintPinData IdxPin;
+			IdxPin.Name = TEXT("Index");
+			IdxPin.Direction = EBlueprintPinDirection::Input;
+
+			if (!IdxNodeId.IsEmpty())
+			{
+				FBlueprintPinConnection Conn;
+				Conn.SourceNodeId = IdxNodeId;
+				Conn.SourcePinName = IdxPinName;
+				IdxPin.Connections.Add(Conn);
+			}
+			else if (Expr.Right->Type == EExpressionType::Literal_Int)
+			{
+				IdxPin.DefaultValue = FString::FromInt(Expr.Right->IntValue);
+			}
+
+			GetNode.Pins.Add(IdxPin);
+		}
+
+		OutNodes.Add(GetNode);
+		OutNodeId = GetNode.NodeId;
+		return TEXT("Item");  // Array_Get output pin name
 	}
 
 	case EExpressionType::MemberAccess:
