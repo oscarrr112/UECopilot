@@ -481,6 +481,74 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 		}
 	}
 
+	// If not found in libraries, search the blueprint's parent class hierarchy
+	// (e.g., AActor::K2_SetActorLocation, AActor::GetOwner, APawn::GetController)
+	if (!Function && Blueprint && Blueprint->ParentClass)
+	{
+		// UE Blueprint-callable functions often have a K2_ prefix
+		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+		{
+			Function = Blueprint->ParentClass->FindFunctionByName(*Candidate);
+			if (Function)
+			{
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on parent class '%s'"),
+					*Candidate, *Blueprint->ParentClass->GetName());
+				break;
+			}
+		}
+	}
+
+	// If still not found, check if it's a function defined in the same blueprint (self-call)
+	if (!Function && Blueprint)
+	{
+		for (UEdGraph* FuncGraph : Blueprint->FunctionGraphs)
+		{
+			if (FuncGraph && FuncGraph->GetFName() == FName(*FunctionRef))
+			{
+				UK2Node_CallFunction* FuncNode = CreateNode<UK2Node_CallFunction>(Graph);
+				FuncNode->FunctionReference.SetSelfMember(FName(*FunctionRef));
+				FuncNode->AllocateDefaultPins();
+
+				// AllocateDefaultPins may fail for self-member calls when UFunction
+				// doesn't exist yet (blueprint not compiled). Manually create pins
+				// by inspecting the function graph's entry/result nodes.
+				for (UEdGraphNode* FuncGraphNode : FuncGraph->Nodes)
+				{
+					if (UK2Node_FunctionEntry* Entry = Cast<UK2Node_FunctionEntry>(FuncGraphNode))
+					{
+						for (UEdGraphPin* Pin : Entry->Pins)
+						{
+							if (Pin->Direction == EGPD_Output
+								&& Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec
+								&& !FuncNode->FindPin(Pin->PinName))
+							{
+								FuncNode->CreatePin(EGPD_Input, Pin->PinType, Pin->PinName);
+							}
+						}
+					}
+					else if (UK2Node_FunctionResult* ResultN = Cast<UK2Node_FunctionResult>(FuncGraphNode))
+					{
+						for (UEdGraphPin* Pin : ResultN->Pins)
+						{
+							if (Pin->Direction == EGPD_Input
+								&& Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec
+								&& !FuncNode->FindPin(Pin->PinName))
+							{
+								FuncNode->CreatePin(EGPD_Output, Pin->PinType, Pin->PinName);
+							}
+						}
+					}
+				}
+
+				SetNodePosition(FuncNode, NodeData.Position);
+				Result.bSuccess = true;
+				Result.Node = FuncNode;
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' as self-member call"), *FunctionRef);
+				return Result;
+			}
+		}
+	}
+
 	if (!Function)
 	{
 		Result.ErrorMessage = FString::Printf(TEXT("Function not found: %s"), *NodeData.FunctionReference);
@@ -549,6 +617,46 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 
 	if (Node)
 	{
+		// Post-configure: for SwitchInteger nodes, add case pins based on node data.
+		// BSLCompiler adds output exec pins named by the integer case value (e.g., "1", "2", "3").
+		if (NodeData.NodeType == EBlueprintNodeType::Flow_Switch)
+		{
+			if (UK2Node_SwitchInteger* SwitchNode = Cast<UK2Node_SwitchInteger>(Node))
+			{
+				// Collect case values from output exec pins
+				TArray<int32> CaseValues;
+				for (const FBlueprintPinData& PinData : NodeData.Pins)
+				{
+					if (PinData.Direction == EBlueprintPinDirection::Output && PinData.Name.IsNumeric())
+					{
+						CaseValues.Add(FCString::Atoi(*PinData.Name));
+					}
+				}
+
+				if (CaseValues.Num() > 0)
+				{
+					CaseValues.Sort();
+					SwitchNode->StartIndex = CaseValues[0];
+
+					// Add pins for each case value. SwitchInteger pins are sequential
+					// from StartIndex, so we need pins from min to max.
+					int32 PinsNeeded = CaseValues.Last() - CaseValues[0] + 1;
+					constexpr int32 MaxSwitchPins = 256;
+					if (PinsNeeded > MaxSwitchPins)
+					{
+						UE_LOG(LogAssetFactoryAI, Warning,
+							TEXT("SwitchInteger: case range [%d..%d] requires %d pins, clamping to %d"),
+							CaseValues[0], CaseValues.Last(), PinsNeeded, MaxSwitchPins);
+						PinsNeeded = MaxSwitchPins;
+					}
+					for (int32 i = 0; i < PinsNeeded; ++i)
+					{
+						SwitchNode->AddPinToSwitchNode();
+					}
+				}
+			}
+		}
+
 		SetNodePosition(Node, NodeData.Position);
 		Result.bSuccess = true;
 		Result.Node = Node;

@@ -5,6 +5,8 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
+#include "Misc/App.h"
+#include "UObject/UObjectIterator.h"
 
 namespace BSL
 {
@@ -52,6 +54,54 @@ bool FCompiler::CompileBlueprint(const FBlueprint& Source, FBlueprintData& OutDa
 	OutData.Name = Source.Name;
 	OutData.ParentClass = Source.ParentClass;
 
+	// Resolve parent class for function lookup (e.g., AActor for "Actor")
+	// Search multiple modules dynamically, then fall back to class iterator
+	ResolvedParentClass = nullptr;
+	{
+		const TArray<FString> ModulePaths = {
+			TEXT("/Script/Engine"),
+			FString::Printf(TEXT("/Script/%s"), FApp::GetProjectName()),
+			TEXT("/Script/GameplayAbilities"),
+			TEXT("/Script/AIModule"),
+			TEXT("/Script/EnhancedInput"),
+		};
+		const TCHAR* Prefixes[] = { TEXT(""), TEXT("A"), TEXT("U") };
+
+		for (const FString& ModulePath : ModulePaths)
+		{
+			for (const TCHAR* Prefix : Prefixes)
+			{
+				ResolvedParentClass = FindObject<UClass>(nullptr,
+					*FString::Printf(TEXT("%s.%s%s"), *ModulePath, Prefix, *Source.ParentClass));
+				if (ResolvedParentClass) break;
+			}
+			if (ResolvedParentClass) break;
+		}
+
+		// Fallback: iterate all loaded classes
+		if (!ResolvedParentClass)
+		{
+			const TArray<FString> NamesToMatch = {
+				Source.ParentClass,
+				TEXT("A") + Source.ParentClass,
+				TEXT("U") + Source.ParentClass
+			};
+			for (TObjectIterator<UClass> It; It; ++It)
+			{
+				FString Name = It->GetName();
+				for (const FString& Match : NamesToMatch)
+				{
+					if (Name == Match)
+					{
+						ResolvedParentClass = *It;
+						break;
+					}
+				}
+				if (ResolvedParentClass) break;
+			}
+		}
+	}
+
 	// Build variable type map first
 	VariableTypeMap.Empty();
 	for (const FVariable& Var : Source.Variables)
@@ -63,6 +113,33 @@ bool FCompiler::CompileBlueprint(const FBlueprint& Source, FBlueprintData& OutDa
 	for (const FVariable& Var : Source.Variables)
 	{
 		OutData.Variables.Add(CompileVariable(Var));
+	}
+
+	// Pre-build self-defined function param names for self-call resolution
+	SelfFunctionInputNames.Empty();
+	SelfFunctionOutputNames.Empty();
+	for (const FFunction& Func : Source.Functions)
+	{
+		if (Func.bIsEvent) continue;
+
+		if (Func.Inputs.Num() > 0)
+		{
+			TArray<FString> InNames;
+			for (const FVariable& Param : Func.Inputs)
+			{
+				InNames.Add(Param.Name);
+			}
+			SelfFunctionInputNames.Add(Func.Name, MoveTemp(InNames));
+		}
+		if (Func.Outputs.Num() > 0)
+		{
+			TArray<FString> OutNames;
+			for (const FVariable& Out : Func.Outputs)
+			{
+				OutNames.Add(Out.Name);
+			}
+			SelfFunctionOutputNames.Add(Func.Name, MoveTemp(OutNames));
+		}
 	}
 
 	// Create the default EventGraph - all events go here
@@ -109,6 +186,13 @@ FBlueprintVariableData FCompiler::CompileVariable(const FVariable& Var)
 	Data.Name = Var.Name;
 	Data.Type = MapType(Var.Type.Type);
 	Data.TypeClass = Var.Type.SubType;
+
+	// For Array types, set the container element type from SubType (e.g., "string" -> String)
+	if (Var.Type.Type == EType::Array && !Var.Type.SubType.IsEmpty())
+	{
+		FTypeInfo ElementTypeInfo = FTypeInfo::FromString(Var.Type.SubType);
+		Data.ContainerElementType = MapType(ElementTypeInfo.Type);
+	}
 
 	// Handle default value
 	if (Var.DefaultValue.IsValid())
@@ -1142,21 +1226,32 @@ bool FCompiler::CompileStatement(
 			}
 		}
 
+		// Pre-scan: add case output exec pins to SwitchNode so NodeSpawner
+		// can create matching pins on the UK2Node_SwitchInteger.
+		// UE's SwitchInteger names pins by the integer value (e.g., "1", "2", "3").
+		for (const FSwitchCase& SwitchCase : Stmt.SwitchCases)
+		{
+			if (SwitchCase.Value.IsValid())
+			{
+				FBlueprintPinData CasePin;
+				CasePin.Name = FString::FromInt(SwitchCase.Value->IntValue);
+				CasePin.Direction = EBlueprintPinDirection::Output;
+				SwitchNode.Pins.Add(CasePin);
+			}
+		}
+
 		OutNodes.Add(SwitchNode);
 
 		// Compile each case branch
-		int32 CaseIndex = 0;
 		for (const FSwitchCase& SwitchCase : Stmt.SwitchCases)
 		{
 			FString CasePinName = SwitchCase.Value.IsValid()
-				? FString::Printf(TEXT("Case_%d"), CaseIndex)
+				? FString::FromInt(SwitchCase.Value->IntValue)
 				: TEXT("Default");
 
 			FString CaseLastNodeId = SwitchNode.NodeId;
 			FString CaseLastPinName = CasePinName;
 			CompileStatements(SwitchCase.Body, OutNodes, CaseLastNodeId, CaseLastPinName);
-
-			if (SwitchCase.Value.IsValid()) CaseIndex++;
 		}
 
 		InOutLastExecNodeId.Empty();
@@ -1793,7 +1888,8 @@ FString FCompiler::CompileExpression(
 
 		OutNodes.Add(MakeNode);
 		OutNodeId = MakeNode.NodeId;
-		return TEXT("ReturnValue");
+		// UK2Node_MakeStruct output pin is named after the struct type (e.g., "Vector", "Rotator")
+		return Expr.StructTypeName;
 	}
 
 	case EExpressionType::Cast:
@@ -2033,7 +2129,26 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 		}
 	}
 
-	if (!Func) return false;
+	// Search blueprint's parent class hierarchy (e.g., AActor for SetActorLocation)
+	if (!Func && ResolvedParentClass)
+	{
+		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+		{
+			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
+			if (Func) break;
+		}
+	}
+
+	if (!Func)
+	{
+		// Fallback: check self-defined functions from BSL AST
+		if (const TArray<FString>* SelfNames = SelfFunctionInputNames.Find(FunctionRef))
+		{
+			OutNames = *SelfNames;
+			return OutNames.Num() > 0;
+		}
+		return false;
+	}
 
 	// Collect parameter names to skip:
 	// WorldContext and HidePin metadata are on the UFunction, not on individual FProperty.
@@ -2080,7 +2195,25 @@ bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FStri
 			if (Cls) { Func = Cls->FindFunctionByName(*FunctionRef); if (Func) break; }
 		}
 	}
-	if (!Func) return false;
+	// Search parent class hierarchy
+	if (!Func && ResolvedParentClass)
+	{
+		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+		{
+			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
+			if (Func) break;
+		}
+	}
+	if (!Func)
+	{
+		// Fallback: check self-defined functions from BSL AST
+		if (const TArray<FString>* SelfNames = SelfFunctionOutputNames.Find(FunctionRef))
+		{
+			OutNames = *SelfNames;
+			return OutNames.Num() > 0;
+		}
+		return false;
+	}
 
 	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
 	{

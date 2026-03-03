@@ -425,18 +425,19 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 	// Create variables
 	CreateVariables(NewBlueprint, Data.Variables, Result.Warnings);
 
-	// Create event graphs
-	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
+	// Create function graphs FIRST so that EventGraph nodes can resolve
+	// self-function calls (CallFunction nodes referencing functions defined
+	// in the same blueprint need the function graph to exist with proper
+	// input/output pins for AllocateDefaultPins to work).
+	for (const FBlueprintGraphData& GraphData : Data.Functions)
 	{
 		TMap<FString, UK2Node*> NodeMap;
-		if (CreateEventGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
+		if (CreateFunctionGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
 		{
-			// Connect nodes
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
 
-			// Merge node maps
 			for (const auto& Pair : NodeMap)
 			{
 				Result.CreatedNodes.Add(Pair.Key, Pair.Value);
@@ -444,18 +445,16 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 		}
 	}
 
-	// Create function graphs
-	for (const FBlueprintGraphData& GraphData : Data.Functions)
+	// Create event graphs (after functions, so self-calls resolve correctly)
+	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
 	{
 		TMap<FString, UK2Node*> NodeMap;
-		if (CreateFunctionGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
+		if (CreateEventGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
 		{
-			// Connect nodes
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
 
-			// Merge node maps
 			for (const auto& Pair : NodeMap)
 			{
 				Result.CreatedNodes.Add(Pair.Key, Pair.Value);
@@ -564,11 +563,13 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 	// Create variables
 	CreateVariables(NewBlueprint, Data.Variables, Result.Warnings);
 
-	// Create event graphs
-	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
+	// Create function graphs FIRST so that EventGraph nodes can resolve
+	// self-function calls (SetSelfMember + AllocateDefaultPins needs the
+	// function graph with proper input/output pins to exist).
+	for (const FBlueprintGraphData& GraphData : Data.Functions)
 	{
 		TMap<FString, UK2Node*> NodeMap;
-		if (CreateEventGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
+		if (CreateFunctionGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
 		{
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
@@ -581,11 +582,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 		}
 	}
 
-	// Create function graphs
-	for (const FBlueprintGraphData& GraphData : Data.Functions)
+	// Create event graphs (after functions, so self-calls resolve correctly)
+	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
 	{
 		TMap<FString, UK2Node*> NodeMap;
-		if (CreateFunctionGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
+		if (CreateEventGraph(NewBlueprint, GraphData, NodeMap, Result.Warnings))
 		{
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
@@ -633,10 +634,14 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 		AddVariable(Blueprint, VarData);
 	}
 
-	// Add/modify graphs
-	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
+	// Create function graphs FIRST so that EventGraph self-function calls
+	// can resolve properly (SetSelfMember + AllocateDefaultPins needs the
+	// function graph with proper input/output pins).
+	for (const FBlueprintGraphData& GraphData : Data.Functions)
 	{
-		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, GraphData, bMerge);
+		FBlueprintGraphData FuncData = GraphData;
+		FuncData.bIsFunction = true;
+		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, FuncData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
 
 		for (const auto& Pair : GraphResult.CreatedNodes)
@@ -645,11 +650,10 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 		}
 	}
 
-	for (const FBlueprintGraphData& GraphData : Data.Functions)
+	// Add/modify event graphs (after functions, so self-calls resolve correctly)
+	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
 	{
-		FBlueprintGraphData FuncData = GraphData;
-		FuncData.bIsFunction = true;
-		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, FuncData, bMerge);
+		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, GraphData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
 
 		for (const auto& Pair : GraphResult.CreatedNodes)

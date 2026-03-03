@@ -116,10 +116,17 @@ private:
 	bool IsFunctionOutputParameter(const FString& Name) const;
 
 	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found. */
-	static bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+	bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
 
 	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found. */
-	static bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+	bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+
+	/** Resolve parent class from blueprint AST */
+	UClass* ResolvedParentClass = nullptr;
+
+	/** Self-defined function input/output param names (populated during CompileBlueprint) */
+	TMap<FString, TArray<FString>> SelfFunctionInputNames;
+	TMap<FString, TArray<FString>> SelfFunctionOutputNames;
 
 	/** Compile the Object expression of a method call and connect it to the 'self' Target pin.
 	 *  Emits a Warning if the object cannot be compiled. */
