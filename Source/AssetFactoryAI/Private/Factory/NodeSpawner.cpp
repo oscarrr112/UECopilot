@@ -195,6 +195,63 @@ namespace
 		return Errors;
 	}
 
+	// Map flow control types to StandardMacros macro graph names
+	const TMap<EBlueprintNodeType, FString>& GetFlowMacroNames()
+	{
+		static const TMap<EBlueprintNodeType, FString> Names = {
+			{ EBlueprintNodeType::Flow_ForLoop, TEXT("ForLoop") },
+			{ EBlueprintNodeType::Flow_ForEachLoop, TEXT("ForEachLoop") },
+			{ EBlueprintNodeType::Flow_WhileLoop, TEXT("WhileLoop") },
+		};
+		return Names;
+	}
+
+	UK2Node* TryCreateMacroInstance(UEdGraph* Graph, EBlueprintNodeType NodeType)
+	{
+		const FString* MacroName = GetFlowMacroNames().Find(NodeType);
+		if (!MacroName)
+		{
+			return nullptr;
+		}
+
+		// Load StandardMacros blueprint (cached by engine after first load)
+		// UE 5.7+: /Engine/EditorBlueprintResources/StandardMacros
+		// UE 5.x:  /Engine/EditorResources/StandardMacros (older versions)
+		static const TCHAR* MacroLibPath = TEXT("/Engine/EditorBlueprintResources/StandardMacros.StandardMacros");
+		UBlueprint* MacroLib = LoadObject<UBlueprint>(nullptr, MacroLibPath);
+		if (!MacroLib)
+		{
+			UE_LOG(LogAssetFactoryAI, Warning, TEXT("Failed to load StandardMacros blueprint"));
+			return nullptr;
+		}
+
+		// Find the macro graph by name
+		UEdGraph* MacroGraph = nullptr;
+		for (UEdGraph* MG : MacroLib->MacroGraphs)
+		{
+			if (MG && MG->GetName() == *MacroName)
+			{
+				MacroGraph = MG;
+				break;
+			}
+		}
+
+		if (!MacroGraph)
+		{
+			UE_LOG(LogAssetFactoryAI, Warning, TEXT("Macro '%s' not found in StandardMacros"), **MacroName);
+			return nullptr;
+		}
+
+		// Create the macro instance node
+		FGraphNodeCreator<UK2Node_MacroInstance> NodeCreator(*Graph);
+		UK2Node_MacroInstance* MacroNode = NodeCreator.CreateNode();
+		MacroNode->SetMacroGraph(MacroGraph);
+		MacroNode->AllocateDefaultPins();
+		NodeCreator.Finalize();
+
+		return MacroNode;
+	}
+
 	void RegisterManyHandlers(TMap<EBlueprintNodeType, FSpawnHandler>& InHandlers, const TArray<EBlueprintNodeType>& Types, FSpawnHandler Handler)
 	{
 		for (EBlueprintNodeType Type : Types)
@@ -451,40 +508,43 @@ FNodeSpawnResult UNodeSpawner::SpawnFlowControlNode(UEdGraph* Graph, const FBlue
 	{
 		Node = (*NodeFactory)(Graph);
 	}
-	else if (const TArray<FString>* CandidatePaths = GetFlowFunctionCandidates().Find(NodeData.NodeType))
+	else
 	{
-		UFunction* ResolvedFunction = nullptr;
-		for (const FString& Path : *CandidatePaths)
+		// Try function path candidates first
+		if (const TArray<FString>* CandidatePaths = GetFlowFunctionCandidates().Find(NodeData.NodeType))
 		{
-			ResolvedFunction = FindFunctionByPath(Path);
-			if (ResolvedFunction)
+			for (const FString& Path : *CandidatePaths)
 			{
-				break;
+				UFunction* ResolvedFunction = FindFunctionByPath(Path);
+				if (ResolvedFunction)
+				{
+					UK2Node_CallFunction* FlowNode = CreateNode<UK2Node_CallFunction>(Graph);
+					FlowNode->SetFromFunction(ResolvedFunction);
+					FlowNode->AllocateDefaultPins();
+					Node = FlowNode;
+					break;
+				}
 			}
 		}
 
-		if (ResolvedFunction)
+		// If function not found, try StandardMacros (ForLoop, WhileLoop, ForEachLoop are macros in UE5)
+		if (!Node)
 		{
-			UK2Node_CallFunction* FlowNode = CreateNode<UK2Node_CallFunction>(Graph);
-			FlowNode->SetFromFunction(ResolvedFunction);
-			FlowNode->AllocateDefaultPins();
-			Node = FlowNode;
+			Node = TryCreateMacroInstance(Graph, NodeData.NodeType);
 		}
-		else if (const FString* FallbackMessage = GetFlowFallbackErrors().Find(NodeData.NodeType))
+
+		if (!Node)
 		{
-			Result.ErrorMessage = *FallbackMessage;
+			if (const FString* FallbackMessage = GetFlowFallbackErrors().Find(NodeData.NodeType))
+			{
+				Result.ErrorMessage = *FallbackMessage;
+			}
+			else
+			{
+				Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FlowNodeTypeNotImplemented"), TEXT("Flow control node type not yet implemented"));
+			}
 			return Result;
 		}
-		else
-		{
-			Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FlowFunctionNotFound"), TEXT("Flow control function not found"));
-			return Result;
-		}
-	}
-	else
-	{
-		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FlowNodeTypeNotImplemented"), TEXT("Flow control node type not yet implemented"));
-		return Result;
 	}
 
 	if (Node)

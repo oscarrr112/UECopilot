@@ -30,7 +30,7 @@ namespace BSL
  * assignment    = target "=" expression | "(" targets ")" "=" expression
  * ifStmt        = "if" "(" expression ")" block ("else" (ifStmt | block))?
  * whileStmt     = "while" "(" expression ")" block
- * forStmt       = "for" IDENTIFIER "in" expression ".." expression block
+ * forStmt       = "for" "("? IDENTIFIER "in" expression ".." expression ")"? block
  * returnStmt    = "return" ("(" expressions ")")?
  * expression    = logicOr
  * logicOr       = logicAnd ("||" logicAnd)*

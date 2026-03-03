@@ -475,6 +475,9 @@ TSharedPtr<FStatement> FParser::ParseFor()
 
 	Consume(ETokenType::For, TEXT("Expected 'for'"));
 
+	// Support both: for i in 0..5 { } and for (i in 0..5) { }
+	bool bHasParens = Match(ETokenType::LeftParen);
+
 	FToken VarToken = Consume(ETokenType::Identifier, TEXT("Expected loop variable"));
 	Stmt->LoopVariable = VarToken.Value;
 
@@ -485,6 +488,11 @@ TSharedPtr<FStatement> FParser::ParseFor()
 	Consume(ETokenType::DotDot, TEXT("Expected '..'"));
 
 	Stmt->LoopEnd = ParseExpression();
+
+	if (bHasParens)
+	{
+		Consume(ETokenType::RightParen, TEXT("Expected ')' after for range"));
+	}
 
 	Stmt->LoopBody = ParseBlock();
 
@@ -579,10 +587,19 @@ TArray<TSharedPtr<FStatement>> FParser::ParseBlock()
 
 	while (!Check(ETokenType::RightBrace) && !IsAtEnd())
 	{
+		FToken BeforeToken = Peek();
 		TSharedPtr<FStatement> Stmt = ParseStatement();
 		if (Stmt)
 		{
 			Statements.Add(Stmt);
+		}
+
+		// Safety: if ParseStatement did not advance the token position,
+		// skip the current token to prevent infinite loops
+		if (Peek().Type == BeforeToken.Type && Peek().Line == BeforeToken.Line && Peek().Column == BeforeToken.Column)
+		{
+			Error(Peek(), FString::Printf(TEXT("Unexpected token '%s', skipping"), *Peek().Value));
+			Advance();
 		}
 	}
 
