@@ -636,7 +636,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 	// Add/modify graphs
 	for (const FBlueprintGraphData& GraphData : Data.EventGraphs)
 	{
-		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, GraphData);
+		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, GraphData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
 
 		for (const auto& Pair : GraphResult.CreatedNodes)
@@ -649,7 +649,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 	{
 		FBlueprintGraphData FuncData = GraphData;
 		FuncData.bIsFunction = true;
-		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, FuncData);
+		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, FuncData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
 
 		for (const auto& Pair : GraphResult.CreatedNodes)
@@ -670,7 +670,8 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 
 FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 	UBlueprint* Blueprint,
-	const FBlueprintGraphData& GraphData)
+	const FBlueprintGraphData& GraphData,
+	bool bMerge)
 {
 	FBlueprintGenerationResult Result;
 
@@ -688,7 +689,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 	}
 	else
 	{
-		CreateEventGraph(Blueprint, GraphData, NodeMap, Result.Warnings);
+		CreateEventGraph(Blueprint, GraphData, NodeMap, Result.Warnings, bMerge);
 	}
 
 	// Connect nodes
@@ -1543,7 +1544,8 @@ bool UAIBlueprintFactory::CreateEventGraph(
 	UBlueprint* Blueprint,
 	const FBlueprintGraphData& GraphData,
 	TMap<FString, UK2Node*>& OutNodeMap,
-	TArray<FString>& OutWarnings)
+	TArray<FString>& OutWarnings,
+	bool bMerge)
 {
 	if (!Blueprint)
 	{
@@ -1591,6 +1593,35 @@ bool UAIBlueprintFactory::CreateEventGraph(
 		);
 
 		FBlueprintEditorUtils::AddUbergraphPage(Blueprint, EventGraph);
+	}
+
+	// When not merging, clear existing non-event nodes and break event node connections
+	// so we get a clean slate for the new BSL-compiled nodes.
+	if (!bMerge)
+	{
+		TArray<UEdGraphNode*> NodesToRemove;
+		for (UEdGraphNode* Node : EventGraph->Nodes)
+		{
+			if (Cast<UK2Node_Event>(Node))
+			{
+				// Keep event nodes (SpawnEventNode will reuse them),
+				// but break all their connections so new ones can be applied cleanly
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					Pin->BreakAllPinLinks();
+				}
+			}
+			else
+			{
+				// Remove all non-event nodes (call functions, variables, flow control, etc.)
+				NodesToRemove.Add(Node);
+			}
+		}
+
+		for (UEdGraphNode* Node : NodesToRemove)
+		{
+			EventGraph->RemoveNode(Node);
+		}
 	}
 
 	// Spawn nodes

@@ -530,6 +530,20 @@ const tools = [
             required: ["asset", "bsl"],
         },
     },
+    {
+        name: "extract_blueprint_graph",
+        description: "Export a Blueprint's node graph structure as JSON. Returns all nodes with their pins, connections, and default values. Useful for inspecting and debugging Blueprint graph structure.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset: {
+                    type: "string",
+                    description: "Blueprint asset path (e.g., /Game/Blueprints/BP_Player)",
+                },
+            },
+            required: ["asset"],
+        },
+    },
 ];
 // Create MCP server
 const server = new Server({
@@ -715,6 +729,13 @@ const toolHandlers = {
             Merge: merge ?? false,
             Save: save ?? true,
         });
+    },
+    extract_blueprint_graph: async (args) => {
+        const { asset } = args;
+        if (!asset) {
+            throw new Error("'asset' is required.");
+        }
+        return callUEApi("/extract_graph", "POST", { Asset: asset });
     },
 };
 for (const sidecarToolName of [

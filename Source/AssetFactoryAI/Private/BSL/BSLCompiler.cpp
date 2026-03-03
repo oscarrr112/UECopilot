@@ -2035,14 +2035,29 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 
 	if (!Func) return false;
 
-	// Iterate parameters: skip return, output, and hidden pins (WorldContextObject etc.)
+	// Collect parameter names to skip:
+	// WorldContext and HidePin metadata are on the UFunction, not on individual FProperty.
+	TSet<FString> SkipParams;
+
+	if (Func->HasMetaData(TEXT("WorldContext")))
+	{
+		SkipParams.Add(Func->GetMetaData(TEXT("WorldContext")));
+	}
+	if (Func->HasMetaData(TEXT("HidePin")))
+	{
+		TArray<FString> HiddenPins;
+		Func->GetMetaData(TEXT("HidePin")).ParseIntoArray(HiddenPins, TEXT(","));
+		for (FString& Pin : HiddenPins)
+		{
+			SkipParams.Add(Pin.TrimStartAndEnd());
+		}
+	}
+
 	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
 	{
 		if (It->PropertyFlags & CPF_ReturnParm) continue;
 		if (It->PropertyFlags & CPF_OutParm) continue;
-		// Skip hidden parameters (WorldContextObject and similar)
-		if (It->HasMetaData(TEXT("WorldContext"))) continue;
-		if (It->HasMetaData(TEXT("HidePin"))) continue;
+		if (SkipParams.Contains(It->GetName())) continue;
 		OutNames.Add(It->GetName());
 	}
 	return OutNames.Num() > 0;

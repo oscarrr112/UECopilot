@@ -43,6 +43,10 @@
 // Blueprint AI factory + JSON parser (for apply_bsl)
 #include "Factory/AIBlueprintFactory.h"
 #include "JSON/BlueprintJSONParser.h"
+// Blueprint graph extraction (for extract_graph)
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
 
 namespace
 {
@@ -179,6 +183,14 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleApplyBSL),
 		TEXT("POST"),
 		TEXT("Compile BSL source and apply to Blueprint asset"),
+		true
+	});
+	RouteSpecs.Add({
+		TEXT("/assetfactory/extract_graph"),
+		EHttpServerRequestVerbs::VERB_POST,
+		FHttpRequestHandler::CreateRaw(this, &FAssetFactoryHttpServer::HandleExtractGraph),
+		TEXT("POST"),
+		TEXT("Export Blueprint node graph as JSON"),
 		true
 	});
 
@@ -1786,6 +1798,186 @@ bool FAssetFactoryHttpServer::HandleApplyBSL(const FHttpServerRequest& Request, 
 		ResponseJson->SetStringField(TEXT("error"), ApplyError);
 		int32 StatusCode = bNotFound ? 404 : 422;
 		SendJsonResponse(OnComplete, StatusCode, ResponseJson);
+	}
+	else
+	{
+		SendJsonResponse(OnComplete, 200, ResponseJson);
+	}
+	return true;
+}
+
+bool FAssetFactoryHttpServer::HandleExtractGraph(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+{
+	// Parse request body
+	FString RequestBody;
+	if (!Request.Body.IsEmpty())
+	{
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		RequestBody = FString(Converter.Length(), Converter.Get());
+	}
+
+	if (RequestBody.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Request body is empty"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> JsonObject;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(RequestBody);
+	if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+	{
+		SendErrorResponse(OnComplete, 400, FString::Printf(TEXT("Invalid JSON: %s"), *Reader->GetErrorMessage()));
+		return true;
+	}
+
+	FString AssetPath;
+	if (!JsonObject->TryGetStringField(TEXT("Asset"), AssetPath) || AssetPath.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 400, TEXT("Missing required field: 'Asset'"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
+	FString ExtractError;
+
+	auto DoExtract = [&]()
+	{
+		UBlueprint* BP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetPath));
+		if (!BP)
+		{
+			FString Name = FPaths::GetBaseFilename(AssetPath);
+			if (!Name.IsEmpty())
+			{
+				FString FullPath = FString::Printf(TEXT("%s.%s"), *AssetPath, *Name);
+				BP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *FullPath));
+			}
+		}
+
+		if (!BP)
+		{
+			ExtractError = FString::Printf(TEXT("Blueprint not found: %s"), *AssetPath);
+			return;
+		}
+
+		ResponseJson->SetBoolField(TEXT("success"), true);
+		ResponseJson->SetStringField(TEXT("asset"), AssetPath);
+		ResponseJson->SetStringField(TEXT("parentClass"), BP->ParentClass ? BP->ParentClass->GetName() : TEXT(""));
+
+		// Extract graphs
+		TArray<TSharedPtr<FJsonValue>> GraphsArray;
+
+		auto ExtractGraphNodes = [](UEdGraph* Graph) -> TSharedPtr<FJsonObject>
+		{
+			TSharedPtr<FJsonObject> GraphJson = MakeShared<FJsonObject>();
+			GraphJson->SetStringField(TEXT("name"), Graph->GetName());
+
+			TArray<TSharedPtr<FJsonValue>> NodesArray;
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+				NodeJson->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+				NodeJson->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+				NodeJson->SetNumberField(TEXT("posX"), Node->NodePosX);
+				NodeJson->SetNumberField(TEXT("posY"), Node->NodePosY);
+
+				if (!Node->NodeComment.IsEmpty())
+				{
+					NodeJson->SetStringField(TEXT("comment"), Node->NodeComment);
+				}
+
+				// Extract pins
+				TArray<TSharedPtr<FJsonValue>> PinsArray;
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					TSharedPtr<FJsonObject> PinJson = MakeShared<FJsonObject>();
+					PinJson->SetStringField(TEXT("name"), Pin->PinName.ToString());
+					PinJson->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Output ? TEXT("out") : TEXT("in"));
+					PinJson->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+
+					if (!Pin->PinType.PinSubCategory.IsNone())
+					{
+						PinJson->SetStringField(TEXT("subType"), Pin->PinType.PinSubCategory.ToString());
+					}
+
+					if (!Pin->DefaultValue.IsEmpty())
+					{
+						PinJson->SetStringField(TEXT("default"), Pin->DefaultValue);
+					}
+
+					if (!Pin->DefaultTextValue.IsEmpty())
+					{
+						PinJson->SetStringField(TEXT("defaultText"), Pin->DefaultTextValue.ToString());
+					}
+
+					// Connections
+					if (Pin->LinkedTo.Num() > 0)
+					{
+						TArray<TSharedPtr<FJsonValue>> ConnArray;
+						for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+						{
+							TSharedPtr<FJsonObject> ConnJson = MakeShared<FJsonObject>();
+							UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+							ConnJson->SetStringField(TEXT("node"), LinkedNode->GetClass()->GetName());
+							ConnJson->SetStringField(TEXT("nodeTitle"), LinkedNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+							ConnJson->SetStringField(TEXT("pin"), LinkedPin->PinName.ToString());
+							ConnArray.Add(MakeShared<FJsonValueObject>(ConnJson));
+						}
+						PinJson->SetArrayField(TEXT("linkedTo"), ConnArray);
+					}
+
+					// Only include pins with connections, non-default values, or exec type
+					bool bIsExec = Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+					bool bHasConnection = Pin->LinkedTo.Num() > 0;
+					bool bHasValue = !Pin->DefaultValue.IsEmpty() || !Pin->DefaultTextValue.IsEmpty();
+					if (bIsExec || bHasConnection || bHasValue)
+					{
+						PinsArray.Add(MakeShared<FJsonValueObject>(PinJson));
+					}
+				}
+				NodeJson->SetArrayField(TEXT("pins"), PinsArray);
+
+				NodesArray.Add(MakeShared<FJsonValueObject>(NodeJson));
+			}
+			GraphJson->SetArrayField(TEXT("nodes"), NodesArray);
+			return GraphJson;
+		};
+
+		// Event graphs (UbergraphPages)
+		for (UEdGraph* Graph : BP->UbergraphPages)
+		{
+			GraphsArray.Add(MakeShared<FJsonValueObject>(ExtractGraphNodes(Graph)));
+		}
+
+		// Function graphs
+		for (UEdGraph* Graph : BP->FunctionGraphs)
+		{
+			TSharedPtr<FJsonObject> GraphObj = ExtractGraphNodes(Graph);
+			GraphObj->SetBoolField(TEXT("isFunction"), true);
+			GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+		}
+
+		ResponseJson->SetArrayField(TEXT("graphs"), GraphsArray);
+	};
+
+	if (IsInGameThread())
+	{
+		DoExtract();
+	}
+	else
+	{
+		FEvent* CompletionEvent = FPlatformProcess::GetSynchEventFromPool(true);
+		AsyncTask(ENamedThreads::GameThread, [&]()
+		{
+			DoExtract();
+			CompletionEvent->Trigger();
+		});
+		CompletionEvent->Wait();
+		FPlatformProcess::ReturnSynchEventToPool(CompletionEvent);
+	}
+
+	if (!ExtractError.IsEmpty())
+	{
+		SendErrorResponse(OnComplete, 404, ExtractError);
 	}
 	else
 	{

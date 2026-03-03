@@ -92,7 +92,8 @@ public:
 	 */
 	static FBlueprintGenerationResult AddGraph(
 		UBlueprint* Blueprint,
-		const FBlueprintGraphData& GraphData);
+		const FBlueprintGraphData& GraphData,
+		bool bMerge = true);
 
 	/**
 	 * Add a variable to a blueprint
@@ -132,7 +133,8 @@ private:
 		UBlueprint* Blueprint,
 		const FBlueprintGraphData& GraphData,
 		TMap<FString, UK2Node*>& OutNodeMap,
-		TArray<FString>& OutWarnings);
+		TArray<FString>& OutWarnings,
+		bool bMerge = true);
 
 	/**
 	 * Create function graph
