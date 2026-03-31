@@ -300,6 +300,18 @@ private:
 	static TMap<UScriptStruct*, FStructSerializer>& GetSpecialSerializers();
 
 	/**
+	 * Unified recursive entry point for setting any FProperty value from JSON.
+	 * Symmetric with ExtractPropertyToJson (extraction side).
+	 * Supports arbitrary nesting of Array/Map/Set containers.
+	 * @param Property - The FProperty describing the type
+	 * @param ValuePtr - Pointer to the memory location to write
+	 * @param JsonValue - The JSON value containing the data
+	 * @param OwnerObject - Optional UObject used as Outer for NewObject (instanced subobjects)
+	 * @return true if the value was set successfully
+	 */
+	static bool SetPropertyValueFromJson(FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject = nullptr);
+
+	/**
 	 * Internal property value setter with void* pointer
 	 */
 	static bool SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue);
