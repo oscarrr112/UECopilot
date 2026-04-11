@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "AI/OpenAICompatibleService.h"
-#include "ConversationContext.generated.h"
+#include "AFConversationContext.generated.h"
 
 /**
  * Conversation Context - Manages chat history and context for AI interactions
