@@ -60,16 +60,7 @@ namespace
 
 		if (!NodeData.EventName.IsEmpty())
 		{
-			const FString EventKey = NormalizeNodeTypeKey(NodeData.EventName);
-			if (EventKey.Contains(TEXT("beginplay")) || NodeIdKey.Contains(TEXT("eventbegin")) || NodeIdKey.Contains(TEXT("eventbeginplay")))
-			{
-				return EBlueprintNodeType::Event_BeginPlay;
-			}
-			if (EventKey.Contains(TEXT("tick")) || NodeIdKey.Contains(TEXT("eventtick")))
-			{
-				return EBlueprintNodeType::Event_Tick;
-			}
-			return EBlueprintNodeType::Event_Custom;
+			return EBlueprintNodeType::Event_Auto;
 		}
 
 		if (!NodeData.FunctionReference.IsEmpty())
@@ -160,12 +151,14 @@ namespace
 				Map.Add(NormalizeNodeTypeKey(Name), Type);
 			};
 
-			AddEntry(TEXT("Event_BeginPlay"), EBlueprintNodeType::Event_BeginPlay);
-			AddEntry(TEXT("BeginPlay"), EBlueprintNodeType::Event_BeginPlay);
-			AddEntry(TEXT("Event_Tick"), EBlueprintNodeType::Event_Tick);
-			AddEntry(TEXT("Tick"), EBlueprintNodeType::Event_Tick);
+			AddEntry(TEXT("Event_Auto"), EBlueprintNodeType::Event_Auto);
+			AddEntry(TEXT("Event_BeginPlay"), EBlueprintNodeType::Event_Auto);  // 向后兼容
+			AddEntry(TEXT("BeginPlay"), EBlueprintNodeType::Event_Auto);        // 向后兼容
+			AddEntry(TEXT("Event_Tick"), EBlueprintNodeType::Event_Auto);       // 向后兼容
+			AddEntry(TEXT("Tick"), EBlueprintNodeType::Event_Auto);             // 向后兼容
 			AddEntry(TEXT("Event_Custom"), EBlueprintNodeType::Event_Custom);
 			AddEntry(TEXT("CustomEvent"), EBlueprintNodeType::Event_Custom);
+			AddEntry(TEXT("Event_Native"), EBlueprintNodeType::Event_Native);
 			AddEntry(TEXT("Event_Input"), EBlueprintNodeType::Event_Input);
 			AddEntry(TEXT("InputEvent"), EBlueprintNodeType::Event_Input);
 
@@ -273,7 +266,7 @@ namespace
 			AddEntry(TEXT("Return"), EBlueprintNodeType::Return);
 			AddEntry(TEXT("K2Node_FunctionResult"), EBlueprintNodeType::Return);
 			AddEntry(TEXT("K2Node_IfThenElse"), EBlueprintNodeType::Flow_Branch);
-			AddEntry(TEXT("K2Node_Event"), EBlueprintNodeType::Event_Custom);
+			AddEntry(TEXT("K2Node_Event"), EBlueprintNodeType::Event_Auto);
 			AddEntry(TEXT("K2Node_InputAction"), EBlueprintNodeType::Event_Input);
 			AddEntry(TEXT("K2Node_FunctionEntry"), EBlueprintNodeType::Unknown);
 		}
@@ -1254,9 +1247,9 @@ EBlueprintVarType UBlueprintJSONParser::StringToVarType(const FString& TypeStrin
 FString UBlueprintJSONParser::NodeTypeToString(EBlueprintNodeType Type)
 {
 	static const TMap<EBlueprintNodeType, FString> TypeNameMap = {
-		{EBlueprintNodeType::Event_BeginPlay, TEXT("BeginPlay")},
-		{EBlueprintNodeType::Event_Tick, TEXT("Tick")},
+		{EBlueprintNodeType::Event_Auto, TEXT("Event")},
 		{EBlueprintNodeType::Event_Custom, TEXT("CustomEvent")},
+		{EBlueprintNodeType::Event_Native, TEXT("NativeEvent")},
 		{EBlueprintNodeType::Event_Input, TEXT("InputEvent")},
 		{EBlueprintNodeType::Flow_Branch, TEXT("Branch")},
 		{EBlueprintNodeType::Flow_Sequence, TEXT("Sequence")},

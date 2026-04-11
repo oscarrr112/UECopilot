@@ -7,7 +7,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "UObject/StrongObjectPtr.h"
 #include "AI/OpenAICompatibleService.h"
-#include "AI/ConversationContext.h"
+#include "AI/AFConversationContext.h"
 #include "JSON/BlueprintJSONSchema.h"
 
 class SMultiLineEditableTextBox;

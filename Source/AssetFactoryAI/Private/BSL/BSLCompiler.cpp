@@ -227,20 +227,28 @@ bool FCompiler::CompileEvent(const FFunction& Event, FBlueprintGraphData& OutGra
 	FBlueprintNodeData EventNode;
 	EventNode.NodeId = GenerateNodeId(TEXT("event"));
 
-	// Map common event names
-	if (Event.Name == TEXT("BeginPlay"))
+	// 简写名映射：BSL 简写 → UE 原生函数名
+	static const TMap<FString, FString> ShorthandMap = {
+		{TEXT("BeginPlay"),       TEXT("ReceiveBeginPlay")},
+		{TEXT("Tick"),            TEXT("ReceiveTick")},
+		{TEXT("BeginOverlap"),   TEXT("ReceiveActorBeginOverlap")},
+		{TEXT("EndOverlap"),     TEXT("ReceiveActorEndOverlap")},
+		{TEXT("Destroyed"),      TEXT("ReceiveDestroyed")},
+		{TEXT("AnyDamage"),      TEXT("ReceiveAnyDamage")},
+	};
+
+	// 解析事件名：应用简写映射，存储供 NodeSpawner 使用
+	if (const FString* MappedName = ShorthandMap.Find(Event.Name))
 	{
-		EventNode.NodeType = EBlueprintNodeType::Event_BeginPlay;
-	}
-	else if (Event.Name == TEXT("Tick"))
-	{
-		EventNode.NodeType = EBlueprintNodeType::Event_Tick;
+		EventNode.EventName = *MappedName;
 	}
 	else
 	{
-		EventNode.NodeType = EBlueprintNodeType::Event_Custom;
 		EventNode.EventName = Event.Name;
 	}
+
+	// 所有事件统一使用 Event_Auto — NodeSpawner 通过反射解析
+	EventNode.NodeType = EBlueprintNodeType::Event_Auto;
 
 	EventNode.Position = {0.0f, 0.0f};
 	OutGraph.Nodes.Add(EventNode);

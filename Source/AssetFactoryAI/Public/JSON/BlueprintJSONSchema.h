@@ -12,9 +12,9 @@ UENUM(BlueprintType)
 enum class EBlueprintNodeType : uint8
 {
 	// Events
-	Event_BeginPlay			UMETA(DisplayName = "Event BeginPlay"),
-	Event_Tick				UMETA(DisplayName = "Event Tick"),
+	Event_Auto				UMETA(DisplayName = "Event Auto"),
 	Event_Custom			UMETA(DisplayName = "Custom Event"),
+	Event_Native			UMETA(DisplayName = "Native Event"),
 	Event_Input				UMETA(DisplayName = "Input Event"),
 
 	// Flow Control

@@ -121,16 +121,16 @@ namespace
 		if (NormalizedKey == TEXT("tick"))
 		{
 			OutNode.NodeId = NodeId;
-			OutNode.NodeType = EBlueprintNodeType::Event_Tick;
-			OutNode.EventName = TEXT("Tick");
+			OutNode.NodeType = EBlueprintNodeType::Event_Auto;
+			OutNode.EventName = TEXT("ReceiveTick");
 			return true;
 		}
 
 		if (NormalizedKey == TEXT("beginplay") || NormalizedKey == TEXT("begin"))
 		{
 			OutNode.NodeId = NodeId;
-			OutNode.NodeType = EBlueprintNodeType::Event_BeginPlay;
-			OutNode.EventName = TEXT("BeginPlay");
+			OutNode.NodeType = EBlueprintNodeType::Event_Auto;
+			OutNode.EventName = TEXT("ReceiveBeginPlay");
 			return true;
 		}
 

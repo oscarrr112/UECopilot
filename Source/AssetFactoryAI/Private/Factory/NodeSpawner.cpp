@@ -120,17 +120,7 @@ namespace
 		return Libraries;
 	}
 
-	const TMap<EBlueprintNodeType, FName>& GetActorEventNames()
-	{
-		static const TMap<EBlueprintNodeType, FName> EventNames = []()
-		{
-			TMap<EBlueprintNodeType, FName> Mapped;
-			Mapped.Add(EBlueprintNodeType::Event_BeginPlay, FName(*DC::GetString(TEXT("NodeSpawner.Event.BeginPlay"), TEXT("ReceiveBeginPlay"))));
-			Mapped.Add(EBlueprintNodeType::Event_Tick, FName(*DC::GetString(TEXT("NodeSpawner.Event.Tick"), TEXT("ReceiveTick"))));
-			return Mapped;
-		}();
-		return EventNames;
-	}
+	// GetActorEventNames 已移除 — 事件通过反射解析父类函数
 
 	const TMap<EBlueprintNodeType, TArray<FString>>& GetFlowFunctionCandidates()
 	{
@@ -266,9 +256,9 @@ namespace
 		if (Handlers.Num() == 0)
 		{
 			RegisterManyHandlers(Handlers, {
-				EBlueprintNodeType::Event_BeginPlay,
-				EBlueprintNodeType::Event_Tick,
+				EBlueprintNodeType::Event_Auto,
 				EBlueprintNodeType::Event_Custom,
+				EBlueprintNodeType::Event_Native,
 				EBlueprintNodeType::Event_Input,
 			}, &UNodeSpawner::SpawnEventNode);
 
@@ -360,77 +350,84 @@ FNodeSpawnResult UNodeSpawner::SpawnNode(UEdGraph* Graph, const FBlueprintNodeDa
 FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
 {
 	FNodeSpawnResult Result;
-
 	UK2Node* Node = nullptr;
-	FName EventFunctionName;
+	FName EventFunctionName = FName(*NodeData.EventName);
 
-	if (const FName* BuiltInEventName = GetActorEventNames().Find(NodeData.NodeType))
+	// --- 复用检查：事件已存在则直接返回 ---
+	for (UEdGraphNode* ExistingNode : Graph->Nodes)
 	{
-		EventFunctionName = *BuiltInEventName;
-	}
-	else if (NodeData.NodeType != EBlueprintNodeType::Event_Custom)
-	{
-		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.UnknownEventType"), TEXT("Unknown event type"));
-		return Result;
-	}
-
-	// For built-in events, first check if the event already exists in the graph
-	if (NodeData.NodeType != EBlueprintNodeType::Event_Custom && !EventFunctionName.IsNone())
-	{
-		for (UEdGraphNode* ExistingNode : Graph->Nodes)
+		if (UK2Node_Event* ExistingEvent = Cast<UK2Node_Event>(ExistingNode))
 		{
-			if (UK2Node_Event* ExistingEvent = Cast<UK2Node_Event>(ExistingNode))
+			if (ExistingEvent->EventReference.GetMemberName() == EventFunctionName)
 			{
-				if (ExistingEvent->EventReference.GetMemberName() == EventFunctionName)
-				{
-					// Found existing event node, reuse it
-					UE_LOG(LogAssetFactoryAI, Log, TEXT("Reusing existing event node: %s"), *EventFunctionName.ToString());
-					Result.bSuccess = true;
-					Result.Node = ExistingEvent;
-					return Result;
-				}
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Reusing existing native event: %s"), *EventFunctionName.ToString());
+				Result.bSuccess = true;
+				Result.Node = ExistingEvent;
+				return Result;
+			}
+		}
+		if (UK2Node_CustomEvent* ExistingCustom = Cast<UK2Node_CustomEvent>(ExistingNode))
+		{
+			if (ExistingCustom->CustomFunctionName == EventFunctionName)
+			{
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Reusing existing custom event: %s"), *EventFunctionName.ToString());
+				Result.bSuccess = true;
+				Result.Node = ExistingCustom;
+				return Result;
 			}
 		}
 	}
 
-	// Event doesn't exist, create new one
+	// --- 反射解析：在父类上查找函数 ---
+	UClass* ParentClass = Blueprint->ParentClass;
+	UFunction* NativeFunc = ParentClass ? ParentClass->FindFunctionByName(EventFunctionName) : nullptr;
+
 	switch (NodeData.NodeType)
 	{
-	case EBlueprintNodeType::Event_BeginPlay:
-	case EBlueprintNodeType::Event_Tick:
+	case EBlueprintNodeType::Event_Auto:
 	{
-		UFunction* EventFunc = AActor::StaticClass()->FindFunctionByName(EventFunctionName);
-		if (EventFunc)
+		if (NativeFunc)
 		{
+			// 父类上找到 → 生成原生事件覆盖节点
 			UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
-			EventNode->EventReference.SetExternalMember(EventFunctionName, AActor::StaticClass());
+			EventNode->EventReference.SetExternalMember(EventFunctionName, ParentClass);
 			EventNode->bOverrideFunction = true;
 			EventNode->AllocateDefaultPins();
 			Node = EventNode;
 		}
+		else
+		{
+			// 父类上找不到 → 回退为自定义事件
+			UK2Node_CustomEvent* CustomEvent = CreateNode<UK2Node_CustomEvent>(Graph);
+			CustomEvent->CustomFunctionName = EventFunctionName;
+			CustomEvent->AllocateDefaultPins();
+			Node = CustomEvent;
+		}
+		break;
+	}
+
+	case EBlueprintNodeType::Event_Native:
+	{
+		if (!NativeFunc)
+		{
+			Result.ErrorMessage = FString::Printf(
+				TEXT("Native event '%s' not found on parent class '%s'. Check the event name or use Event_Auto."),
+				*EventFunctionName.ToString(),
+				ParentClass ? *ParentClass->GetName() : TEXT("nullptr"));
+			return Result;
+		}
+		UK2Node_Event* EventNode = CreateNode<UK2Node_Event>(Graph);
+		EventNode->EventReference.SetExternalMember(EventFunctionName, ParentClass);
+		EventNode->bOverrideFunction = true;
+		EventNode->AllocateDefaultPins();
+		Node = EventNode;
 		break;
 	}
 
 	case EBlueprintNodeType::Event_Custom:
 	{
-		// For custom events, check if it already exists by name
-		FName CustomEventName = FName(*NodeData.EventName);
-		for (UEdGraphNode* ExistingNode : Graph->Nodes)
-		{
-			if (UK2Node_CustomEvent* ExistingCustom = Cast<UK2Node_CustomEvent>(ExistingNode))
-			{
-				if (ExistingCustom->CustomFunctionName == CustomEventName)
-				{
-					Result.bSuccess = true;
-					Result.Node = ExistingCustom;
-					return Result;
-				}
-			}
-		}
-
-		// Create new custom event
 		UK2Node_CustomEvent* CustomEvent = CreateNode<UK2Node_CustomEvent>(Graph);
-		CustomEvent->CustomFunctionName = CustomEventName;
+		CustomEvent->CustomFunctionName = EventFunctionName;
 		CustomEvent->AllocateDefaultPins();
 		Node = CustomEvent;
 		break;
@@ -448,9 +445,8 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 	}
 	else
 	{
-		Result.ErrorMessage = GetDynamicError(TEXT("NodeSpawner.Error.FailedCreateEventNode"), TEXT("Failed to create event node"));
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to spawn event node: %s"), *NodeData.EventName);
 	}
-
 	return Result;
 }
 
