@@ -3,6 +3,7 @@
 #include "Factory/LayoutEngine.h"
 #include "K2Node.h"
 #include "K2Node_Event.h"
+#include "K2Node_IfThenElse.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_CallFunction.h"
@@ -38,7 +39,8 @@ namespace
 			}
 
 			// Conservative estimate that works for most K2 node visual sizes.
-			const FNodePlacement Placement(Node, static_cast<float>(Node->NodePosX), static_cast<float>(Node->NodePosY), 320.0f, 180.0f);
+			const FVector2D NodeSize = ULayoutEngine::EstimateNodeSize(Node);
+			const FNodePlacement Placement(Node, static_cast<float>(Node->NodePosX), static_cast<float>(Node->NodePosY), NodeSize.X, NodeSize.Y);
 			Grid.PlaceAndPush(Placement, Padding, true);
 		}
 
@@ -52,9 +54,10 @@ namespace
 			{
 				Rect.X = static_cast<float>(Node->NodePosX);
 				Rect.Y = static_cast<float>(Node->NodePosY);
+				const FVector2D Size = ULayoutEngine::EstimateNodeSize(const_cast<UK2Node*>(Node));
+				Rect.Width = Size.X;
+				Rect.Height = Size.Y;
 			}
-			Rect.Width = 320.0f;
-			Rect.Height = 180.0f;
 			return Rect;
 		};
 
@@ -297,7 +300,7 @@ void ULayoutEngine::AutoLayoutGraph(UEdGraph* Graph, const FLayoutSettings& Sett
 
 	// Layout each subgraph separately
 	float CurrentY = Settings.StartY;
-	const float SubgraphSpacing = 200.0f; // Spacing between event groups
+	const float SubgraphSpacing = 150.0f; // Spacing between event groups
 
 	for (FSubgraphInfo& Subgraph : Subgraphs)
 	{
@@ -546,7 +549,63 @@ void ULayoutEngine::AutoLayoutNodes(TArray<UK2Node*>& Nodes, const FLayoutSettin
 	PositionDataNodesNearConsumers(DataNodes, ExecNodes, Settings);
 
 	// Step 8: Final overlap resolution pass for all nodes.
-	ResolveNodeOverlapsWithPush(Nodes, Settings.VerticalSpacing * 0.35f);
+	ResolveNodeOverlapsWithPush(Nodes, 20.0f);
+
+	// Step 9: Post-process Branch nodes AFTER overlap resolution.
+	// This is the final positioning pass so it won't get undone.
+	for (UK2Node* Node : ExecNodes)
+	{
+		UK2Node_IfThenElse* BranchNode = Cast<UK2Node_IfThenElse>(Node);
+		if (!BranchNode)
+		{
+			continue;
+		}
+
+		// Find True and False successors via exec output pins
+		UK2Node* TrueSucc = nullptr;
+		UK2Node* FalseSucc = nullptr;
+
+		for (UEdGraphPin* Pin : BranchNode->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output ||
+				Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+			{
+				continue;
+			}
+			if (Pin->LinkedTo.Num() == 0)
+			{
+				continue;
+			}
+
+			UK2Node* Successor = Cast<UK2Node>(Pin->LinkedTo[0]->GetOwningNode());
+			if (!Successor)
+			{
+				continue;
+			}
+
+			// First exec output = True (PN_Then), Second = False (PN_Else)
+			if (!TrueSucc)
+			{
+				TrueSucc = Successor;
+			}
+			else if (!FalseSucc)
+			{
+				FalseSucc = Successor;
+			}
+		}
+
+		if (TrueSucc && FalseSucc && TrueSucc != FalseSucc)
+		{
+			// UE5 convention: True pin is on top of Branch, False pin on bottom.
+			// True successor at same Y as Branch (wire goes straight right from top pin).
+			// False successor BELOW Branch (wire goes down-right from bottom pin).
+			const int32 MinGap = static_cast<int32>(Settings.VerticalSpacing);
+			const FVector2D TrueSize = EstimateNodeSize(TrueSucc);
+
+			TrueSucc->NodePosY = BranchNode->NodePosY;
+			FalseSucc->NodePosY = BranchNode->NodePosY + static_cast<int32>(TrueSize.Y) + MinGap / 2;
+		}
+	}
 }
 
 TMap<FString, FNodePosition> ULayoutEngine::CalculateLayout(
@@ -917,10 +976,22 @@ void ULayoutEngine::CalculatePositions(
 		});
 	}
 
-	// Apply positions
+	// Apply positions with dynamic horizontal spacing based on max node width per layer
+	const float HSpacingPadding = 50.0f; // Minimum gap between layers
+	float CurrentX = Settings.StartX;
+
 	for (int32 L = 0; L < NumLayers; L++)
 	{
-		float X = Settings.StartX + L * Settings.HorizontalSpacing;
+		// Find the widest node in this layer
+		float MaxWidthInLayer = 0.0f;
+		for (FNodeLayerInfo* Info : Layers[L])
+		{
+			if (Info->Node)
+			{
+				const FVector2D NodeSize = EstimateNodeSize(Info->Node);
+				MaxWidthInLayer = FMath::Max(MaxWidthInLayer, NodeSize.X);
+			}
+		}
 
 		for (int32 i = 0; i < Layers[L].Num(); i++)
 		{
@@ -928,10 +999,13 @@ void ULayoutEngine::CalculatePositions(
 
 			if (UK2Node* Node = Layers[L][i]->Node)
 			{
-				Node->NodePosX = static_cast<int32>(X);
+				Node->NodePosX = static_cast<int32>(CurrentX);
 				Node->NodePosY = static_cast<int32>(Y);
 			}
 		}
+
+		// Advance X by the wider of: configured spacing, or actual node width + padding
+		CurrentX += FMath::Max(Settings.HorizontalSpacing, MaxWidthInLayer + HSpacingPadding);
 	}
 }
 
@@ -1279,6 +1353,51 @@ bool ULayoutEngine::IsPureDataNode(UK2Node* Node)
 	return !bHasExecPin;
 }
 
+FVector2D ULayoutEngine::EstimateNodeSize(UK2Node* Node)
+{
+	if (!Node)
+	{
+		return FVector2D(200.0f, 100.0f);
+	}
+
+	// Count visible pins
+	int32 InputPinCount = 0;
+	int32 OutputPinCount = 0;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin || Pin->bHidden)
+		{
+			continue;
+		}
+		if (Pin->Direction == EGPD_Input)
+		{
+			InputPinCount++;
+		}
+		else
+		{
+			OutputPinCount++;
+		}
+	}
+
+	// Height: base header + pins
+	const float BaseHeight = 60.0f;
+	const float PinHeight = 26.0f;
+	float Height = BaseHeight + FMath::Max(InputPinCount, OutputPinCount) * PinHeight;
+
+	// Width: based on title length
+	const float MinWidth = 150.0f;
+	const float CharWidth = 8.0f;
+	const float WidthPadding = 60.0f;
+	FString Title = Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString();
+	float Width = FMath::Max(MinWidth, Title.Len() * CharWidth + WidthPadding);
+
+	// Clamp to reasonable range
+	Width = FMath::Clamp(Width, 150.0f, 500.0f);
+	Height = FMath::Clamp(Height, 60.0f, 600.0f);
+
+	return FVector2D(Width, Height);
+}
+
 // Helper function to recursively find exec node consumers through data node chains
 static void FindExecConsumers(
 	UK2Node* Node,
@@ -1336,28 +1455,30 @@ void ULayoutEngine::PositionDataNodesNearConsumers(
 		return;
 	}
 
-	// Ultra-simple approach: position each data node above its first consumer
-	// with simple vertical stacking for overlaps
+	const float OffsetX = Settings.HorizontalSpacing * 0.6f;
+	const float CollisionPadding = 20.0f;
 
-	const float OffsetX = 180.0f;  // How far left of consumer
-	const float OffsetY = -80.0f;  // How far above consumer (negative = above)
-	const float StackSpacing = 100.0f;  // Vertical spacing when stacking
+	// Track placed data nodes for collision detection
+	TArray<FNodePlacement> PlacedNodes;
 
-	// Track occupied positions (X -> list of Y ranges)
-	TMap<int32, TArray<int32>> OccupiedPositions;
-
-	// First, mark exec node positions as occupied
+	// Pre-populate with exec node positions
 	for (UK2Node* ExecNode : ExecNodes)
 	{
-		int32 GridX = ExecNode->NodePosX / 100;  // Quantize to grid
-		OccupiedPositions.FindOrAdd(GridX).Add(ExecNode->NodePosY);
+		if (!ExecNode) continue;
+		const FVector2D Size = EstimateNodeSize(ExecNode);
+		PlacedNodes.Add(FNodePlacement(ExecNode, static_cast<float>(ExecNode->NodePosX),
+			static_cast<float>(ExecNode->NodePosY), Size.X, Size.Y));
 	}
 
-	// For each data node, find where to place it
 	for (UK2Node* DataNode : DataNodes)
 	{
-		// Find the first consumer
-		UK2Node* Consumer = nullptr;
+		if (!DataNode) continue;
+
+		// Find all consumers and their connected pin positions
+		float SumX = 0.0f;
+		float SumY = 0.0f;
+		int32 ConsumerCount = 0;
+
 		for (UEdGraphPin* Pin : DataNode->Pins)
 		{
 			if (!Pin || Pin->Direction != EGPD_Output)
@@ -1366,64 +1487,108 @@ void ULayoutEngine::PositionDataNodesNearConsumers(
 			}
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
-				if (LinkedPin && LinkedPin->GetOwningNode())
+				if (!LinkedPin || !LinkedPin->GetOwningNode())
 				{
-					Consumer = Cast<UK2Node>(LinkedPin->GetOwningNode());
-					if (Consumer)
+					continue;
+				}
+				UK2Node* Consumer = Cast<UK2Node>(LinkedPin->GetOwningNode());
+				if (!Consumer)
+				{
+					continue;
+				}
+
+				// Estimate the Y offset of the connected pin on the consumer
+				int32 PinIndex = 0;
+				int32 VisibleIndex = 0;
+				for (UEdGraphPin* ConsumerPin : Consumer->Pins)
+				{
+					if (!ConsumerPin || ConsumerPin->bHidden)
 					{
+						continue;
+					}
+					if (ConsumerPin == LinkedPin)
+					{
+						PinIndex = VisibleIndex;
 						break;
 					}
+					if (ConsumerPin->Direction == LinkedPin->Direction)
+					{
+						VisibleIndex++;
+					}
 				}
-			}
-			if (Consumer)
-			{
-				break;
+
+				float ConsumerPinY = static_cast<float>(Consumer->NodePosY) + 60.0f + PinIndex * 26.0f;
+				SumX += static_cast<float>(Consumer->NodePosX);
+				SumY += ConsumerPinY;
+				ConsumerCount++;
 			}
 		}
 
-		int32 TargetX, TargetY;
-
-		if (Consumer)
+		float TargetX, TargetY;
+		if (ConsumerCount > 0)
 		{
-			// Position relative to consumer
-			TargetX = Consumer->NodePosX - static_cast<int32>(OffsetX);
-			TargetY = Consumer->NodePosY + static_cast<int32>(OffsetY);
+			// Position at barycenter of consumers, offset to the left
+			TargetX = (SumX / ConsumerCount) - OffsetX;
+			TargetY = (SumY / ConsumerCount) - 30.0f; // Center the node vertically on the pin
 		}
 		else
 		{
-			// Orphan node
-			TargetX = static_cast<int32>(Settings.StartX - OffsetX);
-			TargetY = static_cast<int32>(Settings.StartY);
+			// Orphan data node
+			TargetX = Settings.StartX - OffsetX;
+			TargetY = Settings.StartY;
 		}
 
-		// Check for overlap and stack if needed
-		int32 GridX = TargetX / 100;
-		TArray<int32>& YPositions = OccupiedPositions.FindOrAdd(GridX);
+		// Resolve collisions with already-placed nodes using small nudges
+		const FVector2D DataSize = EstimateNodeSize(DataNode);
+		FNodePlacement Candidate(DataNode, TargetX, TargetY, DataSize.X, DataSize.Y);
 
-		// Find a Y position that doesn't overlap
-		bool bOverlap = true;
+		// Use smaller step and limit max displacement from target
+		const float Step = DataSize.Y + CollisionPadding;
+		const float MaxDisplacement = Step * 3.0f; // Don't go further than 3 node heights
 		int32 Attempts = 0;
-		while (bOverlap && Attempts < 20)
+		float OriginalY = TargetY;
+
+		while (Attempts < 10)
 		{
-			bOverlap = false;
-			for (int32 OccupiedY : YPositions)
+			bool bOverlap = false;
+			for (const FNodePlacement& Existing : PlacedNodes)
 			{
-				if (FMath::Abs(TargetY - OccupiedY) < static_cast<int32>(StackSpacing))
+				if (Candidate.Overlaps(Existing, CollisionPadding))
 				{
 					bOverlap = true;
-					TargetY = OccupiedY - static_cast<int32>(StackSpacing);  // Move up
 					break;
 				}
 			}
+
+			if (!bOverlap)
+			{
+				break;
+			}
+
+			// Alternate: attempt 1 = down, attempt 2 = up, attempt 3 = down further, etc.
+			// Prefer downward (same direction as exec flow)
 			Attempts++;
+			float Offset = ((Attempts + 1) / 2) * Step;
+
+			// Clamp displacement
+			Offset = FMath::Min(Offset, MaxDisplacement);
+
+			if (Attempts % 2 == 1)
+			{
+				Candidate.Y = OriginalY + Offset; // Down first (preferred)
+			}
+			else
+			{
+				Candidate.Y = OriginalY - Offset; // Then up
+			}
 		}
 
 		// Apply position
-		DataNode->NodePosX = TargetX;
-		DataNode->NodePosY = TargetY;
+		DataNode->NodePosX = static_cast<int32>(Candidate.X);
+		DataNode->NodePosY = static_cast<int32>(Candidate.Y);
 
-		// Mark as occupied
-		YPositions.Add(TargetY);
+		// Track this node for future collision checks
+		PlacedNodes.Add(Candidate);
 	}
 }
 
@@ -1460,16 +1625,14 @@ void ULayoutEngine::CalculateBoundingBox(const TArray<UK2Node*>& Nodes, float& O
 	OutMinX = OutMinY = FLT_MAX;
 	OutMaxX = OutMaxY = -FLT_MAX;
 
-	const float NodeWidth = 200.0f;  // Approximate node width
-	const float NodeHeight = 100.0f; // Approximate node height
-
 	for (UK2Node* Node : Nodes)
 	{
 		if (!Node) continue;
 
+		const FVector2D NodeSize = EstimateNodeSize(Node);
 		OutMinX = FMath::Min(OutMinX, static_cast<float>(Node->NodePosX));
-		OutMaxX = FMath::Max(OutMaxX, static_cast<float>(Node->NodePosX) + NodeWidth);
+		OutMaxX = FMath::Max(OutMaxX, static_cast<float>(Node->NodePosX) + NodeSize.X);
 		OutMinY = FMath::Min(OutMinY, static_cast<float>(Node->NodePosY));
-		OutMaxY = FMath::Max(OutMaxY, static_cast<float>(Node->NodePosY) + NodeHeight);
+		OutMaxY = FMath::Max(OutMaxY, static_cast<float>(Node->NodePosY) + NodeSize.Y);
 	}
 }

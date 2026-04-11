@@ -19,11 +19,11 @@ struct ASSETFACTORYAI_API FLayoutSettings
 
 	/** Horizontal spacing between nodes */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	float HorizontalSpacing = 300.0f;
+	float HorizontalSpacing = 250.0f;
 
 	/** Vertical spacing between nodes */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
-	float VerticalSpacing = 150.0f;
+	float VerticalSpacing = 100.0f;
 
 	/** Starting X position */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
@@ -157,6 +157,13 @@ public:
 	 * @param Settings - Layout settings
 	 */
 	static void AutoLayoutNodes(TArray<UK2Node*>& Nodes, const FLayoutSettings& Settings = FLayoutSettings());
+
+	/**
+	 * Estimate node visual size based on pin count and title length
+	 * @param Node - The node to estimate size for
+	 * @return Estimated (Width, Height) in pixels
+	 */
+	static FVector2D EstimateNodeSize(UK2Node* Node);
 
 	/**
 	 * Calculate positions for nodes without applying
