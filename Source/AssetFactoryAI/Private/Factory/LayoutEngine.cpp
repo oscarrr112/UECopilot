@@ -4,6 +4,7 @@
 #include "K2Node.h"
 #include "K2Node_Event.h"
 #include "K2Node_IfThenElse.h"
+#include "K2Node_ExecutionSequence.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_CallFunction.h"
@@ -545,67 +546,183 @@ void ULayoutEngine::AutoLayoutNodes(TArray<UK2Node*>& Nodes, const FLayoutSettin
 		}
 	}
 
-	// Step 7: Move pure data nodes close to their first/nearest consumers to reduce wire bends.
-	PositionDataNodesNearConsumers(DataNodes, ExecNodes, Settings);
+	// Step 7: Overlap resolution for exec nodes only (data nodes positioned later).
+	ResolveNodeOverlapsWithPush(ExecNodes, 20.0f);
 
-	// Step 8: Final overlap resolution pass for all nodes.
-	ResolveNodeOverlapsWithPush(Nodes, 20.0f);
+	// Step 8: Post-process multi-output exec nodes (Branch, Sequence).
+	// Shift entire downstream exec chains so output ordering matches pin order.
+	//
+	// Helper lambda: collect exec-chain nodes reachable from Start, excluding AlreadyClaimed.
+	auto CollectExecChain = [](UK2Node* Start, TSet<UK2Node*>& OutNodes, const TSet<UK2Node*>& Exclude)
+	{
+		TArray<UK2Node*> Stack;
+		Stack.Add(Start);
+		while (Stack.Num() > 0)
+		{
+			UK2Node* Cur = Stack.Pop();
+			if (!Cur || OutNodes.Contains(Cur) || Exclude.Contains(Cur))
+			{
+				continue;
+			}
+			OutNodes.Add(Cur);
 
-	// Step 9: Post-process Branch nodes AFTER overlap resolution.
-	// This is the final positioning pass so it won't get undone.
+			for (UEdGraphPin* Pin : Cur->Pins)
+			{
+				if (Pin && Pin->Direction == EGPD_Output &&
+					Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+				{
+					for (UEdGraphPin* Linked : Pin->LinkedTo)
+					{
+						if (Linked)
+						{
+							if (UK2Node* Next = Cast<UK2Node>(Linked->GetOwningNode()))
+							{
+								Stack.Add(Next);
+							}
+						}
+					}
+				}
+			}
+		}
+	};
+
+	// Helper lambda: shift a set of nodes by deltaY.
+	auto ShiftNodes = [](const TSet<UK2Node*>& NodeSet, int32 DeltaY)
+	{
+		for (UK2Node* N : NodeSet)
+		{
+			if (N)
+			{
+				N->NodePosY += DeltaY;
+			}
+		}
+	};
+
+	// Collect all exec output successors for a node in pin order.
+	auto GetOrderedExecSuccessors = [](UK2Node* Node) -> TArray<UK2Node*>
+	{
+		TArray<UK2Node*> Result;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Output &&
+				Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec &&
+				Pin->LinkedTo.Num() > 0)
+			{
+				if (UK2Node* Succ = Cast<UK2Node>(Pin->LinkedTo[0]->GetOwningNode()))
+				{
+					if (!Result.Contains(Succ))
+					{
+						Result.Add(Succ);
+					}
+				}
+			}
+		}
+		return Result;
+	};
+
 	for (UK2Node* Node : ExecNodes)
 	{
-		UK2Node_IfThenElse* BranchNode = Cast<UK2Node_IfThenElse>(Node);
-		if (!BranchNode)
+		bool bIsBranch = Cast<UK2Node_IfThenElse>(Node) != nullptr;
+		bool bIsSequence = Cast<UK2Node_ExecutionSequence>(Node) != nullptr;
+
+		if (!bIsBranch && !bIsSequence)
 		{
 			continue;
 		}
 
-		// Find True and False successors via exec output pins
-		UK2Node* TrueSucc = nullptr;
-		UK2Node* FalseSucc = nullptr;
-
-		for (UEdGraphPin* Pin : BranchNode->Pins)
+		TArray<UK2Node*> Successors = GetOrderedExecSuccessors(Node);
+		if (Successors.Num() < 2)
 		{
-			if (!Pin || Pin->Direction != EGPD_Output ||
-				Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
-			{
-				continue;
-			}
-			if (Pin->LinkedTo.Num() == 0)
-			{
-				continue;
-			}
-
-			UK2Node* Successor = Cast<UK2Node>(Pin->LinkedTo[0]->GetOwningNode());
-			if (!Successor)
-			{
-				continue;
-			}
-
-			// First exec output = True (PN_Then), Second = False (PN_Else)
-			if (!TrueSucc)
-			{
-				TrueSucc = Successor;
-			}
-			else if (!FalseSucc)
-			{
-				FalseSucc = Successor;
-			}
+			continue;
 		}
 
-		if (TrueSucc && FalseSucc && TrueSucc != FalseSucc)
-		{
-			// UE5 convention: True pin is on top of Branch, False pin on bottom.
-			// True successor at same Y as Branch (wire goes straight right from top pin).
-			// False successor BELOW Branch (wire goes down-right from bottom pin).
-			const int32 MinGap = static_cast<int32>(Settings.VerticalSpacing);
-			const FVector2D TrueSize = EstimateNodeSize(TrueSucc);
+		// Compute target Y for each successor:
+		// First successor at Node Y, each subsequent below the previous.
+		const int32 BaseY = Node->NodePosY;
+		int32 CurrentTargetY = BaseY;
 
-			TrueSucc->NodePosY = BranchNode->NodePosY;
-			FalseSucc->NodePosY = BranchNode->NodePosY + static_cast<int32>(TrueSize.Y) + MinGap / 2;
+		TSet<UK2Node*> AllClaimed; // Nodes already assigned to a chain
+
+		for (int32 i = 0; i < Successors.Num(); i++)
+		{
+			UK2Node* Succ = Successors[i];
+
+			// Collect this successor's exec chain (excluding already-claimed nodes)
+			TSet<UK2Node*> Chain;
+			CollectExecChain(Succ, Chain, AllClaimed);
+
+			if (Chain.Num() == 0)
+			{
+				continue;
+			}
+
+			// Compute delta to move this chain to the target Y
+			int32 DeltaY = CurrentTargetY - Succ->NodePosY;
+			if (FMath::Abs(DeltaY) > 1)
+			{
+				ShiftNodes(Chain, DeltaY);
+			}
+
+			// Next successor goes below this one
+			const FVector2D SuccSize = EstimateNodeSize(Succ);
+			CurrentTargetY += static_cast<int32>(SuccSize.Y) + Settings.VerticalSpacing / 2;
+
+			// Straighten linear exec chains within this branch:
+			// If A has one exec successor B, and B has one exec predecessor A,
+			// align B to A's Y so the wire goes straight right.
+			UK2Node* Current = Succ;
+			while (Current)
+			{
+				// Find the single exec successor of Current
+				UK2Node* NextInChain = nullptr;
+				int32 ExecOutCount = 0;
+				for (UEdGraphPin* Pin : Current->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Output &&
+						Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec &&
+						Pin->LinkedTo.Num() > 0)
+					{
+						ExecOutCount++;
+						if (ExecOutCount == 1)
+						{
+							NextInChain = Cast<UK2Node>(Pin->LinkedTo[0]->GetOwningNode());
+						}
+					}
+				}
+
+				// Only straighten if Current has exactly 1 exec output
+				if (ExecOutCount != 1 || !NextInChain || !Chain.Contains(NextInChain))
+				{
+					break;
+				}
+
+				// Check NextInChain has exactly 1 exec input predecessor
+				int32 ExecInCount = 0;
+				for (UEdGraphPin* Pin : NextInChain->Pins)
+				{
+					if (Pin && Pin->Direction == EGPD_Input &&
+						Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec &&
+						Pin->LinkedTo.Num() > 0)
+					{
+						ExecInCount++;
+					}
+				}
+
+				if (ExecInCount == 1)
+				{
+					NextInChain->NodePosY = Current->NodePosY;
+				}
+
+				Current = NextInChain;
+			}
+
+			// Mark these nodes as claimed
+			AllClaimed.Append(Chain);
 		}
 	}
+
+	// Step 9: Position data nodes near their consumers (exec nodes are now final).
+	PositionDataNodesNearConsumers(DataNodes, ExecNodes, Settings);
 }
 
 TMap<FString, FNodePosition> ULayoutEngine::CalculateLayout(
