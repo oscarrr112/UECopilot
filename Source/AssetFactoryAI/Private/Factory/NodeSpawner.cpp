@@ -20,6 +20,8 @@
 #include "K2Node_FunctionEntry.h"
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectIterator.h"
@@ -491,6 +493,46 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 					*Candidate, *Blueprint->ParentClass->GetName());
 				break;
 			}
+		}
+	}
+
+	// Search component class hierarchy via SCS (e.g., USceneComponent::K2_SetRelativeRotation)
+	if (!Function && Blueprint && Blueprint->SimpleConstructionScript)
+	{
+		// Check if there's a 'self' pin that references a component variable
+		FString TargetComponentName;
+		for (const FBlueprintPinData& Pin : NodeData.Pins)
+		{
+			if (Pin.Name == TEXT("self") && Pin.Connections.Num() > 0)
+			{
+				// The source node of the self pin is typically a variable get node for the component
+				TargetComponentName = Pin.Connections[0].SourcePinName;
+				break;
+			}
+		}
+
+		// Search all SCS component nodes for the target or try all component classes
+		TArray<USCS_Node*> AllNodes = Blueprint->SimpleConstructionScript->GetAllNodes();
+		for (USCS_Node* SCSNode : AllNodes)
+		{
+			if (!SCSNode || !SCSNode->ComponentTemplate) continue;
+
+			// Match by component name, or if no specific target, try all components
+			FString CompName = SCSNode->GetVariableName().ToString();
+			if (!TargetComponentName.IsEmpty() && CompName != TargetComponentName) continue;
+
+			UClass* CompClass = SCSNode->ComponentTemplate->GetClass();
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Function = CompClass->FindFunctionByName(*Candidate);
+				if (Function)
+				{
+					UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on component '%s' (class '%s')"),
+						*Candidate, *CompName, *CompClass->GetName());
+					break;
+				}
+			}
+			if (Function) break;
 		}
 	}
 

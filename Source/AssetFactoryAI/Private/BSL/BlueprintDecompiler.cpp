@@ -39,6 +39,10 @@ static TSharedPtr<BSL::FExpression> MakeLiteralFromPin(UEdGraphPin* Pin)
 			return BSL::FExpression::MakeFloat(FCString::Atof(*DV));
 		if (PinCat == TEXT("string") || PinCat == TEXT("name") || PinCat == TEXT("text"))
 			return BSL::FExpression::MakeString(DV);
+		// Struct types (FLinearColor, FVector, etc.) - emit as string literal
+		// so positional arguments are preserved during round-trip decompile → recompile
+		if (PinCat == TEXT("struct"))
+			return BSL::FExpression::MakeString(DV);
 	}
 	if (!Pin->DefaultTextValue.IsEmpty())
 		return BSL::FExpression::MakeString(Pin->DefaultTextValue.ToString());

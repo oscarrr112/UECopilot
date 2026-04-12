@@ -32,16 +32,19 @@ public:
 	/**
 	 * Compile BSL source code to FBlueprintData
 	 * @param Source - BSL source code
+	 * @param InComponentClassMap - Optional map of component variable names to their UClass types,
+	 *        used for resolving method calls on components (e.g., DoorMesh.SetRelativeRotation)
 	 * @return Compile result with FBlueprintData
 	 */
-	static FCompileResult Compile(const FString& Source);
+	static FCompileResult Compile(const FString& Source, const TMap<FString, UClass*>& InComponentClassMap = TMap<FString, UClass*>());
 
 	/**
 	 * Compile BSL AST to FBlueprintData
 	 * @param Blueprint - Parsed BSL AST
+	 * @param InComponentClassMap - Optional map of component variable names to their UClass types
 	 * @return Compile result with FBlueprintData
 	 */
-	static FCompileResult CompileAST(const FBlueprint& Blueprint);
+	static FCompileResult CompileAST(const FBlueprint& Blueprint, const TMap<FString, UClass*>& InComponentClassMap = TMap<FString, UClass*>());
 
 private:
 	FCompiler();
@@ -115,14 +118,19 @@ private:
 	/** Check if a name is a function output parameter */
 	bool IsFunctionOutputParameter(const FString& Name) const;
 
-	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found. */
-	bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found.
+	 *  @param TargetClass - Optional class to search when the function is a method call on a component */
+	bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr);
 
-	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found. */
-	bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames);
+	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found.
+	 *  @param TargetClass - Optional class to search when the function is a method call on a component */
+	bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr);
 
 	/** Resolve parent class from blueprint AST */
 	UClass* ResolvedParentClass = nullptr;
+
+	/** Component variable name → UClass* mapping for resolving component method calls */
+	TMap<FString, UClass*> ComponentClassMap;
 
 	/** Self-defined function input/output param names (populated during CompileBlueprint) */
 	TMap<FString, TArray<FString>> SelfFunctionInputNames;

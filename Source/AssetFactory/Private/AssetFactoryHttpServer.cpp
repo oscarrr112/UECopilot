@@ -40,6 +40,9 @@
 #include "BSL/BlueprintDecompiler.h"
 #include "BSL/BSLEmitter.h"
 #include "BSL/BSLCompiler.h"
+// SCS for component type resolution in BSL compilation
+#include "Engine/SimpleConstructionScript.h"
+#include "Engine/SCS_Node.h"
 // Blueprint AI factory + JSON parser (for apply_bsl)
 #include "Factory/AIBlueprintFactory.h"
 #include "JSON/BlueprintJSONParser.h"
@@ -1674,44 +1677,18 @@ bool FAssetFactoryHttpServer::HandleApplyBSL(const FHttpServerRequest& Request, 
 	bool bSave = true;
 	JsonObject->TryGetBoolField(TEXT("Save"), bSave);
 
-	// Step 1: Compile BSL source (thread-safe, can run anywhere)
-	BSL::FCompileResult CompileResult = BSL::FCompiler::Compile(BslSource);
-
-	if (!CompileResult.bSuccess)
-	{
-		TSharedPtr<FJsonObject> ResponseJson = MakeShared<FJsonObject>();
-		ResponseJson->SetBoolField(TEXT("success"), false);
-		ResponseJson->SetStringField(TEXT("asset"), AssetPath);
-		ResponseJson->SetBoolField(TEXT("saved"), false);
-
-		TArray<TSharedPtr<FJsonValue>> BslErrorsArray;
-		for (const FString& E : CompileResult.Errors)
-		{
-			BslErrorsArray.Add(MakeShared<FJsonValueString>(E));
-		}
-		ResponseJson->SetArrayField(TEXT("bslErrors"), BslErrorsArray);
-
-		TArray<TSharedPtr<FJsonValue>> BslWarningsArray;
-		for (const FString& W : CompileResult.Warnings)
-		{
-			BslWarningsArray.Add(MakeShared<FJsonValueString>(W));
-		}
-		ResponseJson->SetArrayField(TEXT("bslWarnings"), BslWarningsArray);
-
-		SendJsonResponse(OnComplete, 422, ResponseJson);
-		return true;
-	}
-
-	// Step 2: Apply compiled blueprint data on game thread
+	// All steps run on game thread: load blueprint → extract component types → compile BSL → apply
+	BSL::FCompileResult CompileResult;
 	bool bSuccess = false;
 	bool bSaved = false;
 	bool bNotFound = false;
+	bool bCompileError = false;
 	FString ApplyError;
 	TArray<FString> ApplyWarnings;
 
 	auto DoApply = [&]()
 	{
-		// Resolve asset path: support both "/Game/BP" and "/Game/BP.BP" forms
+		// Step 1: Load the blueprint first so we can extract component type info
 		UBlueprint* BP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *AssetPath));
 		if (!BP)
 		{
@@ -1730,7 +1707,30 @@ bool FAssetFactoryHttpServer::HandleApplyBSL(const FHttpServerRequest& Request, 
 			return;
 		}
 
-		// Apply the compiled blueprint data
+		// Step 2: Build component class map from SCS for resolving component method calls
+		TMap<FString, UClass*> ComponentClassMap;
+		if (BP->SimpleConstructionScript)
+		{
+			for (USCS_Node* SCSNode : BP->SimpleConstructionScript->GetAllNodes())
+			{
+				if (SCSNode && SCSNode->ComponentTemplate)
+				{
+					FString CompName = SCSNode->GetVariableName().ToString();
+					UClass* CompClass = SCSNode->ComponentTemplate->GetClass();
+					ComponentClassMap.Add(CompName, CompClass);
+				}
+			}
+		}
+
+		// Step 3: Compile BSL with component type info
+		CompileResult = BSL::FCompiler::Compile(BslSource, ComponentClassMap);
+		if (!CompileResult.bSuccess)
+		{
+			bCompileError = true;
+			return;
+		}
+
+		// Step 4: Apply the compiled blueprint data
 		FBlueprintGenerationResult ApplyResult = UAIBlueprintFactory::ModifyBlueprint(BP, CompileResult.BlueprintData, bMerge);
 		if (!ApplyResult.bSuccess)
 		{
@@ -1778,6 +1778,17 @@ bool FAssetFactoryHttpServer::HandleApplyBSL(const FHttpServerRequest& Request, 
 	ResponseJson->SetBoolField(TEXT("success"), bSuccess);
 	ResponseJson->SetStringField(TEXT("asset"), AssetPath);
 	ResponseJson->SetBoolField(TEXT("saved"), bSaved);
+
+	// BSL compile errors (moved inside game thread, so handle here)
+	if (bCompileError)
+	{
+		TArray<TSharedPtr<FJsonValue>> BslErrorsArray;
+		for (const FString& E : CompileResult.Errors)
+		{
+			BslErrorsArray.Add(MakeShared<FJsonValueString>(E));
+		}
+		ResponseJson->SetArrayField(TEXT("bslErrors"), BslErrorsArray);
+	}
 
 	TArray<TSharedPtr<FJsonValue>> BslWarningsArray;
 	for (const FString& W : CompileResult.Warnings)

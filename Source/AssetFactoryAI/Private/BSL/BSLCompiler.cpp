@@ -15,7 +15,7 @@ FCompiler::FCompiler()
 {
 }
 
-FCompileResult FCompiler:: Compile(const FString& Source)
+FCompileResult FCompiler::Compile(const FString& Source, const TMap<FString, UClass*>& InComponentClassMap)
 {
 	FCompileResult Result;
 
@@ -31,12 +31,13 @@ FCompileResult FCompiler:: Compile(const FString& Source)
 	}
 
 	// Compile AST
-	return CompileAST(ParseResult.Blueprint);
+	return CompileAST(ParseResult.Blueprint, InComponentClassMap);
 }
 
-FCompileResult FCompiler::CompileAST(const FBlueprint& Blueprint)
+FCompileResult FCompiler::CompileAST(const FBlueprint& Blueprint, const TMap<FString, UClass*>& InComponentClassMap)
 {
 	FCompiler Compiler;
+	Compiler.ComponentClassMap = InComponentClassMap;
 	FCompileResult Result;
 
 	if (Compiler.CompileBlueprint(Blueprint, Result.BlueprintData))
@@ -819,8 +820,19 @@ bool FCompiler::CompileStatement(
 
 			// If this is a method call, connect the Target ('self') pin
 			TryConnectTargetPin(CallNode, Stmt.Expression->Object, Stmt.Expression->Name, OutNodes);
+
+			// Resolve target component class for method calls (e.g., DoorMesh.SetRelativeRotation)
+			UClass* MethodTargetClass = nullptr;
+			if (Stmt.Expression->Object.IsValid() && Stmt.Expression->Object->Type == EExpressionType::Variable)
+			{
+				if (UClass** Found = ComponentClassMap.Find(Stmt.Expression->Object->Name))
+				{
+					MethodTargetClass = *Found;
+				}
+			}
+
 			TArray<FString> ParamNames;
-			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames);
+			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames, MethodTargetClass);
 
 			int32 ArgIndex = 0;
 			for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
@@ -1419,8 +1431,19 @@ FString FCompiler::CompileExpression(
 
 		// If this is a method call, connect the Target ('self') pin
 		TryConnectTargetPin(CallNode, Expr.Object, Expr.Name, OutNodes);
+
+		// Resolve target component class for method calls
+		UClass* MethodTargetClass = nullptr;
+		if (Expr.Object.IsValid() && Expr.Object->Type == EExpressionType::Variable)
+		{
+			if (UClass** Found = ComponentClassMap.Find(Expr.Object->Name))
+			{
+				MethodTargetClass = *Found;
+			}
+		}
+
 		TArray<FString> ParamNames;
-		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames);
+		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames, MethodTargetClass);
 
 		int32 ArgIndex = 0;
 		for (const TSharedPtr<FExpression>& Arg : Expr.Arguments)
@@ -2112,7 +2135,7 @@ bool FCompiler::IsFunctionOutputParameter(const FString& Name) const
 	return false;
 }
 
-bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames)
+bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass)
 {
 	OutNames.Empty();
 
@@ -2143,6 +2166,16 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
 		{
 			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
+			if (Func) break;
+		}
+	}
+
+	// Search target component class hierarchy (e.g., USceneComponent for SetRelativeRotation)
+	if (!Func && TargetClass)
+	{
+		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+		{
+			Func = TargetClass->FindFunctionByName(*Candidate);
 			if (Func) break;
 		}
 	}
@@ -2186,7 +2219,7 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 	return OutNames.Num() > 0;
 }
 
-bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames)
+bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass)
 {
 	OutNames.Empty();
 
@@ -2209,6 +2242,15 @@ bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FStri
 		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
 		{
 			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
+			if (Func) break;
+		}
+	}
+	// Search target component class hierarchy
+	if (!Func && TargetClass)
+	{
+		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+		{
+			Func = TargetClass->FindFunctionByName(*Candidate);
 			if (Func) break;
 		}
 	}
