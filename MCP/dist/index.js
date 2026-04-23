@@ -2,6 +2,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
+import { resolveClientProfile } from "./broker/clientProfile.js";
+import { assertToolAllowed, buildVisibleTools, validateToolCatalogPolicy, } from "./broker/toolCatalog.js";
 import { readFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
@@ -554,9 +556,11 @@ const server = new Server({
         tools: {},
     },
 });
+validateToolCatalogPolicy(tools.map((tool) => tool.name));
 // Handle list tools request
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return { tools };
+    const profile = resolveClientProfile(server.getClientVersion());
+    return { tools: buildVisibleTools(tools, profile) };
 });
 const applyBlueprintChangeHandler = async (rawArgs) => {
     const a = rawArgs || { asset_path: "", blueprint_json: "" };
@@ -752,6 +756,8 @@ for (const sidecarToolName of [
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
+        const profile = resolveClientProfile(server.getClientVersion());
+        assertToolAllowed(profile, name);
         const handler = toolHandlers[name];
         if (!handler) {
             return {

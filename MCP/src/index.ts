@@ -7,6 +7,12 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
+import { resolveClientProfile } from "./broker/clientProfile.js";
+import {
+  assertToolAllowed,
+  buildVisibleTools,
+  validateToolCatalogPolicy,
+} from "./broker/toolCatalog.js";
 import { readFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
@@ -618,9 +624,12 @@ const server = new Server(
   }
 );
 
+validateToolCatalogPolicy(tools.map((tool) => tool.name));
+
 // Handle list tools request
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools };
+  const profile = resolveClientProfile(server.getClientVersion());
+  return { tools: buildVisibleTools(tools, profile) };
 });
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
@@ -873,6 +882,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    const profile = resolveClientProfile(server.getClientVersion());
+    assertToolAllowed(profile, name);
+
     const handler = toolHandlers[name];
     if (!handler) {
       return {

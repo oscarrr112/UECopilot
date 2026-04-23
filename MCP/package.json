@@ -1,6 +1,6 @@
 {
   "name": "@anthropic/ue-copilot-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP Server for Unreal Engine Copilot - AI-assisted asset generation",
   "main": "dist/index.js",
   "type": "module",
@@ -11,7 +11,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "watch": "node --watch dist/index.js",
-    "dev": "tsc && node dist/index.js"
+    "dev": "tsc && node dist/index.js",
+    "pretest": "node -e \"require('fs').rmSync('dist/broker',{recursive:true,force:true})\"",
+    "test": "npm run build && node --test dist/broker/*.test.js"
   },
   "keywords": [
     "mcp",

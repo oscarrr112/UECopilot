@@ -58,6 +58,17 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
+## Agent-Aware Tool Catalog
+
+This broker has a single canonical implementation in `MCP/dist/index.js`. It exposes tools based on the client that connects to it:
+
+- `generic` clients see the shared asset tools, the editor-assist tools, and the BSL Blueprint tool set, but not the legacy JSON Blueprint tools or Claude-only sidecar compatibility tools.
+- `Codex` sees the shared asset tools, the editor-assist tools, and the BSL Blueprint tool set only.
+- `Claude` sees the same shared tools, the BSL Blueprint tools, and the legacy JSON Blueprint compatibility tools.
+- `chat_completion` is a Claude-only sidecar compatibility tool, not part of the shared editor tool surface.
+
+The intent is to keep the implementation unified while presenting the smallest useful tool surface to each agent.
+
 ## Available Tools
 
 ### generate_assets
@@ -123,7 +134,7 @@ List all available asset generators.
 Check if the UE HTTP server is running.
 
 ### chat_completion / generate_blueprint_change
-Proxy to blueprint logic sidecar model request.
+Claude compatibility / legacy sidecar flow.
 
 ### repair_blueprint_json
 Repair malformed blueprint JSON into one valid object.

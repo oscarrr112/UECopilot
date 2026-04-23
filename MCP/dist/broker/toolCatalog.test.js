@@ -1,0 +1,79 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { ALL_TOOLS, assertToolAllowed, buildVisibleTools, validateToolCatalogPolicy, } from "./toolCatalog.js";
+test("buildVisibleTools returns shared asset tools, shared editor tools, and BSL blueprint tools for codex in order", () => {
+    const visibleTools = buildVisibleTools(ALL_TOOLS, "codex");
+    assert.deepEqual(visibleTools.map((tool) => tool.name), [
+        "health_check",
+        "list_generators",
+        "get_generator_schema",
+        "generate_assets",
+        "extract_assets",
+        "query_asset",
+        "delete_assets",
+        "update_datatable_rows",
+        "get_editor_context",
+        "execute_python",
+        "get_viewport_screenshot",
+        "extract_blueprint_graph",
+        "extract_blueprint_as_bsl",
+        "apply_blueprint_as_bsl",
+    ]);
+});
+test("buildVisibleTools keeps legacy JSON blueprint tools for claude and includes BSL tools", () => {
+    const visibleTools = buildVisibleTools(ALL_TOOLS, "claude");
+    const toolNames = visibleTools.map((tool) => tool.name);
+    assert.ok(toolNames.includes("chat_completion"));
+    assert.ok(toolNames.includes("apply_blueprint_change"));
+    assert.ok(toolNames.includes("generate_blueprint_change"));
+    assert.ok(toolNames.includes("repair_blueprint_json"));
+    assert.ok(toolNames.includes("orchestrate_modify_request"));
+    assert.ok(toolNames.includes("validate_blueprint_json"));
+    assert.ok(toolNames.includes("layout_blueprint_graph"));
+    assert.ok(toolNames.includes("apply_blueprint_as_bsl"));
+});
+test("buildVisibleTools returns the modern BSL-only catalog for generic", () => {
+    const visibleTools = buildVisibleTools(ALL_TOOLS, "generic");
+    assert.deepEqual(visibleTools.map((tool) => tool.name), buildVisibleTools(ALL_TOOLS, "codex").map((tool) => tool.name));
+    assert.ok(!visibleTools.some((tool) => tool.name === "apply_blueprint_change"));
+    assert.ok(!visibleTools.some((tool) => tool.name === "chat_completion"));
+});
+test("Codex blueprint descriptions prefer the BSL path", () => {
+    const visibleTools = buildVisibleTools(ALL_TOOLS, "codex");
+    const tool = visibleTools.find((entry) => entry.name === "apply_blueprint_as_bsl");
+    assert.ok(tool);
+    assert.match(tool.description ?? "", /Preferred Blueprint modification path/i);
+    assert.equal((tool.description ?? "").match(/Preferred Blueprint modification path/gi)?.length, 1);
+});
+test("Codex blueprint description override does not prepend undefined when the source description is missing", () => {
+    const visibleTools = buildVisibleTools([{ name: "apply_blueprint_as_bsl" }], "codex");
+    assert.deepEqual(visibleTools, [
+        {
+            name: "apply_blueprint_as_bsl",
+            description: "Preferred Blueprint modification path for Codex.",
+        },
+    ]);
+});
+test("non-Codex profiles do not leak Codex-specific BSL wording", () => {
+    for (const profile of ["claude", "generic"]) {
+        const tool = buildVisibleTools(ALL_TOOLS, profile).find((entry) => entry.name === "apply_blueprint_as_bsl");
+        assert.ok(tool);
+        assert.doesNotMatch(tool.description ?? "", /for Codex/i);
+        assert.doesNotMatch(tool.description ?? "", /Preferred Blueprint modification path/i);
+    }
+});
+test("assertToolAllowed rejects legacy blueprint tools for codex with a BSL hint", () => {
+    assert.throws(() => assertToolAllowed("codex", "apply_blueprint_change"), /BSL blueprint tools/i);
+});
+test("validateToolCatalogPolicy accepts the full tool list and rejects missing tools", () => {
+    assert.doesNotThrow(() => validateToolCatalogPolicy(ALL_TOOLS.map((tool) => tool.name)));
+    assert.throws(() => validateToolCatalogPolicy(ALL_TOOLS.filter((tool) => tool.name !== "apply_blueprint_change").map((tool) => tool.name)), /unknown tool/i);
+});
+test("validateToolCatalogPolicy rejects duplicate canonical tool names", () => {
+    const names = ALL_TOOLS.map((tool) => tool.name);
+    assert.throws(() => validateToolCatalogPolicy([...names, names[0]]), /duplicate tool/i);
+});
+test("validateToolCatalogPolicy rejects canonical tools outside any policy bucket", () => {
+    const names = ALL_TOOLS.map((tool) => tool.name);
+    assert.throws(() => validateToolCatalogPolicy([...names, "unclassified_tool"]), /unknown tool/i);
+});
