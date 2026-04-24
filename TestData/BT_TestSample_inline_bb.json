@@ -1,0 +1,32 @@
+{
+  "AssetType": "BehaviorTree",
+  "Name": "BT_TestSample_Inline",
+  "Path": "/Game/UECopilotTests/AI",
+  "BlackboardInline": {
+    "Name": "BB_TestSample_Inline",
+    "Path": "/Game/UECopilotTests/AI",
+    "Keys": [
+      {
+        "Name": "HasTarget",
+        "Type": "Bool"
+      },
+      {
+        "Name": "MoveLocation",
+        "Type": "Vector"
+      }
+    ]
+  },
+  "Root": {
+    "Node": "BTComposite_Sequence",
+    "Children": [
+      {
+        "Node": "BTTask_Wait",
+        "Properties": {
+          "WaitTime": {
+            "DefaultValue": 0.2
+          }
+        }
+      }
+    ]
+  }
+}

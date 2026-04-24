@@ -1,0 +1,52 @@
+{
+  "AssetType": "BehaviorTree",
+  "Name": "BT_TestSample",
+  "Path": "/Game/UECopilotTests/AI",
+  "Blackboard": "/Game/UECopilotTests/AI/BB_TestSample",
+  "Root": {
+    "Node": "BTComposite_Selector",
+    "InstanceName": "RootSelector",
+    "Children": [
+      {
+        "Node": "BTComposite_Sequence",
+        "InstanceName": "AttackSeq",
+        "Decorators": [
+          {
+            "Type": "BTDecorator_Blackboard",
+            "Properties": {
+              "BlackboardKey": {
+                "SelectedKeyName": "HasTarget"
+              }
+            }
+          }
+        ],
+        "Children": [
+          {
+            "Node": "BTTask_MoveTo",
+            "Properties": {
+              "AcceptableRadius": {
+                "DefaultValue": 50.0
+              }
+            }
+          },
+          {
+            "Node": "BTTask_Wait",
+            "Properties": {
+              "WaitTime": {
+                "DefaultValue": 0.5
+              }
+            }
+          }
+        ]
+      },
+      {
+        "Node": "BTTask_Wait",
+        "Properties": {
+          "WaitTime": {
+            "DefaultValue": 1.0
+          }
+        }
+      }
+    ]
+  }
+}
