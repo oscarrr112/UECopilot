@@ -6,6 +6,27 @@
 #include "GameFramework/Actor.h"
 #include "TestActorBase.generated.h"
 
+USTRUCT(BlueprintType)
+struct ASSETFACTORY_API FAssetFactoryTestEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test|Nested")
+	FName Name;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test|Nested")
+	float Value = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct ASSETFACTORY_API FAssetFactoryTestConfig
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test|Nested")
+	TArray<FAssetFactoryTestEntry> Entries;
+};
+
 /**
  * Test Actor base class for validating Blueprint generation with default properties
  */
@@ -40,4 +61,8 @@ public:
 	/** Test level property */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test|Info")
 	int32 Level = 1;
+
+	/** Nested test config for validating Blueprint CDO default persistence */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test|Nested")
+	FAssetFactoryTestConfig Config;
 };

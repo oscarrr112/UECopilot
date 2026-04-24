@@ -20,6 +20,24 @@
 #include "AttributeSet.h"
 #endif
 
+namespace
+{
+FString MakeChildPropertyPath(const FString& BasePath, const FString& ChildName)
+{
+	return BasePath.IsEmpty() ? ChildName : FString::Printf(TEXT("%s.%s"), *BasePath, *ChildName);
+}
+
+FString MakeArrayPropertyPath(const FString& BasePath, int32 Index)
+{
+	return FString::Printf(TEXT("%s[%d]"), *BasePath, Index);
+}
+
+FString MakeMapPropertyPath(const FString& BasePath, const FString& Key)
+{
+	return FString::Printf(TEXT("%s[%s]"), *BasePath, *Key);
+}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // New Typed Property System
 //////////////////////////////////////////////////////////////////////////
@@ -598,47 +616,64 @@ bool FPropertySetterUtils::SetStructValueFromTypedJson(void* ValuePtr, UScriptSt
 		return false;
 	}
 
+	bool bAllSucceeded = true;
 	for (const auto& Pair : (*Obj)->Values)
 	{
 		const FString& FieldName = Pair.Key;
 		const TSharedPtr<FJsonValue>& FieldValue = Pair.Value;
+		const FString FieldPath = MakeChildPropertyPath(Struct->GetName(), FieldName);
 
 		// Each field should be { "type": "...", "value": ... }
 		const TSharedPtr<FJsonObject>* TypedFieldObj;
 		if (!FieldValue->TryGetObject(TypedFieldObj))
 		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Typed struct field '%s': expected object with 'type' and 'value' fields"), *FieldPath);
+			bAllSucceeded = false;
 			continue;
 		}
 
 		FString TypeStr;
 		if (!(*TypedFieldObj)->TryGetStringField(TEXT("type"), TypeStr))
 		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Typed struct field '%s': missing 'type' field"), *FieldPath);
+			bAllSucceeded = false;
 			continue;
 		}
 
 		TSharedPtr<FJsonValue> ValueField = (*TypedFieldObj)->TryGetField(TEXT("value"));
 		if (!ValueField.IsValid())
 		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Typed struct field '%s': missing 'value' field"), *FieldPath);
+			bAllSucceeded = false;
 			continue;
 		}
 
 		FProperty* FieldProp = Struct->FindPropertyByName(*FieldName);
 		if (!FieldProp)
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Struct field '%s' not found in %s"), *FieldName, *Struct->GetName());
+			UE_LOG(LogAssetFactory, Warning, TEXT("Struct field path '%s' not found in %s"), *FieldPath, *Struct->GetName());
+			bAllSucceeded = false;
 			continue;
 		}
 
 		void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
 		FParsedTypeInfo TypeInfo = ParseTypeString(TypeStr);
 
-		if (TypeInfo.bIsValid)
+		if (!TypeInfo.bIsValid)
 		{
-			SetValueFromTypedJson(FieldPtr, TypeInfo, ValueField);
+			UE_LOG(LogAssetFactory, Warning, TEXT("Typed struct field '%s': invalid type '%s' - %s"), *FieldPath, *TypeStr, *TypeInfo.ErrorMessage);
+			bAllSucceeded = false;
+			continue;
+		}
+
+		if (!SetValueFromTypedJson(FieldPtr, TypeInfo, ValueField))
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set typed struct field '%s'"), *FieldPath);
+			bAllSucceeded = false;
 		}
 	}
 
-	return true;
+	return bAllSucceeded;
 }
 
 bool FPropertySetterUtils::SetTypedPropertyFromJson(UObject* Object, const FString& PropertyName, TSharedPtr<FJsonObject> TypedValue)
@@ -711,13 +746,14 @@ bool FPropertySetterUtils::SetTypedPropertyFromJson(UObject* Object, const FStri
 	return SetValueFromTypedJson(ValuePtr, TypeInfo, ValueField);
 }
 
-void FPropertySetterUtils::SetTypedPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties)
+bool FPropertySetterUtils::SetTypedPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties)
 {
 	if (!Object || !Properties.IsValid())
 	{
-		return;
+		return false;
 	}
 
+	bool bAllSucceeded = true;
 	for (const auto& Pair : Properties->Values)
 	{
 		const FString& PropertyName = Pair.Key;
@@ -727,14 +763,17 @@ void FPropertySetterUtils::SetTypedPropertiesFromJson(UObject* Object, TSharedPt
 		if (!PropertyValue->TryGetObject(TypedObj))
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Property '%s': expected object with 'type' and 'value' fields"), *PropertyName);
+			bAllSucceeded = false;
 			continue;
 		}
 
 		if (!SetTypedPropertyFromJson(Object, PropertyName, *TypedObj))
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set typed property '%s'"), *PropertyName);
+			bAllSucceeded = false;
 		}
 	}
+	return bAllSucceeded;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -754,6 +793,11 @@ bool FPropertySetterUtils::SetPropertyFromJson(UObject* Object, FProperty* Prope
 
 bool FPropertySetterUtils::SetPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties)
 {
+	return SetPropertiesFromJsonInternal(Object, Properties, FString());
+}
+
+bool FPropertySetterUtils::SetPropertiesFromJsonInternal(UObject* Object, TSharedPtr<FJsonObject> Properties, const FString& BasePath)
+{
 	if (!Object || !Properties.IsValid())
 	{
 		return false;
@@ -766,31 +810,35 @@ bool FPropertySetterUtils::SetPropertiesFromJson(UObject* Object, TSharedPtr<FJs
 	{
 		const FString& PropertyName = Pair.Key;
 		const TSharedPtr<FJsonValue>& JsonValue = Pair.Value;
+		const FString PropertyPath = MakeChildPropertyPath(BasePath, PropertyName);
 
 		FProperty* Property = ObjectClass->FindPropertyByName(*PropertyName);
 		if (!Property)
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Property '%s' not found on class '%s'"),
-				*PropertyName, *ObjectClass->GetName());
+			UE_LOG(LogAssetFactory, Warning, TEXT("Property path '%s' not found on class '%s'"),
+				*PropertyPath, *ObjectClass->GetName());
 			bAllSucceeded = false;
 			continue;
 		}
 
-		if (!SetPropertyFromJson(Object, Property, JsonValue))
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		if (!SetPropertyValueInternal(Object, Property, ValuePtr, JsonValue, PropertyPath))
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set property '%s'"), *PropertyName);
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set property path '%s'"), *PropertyPath);
 			bAllSucceeded = false;
 		}
 	}
 	return bAllSucceeded;
 }
 
-bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject)
+bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject, const FString& PropertyPath)
 {
 	if (!Property || !ValuePtr || !JsonValue.IsValid())
 	{
 		return false;
 	}
+
+	const FString EffectivePath = PropertyPath.IsEmpty() ? Property->GetName() : PropertyPath;
 
 	// --- Enum types (must come before FNumericProperty since FByteProperty inherits from it) ---
 
@@ -812,7 +860,7 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 			EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, EnumValue);
 			return true;
 		}
-		UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unknown enum value '%s' for '%s'"), *EnumValueStr, *Enum->GetName());
+		UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unknown enum value '%s' for '%s' at '%s'"), *EnumValueStr, *Enum->GetName(), *EffectivePath);
 		return false;
 	}
 
@@ -834,7 +882,7 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 					return true;
 				}
 			}
-			UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unknown byte enum value '%s' for '%s'"), *EnumValueStr, *Enum->GetName());
+			UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unknown byte enum value '%s' for '%s' at '%s'"), *EnumValueStr, *Enum->GetName(), *EffectivePath);
 			return false;
 		}
 		double Value = 0.0;
@@ -964,14 +1012,14 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 				UClass* MetaClass = ClassProp->MetaClass;
 				if (MetaClass && !LoadedClass->IsChildOf(MetaClass))
 				{
-					UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: class '%s' is not a subclass of '%s'"),
-						*LoadedClass->GetName(), *MetaClass->GetName());
+					UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: class '%s' is not a subclass of '%s' at '%s'"),
+						*LoadedClass->GetName(), *MetaClass->GetName(), *EffectivePath);
 					return false;
 				}
 				ClassProp->SetPropertyValue(ValuePtr, LoadedClass);
 				return true;
 			}
-			UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to load class '%s'"), *ClassPath);
+			UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to load class '%s' at '%s'"), *ClassPath, *EffectivePath);
 		}
 		return false;
 	}
@@ -981,7 +1029,12 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 		FString ObjectPath;
 		if (JsonValue->TryGetString(ObjectPath))
 		{
-			return SetObjectReferenceFromPath(ObjProp, ValuePtr, ObjectPath);
+			const bool bSetObject = SetObjectReferenceFromPath(ObjProp, ValuePtr, ObjectPath);
+			if (!bSetObject)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set object reference '%s' at '%s'"), *ObjectPath, *EffectivePath);
+			}
+			return bSetObject;
 		}
 		// Instanced subobject: JSON object with "Class" field
 		const TSharedPtr<FJsonObject>* ObjJson;
@@ -1003,7 +1056,10 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 						}
 						if (PropsJson.IsValid())
 						{
-							SetPropertiesFromJson(NewObj, PropsJson);
+							if (!SetPropertiesFromJsonInternal(NewObj, PropsJson, EffectivePath))
+							{
+								return false;
+							}
 						}
 						ObjProp->SetObjectPropertyValue(ValuePtr, NewObj);
 						return true;
@@ -1018,7 +1074,7 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 
 	if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
-		return SetStructPropertyFromJson(StructProp, ValuePtr, JsonValue);
+		return SetStructFromJsonInternal(StructProp->Struct, ValuePtr, JsonValue, OwnerObject, EffectivePath);
 	}
 
 	// --- Containers (recursive) ---
@@ -1035,16 +1091,19 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 		FProperty* InnerProp = ArrayProp->Inner;
 		ArrayHelper.EmptyValues();
 
+		bool bAllSucceeded = true;
 		for (int32 i = 0; i < ArrayValues->Num(); ++i)
 		{
 			int32 Index = ArrayHelper.AddValue();
 			void* ElemPtr = ArrayHelper.GetRawPtr(Index);
-			if (!SetPropertyValueFromJson(InnerProp, ElemPtr, (*ArrayValues)[i], OwnerObject))
+			const FString ElementPath = MakeArrayPropertyPath(EffectivePath, i);
+			if (!SetPropertyValueFromJson(InnerProp, ElemPtr, (*ArrayValues)[i], OwnerObject, ElementPath))
 			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set array element %d"), i);
+				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set '%s'"), *ElementPath);
+				bAllSucceeded = false;
 			}
 		}
-		return true;
+		return bAllSucceeded;
 	}
 
 	if (FMapProperty* MapProp = CastField<FMapProperty>(Property))
@@ -1060,6 +1119,7 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 		FProperty* ValuePropInner = MapProp->ValueProp;
 		MapHelper.EmptyValues();
 
+		bool bAllSucceeded = true;
 		for (const auto& Pair : (*MapObj)->Values)
 		{
 			const FString& KeyStr = Pair.Key;
@@ -1114,21 +1174,24 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 
 			if (!bKeySet)
 			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unsupported map key type '%s'"), *KeyProp->GetClass()->GetName());
+				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unsupported map key type '%s' at '%s'"), *KeyProp->GetClass()->GetName(), *EffectivePath);
 				MapHelper.RemoveAt(Index);
+				bAllSucceeded = false;
 				continue;
 			}
 
 			// Set value recursively
 			void* ValPtr = MapHelper.GetValuePtr(Index);
-			if (!SetPropertyValueFromJson(ValuePropInner, ValPtr, PairValue, OwnerObject))
+			const FString ValuePath = MakeMapPropertyPath(EffectivePath, KeyStr);
+			if (!SetPropertyValueFromJson(ValuePropInner, ValPtr, PairValue, OwnerObject, ValuePath))
 			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set map value for key '%s'"), *KeyStr);
+				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set '%s'"), *ValuePath);
+				bAllSucceeded = false;
 			}
 		}
 
 		MapHelper.Rehash();
-		return true;
+		return bAllSucceeded;
 	}
 
 	if (FSetProperty* SetProp = CastField<FSetProperty>(Property))
@@ -1143,32 +1206,35 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 		FProperty* ElemProp = SetProp->ElementProp;
 		SetHelper.EmptyElements();
 
+		bool bAllSucceeded = true;
 		for (int32 i = 0; i < ArrayValues->Num(); ++i)
 		{
 			int32 Index = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
 			void* ElemPtr = SetHelper.GetElementPtr(Index);
-			if (!SetPropertyValueFromJson(ElemProp, ElemPtr, (*ArrayValues)[i], OwnerObject))
+			const FString ElementPath = MakeArrayPropertyPath(EffectivePath, i);
+			if (!SetPropertyValueFromJson(ElemProp, ElemPtr, (*ArrayValues)[i], OwnerObject, ElementPath))
 			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set element %d"), i);
+				UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: failed to set '%s'"), *ElementPath);
+				bAllSucceeded = false;
 			}
 		}
 
 		SetHelper.Rehash();
-		return true;
+		return bAllSucceeded;
 	}
 
-	UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unsupported property type '%s' (%s)"),
-		*Property->GetName(), *Property->GetClass()->GetName());
+	UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unsupported property type '%s' (%s) at '%s'"),
+		*Property->GetName(), *Property->GetClass()->GetName(), *EffectivePath);
 	return false;
 }
 
-bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
+bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, const FString& PropertyPath)
 {
 	if (!Property || !ValuePtr || !JsonValue.IsValid())
 	{
 		return false;
 	}
-	return SetPropertyValueFromJson(Property, ValuePtr, JsonValue, Object);
+	return SetPropertyValueFromJson(Property, ValuePtr, JsonValue, Object, PropertyPath);
 }
 
 // Check if a struct only contains numeric fields (float, double, int variants)
@@ -1209,17 +1275,21 @@ static bool SetStructFromArray(UScriptStruct* Struct, void* ValuePtr, const TArr
 		}
 
 		double Value = 0;
-		if (Array[Index]->TryGetNumber(Value))
+		if (!Array[Index]->TryGetNumber(Value))
 		{
-			void* FieldPtr = NumProp->ContainerPtrToValuePtr<void>(ValuePtr);
-			if (NumProp->IsFloatingPoint())
-			{
-				NumProp->SetFloatingPointPropertyValue(FieldPtr, Value);
-			}
-			else
-			{
-				NumProp->SetIntPropertyValue(FieldPtr, static_cast<int64>(Value));
-			}
+			UE_LOG(LogAssetFactory, Warning, TEXT("Struct '%s' field '%s' expected numeric array value at index %d"),
+				*Struct->GetName(), *(*It)->GetName(), Index);
+			return false;
+		}
+
+		void* FieldPtr = NumProp->ContainerPtrToValuePtr<void>(ValuePtr);
+		if (NumProp->IsFloatingPoint())
+		{
+			NumProp->SetFloatingPointPropertyValue(FieldPtr, Value);
+		}
+		else
+		{
+			NumProp->SetIntPropertyValue(FieldPtr, static_cast<int64>(Value));
 		}
 		++Index;
 	}
@@ -1330,17 +1400,26 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 				// Remaining fields: fallback to generic struct reflection
 				static UScriptStruct* Struct = FSlateFontInfo::StaticStruct();
 				static const FName SizeName = TEXT("Size");
+				bool bAllSucceeded = true;
 				for (const auto& Pair : (*FontObj)->Values)
 				{
 					if (Pair.Key == SizeName) continue; // already handled
 					if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
 					{
 						void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-						SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+						if (!SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value, MakeChildPropertyPath(TEXT("SlateFontInfo"), Pair.Key)))
+						{
+							bAllSucceeded = false;
+						}
+					}
+					else
+					{
+						UE_LOG(LogAssetFactory, Warning, TEXT("Struct field path 'SlateFontInfo.%s' not found in struct 'SlateFontInfo'"), *Pair.Key);
+						bAllSucceeded = false;
 					}
 				}
 
-				return true;
+				return bAllSucceeded;
 			}
 			return false;
 		});
@@ -1393,17 +1472,26 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 					TEXT("Image"), TEXT("ResourceObject"), TEXT("Tint"),
 					TEXT("ImageSize"), TEXT("DrawAs")
 				};
+				bool bAllSucceeded = true;
 				for (const auto& Pair : (*BrushObj)->Values)
 				{
 					if (HandledFields.Contains(FName(*Pair.Key))) continue;
 					if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
 					{
 						void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-						SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+						if (!SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value, MakeChildPropertyPath(TEXT("SlateBrush"), Pair.Key)))
+						{
+							bAllSucceeded = false;
+						}
+					}
+					else
+					{
+						UE_LOG(LogAssetFactory, Warning, TEXT("Struct field path 'SlateBrush.%s' not found in struct 'SlateBrush'"), *Pair.Key);
+						bAllSucceeded = false;
 					}
 				}
 
-				return true;
+				return bAllSucceeded;
 			}
 			return false;
 		});
@@ -1620,6 +1708,11 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUt
 
 bool FPropertySetterUtils::SetStructFromJson(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue)
 {
+	return SetStructFromJsonInternal(Struct, ValuePtr, JsonValue, nullptr, Struct ? Struct->GetName() : FString());
+}
+
+bool FPropertySetterUtils::SetStructFromJsonInternal(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject, const FString& PropertyPath)
+{
 	if (!Struct || !ValuePtr || !JsonValue.IsValid())
 	{
 		return false;
@@ -1645,15 +1738,27 @@ bool FPropertySetterUtils::SetStructFromJson(UScriptStruct* Struct, void* ValueP
 	const TSharedPtr<FJsonObject>* Obj;
 	if (JsonValue->TryGetObject(Obj))
 	{
+		bool bAllSucceeded = true;
 		for (const auto& Pair : (*Obj)->Values)
 		{
 			if (FProperty* FieldProp = Struct->FindPropertyByName(*Pair.Key))
 			{
 				void* FieldPtr = FieldProp->ContainerPtrToValuePtr<void>(ValuePtr);
-				SetPropertyValueInternal(nullptr, FieldProp, FieldPtr, Pair.Value);
+				const FString FieldPath = MakeChildPropertyPath(PropertyPath, Pair.Key);
+				if (!SetPropertyValueInternal(OwnerObject, FieldProp, FieldPtr, Pair.Value, FieldPath))
+				{
+					UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set struct property path '%s'"), *FieldPath);
+					bAllSucceeded = false;
+				}
+			}
+			else
+			{
+				const FString FieldPath = MakeChildPropertyPath(PropertyPath, Pair.Key);
+				UE_LOG(LogAssetFactory, Warning, TEXT("Struct field path '%s' not found in struct '%s'"), *FieldPath, *Struct->GetName());
+				bAllSucceeded = false;
 			}
 		}
-		return true;
+		return bAllSucceeded;
 	}
 
 	return false;
@@ -1666,7 +1771,7 @@ bool FPropertySetterUtils::SetStructPropertyFromJson(FStructProperty* StructProp
 		return false;
 	}
 
-	return SetStructFromJson(StructProp->Struct, ValuePtr, JsonValue);
+	return SetStructFromJsonInternal(StructProp->Struct, ValuePtr, JsonValue, nullptr, StructProp->GetName());
 }
 
 bool FPropertySetterUtils::SetArrayProperty(UObject* Object, FArrayProperty* Property, const TArray<TSharedPtr<FJsonValue>>& ArrayValues)
@@ -1683,6 +1788,7 @@ bool FPropertySetterUtils::SetArrayProperty(UObject* Object, FArrayProperty* Pro
 	// Clear existing entries
 	ArrayHelper.EmptyValues();
 
+	bool bAllSucceeded = true;
 	for (int32 i = 0; i < ArrayValues.Num(); ++i)
 	{
 		const TSharedPtr<FJsonValue>& JsonValue = ArrayValues[i];
@@ -1690,11 +1796,16 @@ bool FPropertySetterUtils::SetArrayProperty(UObject* Object, FArrayProperty* Pro
 		int32 Index = ArrayHelper.AddValue();
 		void* ElementPtr = ArrayHelper.GetRawPtr(Index);
 
-		SetPropertyValueFromJson(InnerProp, ElementPtr, JsonValue, Object);
+		const FString ElementPath = MakeArrayPropertyPath(Property->GetName(), i);
+		if (!SetPropertyValueFromJson(InnerProp, ElementPtr, JsonValue, Object, ElementPath))
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set array property path '%s'"), *ElementPath);
+			bAllSucceeded = false;
+		}
 	}
 
 	UE_LOG(LogAssetFactory, Verbose, TEXT("Set TArray: %s with %d elements"), *Property->GetName(), ArrayHelper.Num());
-	return true;
+	return bAllSucceeded;
 }
 
 bool FPropertySetterUtils::SetMapProperty(UObject* Object, FMapProperty* Property, TSharedPtr<FJsonObject> MapConfig)
@@ -1713,6 +1824,7 @@ bool FPropertySetterUtils::SetMapProperty(UObject* Object, FMapProperty* Propert
 	// Clear existing entries
 	MapHelper.EmptyValues();
 
+	bool bAllSucceeded = true;
 	for (const auto& Pair : MapConfig->Values)
 	{
 		const FString& KeyStr = Pair.Key;
@@ -1742,6 +1854,7 @@ bool FPropertySetterUtils::SetMapProperty(UObject* Object, FMapProperty* Propert
 			{
 				UE_LOG(LogAssetFactory, Warning, TEXT("Unknown enum value '%s' for enum '%s'"), *KeyStr, *Enum->GetName());
 				MapHelper.RemoveAt(Index);
+				bAllSucceeded = false;
 				continue;
 			}
 		}
@@ -1757,6 +1870,7 @@ bool FPropertySetterUtils::SetMapProperty(UObject* Object, FMapProperty* Propert
 				else
 				{
 					MapHelper.RemoveAt(Index);
+					bAllSucceeded = false;
 					continue;
 				}
 			}
@@ -1777,18 +1891,24 @@ bool FPropertySetterUtils::SetMapProperty(UObject* Object, FMapProperty* Propert
 		{
 			UE_LOG(LogAssetFactory, Warning, TEXT("Unsupported map key type: %s"), *KeyProp->GetClass()->GetName());
 			MapHelper.RemoveAt(Index);
+			bAllSucceeded = false;
 			continue;
 		}
 
 		// Set the value (recursive — supports nested containers)
 		void* ValPtr = MapHelper.GetValuePtr(Index);
-		SetPropertyValueFromJson(ValueProp, ValPtr, JsonValue, Object);
+		const FString ValuePath = MakeMapPropertyPath(Property->GetName(), KeyStr);
+		if (!SetPropertyValueFromJson(ValueProp, ValPtr, JsonValue, Object, ValuePath))
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set map property path '%s'"), *ValuePath);
+			bAllSucceeded = false;
+		}
 	}
 
 	MapHelper.Rehash();
 
 	UE_LOG(LogAssetFactory, Verbose, TEXT("Set TMap: %s with %d entries"), *Property->GetName(), MapHelper.Num());
-	return true;
+	return bAllSucceeded;
 }
 
 bool FPropertySetterUtils::SetObjectReferenceFromPath(FObjectPropertyBase* ObjProp, void* ValuePtr, const FString& ObjectPath)

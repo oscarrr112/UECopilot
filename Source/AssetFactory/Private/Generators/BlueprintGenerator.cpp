@@ -20,6 +20,7 @@
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
 #include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 FGenerationResult FBlueprintGenerator::Generate(
 	const FString& Name,
@@ -134,9 +135,6 @@ FGenerationResult FBlueprintGenerator::Generate(
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to set DefaultProperties (check log for details)"));
 		}
-		// Recompile to serialize CDO values into Blueprint asset data,
-		// otherwise PIE instances won't pick up the changes
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 	}
 
 	// Save
@@ -146,7 +144,11 @@ FGenerationResult FBlueprintGenerator::Generate(
 	FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs);
+	const bool bSaved = UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs);
+	if (!bSaved)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to save Blueprint package"));
+	}
 
 	if (bExists)
 	{
@@ -186,21 +188,87 @@ bool FBlueprintGenerator::SetDefaultProperties(UBlueprint* Blueprint, TSharedPtr
 		break; // Only check first property
 	}
 
-	// Use PropertySetterUtils to set properties on CDO
-	bool bSuccess;
-	if (bUseTypedFormat)
+	auto ApplyPropertiesToObject = [Properties, bUseTypedFormat](UObject* TargetObject, bool bEmitChangeEvents) -> bool
 	{
-		FPropertySetterUtils::SetTypedPropertiesFromJson(CDO, Properties);
-		bSuccess = true; // typed format doesn't return status yet
-	}
-	else
+		if (!TargetObject)
+		{
+			return false;
+		}
+
+		bool bAllSucceeded = true;
+		UClass* ObjectClass = TargetObject->GetClass();
+
+		for (const auto& Pair : Properties->Values)
+		{
+			const FString& PropertyName = Pair.Key;
+			const TSharedPtr<FJsonValue>& PropertyValue = Pair.Value;
+
+			FProperty* Property = ObjectClass->FindPropertyByName(*PropertyName);
+			if (!Property)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("DefaultProperties path '%s' not found on Blueprint CDO class '%s'"),
+					*PropertyName, *ObjectClass->GetName());
+				bAllSucceeded = false;
+				continue;
+			}
+
+			if (bEmitChangeEvents)
+			{
+				TargetObject->PreEditChange(Property);
+			}
+
+			bool bSetProperty = false;
+			if (bUseTypedFormat)
+			{
+				const TSharedPtr<FJsonObject>* TypedPropertyObject;
+				if (PropertyValue->TryGetObject(TypedPropertyObject))
+				{
+					bSetProperty = FPropertySetterUtils::SetTypedPropertyFromJson(TargetObject, PropertyName, *TypedPropertyObject);
+				}
+				else
+				{
+					UE_LOG(LogAssetFactory, Warning, TEXT("DefaultProperties path '%s': expected typed object with 'type' and 'value' fields"), *PropertyName);
+				}
+			}
+			else
+			{
+				bSetProperty = FPropertySetterUtils::SetPropertyFromJson(TargetObject, Property, PropertyValue);
+			}
+
+			if (bEmitChangeEvents)
+			{
+				FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ValueSet);
+				TargetObject->PostEditChangeProperty(PropertyChangedEvent);
+			}
+
+			if (!bSetProperty)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("Failed to set DefaultProperties path '%s'"), *PropertyName);
+				bAllSucceeded = false;
+			}
+		}
+
+		return bAllSucceeded;
+	};
+
+	UObject* ValidationCDO = StaticDuplicateObject(CDO, GetTransientPackage());
+	if (!ValidationCDO || !ApplyPropertiesToObject(ValidationCDO, false))
 	{
-		bSuccess = FPropertySetterUtils::SetPropertiesFromJson(CDO, Properties);
+		return false;
 	}
 
-	// Mark CDO as modified
+	Blueprint->Modify();
+	GeneratedClass->Modify();
 	CDO->Modify();
-	return bSuccess;
+
+	const bool bAllSucceeded = ApplyPropertiesToObject(CDO, true);
+
+	if (bAllSucceeded)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
+		Blueprint->MarkPackageDirty();
+	}
+	return bAllSucceeded;
 }
 
 TOptional<FString> FBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const

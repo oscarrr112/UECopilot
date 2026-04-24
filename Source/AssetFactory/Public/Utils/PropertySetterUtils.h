@@ -106,8 +106,9 @@ public:
 	 * Set multiple properties using typed format
 	 * @param Object - The UObject to set properties on
 	 * @param Properties - JSON object where each value is { "type": "...", "value": ... }
+	 * @return true if all properties were set successfully
 	 */
-	static void SetTypedPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties);
+	static bool SetTypedPropertiesFromJson(UObject* Object, TSharedPtr<FJsonObject> Properties);
 
 	/**
 	 * Set a value directly using parsed type info (for nested/recursive calls)
@@ -307,14 +308,25 @@ private:
 	 * @param ValuePtr - Pointer to the memory location to write
 	 * @param JsonValue - The JSON value containing the data
 	 * @param OwnerObject - Optional UObject used as Outer for NewObject (instanced subobjects)
+	 * @param PropertyPath - Full reflected property path for diagnostics
 	 * @return true if the value was set successfully
 	 */
-	static bool SetPropertyValueFromJson(FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject = nullptr);
+	static bool SetPropertyValueFromJson(FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject = nullptr, const FString& PropertyPath = FString());
+
+	/**
+	 * Internal object property setter with a base path for nested diagnostics.
+	 */
+	static bool SetPropertiesFromJsonInternal(UObject* Object, TSharedPtr<FJsonObject> Properties, const FString& BasePath);
+
+	/**
+	 * Internal struct setter with owner and path context for recursive diagnostics.
+	 */
+	static bool SetStructFromJsonInternal(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, UObject* OwnerObject, const FString& PropertyPath);
 
 	/**
 	 * Internal property value setter with void* pointer
 	 */
-	static bool SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue);
+	static bool SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, const FString& PropertyPath = FString());
 
 	/**
 	 * Find a UScriptStruct by name (e.g., "FVector", "FLinearColor", "FMyCustomStruct")

@@ -1,0 +1,21 @@
+{
+  "Assets": [
+    {
+      "AssetType": "Blueprint",
+      "Name": "BP_AF_NestedDefaults_Invalid",
+      "Path": "/Game/Test/Blueprints",
+      "Action": "CreateOrUpdate",
+      "ParentClass": "TestActorBase",
+      "DefaultProperties": {
+        "Config": {
+          "Entries": [
+            {
+              "Name": "BadEntry",
+              "MissingValue": 100.0
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
