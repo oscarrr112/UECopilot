@@ -497,12 +497,12 @@ namespace
 		{
 			if (!bIsComposite)
 			{
-				return FString::Printf(TEXT("%s: Only composite nodes can define Children"), *NodePath);
+				return FString::Printf(TEXT("%s: Non-composite node '%s' cannot have 'Children'"), *NodePath, *NodeName);
 			}
 
 			if (ChildrenArray->Num() == 0)
 			{
-				return FString::Printf(TEXT("%s: Composite nodes must define at least one child"), *NodePath);
+				return FString::Printf(TEXT("%s: Composite node '%s' must have at least one child"), *NodePath, *NodeName);
 			}
 		}
 		else if (bIsComposite)
