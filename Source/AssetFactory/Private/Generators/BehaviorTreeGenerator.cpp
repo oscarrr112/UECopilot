@@ -107,6 +107,57 @@ namespace
 		return OutKeys;
 	}
 
+	template<typename NodeType>
+	NodeType* CreateBTAttachmentNode(
+		const TCHAR* AttachmentKind,
+		TSharedPtr<FJsonObject> AttachmentJson,
+		TFunctionRef<UClass*(const FString&)> ResolveNodeClass,
+		UBehaviorTree* OuterBT,
+		TArray<FString>& OutWarnings)
+	{
+		if (!AttachmentJson.IsValid() || !OuterBT)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment is invalid; skipped"), AttachmentKind));
+			return nullptr;
+		}
+
+		FString TypeName;
+		if (!AttachmentJson->TryGetStringField(TEXT("Type"), TypeName) || TypeName.IsEmpty())
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment is missing Type; skipped"), AttachmentKind));
+			return nullptr;
+		}
+
+		UClass* AttachmentClass = ResolveNodeClass(TypeName);
+		if (!AttachmentClass || !AttachmentClass->IsChildOf(NodeType::StaticClass()))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment class '%s' could not be resolved; skipped"), AttachmentKind, *TypeName));
+			return nullptr;
+		}
+
+		NodeType* Attachment = NewObject<NodeType>(OuterBT, AttachmentClass);
+		if (!Attachment)
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment '%s' could not be created; skipped"), AttachmentKind, *TypeName));
+			return nullptr;
+		}
+
+		const bool bHasPropertiesField = AttachmentJson->Values.Contains(TEXT("Properties"));
+		const TSharedPtr<FJsonObject> PropsJson = AttachmentJson->HasTypedField<EJson::Object>(TEXT("Properties"))
+			? AttachmentJson->GetObjectField(TEXT("Properties"))
+			: nullptr;
+		if (bHasPropertiesField && !PropsJson.IsValid())
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment '%s': Properties must be an object"), AttachmentKind, *TypeName));
+		}
+		else if (PropsJson.IsValid() && !FPropertySetterUtils::SetPropertiesFromJson(Attachment, PropsJson))
+		{
+			OutWarnings.Add(FString::Printf(TEXT("%s attachment '%s': failed to apply Properties"), AttachmentKind, *TypeName));
+		}
+
+		return Attachment;
+	}
+
 	TOptional<FString> ValidateNodeStructure(
 		const TFunction<UClass*(const FString&)>& ResolveNodeClass,
 		TSharedPtr<FJsonObject> NodeJson,
@@ -412,12 +463,18 @@ UBlackboardData* FBehaviorTreeGenerator::ResolveBlackboard(TSharedPtr<FJsonObjec
 
 UBTNode* FBehaviorTreeGenerator::BuildNode(TSharedPtr<FJsonObject> NodeJson, UBehaviorTree* OuterBT, UBTCompositeNode* Parent, TArray<FString>& OutWarnings)
 {
-	// Parent will be consumed by upcoming decorator/service attachment tasks.
-	(void)Parent;
-
 	if (!NodeJson.IsValid() || !OuterBT)
 	{
 		return nullptr;
+	}
+
+	if (!Parent)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
+		if (NodeJson->TryGetArrayField(TEXT("Decorators"), RootDecorators) && RootDecorators && RootDecorators->Num() > 0)
+		{
+			OutWarnings.Add(TEXT("Root node decorators are not supported by UE BT model; ignored"));
+		}
 	}
 
 	FString NodeName;
@@ -461,6 +518,12 @@ UBTNode* FBehaviorTreeGenerator::BuildNode(TSharedPtr<FJsonObject> NodeJson, UBe
 
 	if (UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node))
 	{
+		const TArray<TSharedPtr<FJsonValue>>* ServicesArray = nullptr;
+		if (NodeJson->TryGetArrayField(TEXT("Services"), ServicesArray))
+		{
+			AttachServices(Composite, ServicesArray, OuterBT, OutWarnings);
+		}
+
 		const TArray<TSharedPtr<FJsonValue>>* ChildrenArray = nullptr;
 		if (NodeJson->TryGetArrayField(TEXT("Children"), ChildrenArray) && ChildrenArray)
 		{
@@ -487,6 +550,28 @@ UBTNode* FBehaviorTreeGenerator::BuildNode(TSharedPtr<FJsonObject> NodeJson, UBe
 					return nullptr;
 				}
 
+				const TArray<TSharedPtr<FJsonValue>>* DecoratorsArray = nullptr;
+				if (ChildJson->TryGetArrayField(TEXT("Decorators"), DecoratorsArray) && DecoratorsArray)
+				{
+					for (const TSharedPtr<FJsonValue>& DecoratorValue : *DecoratorsArray)
+					{
+						const TSharedPtr<FJsonObject> DecoratorJson = DecoratorValue.IsValid() ? DecoratorValue->AsObject() : nullptr;
+						UBTDecorator* Decorator = CreateBTAttachmentNode<UBTDecorator>(
+							TEXT("Decorator"),
+							DecoratorJson,
+							[this](const FString& TypeName) -> UClass*
+							{
+								return ResolveNodeClass(TypeName);
+							},
+							OuterBT,
+							OutWarnings);
+						if (Decorator)
+						{
+							NewChild.Decorators.Add(Decorator);
+						}
+					}
+				}
+
 				Composite->Children.Add(NewChild);
 			}
 		}
@@ -497,18 +582,72 @@ UBTNode* FBehaviorTreeGenerator::BuildNode(TSharedPtr<FJsonObject> NodeJson, UBe
 
 void FBehaviorTreeGenerator::AttachDecorators(UBTNode* Target, const TArray<TSharedPtr<FJsonValue>>* DecoArray, UBehaviorTree* OuterBT, TArray<FString>& OutWarnings)
 {
-	(void)Target;
-	(void)DecoArray;
-	(void)OuterBT;
-	(void)OutWarnings;
+	if (!Target || !DecoArray || !OuterBT)
+	{
+		return;
+	}
+
+	UBTCompositeNode* ParentNode = Target->GetParentNode();
+	if (!ParentNode)
+	{
+		OutWarnings.Add(FString::Printf(TEXT("Decorators for node '%s' could not be attached because the node has no parent composite"), *Target->GetName()));
+		return;
+	}
+
+	for (FBTCompositeChild& Child : ParentNode->Children)
+	{
+		if (Child.ChildComposite != Target && Child.ChildTask != Target)
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& DecoratorValue : *DecoArray)
+		{
+			const TSharedPtr<FJsonObject> DecoratorJson = DecoratorValue.IsValid() ? DecoratorValue->AsObject() : nullptr;
+			UBTDecorator* Decorator = CreateBTAttachmentNode<UBTDecorator>(
+				TEXT("Decorator"),
+				DecoratorJson,
+				[this](const FString& TypeName) -> UClass*
+				{
+					return ResolveNodeClass(TypeName);
+				},
+				OuterBT,
+				OutWarnings);
+			if (Decorator)
+			{
+				Child.Decorators.Add(Decorator);
+			}
+		}
+		return;
+	}
+
+	OutWarnings.Add(FString::Printf(TEXT("Decorators for node '%s' could not be attached because the parent link was not found"), *Target->GetName()));
 }
 
 void FBehaviorTreeGenerator::AttachServices(UBTCompositeNode* Composite, const TArray<TSharedPtr<FJsonValue>>* SvcArray, UBehaviorTree* OuterBT, TArray<FString>& OutWarnings)
 {
-	(void)Composite;
-	(void)SvcArray;
-	(void)OuterBT;
-	(void)OutWarnings;
+	if (!Composite || !SvcArray || !OuterBT)
+	{
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& ServiceValue : *SvcArray)
+	{
+		const TSharedPtr<FJsonObject> ServiceJson = ServiceValue.IsValid() ? ServiceValue->AsObject() : nullptr;
+		UBTService* Service = CreateBTAttachmentNode<UBTService>(
+			TEXT("Service"),
+			ServiceJson,
+			[this](const FString& TypeName) -> UClass*
+			{
+				return ResolveNodeClass(TypeName);
+			},
+			OuterBT,
+			OutWarnings);
+		if (Service)
+		{
+			Composite->Services.Add(Service);
+		}
+	}
 }
 
 void FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
