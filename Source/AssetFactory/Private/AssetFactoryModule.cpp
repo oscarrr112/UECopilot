@@ -23,6 +23,7 @@
 #include "Generators/WidgetBlueprintGenerator.h"
 #include "Generators/MaterialGenerator.h"
 #include "Generators/DataTableGenerator.h"
+#include "Generators/BlackboardDataGenerator.h"
 #include "Generators/GameplayTagGenerator.h"
 
 #define LOCTEXT_NAMESPACE "FAssetFactoryModule"
@@ -62,6 +63,7 @@ void FAssetFactoryModule::RegisterGenerators()
 	FAssetGeneratorRegistry& Registry = FAssetGeneratorRegistry::Get();
 
 	// Register all built-in generators
+	Registry.RegisterGenerator(MakeShared<FBlackboardDataGenerator>());
 	Registry.RegisterGenerator(MakeShared<FGameplayTagGenerator>());  // Highest priority: tags must exist before other assets
 	Registry.RegisterGenerator(MakeShared<FMaterialGenerator>());  // Before widgets that use materials
 	Registry.RegisterGenerator(MakeShared<FDataAssetGenerator>());

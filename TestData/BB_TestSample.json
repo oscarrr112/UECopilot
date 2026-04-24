@@ -1,0 +1,13 @@
+{
+  "AssetType": "BlackboardData",
+  "Name": "BB_TestSample",
+  "Path": "/Game/UECopilotTests/AI",
+  "Keys": [
+    { "Name": "TargetActor", "Type": "Object", "BaseClass": "/Script/Engine.Actor" },
+    { "Name": "HasTarget", "Type": "Bool", "bInstanceSynced": true },
+    { "Name": "MoveLocation", "Type": "Vector" },
+    { "Name": "TargetTag", "Type": "Name" },
+    { "Name": "Score", "Type": "Int" },
+    { "Name": "Speed", "Type": "Float" }
+  ]
+}
