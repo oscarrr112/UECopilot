@@ -3,6 +3,7 @@
 #include "Generators/BehaviorTreeGenerator.h"
 
 #include "AssetFactoryModule.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BehaviorTree/BTCompositeNode.h"
 #include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTNode.h"
@@ -11,8 +12,10 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "Generators/BlackboardDataGenerator.h"
+#include "Misc/PackageName.h"
 #include "Utils/ClassFinderUtils.h"
 #include "Utils/PropertySetterUtils.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -341,10 +344,114 @@ FGenerationResult FBehaviorTreeGenerator::Generate(
 	EGenerationAction Action,
 	TSharedPtr<FJsonObject> Config)
 {
-	(void)Action;
-	(void)Config;
+	if (!Config.IsValid())
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Invalid configuration object"));
+	}
 
-	return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Not implemented yet"));
+	const bool bExists = DoesAssetExist(Path, Name);
+	if (Action == EGenerationAction::Create && bExists)
+	{
+		return FGenerationResult::MakeSkipped(GetAssetType(), Name, Path, TEXT("Asset already exists"));
+	}
+
+	if (Action == EGenerationAction::Update && !bExists)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Asset does not exist for update"));
+	}
+
+	UBlackboardData* Blackboard = ResolveBlackboard(Config, Name, Path);
+	if (!Blackboard)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to resolve Blackboard"));
+	}
+
+	UBehaviorTree* BehaviorTree = nullptr;
+	UPackage* Package = nullptr;
+	if (bExists)
+	{
+		BehaviorTree = Cast<UBehaviorTree>(LoadExistingAsset(Path, Name));
+		if (!BehaviorTree)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load BT for update"));
+		}
+
+		Package = BehaviorTree->GetOutermost();
+	}
+	else
+	{
+		FString FullPath = Path / Name;
+		if (!FullPath.StartsWith(TEXT("/")))
+		{
+			FullPath = TEXT("/") + FullPath;
+		}
+
+		Package = CreatePackage(*FullPath);
+		if (!Package)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to create package"));
+		}
+
+		BehaviorTree = NewObject<UBehaviorTree>(Package, UBehaviorTree::StaticClass(), *Name, RF_Public | RF_Standalone);
+		if (!BehaviorTree)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to create behavior tree asset"));
+		}
+	}
+
+	TArray<FString> Warnings;
+	TSharedPtr<FJsonObject> RootJson = GetObjectField(Config, TEXT("Root"));
+	UBTNode* Root = BuildNode(RootJson, BehaviorTree, nullptr, Warnings);
+	if (!Root)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build root node"));
+	}
+
+	UBTCompositeNode* NewRootNode = Cast<UBTCompositeNode>(Root);
+	if (!NewRootNode)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Root node must be a Composite"));
+	}
+
+	BehaviorTree->Modify();
+	BehaviorTree->BlackboardAsset = Blackboard;
+	BehaviorTree->RootNode = NewRootNode;
+	BehaviorTree->RootDecorators.Reset();
+	BehaviorTree->RootDecoratorOps.Reset();
+#if WITH_EDITORONLY_DATA
+	BehaviorTree->BTGraph = nullptr;
+	BehaviorTree->LastEditedDocuments.Reset();
+#endif
+
+	if (!bExists)
+	{
+		FAssetRegistryModule::AssetCreated(BehaviorTree);
+	}
+
+	FinalizeBT(BehaviorTree);
+
+	if (!Package)
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to resolve behavior tree package"));
+	}
+
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	if (!UPackage::SavePackage(Package, BehaviorTree, *PackageFileName, SaveArgs))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to save behavior tree package"));
+	}
+
+	FGenerationResult Result = bExists
+		? FGenerationResult::MakeUpdated(GetAssetType(), Name, Path, BehaviorTree)
+		: FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, BehaviorTree);
+	if (Warnings.Num() > 0)
+	{
+		Result.Message += FString::Printf(TEXT(" | Warnings: %s"), *FString::Join(Warnings, TEXT("; ")));
+	}
+
+	return Result;
 }
 
 TOptional<FString> FBehaviorTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
@@ -693,7 +800,13 @@ void FBehaviorTreeGenerator::AttachServices(UBTCompositeNode* Composite, const T
 
 void FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
 {
-	(void)BT;
+	if (!BT)
+	{
+		return;
+	}
+
+	BT->PostEditChange();
+	BT->MarkPackageDirty();
 }
 
 TSharedPtr<FJsonObject> FBehaviorTreeGenerator::ExtractNode(const UBTNode* Node, bool bDiffOnly) const
