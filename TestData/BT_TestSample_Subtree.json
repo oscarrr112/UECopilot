@@ -1,0 +1,17 @@
+{
+  "AssetType": "BehaviorTree",
+  "Name": "BT_TestSample_Main",
+  "Path": "/Game/UECopilotTests/AI",
+  "Blackboard": "/Game/UECopilotTests/AI/BB_TestSample",
+  "Root": {
+    "Node": "BTComposite_Sequence",
+    "Children": [
+      {
+        "Node": "BTTask_RunBehavior",
+        "Properties": {
+          "BehaviorAsset": "/Game/UECopilotTests/AI/BT_TestSample"
+        }
+      }
+    ]
+  }
+}
