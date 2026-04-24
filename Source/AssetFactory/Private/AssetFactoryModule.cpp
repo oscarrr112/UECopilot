@@ -24,6 +24,7 @@
 #include "Generators/MaterialGenerator.h"
 #include "Generators/DataTableGenerator.h"
 #include "Generators/BlackboardDataGenerator.h"
+#include "Generators/BehaviorTreeGenerator.h"
 #include "Generators/GameplayTagGenerator.h"
 
 #define LOCTEXT_NAMESPACE "FAssetFactoryModule"
@@ -64,6 +65,7 @@ void FAssetFactoryModule::RegisterGenerators()
 
 	// Register all built-in generators
 	Registry.RegisterGenerator(MakeShared<FBlackboardDataGenerator>());
+	Registry.RegisterGenerator(MakeShared<FBehaviorTreeGenerator>());  // Priority 30: BT after BB
 	Registry.RegisterGenerator(MakeShared<FGameplayTagGenerator>());  // Highest priority: tags must exist before other assets
 	Registry.RegisterGenerator(MakeShared<FMaterialGenerator>());  // Before widgets that use materials
 	Registry.RegisterGenerator(MakeShared<FDataAssetGenerator>());
