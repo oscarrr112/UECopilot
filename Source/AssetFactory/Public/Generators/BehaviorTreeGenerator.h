@@ -55,4 +55,7 @@ private:
 
 	/** §6.3: discover FBlackboardKeySelector properties via reflection and cross-check against AllowedKeys. */
 	TOptional<FString> ValidateBBKeyReferences(TSharedPtr<FJsonObject> NodeJson, const TSet<FName>& AllowedKeys, int32& InOutFakeIndex) const;
+
+	/** §6.5: discover BehaviorTree object references via reflection and validate subtree blackboard compatibility. */
+	TOptional<FString> ValidateBTAssetReferences(TSharedPtr<FJsonObject> NodeJson, const UBlackboardData* ParentBlackboard, int32& InOutFakeIndex, bool bValidateBlackboardCompatibility = true) const;
 };

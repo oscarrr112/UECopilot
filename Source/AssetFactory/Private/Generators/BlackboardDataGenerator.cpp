@@ -4,18 +4,12 @@
 
 #include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Class.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Rotator.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_String.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonValue.h"
+#include "Misc/App.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/SavePackage.h"
@@ -376,13 +370,14 @@ TOptional<FString> FBlackboardDataGenerator::ValidateConfig(
 			return FString::Printf(TEXT("Keys[%d] ('%s') is missing a valid Type"), Index, *KeyName);
 		}
 
-		if (!ResolveKeyTypeClass(TypeName))
+		UClass* KeyTypeClass = ResolveKeyTypeClass(TypeName);
+		if (!KeyTypeClass)
 		{
 			return FString::Printf(TEXT("Keys[%d] ('%s') has unsupported Type '%s'"), Index, *KeyName, *TypeName);
 		}
 
-		if (TypeName.Equals(TEXT("Object"), ESearchCase::IgnoreCase) ||
-			TypeName.Equals(TEXT("Class"), ESearchCase::IgnoreCase))
+		if (KeyTypeClass->IsChildOf(UBlackboardKeyType_Object::StaticClass()) ||
+			KeyTypeClass->IsChildOf(UBlackboardKeyType_Class::StaticClass()))
 		{
 			FString BaseClassName;
 			if (!KeyObject->TryGetStringField(TEXT("BaseClass"), BaseClassName) || BaseClassName.IsEmpty())
@@ -396,7 +391,7 @@ TOptional<FString> FBlackboardDataGenerator::ValidateConfig(
 			}
 		}
 
-		if (TypeName.Equals(TEXT("Enum"), ESearchCase::IgnoreCase))
+		if (KeyTypeClass->IsChildOf(UBlackboardKeyType_Enum::StaticClass()))
 		{
 			FString EnumName;
 			if (!KeyObject->TryGetStringField(TEXT("EnumName"), EnumName) || EnumName.IsEmpty())
@@ -528,37 +523,79 @@ UClass* FBlackboardDataGenerator::ResolveKeyTypeClass(const FString& TypeName) c
 		return nullptr;
 	}
 
-	if (TypeName.Equals(TEXT("Bool"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Bool::StaticClass();
-	if (TypeName.Equals(TEXT("Int"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Int::StaticClass();
-	if (TypeName.Equals(TEXT("Float"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Float::StaticClass();
-	if (TypeName.Equals(TEXT("String"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_String::StaticClass();
-	if (TypeName.Equals(TEXT("Name"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Name::StaticClass();
-	if (TypeName.Equals(TEXT("Vector"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Vector::StaticClass();
-	if (TypeName.Equals(TEXT("Rotator"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Rotator::StaticClass();
-	if (TypeName.Equals(TEXT("Object"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Object::StaticClass();
-	if (TypeName.Equals(TEXT("Class"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Class::StaticClass();
-	if (TypeName.Equals(TEXT("Enum"), ESearchCase::IgnoreCase)) return UBlackboardKeyType_Enum::StaticClass();
+	const auto TryResolveClass = [](const FString& ClassPath) -> UClass*
+	{
+		if (ClassPath.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (UClass* FoundClass = FindObject<UClass>(nullptr, *ClassPath))
+		{
+			return FoundClass->IsChildOf(UBlackboardKeyType::StaticClass()) ? FoundClass : nullptr;
+		}
+
+		if (UClass* LoadedClass = StaticLoadClass(UBlackboardKeyType::StaticClass(), nullptr, *ClassPath))
+		{
+			return LoadedClass;
+		}
+
+		return nullptr;
+	};
+
+	if (TypeName.Contains(TEXT("/")) || TypeName.Contains(TEXT(".")))
+	{
+		return TryResolveClass(TypeName);
+	}
+
+	FString KeyTypeClassName = TypeName;
+	KeyTypeClassName.RemoveFromStart(TEXT("U"));
+	if (!KeyTypeClassName.StartsWith(TEXT("BlackboardKeyType_")))
+	{
+		KeyTypeClassName = TEXT("BlackboardKeyType_") + KeyTypeClassName;
+	}
+
+	const TArray<FString> ModulePaths = {
+		TEXT("/Script/AIModule"),
+		TEXT("/Script/AssetFactory"),
+		FString::Printf(TEXT("/Script/%s"), FApp::GetProjectName()),
+		TEXT("/Script/Engine")
+	};
+
+	for (const FString& ModulePath : ModulePaths)
+	{
+		if (UClass* FoundClass = TryResolveClass(FString::Printf(TEXT("%s.%s"), *ModulePath, *KeyTypeClassName)))
+		{
+			return FoundClass;
+		}
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Candidate = *It;
+		if (!Candidate || !Candidate->IsChildOf(UBlackboardKeyType::StaticClass()))
+		{
+			continue;
+		}
+
+		if (Candidate->GetName().Equals(KeyTypeClassName, ESearchCase::IgnoreCase))
+		{
+			return Candidate;
+		}
+	}
 
 	return nullptr;
 }
 
 FString FBlackboardDataGenerator::KeyTypeClassToName(const UClass* KeyTypeClass) const
 {
-	if (!KeyTypeClass)
+	if (!KeyTypeClass || !KeyTypeClass->IsChildOf(UBlackboardKeyType::StaticClass()))
 	{
 		return TEXT("");
 	}
 
-	if (KeyTypeClass == UBlackboardKeyType_Bool::StaticClass()) return TEXT("Bool");
-	if (KeyTypeClass == UBlackboardKeyType_Int::StaticClass()) return TEXT("Int");
-	if (KeyTypeClass == UBlackboardKeyType_Float::StaticClass()) return TEXT("Float");
-	if (KeyTypeClass == UBlackboardKeyType_String::StaticClass()) return TEXT("String");
-	if (KeyTypeClass == UBlackboardKeyType_Name::StaticClass()) return TEXT("Name");
-	if (KeyTypeClass == UBlackboardKeyType_Vector::StaticClass()) return TEXT("Vector");
-	if (KeyTypeClass == UBlackboardKeyType_Rotator::StaticClass()) return TEXT("Rotator");
-	if (KeyTypeClass == UBlackboardKeyType_Object::StaticClass()) return TEXT("Object");
-	if (KeyTypeClass == UBlackboardKeyType_Class::StaticClass()) return TEXT("Class");
-	if (KeyTypeClass == UBlackboardKeyType_Enum::StaticClass()) return TEXT("Enum");
-
-	return TEXT("");
+	FString ClassName = KeyTypeClass->GetName();
+	ClassName.RemoveFromStart(TEXT("U"));
+	ClassName.RemoveFromStart(TEXT("BlackboardKeyType_"));
+	return ClassName;
 }

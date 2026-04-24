@@ -21,9 +21,9 @@
 
 namespace
 {
-	FString NormalizeBlackboardPath(const FString& BlackboardPath)
+	FString NormalizeAssetObjectPath(const FString& AssetPath)
 	{
-		FString NormalizedPath = BlackboardPath;
+		FString NormalizedPath = AssetPath;
 		if (!NormalizedPath.Contains(TEXT(".")))
 		{
 			const FString AssetName = FPaths::GetBaseFilename(NormalizedPath);
@@ -36,6 +36,11 @@ namespace
 		return NormalizedPath;
 	}
 
+	FString NormalizeBlackboardPath(const FString& BlackboardPath)
+	{
+		return NormalizeAssetObjectPath(BlackboardPath);
+	}
+
 	UBlackboardData* LoadBlackboardDataFromPath(const FString& BlackboardPath)
 	{
 		if (BlackboardPath.IsEmpty())
@@ -44,6 +49,62 @@ namespace
 		}
 
 		return LoadObject<UBlackboardData>(nullptr, *NormalizeBlackboardPath(BlackboardPath));
+	}
+
+	UBehaviorTree* LoadBehaviorTreeFromPath(const FString& BehaviorTreePath)
+	{
+		if (BehaviorTreePath.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		return LoadObject<UBehaviorTree>(nullptr, *NormalizeAssetObjectPath(BehaviorTreePath));
+	}
+
+	bool IsBlackboardCompatibleWithSubtree(const UBlackboardData* ParentBlackboard, const UBlackboardData* ChildBlackboard)
+	{
+		if (!ChildBlackboard)
+		{
+			return true;
+		}
+
+		if (!ParentBlackboard)
+		{
+			return false;
+		}
+
+		for (const UBlackboardData* Current = ParentBlackboard; Current; Current = Current->Parent)
+		{
+			if (Current == ChildBlackboard || &Current->Keys == &ChildBlackboard->Keys)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> BuildInlineBlackboardValidationConfig(
+		TSharedPtr<FJsonObject> InlineBlackboard,
+		const FString& BTName,
+		const FString& BTPath)
+	{
+		TSharedPtr<FJsonObject> ValidationConfig = MakeShared<FJsonObject>(*InlineBlackboard);
+		ValidationConfig->SetStringField(TEXT("AssetType"), TEXT("BlackboardData"));
+
+		FString InlineName;
+		if (!ValidationConfig->TryGetStringField(TEXT("Name"), InlineName) || InlineName.IsEmpty())
+		{
+			ValidationConfig->SetStringField(TEXT("Name"), FString::Printf(TEXT("BB_%s"), *BTName));
+		}
+
+		FString InlinePath;
+		if (!ValidationConfig->TryGetStringField(TEXT("Path"), InlinePath) || InlinePath.IsEmpty())
+		{
+			ValidationConfig->SetStringField(TEXT("Path"), BTPath);
+		}
+
+		return ValidationConfig;
 	}
 
 	void CollectBlackboardKeysFromData(UBlackboardData* Blackboard, TSet<FName>& OutKeys)
@@ -671,6 +732,12 @@ FGenerationResult FBehaviorTreeGenerator::Generate(
 
 	TArray<FString> Warnings;
 	TSharedPtr<FJsonObject> RootJson = GetObjectField(Config, TEXT("Root"));
+	int32 BTAssetIdx = 0;
+	if (TOptional<FString> BTAssetError = ValidateBTAssetReferences(RootJson, Blackboard, BTAssetIdx, true))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, BTAssetError.GetValue());
+	}
+
 	UBTNode* Root = BuildNode(RootJson, BehaviorTree, nullptr, Warnings);
 	if (!Root)
 	{
@@ -746,6 +813,7 @@ TOptional<FString> FBehaviorTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		return FString(TEXT("Blackboard and BlackboardInline are mutually exclusive"));
 	}
 
+	UBlackboardData* ValidationBlackboard = nullptr;
 	if (bHasBlackboard)
 	{
 		FString BlackboardPath;
@@ -769,6 +837,30 @@ TOptional<FString> FBehaviorTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		{
 			return FString::Printf(TEXT("Blackboard asset could not be loaded: %s"), *BlackboardPath);
 		}
+		ValidationBlackboard = Blackboard;
+	}
+	else if (bHasBlackboardInline)
+	{
+		if (!Config->HasTypedField<EJson::Object>(TEXT("BlackboardInline")))
+		{
+			return FString(TEXT("BlackboardInline must be a JSON object"));
+		}
+
+		FString BTName;
+		Config->TryGetStringField(TEXT("Name"), BTName);
+		FString BTPath;
+		Config->TryGetStringField(TEXT("Path"), BTPath);
+
+		const TSharedPtr<FJsonObject> InlineBlackboard = Config->GetObjectField(TEXT("BlackboardInline"));
+		FBlackboardDataGenerator BlackboardGenerator;
+		if (TOptional<FString> InlineError = BlackboardGenerator.ValidateConfig(
+			BuildInlineBlackboardValidationConfig(InlineBlackboard, BTName, BTPath),
+			EGenerationAction::CreateOrUpdate);
+			InlineError.IsSet())
+		{
+			return FString::Printf(TEXT("BlackboardInline validation failed: %s"), *InlineError.GetValue());
+		}
+
 	}
 
 	TSharedPtr<FJsonObject> RootJson = GetObjectField(Config, TEXT("Root"));
@@ -796,6 +888,12 @@ TOptional<FString> FBehaviorTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject
 	if (TOptional<FString> BBKeyError = ValidateBBKeyReferences(RootJson, Allowed, Idx))
 	{
 		return BBKeyError;
+	}
+
+	int32 BTAssetIdx = 0;
+	if (TOptional<FString> BTAssetError = ValidateBTAssetReferences(RootJson, ValidationBlackboard, BTAssetIdx, !bHasBlackboardInline))
+	{
+		return BTAssetError;
 	}
 
 	return TOptional<FString>();
@@ -1249,6 +1347,171 @@ TOptional<FString> FBehaviorTreeGenerator::ValidateBBKeyReferences(TSharedPtr<FJ
 		{
 			const TSharedPtr<FJsonObject> ChildJson = Value.IsValid() ? Value->AsObject() : nullptr;
 			if (TOptional<FString> ChildError = ValidateBBKeyReferences(ChildJson, AllowedKeys, InOutFakeIndex); ChildError.IsSet())
+			{
+				return ChildError;
+			}
+		}
+	}
+
+	return TOptional<FString>();
+}
+
+TOptional<FString> FBehaviorTreeGenerator::ValidateBTAssetReferences(
+	TSharedPtr<FJsonObject> NodeJson,
+	const UBlackboardData* ParentBlackboard,
+	int32& InOutFakeIndex,
+	bool bValidateBlackboardCompatibility) const
+{
+	const int32 CurrentIndex = InOutFakeIndex++;
+
+	auto ValidateBehaviorTreeProperties = [&](TSharedPtr<FJsonObject> JsonObject, const FString& TypeFieldName, int32 ItemIndex) -> TOptional<FString>
+	{
+		if (!JsonObject.IsValid())
+		{
+			return TOptional<FString>();
+		}
+
+		FString ClassName;
+		if (!JsonObject->TryGetStringField(TypeFieldName, ClassName) || ClassName.IsEmpty())
+		{
+			return TOptional<FString>();
+		}
+
+		UClass* NodeClass = ResolveNodeClass(ClassName);
+		if (!NodeClass)
+		{
+			return TOptional<FString>();
+		}
+
+		for (TFieldIterator<FObjectPropertyBase> It(NodeClass, EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FObjectPropertyBase* ObjectProperty = *It;
+			if (!ObjectProperty ||
+				!ObjectProperty->PropertyClass ||
+				!ObjectProperty->PropertyClass->IsChildOf(UBehaviorTree::StaticClass()) ||
+				!ObjectProperty->HasAnyPropertyFlags(CPF_Edit))
+			{
+				continue;
+			}
+
+			const FString PropertyName = ObjectProperty->GetName();
+			const TSharedPtr<FJsonObject> Properties = GetObjectField(JsonObject, TEXT("Properties"));
+			UBehaviorTree* ChildBehaviorTree = nullptr;
+			FString BehaviorAssetPath;
+			if (Properties.IsValid() && Properties->Values.Contains(PropertyName))
+			{
+				if (!Properties->TryGetStringField(PropertyName, BehaviorAssetPath) || BehaviorAssetPath.IsEmpty())
+				{
+					return FString::Printf(
+						TEXT("BT asset reference error: node #%d (%s).%s must be a non-empty BehaviorTree asset path"),
+						ItemIndex,
+						*ClassName,
+						*PropertyName);
+				}
+
+				ChildBehaviorTree = LoadBehaviorTreeFromPath(BehaviorAssetPath);
+				if (!ChildBehaviorTree)
+				{
+					return FString::Printf(
+						TEXT("BT asset reference error: node #%d (%s).%s could not load BehaviorTree asset '%s'"),
+						ItemIndex,
+						*ClassName,
+						*PropertyName,
+						*BehaviorAssetPath);
+				}
+			}
+			else
+			{
+				const UObject* DefaultObject = NodeClass->GetDefaultObject();
+				ChildBehaviorTree = DefaultObject
+					? Cast<UBehaviorTree>(ObjectProperty->GetObjectPropertyValue_InContainer(DefaultObject))
+					: nullptr;
+
+				if (!ChildBehaviorTree)
+				{
+					return FString::Printf(
+						TEXT("BT asset reference error: node #%d (%s).%s must define a BehaviorTree asset path"),
+						ItemIndex,
+						*ClassName,
+						*PropertyName);
+				}
+
+				BehaviorAssetPath = ChildBehaviorTree->GetPathName();
+			}
+
+			if (bValidateBlackboardCompatibility && !IsBlackboardCompatibleWithSubtree(ParentBlackboard, ChildBehaviorTree->BlackboardAsset))
+			{
+				const FString ParentBlackboardName = ParentBlackboard ? ParentBlackboard->GetPathName() : TEXT("<none>");
+				const FString ChildBlackboardName = ChildBehaviorTree->BlackboardAsset ? ChildBehaviorTree->BlackboardAsset->GetPathName() : TEXT("<none>");
+				return FString::Printf(
+					TEXT("BT asset reference error: node #%d (%s).%s references BehaviorTree '%s' with incompatible blackboard '%s'; parent blackboard is '%s'"),
+					ItemIndex,
+					*ClassName,
+					*PropertyName,
+					*BehaviorAssetPath,
+					*ChildBlackboardName,
+					*ParentBlackboardName);
+			}
+		}
+
+		return TOptional<FString>();
+	};
+
+	if (!NodeJson.IsValid())
+	{
+		return FString::Printf(TEXT("Node #%d: Invalid node object"), CurrentIndex);
+	}
+
+	if (TOptional<FString> NodeError = ValidateBehaviorTreeProperties(NodeJson, TEXT("Node"), CurrentIndex); NodeError.IsSet())
+	{
+		return NodeError;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* DecoratorsArray = nullptr;
+	if (NodeJson->TryGetArrayField(TEXT("Decorators"), DecoratorsArray) && DecoratorsArray)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *DecoratorsArray)
+		{
+			const int32 DecoratorIndex = InOutFakeIndex++;
+			const TSharedPtr<FJsonObject> DecoratorJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!DecoratorJson.IsValid())
+			{
+				return FString::Printf(TEXT("Decorator #%d: Invalid decorator object"), DecoratorIndex);
+			}
+
+			if (TOptional<FString> DecoratorError = ValidateBehaviorTreeProperties(DecoratorJson, TEXT("Type"), DecoratorIndex); DecoratorError.IsSet())
+			{
+				return DecoratorError;
+			}
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ServicesArray = nullptr;
+	if (NodeJson->TryGetArrayField(TEXT("Services"), ServicesArray) && ServicesArray)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *ServicesArray)
+		{
+			const int32 ServiceIndex = InOutFakeIndex++;
+			const TSharedPtr<FJsonObject> ServiceJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (!ServiceJson.IsValid())
+			{
+				return FString::Printf(TEXT("Service #%d: Invalid service object"), ServiceIndex);
+			}
+
+			if (TOptional<FString> ServiceError = ValidateBehaviorTreeProperties(ServiceJson, TEXT("Type"), ServiceIndex); ServiceError.IsSet())
+			{
+				return ServiceError;
+			}
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ChildrenArray = nullptr;
+	if (NodeJson->TryGetArrayField(TEXT("Children"), ChildrenArray) && ChildrenArray)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *ChildrenArray)
+		{
+			const TSharedPtr<FJsonObject> ChildJson = Value.IsValid() ? Value->AsObject() : nullptr;
+			if (TOptional<FString> ChildError = ValidateBTAssetReferences(ChildJson, ParentBlackboard, InOutFakeIndex, bValidateBlackboardCompatibility); ChildError.IsSet())
 			{
 				return ChildError;
 			}
