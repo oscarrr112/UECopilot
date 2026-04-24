@@ -17,6 +17,7 @@
 #include "Utils/PropertySetterUtils.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UObjectIterator.h"
 
 namespace
 {
@@ -109,6 +110,201 @@ namespace
 		}
 
 		return OutKeys;
+	}
+
+	FString GetBTNodeClassExportName(const UBTNode* Node)
+	{
+		UClass* NodeClass = Node ? Node->GetClass() : nullptr;
+		if (!NodeClass)
+		{
+			return FString();
+		}
+
+		const FString ClassName = NodeClass->GetName();
+		int32 MatchingLoadedClasses = 0;
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* CandidateClass = *It;
+			if (CandidateClass && CandidateClass->IsChildOf(UBTNode::StaticClass()) && CandidateClass->GetName() == ClassName)
+			{
+				++MatchingLoadedClasses;
+				if (MatchingLoadedClasses > 1)
+				{
+					break;
+				}
+			}
+		}
+
+		return MatchingLoadedClasses > 1 ? NodeClass->GetPathName() : ClassName;
+	}
+
+	void BuildNodeIndexMap(const UBTNode* Node, int32& InOutIndex, TMap<const UBTNode*, int32>& OutNodeIndices)
+	{
+		if (!Node)
+		{
+			return;
+		}
+
+		OutNodeIndices.Add(Node, InOutIndex++);
+
+		const UBTCompositeNode* Composite = Cast<const UBTCompositeNode>(Node);
+		if (!Composite)
+		{
+			return;
+		}
+
+		for (const UBTService* Service : Composite->Services)
+		{
+			if (Service)
+			{
+				OutNodeIndices.Add(Service, InOutIndex++);
+			}
+		}
+
+		for (const FBTCompositeChild& Child : Composite->Children)
+		{
+			for (const UBTDecorator* Decorator : Child.Decorators)
+			{
+				if (Decorator)
+				{
+					OutNodeIndices.Add(Decorator, InOutIndex++);
+				}
+			}
+
+			const UBTNode* ChildNode = Child.ChildComposite
+				? Cast<const UBTNode>(Child.ChildComposite)
+				: Cast<const UBTNode>(Child.ChildTask);
+			BuildNodeIndexMap(ChildNode, InOutIndex, OutNodeIndices);
+		}
+	}
+
+	void AddExtractedBTProperties(TSharedPtr<FJsonObject> OutJson, const UBTNode* Node, bool bDiffOnly)
+	{
+		if (!OutJson.IsValid() || !Node)
+		{
+			return;
+		}
+
+		TSharedPtr<FJsonObject> Properties = FPropertySetterUtils::ExtractPropertiesToJson(const_cast<UBTNode*>(Node), true, bDiffOnly);
+		if (!Properties.IsValid())
+		{
+			return;
+		}
+
+		Properties->RemoveField(TEXT("NodeName"));
+		if (Properties->Values.Num() > 0)
+		{
+			OutJson->SetObjectField(TEXT("Properties"), Properties);
+		}
+	}
+
+	TSharedPtr<FJsonObject> ExtractAttachmentNodeToJson(
+		const UBTNode* Node,
+		bool bDiffOnly,
+		const TMap<const UBTNode*, int32>& NodeIndices)
+	{
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		TSharedPtr<FJsonObject> OutJson = MakeShared<FJsonObject>();
+		if (const int32* NodeIndex = NodeIndices.Find(Node))
+		{
+			OutJson->SetNumberField(TEXT("NodeIndex"), *NodeIndex);
+		}
+		OutJson->SetStringField(TEXT("Type"), GetBTNodeClassExportName(Node));
+		AddExtractedBTProperties(OutJson, Node, bDiffOnly);
+		return OutJson;
+	}
+
+	TSharedPtr<FJsonObject> ExtractBTNodeToJson(
+		const UBTNode* Node,
+		bool bDiffOnly,
+		const TMap<const UBTNode*, int32>& NodeIndices)
+	{
+		if (!Node)
+		{
+			return nullptr;
+		}
+
+		TSharedPtr<FJsonObject> OutJson = MakeShared<FJsonObject>();
+		if (const int32* NodeIndex = NodeIndices.Find(Node))
+		{
+			OutJson->SetNumberField(TEXT("NodeIndex"), *NodeIndex);
+		}
+		OutJson->SetStringField(TEXT("Node"), GetBTNodeClassExportName(Node));
+
+		if (!Node->NodeName.IsEmpty())
+		{
+			OutJson->SetStringField(TEXT("InstanceName"), Node->NodeName);
+		}
+
+		AddExtractedBTProperties(OutJson, Node, bDiffOnly);
+
+		const UBTCompositeNode* Composite = Cast<const UBTCompositeNode>(Node);
+		if (!Composite)
+		{
+			return OutJson;
+		}
+
+		if (Composite->Services.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Services;
+			for (const UBTService* Service : Composite->Services)
+			{
+				TSharedPtr<FJsonObject> ServiceJson = ExtractAttachmentNodeToJson(Service, bDiffOnly, NodeIndices);
+				if (ServiceJson.IsValid())
+				{
+					Services.Add(MakeShared<FJsonValueObject>(ServiceJson));
+				}
+			}
+
+			if (Services.Num() > 0)
+			{
+				OutJson->SetArrayField(TEXT("Services"), Services);
+			}
+		}
+
+		TArray<TSharedPtr<FJsonValue>> Children;
+		for (const FBTCompositeChild& Child : Composite->Children)
+		{
+			const UBTNode* ChildNode = Child.ChildComposite
+				? Cast<const UBTNode>(Child.ChildComposite)
+				: Cast<const UBTNode>(Child.ChildTask);
+			TSharedPtr<FJsonObject> ChildJson = ExtractBTNodeToJson(ChildNode, bDiffOnly, NodeIndices);
+			if (!ChildJson.IsValid())
+			{
+				continue;
+			}
+
+			if (Child.Decorators.Num() > 0)
+			{
+				TArray<TSharedPtr<FJsonValue>> Decorators;
+				for (const UBTDecorator* Decorator : Child.Decorators)
+				{
+					TSharedPtr<FJsonObject> DecoratorJson = ExtractAttachmentNodeToJson(Decorator, bDiffOnly, NodeIndices);
+					if (DecoratorJson.IsValid())
+					{
+						Decorators.Add(MakeShared<FJsonValueObject>(DecoratorJson));
+					}
+				}
+
+				if (Decorators.Num() > 0)
+				{
+					ChildJson->SetArrayField(TEXT("Decorators"), Decorators);
+				}
+			}
+
+			Children.Add(MakeShared<FJsonValueObject>(ChildJson));
+		}
+
+		if (Children.Num() > 0)
+		{
+			OutJson->SetArrayField(TEXT("Children"), Children);
+		}
+
+		return OutJson;
 	}
 
 	template<typename NodeType>
@@ -538,10 +734,33 @@ bool FBehaviorTreeGenerator::CanExtract(UObject* Asset) const
 
 TSharedPtr<FJsonObject> FBehaviorTreeGenerator::Extract(UObject* Asset, bool bDiffOnly) const
 {
-	(void)Asset;
-	(void)bDiffOnly;
+	UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Asset);
+	if (!BehaviorTree)
+	{
+		return nullptr;
+	}
 
-	return nullptr;
+	TSharedPtr<FJsonObject> OutJson = MakeShared<FJsonObject>();
+	OutJson->SetStringField(TEXT("AssetType"), TEXT("BehaviorTree"));
+	OutJson->SetStringField(TEXT("Name"), BehaviorTree->GetName());
+	if (UPackage* Package = BehaviorTree->GetOutermost())
+	{
+		OutJson->SetStringField(TEXT("Path"), FPackageName::GetLongPackagePath(Package->GetName()));
+	}
+	if (BehaviorTree->BlackboardAsset)
+	{
+		OutJson->SetStringField(TEXT("Blackboard"), BehaviorTree->BlackboardAsset->GetPathName());
+	}
+
+	if (BehaviorTree->RootNode)
+	{
+		TMap<const UBTNode*, int32> NodeIndices;
+		int32 NextNodeIndex = 0;
+		BuildNodeIndexMap(BehaviorTree->RootNode, NextNodeIndex, NodeIndices);
+		OutJson->SetObjectField(TEXT("Root"), ExtractBTNodeToJson(BehaviorTree->RootNode, bDiffOnly, NodeIndices));
+	}
+
+	return OutJson;
 }
 
 UClass* FBehaviorTreeGenerator::ResolveNodeClass(const FString& NodeName) const
@@ -811,10 +1030,15 @@ void FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
 
 TSharedPtr<FJsonObject> FBehaviorTreeGenerator::ExtractNode(const UBTNode* Node, bool bDiffOnly) const
 {
-	(void)Node;
-	(void)bDiffOnly;
+	if (!Node)
+	{
+		return nullptr;
+	}
 
-	return nullptr;
+	TMap<const UBTNode*, int32> NodeIndices;
+	int32 NextNodeIndex = 0;
+	BuildNodeIndexMap(Node, NextNodeIndex, NodeIndices);
+	return ExtractBTNodeToJson(Node, bDiffOnly, NodeIndices);
 }
 
 TOptional<FString> FBehaviorTreeGenerator::ValidateBBKeyReferences(TSharedPtr<FJsonObject> NodeJson, const TSet<FName>& AllowedKeys, int32& InOutFakeIndex) const
