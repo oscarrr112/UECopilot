@@ -178,6 +178,80 @@ namespace
 		}
 	}
 
+	void InitializeBTNodeForAsset(UBehaviorTree& TreeAsset, UBTCompositeNode* ParentNode, UBTNode* Node, uint8 TreeDepth, uint16& ExecutionIndex)
+	{
+		if (!Node)
+		{
+			return;
+		}
+
+		Node->InitializeNode(ParentNode, ExecutionIndex, 0, TreeDepth);
+		Node->InitializeFromAsset(TreeAsset);
+		ExecutionIndex++;
+
+		UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node);
+		if (!Composite)
+		{
+			return;
+		}
+
+		for (UBTService* Service : Composite->Services)
+		{
+			if (!Service)
+			{
+				continue;
+			}
+
+			Service->InitializeNode(Composite, ExecutionIndex, 0, TreeDepth);
+			Service->InitializeFromAsset(TreeAsset);
+			ExecutionIndex++;
+		}
+
+		for (int32 ChildIndex = 0; ChildIndex < Composite->Children.Num(); ++ChildIndex)
+		{
+			FBTCompositeChild& Child = Composite->Children[ChildIndex];
+			const uint8 ParentLinkIndex = IntCastChecked<uint8>(ChildIndex);
+
+			for (UBTDecorator* Decorator : Child.Decorators)
+			{
+				if (!Decorator)
+				{
+					continue;
+				}
+
+				Decorator->InitializeNode(Composite, ExecutionIndex, 0, TreeDepth);
+				Decorator->InitializeFromAsset(TreeAsset);
+				Decorator->InitializeParentLink(ParentLinkIndex);
+				Decorator->UpdateFlowAbortMode();
+				ExecutionIndex++;
+			}
+
+			UBTNode* ChildNode = Child.ChildComposite
+				? Cast<UBTNode>(Child.ChildComposite)
+				: Cast<UBTNode>(Child.ChildTask);
+
+			if (UBTTaskNode* ChildTask = Cast<UBTTaskNode>(ChildNode))
+			{
+				for (UBTService* Service : ChildTask->Services)
+				{
+					if (!Service)
+					{
+						continue;
+					}
+
+					Service->InitializeNode(Composite, ExecutionIndex, 0, TreeDepth);
+					Service->InitializeFromAsset(TreeAsset);
+					Service->InitializeParentLink(ParentLinkIndex);
+					ExecutionIndex++;
+				}
+			}
+
+			InitializeBTNodeForAsset(TreeAsset, Composite, ChildNode, TreeDepth + 1, ExecutionIndex);
+		}
+
+		Composite->InitializeComposite(ExecutionIndex - 1);
+	}
+
 	void AddExtractedBTProperties(TSharedPtr<FJsonObject> OutJson, const UBTNode* Node, bool bDiffOnly)
 	{
 		if (!OutJson.IsValid() || !Node)
@@ -1023,6 +1097,9 @@ void FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
 	{
 		return;
 	}
+
+	uint16 ExecutionIndex = 0;
+	InitializeBTNodeForAsset(*BT, nullptr, BT->RootNode, 0, ExecutionIndex);
 
 	BT->PostEditChange();
 	BT->MarkPackageDirty();
