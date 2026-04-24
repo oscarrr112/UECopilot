@@ -10,6 +10,7 @@
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
+#include "Generators/BlackboardDataGenerator.h"
 #include "Utils/ClassFinderUtils.h"
 #include "Utils/PropertySetterUtils.h"
 #include "UObject/UnrealType.h"
@@ -454,9 +455,49 @@ UClass* FBehaviorTreeGenerator::ResolveNodeClass(const FString& NodeName) const
 
 UBlackboardData* FBehaviorTreeGenerator::ResolveBlackboard(TSharedPtr<FJsonObject> Config, const FString& BTName, const FString& BTPath)
 {
-	(void)Config;
-	(void)BTName;
-	(void)BTPath;
+	if (!Config.IsValid())
+	{
+		return nullptr;
+	}
+
+	FString BBPath;
+	if (Config->TryGetStringField(TEXT("Blackboard"), BBPath) && !BBPath.IsEmpty())
+	{
+		return LoadBlackboardDataFromPath(BBPath);
+	}
+
+	if (Config->HasTypedField<EJson::Object>(TEXT("BlackboardInline")))
+	{
+		const TSharedPtr<FJsonObject> InlineConfig = Config->GetObjectField(TEXT("BlackboardInline"));
+		if (!InlineConfig.IsValid())
+		{
+			return nullptr;
+		}
+
+		FString InlineName;
+		InlineConfig->TryGetStringField(TEXT("Name"), InlineName);
+		if (InlineName.IsEmpty())
+		{
+			InlineName = FString::Printf(TEXT("BB_%s"), *BTName);
+		}
+
+		FString InlinePath;
+		InlineConfig->TryGetStringField(TEXT("Path"), InlinePath);
+		if (InlinePath.IsEmpty())
+		{
+			InlinePath = BTPath;
+		}
+
+		FBlackboardDataGenerator BlackboardGenerator;
+		const FGenerationResult Result = BlackboardGenerator.Generate(InlineName, InlinePath, EGenerationAction::CreateOrUpdate, InlineConfig);
+		if (!Result.IsSuccess())
+		{
+			UE_LOG(LogAssetFactory, Error, TEXT("Inline BB generation failed: %s"), *Result.Message);
+			return nullptr;
+		}
+
+		return Cast<UBlackboardData>(Result.GeneratedAsset);
+	}
 
 	return nullptr;
 }
