@@ -52,6 +52,13 @@ public:
 	TArray<FString> GetSupportedAssetTypes() const;
 
 	/**
+	 * Return BehaviorTree editor graph layout diagnostics as JSON.
+	 * Intended for Python/MCP validation paths that cannot read protected graph properties directly.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "AssetFactory|Diagnostics")
+	FString GetBehaviorTreeGraphLayoutDiagnostics(const FString& AssetPath) const;
+
+	/**
 	 * Extract asset configuration as JSON (reverse of Generate)
 	 * @param AssetPath - Full path to the asset (e.g., "/Game/Test/BP_MyActor")
 	 * @param bDiffOnly - If true, only extract values different from defaults

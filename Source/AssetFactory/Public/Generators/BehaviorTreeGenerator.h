@@ -48,7 +48,7 @@ private:
 	void AttachServices(UBTCompositeNode* Composite, const TArray<TSharedPtr<FJsonValue>>* SvcArray, UBehaviorTree* OuterBT, TArray<FString>& OutWarnings);
 
 	/** §8.1: ensure BT is editor-loadable. Implementation per Phase 0 research. */
-	void FinalizeBT(UBehaviorTree* BT);
+	bool FinalizeBT(UBehaviorTree* BT);
 
 	/** Recursive extract; passes accumulating NodeIndex if available. */
 	TSharedPtr<FJsonObject> ExtractNode(const UBTNode* Node, bool bDiffOnly) const;

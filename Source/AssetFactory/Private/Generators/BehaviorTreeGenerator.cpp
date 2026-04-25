@@ -11,6 +11,13 @@
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
+#if WITH_EDITORONLY_DATA
+#include "BehaviorTreeGraph.h"
+#include "BehaviorTreeGraphNode.h"
+#include "BehaviorTreeGraphNode_Root.h"
+#include "EdGraphSchema_BehaviorTree.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#endif
 #include "Generators/BlackboardDataGenerator.h"
 #include "Misc/PackageName.h"
 #include "Utils/ClassFinderUtils.h"
@@ -312,6 +319,418 @@ namespace
 
 		Composite->InitializeComposite(ExecutionIndex - 1);
 	}
+
+#if WITH_EDITORONLY_DATA
+	namespace BTEditorGraphLayout
+	{
+		constexpr int32 RootY = 0;
+		constexpr int32 FirstTreeNodeY = 180;
+		constexpr int32 VerticalSpacing = 220;
+		constexpr int32 HorizontalSpacing = 100;
+		constexpr int32 MinimumSubtreeWidth = 240;
+		constexpr int32 NodePadding = 32;
+		constexpr int32 BaseNodeWidth = 220;
+		constexpr int32 BaseNodeHeight = 90;
+		constexpr int32 RootNodeWidth = 180;
+		constexpr int32 RootNodeHeight = 80;
+		constexpr int32 SubNodeHeight = 42;
+		constexpr int32 MaxOverlapPasses = 8;
+
+		struct FEstimatedGraphNodeSize
+		{
+			float Width = BaseNodeWidth;
+			float Height = BaseNodeHeight;
+		};
+
+		struct FLayoutTreeNode
+		{
+			UBTNode* BTNode = nullptr;
+			UBehaviorTreeGraphNode* GraphNode = nullptr;
+			TArray<FLayoutTreeNode> Children;
+			FEstimatedGraphNodeSize Size;
+			float SubtreeWidth = MinimumSubtreeWidth;
+		};
+
+		struct FPlacedGraphNode
+		{
+			UBehaviorTreeGraphNode* GraphNode = nullptr;
+			FEstimatedGraphNodeSize Size;
+		};
+
+		FString GetBTNodeDisplayName(const UBTNode* Node)
+		{
+			if (!Node)
+			{
+				return FString();
+			}
+
+			if (!Node->NodeName.IsEmpty())
+			{
+				return Node->NodeName;
+			}
+
+			UClass* NodeClass = Node->GetClass();
+			return NodeClass ? NodeClass->GetName() : FString();
+		}
+
+		FEstimatedGraphNodeSize EstimatePrimaryGraphNodeSize(const UBehaviorTreeGraphNode* GraphNode)
+		{
+			FEstimatedGraphNodeSize Result;
+
+			const UBTNode* NodeInstance = GraphNode ? Cast<UBTNode>(GraphNode->NodeInstance) : nullptr;
+			const FString DisplayName = GetBTNodeDisplayName(NodeInstance);
+			const int32 TitleWidth = DisplayName.Len() * 8 + 80;
+			const int32 SubNodeCount = GraphNode ? GraphNode->Decorators.Num() + GraphNode->Services.Num() : 0;
+
+			Result.Width = static_cast<float>(FMath::Clamp(FMath::Max(BaseNodeWidth, TitleWidth), BaseNodeWidth, 520));
+			Result.Height = static_cast<float>(FMath::Clamp(BaseNodeHeight + SubNodeCount * SubNodeHeight, BaseNodeHeight, 640));
+			return Result;
+		}
+
+		FEstimatedGraphNodeSize EstimateRootGraphNodeSize()
+		{
+			FEstimatedGraphNodeSize Result;
+			Result.Width = RootNodeWidth;
+			Result.Height = RootNodeHeight;
+			return Result;
+		}
+
+		void RenameGraphOutOfAsset(UEdGraph* Graph)
+		{
+			if (!Graph)
+			{
+				return;
+			}
+
+			Graph->SetFlags(RF_Transient);
+			Graph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional);
+			Graph->MarkAsGarbage();
+		}
+
+		UBehaviorTreeGraphNode_Root* FindRootGraphNode(UBehaviorTreeGraph* Graph)
+		{
+			if (!Graph)
+			{
+				return nullptr;
+			}
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (UBehaviorTreeGraphNode_Root* RootGraphNode = Cast<UBehaviorTreeGraphNode_Root>(Node))
+				{
+					return RootGraphNode;
+				}
+			}
+
+			return nullptr;
+		}
+
+		void SyncRootGraphBlackboard(UBehaviorTree* BT, UBehaviorTreeGraph* Graph, UBlackboardData* DesiredBlackboard)
+		{
+			if (!BT || !Graph)
+			{
+				return;
+			}
+
+			if (UBehaviorTreeGraphNode_Root* RootGraphNode = FindRootGraphNode(Graph))
+			{
+				RootGraphNode->Modify();
+				RootGraphNode->BlackboardAsset = DesiredBlackboard;
+				RootGraphNode->UpdateBlackboard();
+			}
+
+			BT->BlackboardAsset = DesiredBlackboard;
+		}
+
+		void BuildGraphNodeMap(UBehaviorTreeGraph* Graph, TMap<UBTNode*, UBehaviorTreeGraphNode*>& OutGraphNodes)
+		{
+			OutGraphNodes.Reset();
+			if (!Graph)
+			{
+				return;
+			}
+
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				UBehaviorTreeGraphNode* BTGraphNode = Cast<UBehaviorTreeGraphNode>(Node);
+				UBTNode* BTNode = BTGraphNode ? Cast<UBTNode>(BTGraphNode->NodeInstance) : nullptr;
+				if (BTNode)
+				{
+					OutGraphNodes.Add(BTNode, BTGraphNode);
+				}
+			}
+		}
+
+		bool BuildLayoutTree(UBTNode* BTNode, const TMap<UBTNode*, UBehaviorTreeGraphNode*>& GraphNodes, FLayoutTreeNode& OutTree)
+		{
+			if (!BTNode)
+			{
+				UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: null runtime BT node"));
+				return false;
+			}
+
+			UBehaviorTreeGraphNode* const* GraphNodePtr = GraphNodes.Find(BTNode);
+			if (!GraphNodePtr || !*GraphNodePtr)
+			{
+				UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: missing graph node for runtime node '%s'"), *BTNode->GetPathName());
+				return false;
+			}
+
+			OutTree.BTNode = BTNode;
+			OutTree.GraphNode = *GraphNodePtr;
+			OutTree.Size = EstimatePrimaryGraphNodeSize(OutTree.GraphNode);
+			OutTree.Children.Reset();
+
+			if (UBTCompositeNode* Composite = Cast<UBTCompositeNode>(BTNode))
+			{
+				for (int32 ChildIndex = 0; ChildIndex < Composite->Children.Num(); ++ChildIndex)
+				{
+					UBTNode* ChildNode = Composite->GetChildNode(ChildIndex);
+					if (!ChildNode)
+					{
+						UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: composite '%s' has null child at index %d"), *Composite->GetPathName(), ChildIndex);
+						return false;
+					}
+
+					FLayoutTreeNode ChildTree;
+					if (!BuildLayoutTree(ChildNode, GraphNodes, ChildTree))
+					{
+						UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: could not build layout child %d for composite '%s'"), ChildIndex, *Composite->GetPathName());
+						return false;
+					}
+
+					OutTree.Children.Add(MoveTemp(ChildTree));
+				}
+			}
+
+			return true;
+		}
+
+		float ComputeChildrenWidth(const FLayoutTreeNode& Tree)
+		{
+			float ChildrenWidth = 0.0f;
+			for (int32 ChildIndex = 0; ChildIndex < Tree.Children.Num(); ++ChildIndex)
+			{
+				ChildrenWidth += Tree.Children[ChildIndex].SubtreeWidth;
+				if (ChildIndex > 0)
+				{
+					ChildrenWidth += HorizontalSpacing;
+				}
+			}
+
+			return ChildrenWidth;
+		}
+
+		float ComputeSubtreeWidth(FLayoutTreeNode& Tree)
+		{
+			for (int32 ChildIndex = 0; ChildIndex < Tree.Children.Num(); ++ChildIndex)
+			{
+				ComputeSubtreeWidth(Tree.Children[ChildIndex]);
+			}
+
+			const float ChildrenWidth = ComputeChildrenWidth(Tree);
+			const float OwnWidth = FMath::Max(static_cast<float>(MinimumSubtreeWidth), Tree.Size.Width + NodePadding);
+			Tree.SubtreeWidth = Tree.Children.Num() > 0 ? FMath::Max(OwnWidth, ChildrenWidth) : OwnWidth;
+			return Tree.SubtreeWidth;
+		}
+
+		void PositionLayoutTree(FLayoutTreeNode& Tree, float CenterX, float PosY, TArray<FPlacedGraphNode>& OutPlacedNodes)
+		{
+			if (Tree.GraphNode)
+			{
+				Tree.GraphNode->Modify();
+				Tree.GraphNode->NodePosX = FMath::RoundToInt(CenterX - Tree.Size.Width * 0.5f);
+				Tree.GraphNode->NodePosY = FMath::RoundToInt(PosY);
+
+				FPlacedGraphNode Placement;
+				Placement.GraphNode = Tree.GraphNode;
+				Placement.Size = Tree.Size;
+				OutPlacedNodes.Add(Placement);
+			}
+
+			const float ChildrenWidth = ComputeChildrenWidth(Tree);
+			float ChildLeft = CenterX - ChildrenWidth * 0.5f;
+			for (FLayoutTreeNode& Child : Tree.Children)
+			{
+				const float ChildCenterX = ChildLeft + Child.SubtreeWidth * 0.5f;
+				PositionLayoutTree(Child, ChildCenterX, PosY + VerticalSpacing, OutPlacedNodes);
+				ChildLeft += Child.SubtreeWidth + HorizontalSpacing;
+			}
+		}
+
+		bool DoPlacedNodesOverlap(const FPlacedGraphNode& A, const FPlacedGraphNode& B, float Padding)
+		{
+			if (!A.GraphNode || !B.GraphNode || A.GraphNode == B.GraphNode)
+			{
+				return false;
+			}
+
+			const float ALeft = static_cast<float>(A.GraphNode->NodePosX);
+			const float ATop = static_cast<float>(A.GraphNode->NodePosY);
+			const float BLeft = static_cast<float>(B.GraphNode->NodePosX);
+			const float BTop = static_cast<float>(B.GraphNode->NodePosY);
+
+			return !(ALeft + A.Size.Width + Padding <= BLeft ||
+				BLeft + B.Size.Width + Padding <= ALeft ||
+				ATop + A.Size.Height + Padding <= BTop ||
+				BTop + B.Size.Height + Padding <= ATop);
+		}
+
+		void ResolveOverlaps(TArray<FPlacedGraphNode>& PlacedNodes)
+		{
+			PlacedNodes.Sort([](const FPlacedGraphNode& A, const FPlacedGraphNode& B)
+			{
+				const int32 AY = A.GraphNode ? A.GraphNode->NodePosY : 0;
+				const int32 BY = B.GraphNode ? B.GraphNode->NodePosY : 0;
+				if (AY == BY)
+				{
+					const int32 AX = A.GraphNode ? A.GraphNode->NodePosX : 0;
+					const int32 BX = B.GraphNode ? B.GraphNode->NodePosX : 0;
+					return AX < BX;
+				}
+				return AY < BY;
+			});
+
+			for (int32 Pass = 0; Pass < MaxOverlapPasses; ++Pass)
+			{
+				bool bMovedAny = false;
+				for (int32 Index = 0; Index < PlacedNodes.Num(); ++Index)
+				{
+					FPlacedGraphNode& Current = PlacedNodes[Index];
+					if (!Current.GraphNode)
+					{
+						continue;
+					}
+
+					for (int32 PreviousIndex = 0; PreviousIndex < Index; ++PreviousIndex)
+					{
+						const FPlacedGraphNode& Previous = PlacedNodes[PreviousIndex];
+						if (!Previous.GraphNode || !DoPlacedNodesOverlap(Previous, Current, NodePadding))
+						{
+							continue;
+						}
+
+						const int32 NewY = FMath::RoundToInt(static_cast<float>(Previous.GraphNode->NodePosY) + Previous.Size.Height + NodePadding);
+						if (NewY > Current.GraphNode->NodePosY)
+						{
+							Current.GraphNode->Modify();
+							Current.GraphNode->NodePosY = NewY;
+							bMovedAny = true;
+						}
+					}
+				}
+
+				if (!bMovedAny)
+				{
+					break;
+				}
+			}
+		}
+
+		bool LayoutBehaviorTreeGraph(UBehaviorTree* BT, UBehaviorTreeGraph* Graph)
+		{
+			if (!BT || !BT->RootNode || !Graph)
+			{
+				UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: invalid behavior tree or graph"));
+				return false;
+			}
+
+			TMap<UBTNode*, UBehaviorTreeGraphNode*> GraphNodesByInstance;
+			BuildGraphNodeMap(Graph, GraphNodesByInstance);
+
+			FLayoutTreeNode LayoutRoot;
+			if (!BuildLayoutTree(BT->RootNode, GraphNodesByInstance, LayoutRoot))
+			{
+				return false;
+			}
+
+			ComputeSubtreeWidth(LayoutRoot);
+
+			TArray<FPlacedGraphNode> PlacedNodes;
+			UBehaviorTreeGraphNode_Root* RootGraphNode = FindRootGraphNode(Graph);
+			if (!RootGraphNode)
+			{
+				UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree graph layout failed: missing root graph node for '%s'"), *BT->GetPathName());
+				return false;
+			}
+
+			{
+				const FEstimatedGraphNodeSize RootSize = EstimateRootGraphNodeSize();
+				RootGraphNode->Modify();
+				RootGraphNode->NodePosX = FMath::RoundToInt(-RootSize.Width * 0.5f);
+				RootGraphNode->NodePosY = RootY;
+
+				FPlacedGraphNode RootPlacement;
+				RootPlacement.GraphNode = RootGraphNode;
+				RootPlacement.Size = RootSize;
+				PlacedNodes.Add(RootPlacement);
+			}
+
+			PositionLayoutTree(LayoutRoot, 0.0f, FirstTreeNodeY, PlacedNodes);
+			ResolveOverlaps(PlacedNodes);
+			return true;
+		}
+
+		UBehaviorTreeGraph* RebuildEditorGraph(UBehaviorTree* BT)
+		{
+			if (!BT)
+			{
+				return nullptr;
+			}
+
+			UEdGraph* PreviousGraph = BT->BTGraph;
+			UBlackboardData* DesiredBlackboard = BT->BlackboardAsset;
+			const FName TemporaryGraphName = MakeUniqueObjectName(BT, UBehaviorTreeGraph::StaticClass(), TEXT("Behavior Tree Rebuild"));
+			UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+				BT,
+				TemporaryGraphName,
+				UBehaviorTreeGraph::StaticClass(),
+				UEdGraphSchema_BehaviorTree::StaticClass());
+
+			UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(NewGraph);
+			if (!Graph)
+			{
+				BT->BTGraph = PreviousGraph;
+				BT->BlackboardAsset = DesiredBlackboard;
+				return nullptr;
+			}
+
+			BT->BTGraph = Graph;
+			Graph->LockUpdates();
+			if (const UEdGraphSchema* Schema = Graph->GetSchema())
+			{
+				Schema->CreateDefaultNodesForGraph(*Graph);
+			}
+			SyncRootGraphBlackboard(BT, Graph, DesiredBlackboard);
+			Graph->OnCreated();
+			Graph->Initialize();
+			Graph->UnlockUpdates();
+			SyncRootGraphBlackboard(BT, Graph, DesiredBlackboard);
+
+			if (!LayoutBehaviorTreeGraph(BT, Graph))
+			{
+				UE_LOG(LogAssetFactory, Error, TEXT("Failed to rebuild BehaviorTree editor graph layout for '%s'"), *BT->GetPathName());
+				RenameGraphOutOfAsset(Graph);
+				BT->BTGraph = PreviousGraph;
+				BT->BlackboardAsset = DesiredBlackboard;
+				return nullptr;
+			}
+
+			Graph->UpdateClassData();
+			SyncRootGraphBlackboard(BT, Graph, DesiredBlackboard);
+			Graph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
+			SyncRootGraphBlackboard(BT, Graph, DesiredBlackboard);
+
+			RenameGraphOutOfAsset(PreviousGraph);
+			Graph->Rename(TEXT("Behavior Tree"), BT, REN_DontCreateRedirectors | REN_NonTransactional);
+			BT->BTGraph = Graph;
+			Graph->NotifyGraphChanged();
+			Graph->MarkPackageDirty();
+
+			return Graph;
+		}
+	}
+#endif
 
 	void AddExtractedBTProperties(TSharedPtr<FJsonObject> OutJson, const UBTNode* Node, bool bDiffOnly)
 	{
@@ -756,7 +1175,6 @@ FGenerationResult FBehaviorTreeGenerator::Generate(
 	BehaviorTree->RootDecorators.Reset();
 	BehaviorTree->RootDecoratorOps.Reset();
 #if WITH_EDITORONLY_DATA
-	BehaviorTree->BTGraph = nullptr;
 	BehaviorTree->LastEditedDocuments.Reset();
 #endif
 
@@ -765,7 +1183,10 @@ FGenerationResult FBehaviorTreeGenerator::Generate(
 		FAssetRegistryModule::AssetCreated(BehaviorTree);
 	}
 
-	FinalizeBT(BehaviorTree);
+	if (!FinalizeBT(BehaviorTree))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to rebuild behavior tree editor graph"));
+	}
 
 	if (!Package)
 	{
@@ -1189,18 +1610,27 @@ void FBehaviorTreeGenerator::AttachServices(UBTCompositeNode* Composite, const T
 	}
 }
 
-void FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
+bool FBehaviorTreeGenerator::FinalizeBT(UBehaviorTree* BT)
 {
 	if (!BT)
 	{
-		return;
+		return false;
 	}
 
 	uint16 ExecutionIndex = 0;
 	InitializeBTNodeForAsset(*BT, nullptr, BT->RootNode, 0, ExecutionIndex);
 
+#if WITH_EDITORONLY_DATA
+	if (!BTEditorGraphLayout::RebuildEditorGraph(BT))
+	{
+		UE_LOG(LogAssetFactory, Error, TEXT("BehaviorTree finalization failed to rebuild editor graph for '%s'"), *BT->GetPathName());
+		return false;
+	}
+#endif
+
 	BT->PostEditChange();
 	BT->MarkPackageDirty();
+	return true;
 }
 
 TSharedPtr<FJsonObject> FBehaviorTreeGenerator::ExtractNode(const UBTNode* Node, bool bDiffOnly) const
