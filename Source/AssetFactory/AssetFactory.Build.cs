@@ -30,6 +30,8 @@ public class AssetFactory : ModuleRules
 			"DesktopPlatform",
 			"Kismet",
 			"BlueprintGraph",
+			"BehaviorTreeEditor",
+			"AIGraph",
 			"EditorSubsystem",
 			"AIModule",
 			"UMG",
