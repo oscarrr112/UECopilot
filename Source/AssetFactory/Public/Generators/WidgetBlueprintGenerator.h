@@ -128,10 +128,10 @@ public:
 protected:
 	//~ Widget Tree Building
 	/** Recursively build widget tree from JSON */
-	UWidget* BuildWidgetTree(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> WidgetNode, UPanelWidget* Parent, const FString& JsonPath);
+	UWidget* BuildWidgetTree(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> WidgetNode, UPanelWidget* Parent, const FString& JsonPath, FString* OutError = nullptr, TSet<FString>* OutWidgetLevelBindingTargets = nullptr);
 
 	/** Process per-widget updates (Add/Update/Remove) without rebuilding the whole tree */
-	void ProcessWidgetUpdates(UWidgetBlueprint* Blueprint, const TArray<TSharedPtr<FJsonValue>>* UpdatesArray);
+	bool ProcessWidgetUpdates(UWidgetBlueprint* Blueprint, const TArray<TSharedPtr<FJsonValue>>* UpdatesArray, FString& OutError, TSet<FString>* OutWidgetLevelBindingTargets = nullptr);
 
 	/** Remove a widget and its children from the widget tree */
 	void RemoveWidget(UWidgetBlueprint* Blueprint, UWidget* Widget);
@@ -177,7 +177,9 @@ protected:
 
 	//~ Property Bindings
 	/** Configure property bindings for a widget from JSON */
-	void ConfigureBindings(UWidgetBlueprint* Blueprint, UWidget* Widget, const FString& WidgetName, TSharedPtr<FJsonObject> BindingsConfig);
+	bool ConfigureBindings(UWidgetBlueprint* Blueprint, UWidget* Widget, const FString& WidgetName, TSharedPtr<FJsonObject> BindingsConfig, FString& OutError, TSet<FString>* OutWidgetLevelBindingTargets = nullptr);
+
+	bool ConfigureTopLevelBindings(UWidgetBlueprint* Blueprint, TSharedPtr<FJsonObject> TopLevelBindingsConfig, const TSet<FString>& WidgetLevelBindingTargets, FString& OutError);
 
 	//~ Class Default Properties
 	/** Apply class default properties to the Blueprint's CDO */
@@ -197,7 +199,7 @@ protected:
 
 	//~ Extract Helpers
 	/** Extract widget tree recursively */
-	TSharedPtr<FJsonObject> ExtractWidgetTree(UWidget* Widget) const;
+	TSharedPtr<FJsonObject> ExtractWidgetTree(UWidget* Widget, const TMap<FString, TSharedPtr<FJsonObject>>* BindingsByWidget = nullptr) const;
 
 	/** Extract slot configuration */
 	TSharedPtr<FJsonObject> ExtractSlotConfig(UPanelSlot* Slot) const;

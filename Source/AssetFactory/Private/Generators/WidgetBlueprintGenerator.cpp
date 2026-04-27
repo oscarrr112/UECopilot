@@ -8,8 +8,10 @@
 // Blueprint creation
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 
 // Widget Blueprint - only base classes needed
+#include "Binding/PropertyBinding.h"
 #include "WidgetBlueprint.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
@@ -31,9 +33,977 @@
 // Reflection and property helpers
 #include "UObject/UnrealType.h"
 #include "UObject/EnumProperty.h"
+#include "UObject/Field.h"
 
 // EdGraph for function validation
 #include "EdGraph/EdGraph.h"
+
+namespace
+{
+struct FWidgetBindingSpec
+{
+	FString WidgetName;
+	FName TargetProperty;
+	EBindingKind Kind = EBindingKind::Function;
+	FName FunctionName = NAME_None;
+	FName SourceProperty = NAME_None;
+	TArray<FString> SourcePathSegments;
+};
+
+static FString BindingTargetToString(const FString& WidgetName, FName TargetProperty)
+{
+	return FString::Printf(TEXT("%s.%s"), *WidgetName, *TargetProperty.ToString());
+}
+
+static FString BindingTargetKey(const FString& WidgetName, FName TargetProperty)
+{
+	return BindingTargetToString(WidgetName, TargetProperty).ToLower();
+}
+
+static bool ReadStringArrayField(TSharedPtr<FJsonObject> Object, const TCHAR* FieldName, TArray<FString>& OutValues)
+{
+	if (!Object.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+	if (!Object->TryGetArrayField(FieldName, ArrayValues) || !ArrayValues)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *ArrayValues)
+	{
+		FString Segment;
+		if (!Value.IsValid() || !Value->TryGetString(Segment) || Segment.IsEmpty())
+		{
+			return false;
+		}
+		OutValues.Add(Segment);
+	}
+	return OutValues.Num() > 0;
+}
+
+static bool ParseBindingKind(const FString& KindString, EBindingKind& OutKind)
+{
+	if (KindString.Equals(TEXT("Property"), ESearchCase::IgnoreCase))
+	{
+		OutKind = EBindingKind::Property;
+		return true;
+	}
+	if (KindString.Equals(TEXT("Function"), ESearchCase::IgnoreCase))
+	{
+		OutKind = EBindingKind::Function;
+		return true;
+	}
+	return false;
+}
+
+static bool ParseBindingSpec(
+	const FString& WidgetName,
+	const FString& PropertyName,
+	const TSharedPtr<FJsonValue>& BindingValue,
+	FWidgetBindingSpec& OutSpec,
+	FString& OutError)
+{
+	if (WidgetName.IsEmpty())
+	{
+		OutError = TEXT("Binding is missing widget name");
+		return false;
+	}
+
+	if (PropertyName.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Binding for widget '%s' is missing target property"), *WidgetName);
+		return false;
+	}
+
+	OutSpec = FWidgetBindingSpec();
+	OutSpec.WidgetName = WidgetName;
+	OutSpec.TargetProperty = FName(*PropertyName);
+	const FString BindingTarget = BindingTargetToString(OutSpec.WidgetName, OutSpec.TargetProperty);
+
+	FString SimpleFunctionName;
+	if (BindingValue.IsValid() && BindingValue->TryGetString(SimpleFunctionName))
+	{
+		if (SimpleFunctionName.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Binding '%s' has an empty function name"), *BindingTarget);
+			return false;
+		}
+		OutSpec.Kind = EBindingKind::Function;
+		OutSpec.FunctionName = FName(*SimpleFunctionName);
+		return true;
+	}
+
+	if (!BindingValue.IsValid() || BindingValue->Type != EJson::Object)
+	{
+		OutError = FString::Printf(TEXT("Binding '%s' must be a function string or object"), *BindingTarget);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> BindingObj = BindingValue->AsObject();
+	if (!BindingObj.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Binding '%s' must be a function string or object"), *BindingTarget);
+		return false;
+	}
+
+	bool bHasKind = false;
+	FString KindString;
+	if (BindingObj->TryGetStringField(TEXT("Kind"), KindString))
+	{
+		bHasKind = true;
+		if (!ParseBindingKind(KindString, OutSpec.Kind))
+		{
+			OutError = FString::Printf(TEXT("Binding '%s' has invalid Kind '%s'"), *BindingTarget, *KindString);
+			return false;
+		}
+	}
+
+	FString FunctionName;
+	if (BindingObj->TryGetStringField(TEXT("Function"), FunctionName))
+	{
+		if (FunctionName.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Binding '%s' has an empty function name"), *BindingTarget);
+			return false;
+		}
+		OutSpec.FunctionName = FName(*FunctionName);
+		if (!bHasKind)
+		{
+			OutSpec.Kind = EBindingKind::Function;
+		}
+	}
+
+	FString SourceProperty;
+	if (BindingObj->TryGetStringField(TEXT("Property"), SourceProperty))
+	{
+		if (SourceProperty.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Binding '%s' has an empty source property"), *BindingTarget);
+			return false;
+		}
+		OutSpec.SourceProperty = FName(*SourceProperty);
+		OutSpec.SourcePathSegments.Add(SourceProperty);
+		if (!bHasKind)
+		{
+			OutSpec.Kind = EBindingKind::Property;
+		}
+	}
+
+	TArray<FString> SourcePathSegments;
+	if (ReadStringArrayField(BindingObj, TEXT("SourcePath"), SourcePathSegments))
+	{
+		OutSpec.SourcePathSegments = SourcePathSegments;
+		if (OutSpec.SourcePathSegments.Num() == 1)
+		{
+			OutSpec.SourceProperty = FName(*OutSpec.SourcePathSegments[0]);
+		}
+		if (!bHasKind)
+		{
+			OutSpec.Kind = EBindingKind::Property;
+		}
+	}
+	else if (BindingObj->HasField(TEXT("SourcePath")))
+	{
+		OutError = FString::Printf(TEXT("Binding '%s' SourcePath must be a non-empty string array"), *BindingTarget);
+		return false;
+	}
+
+	if (OutSpec.Kind == EBindingKind::Function && OutSpec.FunctionName.IsNone())
+	{
+		if (OutSpec.SourcePathSegments.Num() > 0)
+		{
+			OutSpec.FunctionName = FName(*OutSpec.SourcePathSegments.Last());
+		}
+		else
+		{
+			OutError = FString::Printf(TEXT("Binding '%s' is a function binding but has no Function"), *BindingTarget);
+			return false;
+		}
+	}
+
+	if (OutSpec.Kind == EBindingKind::Property && OutSpec.SourceProperty.IsNone() && OutSpec.SourcePathSegments.Num() == 0)
+	{
+		OutError = FString::Printf(TEXT("Binding '%s' is a property binding but has no Property or SourcePath"), *BindingTarget);
+		return false;
+	}
+
+	return true;
+}
+
+static bool ParseTopLevelBindingKey(const FString& BindingTarget, FString& OutWidgetName, FString& OutPropertyName)
+{
+	int32 SeparatorIndex = INDEX_NONE;
+	if (!BindingTarget.FindLastChar(TEXT('.'), SeparatorIndex) || SeparatorIndex <= 0 || SeparatorIndex >= BindingTarget.Len() - 1)
+	{
+		return false;
+	}
+
+	OutWidgetName = BindingTarget.Left(SeparatorIndex);
+	OutPropertyName = BindingTarget.Mid(SeparatorIndex + 1);
+	return !OutWidgetName.IsEmpty() && !OutPropertyName.IsEmpty();
+}
+
+static FDelegateProperty* ResolveBindingDelegateProperty(UWidget* Widget, FName TargetProperty, bool& bOutIsPropertyDelegate)
+{
+	bOutIsPropertyDelegate = false;
+	if (!Widget || TargetProperty.IsNone())
+	{
+		return nullptr;
+	}
+
+	const FName PropertyDelegateName(*(TargetProperty.ToString() + TEXT("Delegate")));
+	if (FDelegateProperty* PropertyDelegate = FindFProperty<FDelegateProperty>(Widget->GetClass(), PropertyDelegateName))
+	{
+		bOutIsPropertyDelegate = true;
+		return PropertyDelegate;
+	}
+
+	return FindFProperty<FDelegateProperty>(Widget->GetClass(), TargetProperty);
+}
+
+static UClass* ResolveBindingSourceClass(UWidgetBlueprint* Blueprint)
+{
+	if (!Blueprint)
+	{
+		return nullptr;
+	}
+
+	if (Blueprint->ParentClass)
+	{
+		return Blueprint->ParentClass;
+	}
+	if (Blueprint->GeneratedClass)
+	{
+		return Blueprint->GeneratedClass;
+	}
+	return Blueprint->SkeletonGeneratedClass;
+}
+
+static FProperty* GetBindableReturnProperty(UFunction* Function)
+{
+	if (!Function || Function->NumParms != 1)
+	{
+		return nullptr;
+	}
+	return Function->GetReturnProperty();
+}
+
+static bool HasFunctionBinder(UFunction* Function, UFunction* DelegateSignature)
+{
+	FProperty* FunctionReturn = GetBindableReturnProperty(Function);
+	FProperty* DelegateReturn = GetBindableReturnProperty(DelegateSignature);
+	if (!FunctionReturn || !DelegateReturn)
+	{
+		return false;
+	}
+
+	TSubclassOf<UPropertyBinding> Binder = UWidget::FindBinderClassForDestination(DelegateReturn);
+	return Binder && Binder->GetDefaultObject<UPropertyBinding>()->IsSupportedSource(FunctionReturn);
+}
+
+static UEdGraph* FindFunctionGraph(UWidgetBlueprint* Blueprint, FName FunctionName)
+{
+	if (!Blueprint || FunctionName.IsNone())
+	{
+		return nullptr;
+	}
+
+	for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FunctionName)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+static UFunction* ResolveBindingFunction(UWidgetBlueprint* Blueprint, FName FunctionName, FGuid& OutMemberGuid)
+{
+	OutMemberGuid.Invalidate();
+	if (!Blueprint || FunctionName.IsNone())
+	{
+		return nullptr;
+	}
+
+	UClass* ClassesToCheck[] =
+	{
+		Blueprint->ParentClass,
+		Blueprint->SkeletonGeneratedClass,
+		Blueprint->GeneratedClass
+	};
+
+	for (UClass* ClassToCheck : ClassesToCheck)
+	{
+		if (!ClassToCheck)
+		{
+			continue;
+		}
+
+		if (UFunction* Function = ClassToCheck->FindFunctionByName(FunctionName, EIncludeSuperFlag::IncludeSuper))
+		{
+			if (UClass* OwnerClass = Function->GetOwnerClass())
+			{
+				UBlueprint::GetGuidFromClassByFieldName<UFunction>(OwnerClass, Function->GetFName(), OutMemberGuid);
+			}
+			return Function;
+		}
+	}
+
+	if (UEdGraph* Graph = FindFunctionGraph(Blueprint, FunctionName))
+	{
+		OutMemberGuid = Graph->GraphGuid;
+	}
+	return nullptr;
+}
+
+static UStruct* ResolveNextBindingContainer(FProperty* Property)
+{
+	if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		return ObjectProperty->PropertyClass;
+	}
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		return StructProperty->Struct;
+	}
+	return nullptr;
+}
+
+static void TrySetMemberGuid(FProperty* Property, FGuid& OutMemberGuid)
+{
+	OutMemberGuid.Invalidate();
+	if (Property)
+	{
+		if (UClass* OwnerClass = Property->GetOwnerClass())
+		{
+			UBlueprint::GetGuidFromClassByFieldName<FProperty>(OwnerClass, Property->GetFName(), OutMemberGuid);
+		}
+	}
+}
+
+static void TrySetMemberGuid(UFunction* Function, FGuid& OutMemberGuid)
+{
+	OutMemberGuid.Invalidate();
+	if (Function)
+	{
+		if (UClass* OwnerClass = Function->GetOwnerClass())
+		{
+			UBlueprint::GetGuidFromClassByFieldName<UFunction>(OwnerClass, Function->GetFName(), OutMemberGuid);
+		}
+	}
+}
+
+static bool ResolvePropertyBindingChain(
+	UClass* SourceClass,
+	const TArray<FString>& SourcePathSegments,
+	TArray<FFieldVariant>& OutChain,
+	FName& OutSourceProperty,
+	FGuid& OutMemberGuid,
+	FText& OutError)
+{
+	OutChain.Reset();
+	OutSourceProperty = NAME_None;
+	OutMemberGuid.Invalidate();
+
+	if (!SourceClass)
+	{
+		OutError = FText::FromString(TEXT("Unable to resolve binding source class"));
+		return false;
+	}
+	if (SourcePathSegments.Num() == 0)
+	{
+		OutError = FText::FromString(TEXT("Property binding SourcePath is empty"));
+		return false;
+	}
+
+	UStruct* CurrentStruct = SourceClass;
+	for (int32 SegmentIndex = 0; SegmentIndex < SourcePathSegments.Num(); ++SegmentIndex)
+	{
+		const FString& SegmentString = SourcePathSegments[SegmentIndex];
+		if (SegmentString.IsEmpty())
+		{
+			OutError = FText::FromString(FString::Printf(TEXT("SourcePath segment %d is empty"), SegmentIndex));
+			return false;
+		}
+
+		const FName SegmentName(*SegmentString);
+		const bool bHasRemainingSegments = SegmentIndex < SourcePathSegments.Num() - 1;
+
+		if (FProperty* Property = FindFProperty<FProperty>(CurrentStruct, SegmentName))
+		{
+			OutChain.Add(FFieldVariant(Property));
+			TrySetMemberGuid(Property, OutMemberGuid);
+
+			if (bHasRemainingSegments)
+			{
+				UStruct* NextStruct = ResolveNextBindingContainer(Property);
+				if (!NextStruct)
+				{
+					OutError = FText::FromString(FString::Printf(
+						TEXT("SourcePath segment '%s' on '%s' does not expose an object or struct for remaining path"),
+						*SegmentString,
+						*CurrentStruct->GetName()));
+					return false;
+				}
+				CurrentStruct = NextStruct;
+			}
+			else
+			{
+				OutSourceProperty = Property->GetFName();
+			}
+			continue;
+		}
+
+		UFunction* Function = nullptr;
+		if (UClass* CurrentClass = Cast<UClass>(CurrentStruct))
+		{
+			Function = CurrentClass->FindFunctionByName(SegmentName, EIncludeSuperFlag::IncludeSuper);
+		}
+
+		if (Function)
+		{
+			FProperty* ReturnProperty = GetBindableReturnProperty(Function);
+			if (!ReturnProperty)
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath function segment '%s' on '%s' must take no parameters and return one value"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+
+			if (!Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure))
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath function segment '%s' on '%s' must be const or BlueprintPure"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+
+			OutChain.Add(FFieldVariant(Function));
+			TrySetMemberGuid(Function, OutMemberGuid);
+
+			if (bHasRemainingSegments)
+			{
+				UStruct* NextStruct = ResolveNextBindingContainer(ReturnProperty);
+				if (!NextStruct)
+				{
+					OutError = FText::FromString(FString::Printf(
+						TEXT("SourcePath function segment '%s' on '%s' returns a value that cannot expose remaining path"),
+						*SegmentString,
+						*CurrentStruct->GetName()));
+					return false;
+				}
+				CurrentStruct = NextStruct;
+			}
+			continue;
+		}
+
+		OutError = FText::FromString(FString::Printf(
+			TEXT("SourcePath segment '%s' was not found on '%s'"),
+			*SegmentString,
+			*CurrentStruct->GetName()));
+		return false;
+	}
+
+	return true;
+}
+
+static bool ResolveFunctionBindingChain(
+	UClass* SourceClass,
+	const TArray<FString>& SourcePathSegments,
+	TArray<FFieldVariant>& OutChain,
+	UFunction*& OutFunction,
+	FGuid& OutMemberGuid,
+	FText& OutError)
+{
+	OutChain.Reset();
+	OutFunction = nullptr;
+	OutMemberGuid.Invalidate();
+
+	if (!SourceClass)
+	{
+		OutError = FText::FromString(TEXT("Unable to resolve binding source class"));
+		return false;
+	}
+	if (SourcePathSegments.Num() == 0)
+	{
+		OutError = FText::FromString(TEXT("Function binding SourcePath is empty"));
+		return false;
+	}
+
+	UStruct* CurrentStruct = SourceClass;
+	for (int32 SegmentIndex = 0; SegmentIndex < SourcePathSegments.Num(); ++SegmentIndex)
+	{
+		const FString& SegmentString = SourcePathSegments[SegmentIndex];
+		if (SegmentString.IsEmpty())
+		{
+			OutError = FText::FromString(FString::Printf(TEXT("SourcePath segment %d is empty"), SegmentIndex));
+			return false;
+		}
+
+		const FName SegmentName(*SegmentString);
+		const bool bIsLastSegment = SegmentIndex == SourcePathSegments.Num() - 1;
+
+		UFunction* Function = nullptr;
+		if (UClass* CurrentClass = Cast<UClass>(CurrentStruct))
+		{
+			Function = CurrentClass->FindFunctionByName(SegmentName, EIncludeSuperFlag::IncludeSuper);
+		}
+
+		if (Function)
+		{
+			FProperty* ReturnProperty = GetBindableReturnProperty(Function);
+			if (!ReturnProperty)
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath function segment '%s' on '%s' must take no parameters and return one value"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+
+			if (!Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure))
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath function segment '%s' on '%s' must be const or BlueprintPure"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+
+			OutChain.Add(FFieldVariant(Function));
+			TrySetMemberGuid(Function, OutMemberGuid);
+
+			if (bIsLastSegment)
+			{
+				OutFunction = Function;
+				return true;
+			}
+
+			UStruct* NextStruct = ResolveNextBindingContainer(ReturnProperty);
+			if (!NextStruct)
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath function segment '%s' on '%s' returns a value that cannot expose remaining path"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+			CurrentStruct = NextStruct;
+			continue;
+		}
+
+		FProperty* Property = FindFProperty<FProperty>(CurrentStruct, SegmentName);
+		if (Property)
+		{
+			if (bIsLastSegment)
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("Function binding SourcePath must end in a function, but '%s' on '%s' is a property"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+
+			OutChain.Add(FFieldVariant(Property));
+			TrySetMemberGuid(Property, OutMemberGuid);
+
+			UStruct* NextStruct = ResolveNextBindingContainer(Property);
+			if (!NextStruct)
+			{
+				OutError = FText::FromString(FString::Printf(
+					TEXT("SourcePath segment '%s' on '%s' does not expose an object or struct for remaining path"),
+					*SegmentString,
+					*CurrentStruct->GetName()));
+				return false;
+			}
+			CurrentStruct = NextStruct;
+			continue;
+		}
+
+		OutError = FText::FromString(FString::Printf(
+			TEXT("SourcePath segment '%s' was not found on '%s'"),
+			*SegmentString,
+			*CurrentStruct->GetName()));
+		return false;
+	}
+
+	return OutFunction != nullptr;
+}
+
+static bool BuildFunctionBinding(
+	UWidgetBlueprint* Blueprint,
+	UWidget* Widget,
+	const FWidgetBindingSpec& Spec,
+	FDelegateEditorBinding& OutBinding,
+	FText& OutError)
+{
+	bool bIsPropertyDelegate = false;
+	FDelegateProperty* DelegateProperty = ResolveBindingDelegateProperty(Widget, Spec.TargetProperty, bIsPropertyDelegate);
+	if (!DelegateProperty || !DelegateProperty->SignatureFunction)
+	{
+		OutError = FText::FromString(FString::Printf(
+			TEXT("Binding '%s' target does not expose a bindable delegate"),
+			*BindingTargetToString(Spec.WidgetName, Spec.TargetProperty)));
+		return false;
+	}
+
+	FGuid MemberGuid;
+	UFunction* Function = nullptr;
+	TArray<FFieldVariant> FunctionBindingChain;
+	if (Spec.SourcePathSegments.Num() > 0)
+	{
+		UClass* SourceClass = ResolveBindingSourceClass(Blueprint);
+		if (!ResolveFunctionBindingChain(SourceClass, Spec.SourcePathSegments, FunctionBindingChain, Function, MemberGuid, OutError))
+		{
+			return false;
+		}
+	}
+	else
+	{
+		Function = ResolveBindingFunction(Blueprint, Spec.FunctionName, MemberGuid);
+		if (Function)
+		{
+			FunctionBindingChain.Add(FFieldVariant(Function));
+		}
+	}
+
+	if (!Function)
+	{
+		const FString GraphOnlySuffix = MemberGuid.IsValid()
+			? TEXT(" Graph-only functions must be compiled before strict binding validation can create them.")
+			: TEXT("");
+		OutError = FText::FromString(FString::Printf(
+			TEXT("Binding '%s' function '%s' was not found in the generated, skeleton, or parent class hierarchy.%s"),
+			*BindingTargetToString(Spec.WidgetName, Spec.TargetProperty),
+			*Spec.FunctionName.ToString(),
+			*GraphOnlySuffix));
+		return false;
+	}
+
+	const auto IgnoredSignatureFlags = UFunction::GetDefaultIgnoredSignatureCompatibilityFlags() | CPF_ReturnParm;
+	const bool bSignatureCompatible = Function->IsSignatureCompatibleWith(DelegateProperty->SignatureFunction, IgnoredSignatureFlags);
+	const bool bHasPropertyPathBinder = HasFunctionBinder(Function, DelegateProperty->SignatureFunction);
+	if (!bSignatureCompatible && !bHasPropertyPathBinder)
+	{
+		OutError = FText::FromString(FString::Printf(
+			TEXT("Binding '%s' function '%s' signature is not compatible with delegate '%s'"),
+			*BindingTargetToString(Spec.WidgetName, Spec.TargetProperty),
+			*Spec.FunctionName.ToString(),
+			*DelegateProperty->GetName()));
+		return false;
+	}
+
+	if (bIsPropertyDelegate && !Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure))
+	{
+		OutError = FText::FromString(FString::Printf(
+			TEXT("Binding '%s' function '%s' must be const or BlueprintPure for property delegate binding"),
+			*BindingTargetToString(Spec.WidgetName, Spec.TargetProperty),
+			*Spec.FunctionName.ToString()));
+		return false;
+	}
+
+	OutBinding.ObjectName = Spec.WidgetName;
+	OutBinding.PropertyName = Spec.TargetProperty;
+	OutBinding.FunctionName = Function->GetFName();
+	OutBinding.SourcePath = FEditorPropertyPath(FunctionBindingChain);
+	OutBinding.MemberGuid = MemberGuid;
+	OutBinding.Kind = EBindingKind::Function;
+	return true;
+}
+
+static bool BuildPropertyBinding(
+	UWidgetBlueprint* Blueprint,
+	UWidget* Widget,
+	const FWidgetBindingSpec& Spec,
+	FDelegateEditorBinding& OutBinding,
+	FText& OutError)
+{
+	bool bIsPropertyDelegate = false;
+	FDelegateProperty* DelegateProperty = ResolveBindingDelegateProperty(Widget, Spec.TargetProperty, bIsPropertyDelegate);
+	if (!DelegateProperty || !DelegateProperty->SignatureFunction)
+	{
+		OutError = FText::FromString(FString::Printf(
+			TEXT("Binding '%s' target does not expose a bindable delegate"),
+			*BindingTargetToString(Spec.WidgetName, Spec.TargetProperty)));
+		return false;
+	}
+
+	UClass* SourceClass = ResolveBindingSourceClass(Blueprint);
+	TArray<FFieldVariant> BindingChain;
+	FName SourceProperty;
+	FGuid MemberGuid;
+	if (!ResolvePropertyBindingChain(SourceClass, Spec.SourcePathSegments, BindingChain, SourceProperty, MemberGuid, OutError))
+	{
+		return false;
+	}
+
+	FEditorPropertyPath SourcePath(BindingChain);
+	FText ValidationError;
+	if (!SourcePath.Validate(DelegateProperty, ValidationError))
+	{
+		OutError = ValidationError;
+		return false;
+	}
+
+	OutBinding.ObjectName = Spec.WidgetName;
+	OutBinding.PropertyName = Spec.TargetProperty;
+	OutBinding.SourceProperty = SourceProperty;
+	OutBinding.SourcePath = SourcePath;
+	OutBinding.MemberGuid = MemberGuid;
+	OutBinding.Kind = EBindingKind::Property;
+	return true;
+}
+
+static TArray<FString> ExtractSourcePathSegments(const FDelegateEditorBinding& Binding)
+{
+	TArray<FString> Segments;
+	for (const auto& Segment : Binding.SourcePath.Segments)
+	{
+		const FName MemberName = Segment.GetMemberName();
+		if (!MemberName.IsNone())
+		{
+			Segments.Add(MemberName.ToString());
+		}
+	}
+	return Segments;
+}
+
+static TSharedPtr<FJsonObject> BindingToJsonObject(const FDelegateEditorBinding& Binding)
+{
+	TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
+
+	if (Binding.Kind == EBindingKind::Function)
+	{
+		FName FunctionName = Binding.FunctionName;
+		if (FunctionName.IsNone())
+		{
+			const TArray<FString> SourcePathSegments = ExtractSourcePathSegments(Binding);
+			if (SourcePathSegments.Num() > 0)
+			{
+				FunctionName = FName(*SourcePathSegments.Last());
+			}
+		}
+
+		if (FunctionName.IsNone())
+		{
+			return nullptr;
+		}
+
+		BindingObj->SetStringField(TEXT("Function"), FunctionName.ToString());
+		BindingObj->SetStringField(TEXT("Kind"), TEXT("Function"));
+		const TArray<FString> SourcePathSegments = ExtractSourcePathSegments(Binding);
+		if (SourcePathSegments.Num() > 1)
+		{
+			TArray<TSharedPtr<FJsonValue>> SourcePathJson;
+			for (const FString& SourcePathSegment : SourcePathSegments)
+			{
+				SourcePathJson.Add(MakeShared<FJsonValueString>(SourcePathSegment));
+			}
+			BindingObj->SetArrayField(TEXT("SourcePath"), SourcePathJson);
+		}
+		return BindingObj;
+	}
+
+	BindingObj->SetStringField(TEXT("Kind"), TEXT("Property"));
+
+	const TArray<FString> SourcePathSegments = ExtractSourcePathSegments(Binding);
+	if (SourcePathSegments.Num() == 1)
+	{
+		BindingObj->SetStringField(TEXT("Property"), SourcePathSegments[0]);
+		return BindingObj;
+	}
+
+	if (SourcePathSegments.Num() > 1)
+	{
+		TArray<TSharedPtr<FJsonValue>> SourcePathJson;
+		for (const FString& SourcePathSegment : SourcePathSegments)
+		{
+			SourcePathJson.Add(MakeShared<FJsonValueString>(SourcePathSegment));
+		}
+		BindingObj->SetArrayField(TEXT("SourcePath"), SourcePathJson);
+		return BindingObj;
+	}
+
+	if (!Binding.SourceProperty.IsNone())
+	{
+		BindingObj->SetStringField(TEXT("Property"), Binding.SourceProperty.ToString());
+		return BindingObj;
+	}
+
+	return nullptr;
+}
+
+static TSharedPtr<FJsonObject> BindingToDiagnosticJsonObject(const FDelegateEditorBinding& Binding)
+{
+	TSharedPtr<FJsonObject> DiagnosticObj = MakeShared<FJsonObject>();
+	DiagnosticObj->SetStringField(TEXT("Widget"), Binding.ObjectName);
+	DiagnosticObj->SetStringField(TEXT("Property"), Binding.PropertyName.ToString());
+	DiagnosticObj->SetStringField(TEXT("Kind"), Binding.Kind == EBindingKind::Function ? TEXT("Function") : TEXT("Property"));
+
+	if (!Binding.FunctionName.IsNone())
+	{
+		DiagnosticObj->SetStringField(TEXT("Function"), Binding.FunctionName.ToString());
+	}
+	if (!Binding.SourceProperty.IsNone())
+	{
+		DiagnosticObj->SetStringField(TEXT("SourceProperty"), Binding.SourceProperty.ToString());
+	}
+
+	const TArray<FString> SourcePathSegments = ExtractSourcePathSegments(Binding);
+	TArray<TSharedPtr<FJsonValue>> SourcePathJson;
+	for (const FString& SourcePathSegment : SourcePathSegments)
+	{
+		SourcePathJson.Add(MakeShared<FJsonValueString>(SourcePathSegment));
+	}
+	DiagnosticObj->SetArrayField(TEXT("SourcePath"), SourcePathJson);
+	DiagnosticObj->SetBoolField(TEXT("MemberGuidValid"), Binding.MemberGuid.IsValid());
+	if (Binding.MemberGuid.IsValid())
+	{
+		DiagnosticObj->SetStringField(TEXT("MemberGuid"), Binding.MemberGuid.ToString(EGuidFormats::DigitsWithHyphens));
+	}
+
+	return DiagnosticObj;
+}
+
+static bool CompileBlueprintChecked(UWidgetBlueprint* Blueprint, FString& OutError)
+{
+	if (!Blueprint)
+	{
+		OutError = TEXT("Cannot compile a null WidgetBlueprint");
+		return false;
+	}
+
+	FCompilerResultsLog CompileResults;
+	CompileResults.SetSilentMode(true);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &CompileResults);
+
+	if (CompileResults.NumErrors == 0 && Blueprint->Status != BS_Error)
+	{
+		return true;
+	}
+
+	FString ErrorMessage;
+	for (const TSharedRef<FTokenizedMessage>& Message : CompileResults.Messages)
+	{
+		if (Message->GetSeverity() == EMessageSeverity::Error)
+		{
+			if (!ErrorMessage.IsEmpty())
+			{
+				ErrorMessage += TEXT("; ");
+			}
+			ErrorMessage += Message->ToText().ToString();
+		}
+	}
+
+	if (ErrorMessage.IsEmpty())
+	{
+		ErrorMessage = FString::Printf(TEXT("WidgetBlueprint compile failed with status %d and %d compiler error(s)"),
+			static_cast<int32>(Blueprint->Status),
+			CompileResults.NumErrors);
+	}
+
+	OutError = ErrorMessage;
+	return false;
+}
+
+static UWidgetTree* DuplicateWidgetTree(UWidgetTree* SourceTree, UObject* Outer, const TCHAR* BaseName)
+{
+	if (!SourceTree || !Outer)
+	{
+		return nullptr;
+	}
+
+	const FName DuplicateName = MakeUniqueObjectName(Outer, UWidgetTree::StaticClass(), BaseName);
+	return DuplicateObject<UWidgetTree>(SourceTree, Outer, DuplicateName);
+}
+
+static UObject* DuplicateClassDefaultObject(UClass* SourceClass, UObject* Outer, const TCHAR* BaseName)
+{
+	if (!SourceClass || !Outer)
+	{
+		return nullptr;
+	}
+
+	UObject* SourceCDO = SourceClass->GetDefaultObject(false);
+	if (!SourceCDO)
+	{
+		return nullptr;
+	}
+
+	const FName DuplicateName = MakeUniqueObjectName(Outer, SourceCDO->GetClass(), BaseName);
+	return DuplicateObject<UObject>(SourceCDO, Outer, DuplicateName);
+}
+
+static void CopyDefaultObjectValues(UObject* DestinationCDO, UObject* SourceCDO)
+{
+	if (!DestinationCDO || !SourceCDO)
+	{
+		return;
+	}
+
+	for (TFieldIterator<FProperty> SourceIt(SourceCDO->GetClass()); SourceIt; ++SourceIt)
+	{
+		FProperty* SourceProperty = *SourceIt;
+		if (!SourceProperty || SourceProperty->HasAnyPropertyFlags(CPF_Transient | CPF_DuplicateTransient | CPF_NonPIEDuplicateTransient))
+		{
+			continue;
+		}
+
+		FProperty* DestinationProperty = FindFProperty<FProperty>(DestinationCDO->GetClass(), SourceProperty->GetFName());
+		if (!DestinationProperty || !DestinationProperty->SameType(SourceProperty))
+		{
+			continue;
+		}
+
+		void* SourceValue = SourceProperty->ContainerPtrToValuePtr<void>(SourceCDO);
+		void* DestinationValue = DestinationProperty->ContainerPtrToValuePtr<void>(DestinationCDO);
+		DestinationProperty->CopyCompleteValue(DestinationValue, SourceValue);
+	}
+}
+
+static void MoveWidgetTreeToTransient(UWidgetTree* WidgetTree)
+{
+	if (WidgetTree)
+	{
+		WidgetTree->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+	}
+}
+
+static bool SaveWidgetBlueprintPackage(UWidgetBlueprint* Blueprint, FString& OutError)
+{
+	if (!Blueprint)
+	{
+		OutError = TEXT("Cannot save a null WidgetBlueprint");
+		return false;
+	}
+
+	UPackage* Package = Blueprint->GetOutermost();
+	if (!Package)
+	{
+		OutError = TEXT("WidgetBlueprint has no package to save");
+		return false;
+	}
+
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	if (!UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs))
+	{
+		OutError = FString::Printf(TEXT("Failed to save WidgetBlueprint package '%s'"), *Package->GetName());
+		return false;
+	}
+
+	return true;
+}
+}
 
 FGenerationResult FWidgetBlueprintGenerator::Generate(
 	const FString& Name,
@@ -57,14 +1027,24 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 	}
 
 	UWidgetBlueprint* Blueprint = nullptr;
+	UWidgetBlueprint* ExistingBlueprint = nullptr;
+	FString BindingError;
+	TSet<FString> WidgetLevelBindingTargets;
 
 	if (bExists)
 	{
 		// Load existing blueprint for update or overwrite
-		Blueprint = Cast<UWidgetBlueprint>(LoadExistingAsset(Path, Name));
-		if (!Blueprint)
+		ExistingBlueprint = Cast<UWidgetBlueprint>(LoadExistingAsset(Path, Name));
+		if (!ExistingBlueprint)
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to load existing widget blueprint"));
+		}
+
+		const FName CandidateName = MakeUniqueObjectName(GetTransientPackage(), UWidgetBlueprint::StaticClass(), *FString::Printf(TEXT("%s_GenerateCandidate"), *Name));
+		Blueprint = DuplicateObject<UWidgetBlueprint>(ExistingBlueprint, GetTransientPackage(), CandidateName);
+		if (!Blueprint)
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to create transient widget blueprint candidate"));
 		}
 
 		// Update ParentClass only if explicitly specified in Config
@@ -131,17 +1111,22 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 			Blueprint->Bindings.Empty();
 
 			// Build new widget tree
-			UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"));
+			UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"), &BindingError, &WidgetLevelBindingTargets);
 			if (!RootWidget)
 			{
-				return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build widget tree"));
+				const FString Reason = BindingError.IsEmpty() ? TEXT("Failed to build widget tree") : BindingError;
+				return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Reason);
 			}
 			Blueprint->WidgetTree->RootWidget = RootWidget;
 		}
 		else if (WidgetUpdatesArray)
 		{
 			// Path B: WidgetUpdates provided → element-level operations
-			ProcessWidgetUpdates(Blueprint, WidgetUpdatesArray);
+			if (!ProcessWidgetUpdates(Blueprint, WidgetUpdatesArray, BindingError, &WidgetLevelBindingTargets))
+			{
+				const FString Reason = BindingError.IsEmpty() ? TEXT("Failed to process WidgetUpdates") : BindingError;
+				return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Reason);
+			}
 		}
 		// Path C: Neither provided → widget tree stays unchanged
 	}
@@ -185,18 +1170,33 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Missing RootWidget in configuration"));
 		}
 
-		UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"));
+		UWidget* RootWidget = BuildWidgetTree(Blueprint, RootWidgetConfig, nullptr, TEXT("RootWidget"), &BindingError, &WidgetLevelBindingTargets);
 		if (!RootWidget)
 		{
-			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Failed to build widget tree"));
+			const FString Reason = BindingError.IsEmpty() ? TEXT("Failed to build widget tree") : BindingError;
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Reason);
 		}
 		Blueprint->WidgetTree->RootWidget = RootWidget;
+	}
+
+	TSharedPtr<FJsonObject> TopLevelBindingsConfig = GetObjectField(Config, TEXT("Bindings"));
+	if (TopLevelBindingsConfig.IsValid())
+	{
+		if (!ConfigureTopLevelBindings(Blueprint, TopLevelBindingsConfig, WidgetLevelBindingTargets, BindingError))
+		{
+			const FString Reason = BindingError.IsEmpty() ? TEXT("Failed to configure top-level WidgetBlueprint bindings") : BindingError;
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Reason);
+		}
 	}
 
 	// Compile first to generate the class
 	Blueprint->Modify();
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FString CompileError;
+	if (!CompileBlueprintChecked(Blueprint, CompileError))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, FString::Printf(TEXT("WidgetBlueprint compile failed: %s"), *CompileError));
+	}
 
 	// Apply class default properties if specified (after compilation so GeneratedClass exists)
 	TSharedPtr<FJsonObject> ClassDefaultsConfig = GetObjectField(Config, TEXT("ClassDefaults"));
@@ -205,21 +1205,86 @@ FGenerationResult FWidgetBlueprintGenerator::Generate(
 		ApplyClassDefaults(Blueprint, ClassDefaultsConfig);
 		// Mark dirty and recompile after setting CDO properties
 		Blueprint->Modify();
-		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (!CompileBlueprintChecked(Blueprint, CompileError))
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, FString::Printf(TEXT("WidgetBlueprint compile failed after applying ClassDefaults: %s"), *CompileError));
+		}
+	}
+
+	if (bExists && ExistingBlueprint)
+	{
+		UWidgetTree* SnapshotTree = DuplicateWidgetTree(ExistingBlueprint->WidgetTree, GetTransientPackage(), TEXT("WidgetTreeRollbackSnapshot"));
+		const TArray<FDelegateEditorBinding> SnapshotBindings = ExistingBlueprint->Bindings;
+		UClass* SnapshotParentClass = ExistingBlueprint->ParentClass;
+		UObject* SnapshotClassDefaultObject = DuplicateClassDefaultObject(ExistingBlueprint->GeneratedClass, GetTransientPackage(), TEXT("ClassDefaultRollbackSnapshot"));
+
+		auto RestoreExistingBlueprint = [&](const FString& FailureReason)
+		{
+			MoveWidgetTreeToTransient(ExistingBlueprint->WidgetTree);
+			ExistingBlueprint->WidgetTree = DuplicateWidgetTree(SnapshotTree, ExistingBlueprint, TEXT("WidgetTreeRestored"));
+			ExistingBlueprint->Bindings = SnapshotBindings;
+			ExistingBlueprint->ParentClass = SnapshotParentClass;
+			ExistingBlueprint->Modify();
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ExistingBlueprint);
+
+			FString RestoreCompileError;
+			if (!CompileBlueprintChecked(ExistingBlueprint, RestoreCompileError))
+			{
+				return FString::Printf(TEXT("%s; failed to restore original WidgetBlueprint compile state: %s"),
+					*FailureReason,
+					*RestoreCompileError);
+			}
+
+			if (SnapshotClassDefaultObject && ExistingBlueprint->GeneratedClass)
+			{
+				CopyDefaultObjectValues(ExistingBlueprint->GeneratedClass->GetDefaultObject(), SnapshotClassDefaultObject);
+			}
+
+			return FailureReason;
+		};
+
+		ExistingBlueprint->Modify();
+		MoveWidgetTreeToTransient(ExistingBlueprint->WidgetTree);
+		ExistingBlueprint->WidgetTree = DuplicateWidgetTree(Blueprint->WidgetTree, ExistingBlueprint, TEXT("WidgetTree"));
+		ExistingBlueprint->Bindings = Blueprint->Bindings;
+		ExistingBlueprint->ParentClass = Blueprint->ParentClass;
+
+		ExistingBlueprint->Modify();
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ExistingBlueprint);
+		if (!CompileBlueprintChecked(ExistingBlueprint, CompileError))
+		{
+			const FString FailureReason = FString::Printf(TEXT("WidgetBlueprint compile failed while committing update: %s"), *CompileError);
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, RestoreExistingBlueprint(FailureReason));
+		}
+
+		if (ClassDefaultsConfig.IsValid() && ClassDefaultsConfig->Values.Num() > 0)
+		{
+			ApplyClassDefaults(ExistingBlueprint, ClassDefaultsConfig);
+			ExistingBlueprint->Modify();
+			if (!CompileBlueprintChecked(ExistingBlueprint, CompileError))
+			{
+				const FString FailureReason = FString::Printf(TEXT("WidgetBlueprint compile failed after committing ClassDefaults: %s"), *CompileError);
+				return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, RestoreExistingBlueprint(FailureReason));
+			}
+		}
+
+		ExistingBlueprint->MarkPackageDirty();
+		FString SaveError;
+		if (!SaveWidgetBlueprintPackage(ExistingBlueprint, SaveError))
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, RestoreExistingBlueprint(SaveError));
+		}
+
+		return FGenerationResult::MakeUpdated(GetAssetType(), Name, Path, ExistingBlueprint);
 	}
 
 	Blueprint->MarkPackageDirty();
-
-	UPackage* Package = Blueprint->GetOutermost();
-	FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
-	FSavePackageArgs SaveArgs;
-	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-	UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs);
-
-	if (bExists)
+	FString SaveError;
+	if (!SaveWidgetBlueprintPackage(Blueprint, SaveError))
 	{
-		return FGenerationResult::MakeUpdated(GetAssetType(), Name, Path, Blueprint);
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, SaveError);
 	}
+
 	return FGenerationResult::MakeSuccess(GetAssetType(), Name, Path, Blueprint);
 }
 
@@ -227,7 +1292,9 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 	UWidgetBlueprint* Blueprint,
 	TSharedPtr<FJsonObject> WidgetNode,
 	UPanelWidget* Parent,
-	const FString& JsonPath)
+	const FString& JsonPath,
+	FString* OutError,
+	TSet<FString>* OutWidgetLevelBindingTargets)
 {
 	if (!WidgetNode.IsValid())
 	{
@@ -313,7 +1380,15 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Widget '%s' has Bindings, auto-setting IsVariable to true."), *JsonPath, *WidgetName);
 			ExposeAsVariable(Widget, WidgetName);
 		}
-		ConfigureBindings(Blueprint, Widget, WidgetName, BindingsConfig);
+		FString LocalBindingError;
+		if (!ConfigureBindings(Blueprint, Widget, WidgetName, BindingsConfig, LocalBindingError, OutWidgetLevelBindingTargets))
+		{
+			if (OutError)
+			{
+				*OutError = FString::Printf(TEXT("[%s] %s"), *JsonPath, *LocalBindingError);
+			}
+			return nullptr;
+		}
 	}
 
 	// Add to parent if present
@@ -349,7 +1424,20 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 					TSharedPtr<FJsonObject> ChildNode = (*ChildrenArray)[0]->AsObject();
 					FString ChildPath = FString::Printf(TEXT("%s.Children[0]"), *JsonPath);
 
-					UWidget* ChildWidget = BuildWidgetTree(Blueprint, ChildNode, nullptr, ChildPath);
+					FString ChildError;
+					UWidget* ChildWidget = BuildWidgetTree(Blueprint, ChildNode, nullptr, ChildPath, &ChildError, OutWidgetLevelBindingTargets);
+					if (!ChildWidget)
+					{
+						if (!ChildError.IsEmpty())
+						{
+							if (OutError)
+							{
+								*OutError = ChildError;
+							}
+							return nullptr;
+						}
+					}
+
 					if (ChildWidget)
 					{
 						// Try to add child - first check if it's a PanelWidget
@@ -388,7 +1476,20 @@ UWidget* FWidgetBlueprintGenerator::BuildWidgetTree(
 					TSharedPtr<FJsonObject> ChildNode = (*ChildrenArray)[i]->AsObject();
 					FString ChildPath = FString::Printf(TEXT("%s.Children[%d]"), *JsonPath, i);
 
-					BuildWidgetTree(Blueprint, ChildNode, PanelWidget, ChildPath);
+					FString ChildError;
+					UWidget* ChildWidget = BuildWidgetTree(Blueprint, ChildNode, PanelWidget, ChildPath, &ChildError, OutWidgetLevelBindingTargets);
+					if (!ChildWidget)
+					{
+						if (!ChildError.IsEmpty())
+						{
+							if (OutError)
+							{
+								*OutError = ChildError;
+							}
+							return nullptr;
+						}
+						continue;
+					}
 				}
 			}
 		}
@@ -1039,11 +2140,18 @@ bool FWidgetBlueprintGenerator::IsPanelWidget(UClass* WidgetClass) const
 
 //~ Property Bindings
 
-void FWidgetBlueprintGenerator::ConfigureBindings(UWidgetBlueprint* Blueprint, UWidget* Widget, const FString& WidgetName, TSharedPtr<FJsonObject> BindingsConfig)
+bool FWidgetBlueprintGenerator::ConfigureBindings(
+	UWidgetBlueprint* Blueprint,
+	UWidget* Widget,
+	const FString& WidgetName,
+	TSharedPtr<FJsonObject> BindingsConfig,
+	FString& OutError,
+	TSet<FString>* OutWidgetLevelBindingTargets)
 {
 	if (!Blueprint || !Widget || !BindingsConfig.IsValid())
 	{
-		return;
+		OutError = TEXT("Invalid binding configuration context");
+		return false;
 	}
 
 	// Use the actual widget name from the object, not the passed-in name
@@ -1055,97 +2163,30 @@ void FWidgetBlueprintGenerator::ConfigureBindings(UWidgetBlueprint* Blueprint, U
 		const FString& PropertyName = Pair.Key;
 		const TSharedPtr<FJsonValue>& BindingValue = Pair.Value;
 
-		FDelegateEditorBinding NewBinding;
-		NewBinding.ObjectName = ActualWidgetName;
-		NewBinding.PropertyName = *PropertyName;
-
-		// Simple format: "PropertyName": "FunctionName"
-		FString FunctionName;
-		if (BindingValue->TryGetString(FunctionName))
+		FWidgetBindingSpec Spec;
+		FString ParseError;
+		if (!ParseBindingSpec(ActualWidgetName, PropertyName, BindingValue, Spec, ParseError))
 		{
-			NewBinding.FunctionName = *FunctionName;
-			NewBinding.Kind = EBindingKind::Function;
+			OutError = ParseError;
+			return false;
 		}
-		// Full format: "PropertyName": { "Function": "...", "Kind": "..." }
-		else if (BindingValue->Type == EJson::Object)
+
+		FDelegateEditorBinding NewBinding;
+		FText BindingValidationError;
+		if (Spec.Kind == EBindingKind::Function)
 		{
-			TSharedPtr<FJsonObject> BindingObj = BindingValue->AsObject();
-
-			FString Function;
-			if (BindingObj->TryGetStringField(TEXT("Function"), Function))
+			if (!BuildFunctionBinding(Blueprint, Widget, Spec, NewBinding, BindingValidationError))
 			{
-				NewBinding.FunctionName = *Function;
-				NewBinding.Kind = EBindingKind::Function;
-			}
-
-			FString Property;
-			if (BindingObj->TryGetStringField(TEXT("Property"), Property))
-			{
-				NewBinding.SourceProperty = *Property;
-				NewBinding.Kind = EBindingKind::Property;
-			}
-
-			// Override Kind if explicitly specified
-			FString KindStr;
-			if (BindingObj->TryGetStringField(TEXT("Kind"), KindStr))
-			{
-				if (KindStr == TEXT("Property"))
-				{
-					NewBinding.Kind = EBindingKind::Property;
-				}
-				else if (KindStr == TEXT("Function"))
-				{
-					NewBinding.Kind = EBindingKind::Function;
-				}
+				OutError = BindingValidationError.ToString();
+				return false;
 			}
 		}
 		else
 		{
-			UE_LOG(LogAssetFactory, Warning, TEXT("Invalid binding format for property '%s' on widget '%s'"), *PropertyName, *ActualWidgetName);
-			continue;
-		}
-
-		// Validate that the bound function exists in the class hierarchy (including C++ base classes)
-		if (NewBinding.Kind == EBindingKind::Function && !NewBinding.FunctionName.IsNone())
-		{
-			bool bFunctionFound = false;
-
-			// Try to find the function in the generated class hierarchy
-			UClass* ClassToCheck = Blueprint->GeneratedClass;
-			if (!ClassToCheck)
+			if (!BuildPropertyBinding(Blueprint, Widget, Spec, NewBinding, BindingValidationError))
 			{
-				// If not compiled yet, use the parent class
-				ClassToCheck = Blueprint->ParentClass;
-			}
-
-			if (ClassToCheck)
-			{
-				// FindFunctionByName searches the entire class hierarchy including C++ base classes
-				UFunction* FoundFunction = ClassToCheck->FindFunctionByName(NewBinding.FunctionName);
-				if (FoundFunction)
-				{
-					bFunctionFound = true;
-				}
-			}
-
-			// Also check Blueprint function graphs (functions defined in this Blueprint but not yet compiled)
-			if (!bFunctionFound)
-			{
-				for (UEdGraph* Graph : Blueprint->FunctionGraphs)
-				{
-					if (Graph && Graph->GetFName() == NewBinding.FunctionName)
-					{
-						bFunctionFound = true;
-						break;
-					}
-				}
-			}
-
-			if (!bFunctionFound)
-			{
-				UE_LOG(LogAssetFactory, Warning, TEXT("Binding function '%s' not found in class hierarchy for widget '%s.%s'. Binding will be created but may not work at runtime."),
-					*NewBinding.FunctionName.ToString(), *ActualWidgetName, *PropertyName);
-				// Continue to create the binding anyway - it might be added later or the user knows what they're doing
+				OutError = BindingValidationError.ToString();
+				return false;
 			}
 		}
 
@@ -1158,7 +2199,7 @@ void FWidgetBlueprintGenerator::ConfigureBindings(UWidgetBlueprint* Blueprint, U
 				ExistingBinding = NewBinding;
 				bFound = true;
 				UE_LOG(LogAssetFactory, Log, TEXT("Updated binding: %s.%s -> %s"),
-					*ActualWidgetName, *PropertyName,
+					*Spec.WidgetName, *NewBinding.PropertyName.ToString(),
 					NewBinding.Kind == EBindingKind::Function ? *NewBinding.FunctionName.ToString() : *NewBinding.SourceProperty.ToString());
 				break;
 			}
@@ -1168,10 +2209,75 @@ void FWidgetBlueprintGenerator::ConfigureBindings(UWidgetBlueprint* Blueprint, U
 		{
 			Blueprint->Bindings.Add(NewBinding);
 			UE_LOG(LogAssetFactory, Log, TEXT("Added binding: %s.%s -> %s"),
-				*ActualWidgetName, *PropertyName,
+				*Spec.WidgetName, *NewBinding.PropertyName.ToString(),
 				NewBinding.Kind == EBindingKind::Function ? *NewBinding.FunctionName.ToString() : *NewBinding.SourceProperty.ToString());
 		}
+
+		if (OutWidgetLevelBindingTargets)
+		{
+			OutWidgetLevelBindingTargets->Add(BindingTargetKey(NewBinding.ObjectName, NewBinding.PropertyName));
+		}
 	}
+
+	return true;
+}
+
+bool FWidgetBlueprintGenerator::ConfigureTopLevelBindings(
+	UWidgetBlueprint* Blueprint,
+	TSharedPtr<FJsonObject> TopLevelBindingsConfig,
+	const TSet<FString>& WidgetLevelBindingTargets,
+	FString& OutError)
+{
+	if (!Blueprint || !Blueprint->WidgetTree || !TopLevelBindingsConfig.IsValid())
+	{
+		OutError = TEXT("Invalid top-level binding configuration context");
+		return false;
+	}
+
+	for (const auto& Pair : TopLevelBindingsConfig->Values)
+	{
+		const FString& BindingTarget = Pair.Key;
+		FString WidgetName;
+		FString PropertyName;
+		if (!ParseTopLevelBindingKey(BindingTarget, WidgetName, PropertyName))
+		{
+			OutError = FString::Printf(TEXT("Top-level binding key '%s' must use Widget.Property format"), *BindingTarget);
+			return false;
+		}
+
+		UWidget* Widget = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+		if (!Widget)
+		{
+			OutError = FString::Printf(TEXT("Top-level binding target widget '%s' was not found"), *WidgetName);
+			return false;
+		}
+
+		const FString CanonicalTarget = BindingTargetKey(WidgetName, FName(*PropertyName));
+		if (WidgetLevelBindingTargets.Contains(CanonicalTarget))
+		{
+			UE_LOG(LogAssetFactory, Warning,
+				TEXT("Skipping top-level compatibility binding '%s' because a widget-level binding already defines the same target"),
+				*BindingTarget);
+			continue;
+		}
+
+		if (!Widget->bIsVariable)
+		{
+			ExposeAsVariable(Widget, WidgetName);
+		}
+
+		TSharedPtr<FJsonObject> WidgetBindings = MakeShared<FJsonObject>();
+		WidgetBindings->SetField(PropertyName, Pair.Value);
+
+		FString LocalBindingError;
+		if (!ConfigureBindings(Blueprint, Widget, WidgetName, WidgetBindings, LocalBindingError, nullptr))
+		{
+			OutError = FString::Printf(TEXT("[%s] %s"), *BindingTarget, *LocalBindingError);
+			return false;
+		}
+	}
+
+	return true;
 }
 
 //~ Class Default Properties
@@ -1295,11 +2401,17 @@ void FWidgetBlueprintGenerator::RemoveWidget(UWidgetBlueprint* Blueprint, UWidge
 	DeleteWidgetRecursive(Widget);
 }
 
-void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
+bool FWidgetBlueprintGenerator::ProcessWidgetUpdates(
 	UWidgetBlueprint* Blueprint,
-	const TArray<TSharedPtr<FJsonValue>>* UpdatesArray)
+	const TArray<TSharedPtr<FJsonValue>>* UpdatesArray,
+	FString& OutError,
+	TSet<FString>* OutWidgetLevelBindingTargets)
 {
-	if (!Blueprint || !UpdatesArray) return;
+	if (!Blueprint || !UpdatesArray)
+	{
+		OutError = TEXT("Invalid WidgetUpdates context");
+		return false;
+	}
 
 	for (int32 i = 0; i < UpdatesArray->Num(); ++i)
 	{
@@ -1380,7 +2492,12 @@ void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
 				{
 					ExposeAsVariable(Widget, WidgetName);
 				}
-				ConfigureBindings(Blueprint, Widget, WidgetName, Bindings);
+				FString LocalBindingError;
+				if (!ConfigureBindings(Blueprint, Widget, WidgetName, Bindings, LocalBindingError, OutWidgetLevelBindingTargets))
+				{
+					OutError = FString::Printf(TEXT("[%s] %s"), *JsonPath, *LocalBindingError);
+					return false;
+				}
 			}
 
 			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Updated widget '%s'"), *JsonPath, *WidgetName);
@@ -1411,7 +2528,16 @@ void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
 				UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Missing 'Widget' field for Add action"), *JsonPath);
 				continue;
 			}
-			BuildWidgetTree(Blueprint, WidgetConfig, Panel, JsonPath);
+			FString AddError;
+			if (!BuildWidgetTree(Blueprint, WidgetConfig, Panel, JsonPath, &AddError, OutWidgetLevelBindingTargets))
+			{
+				if (!AddError.IsEmpty())
+				{
+					OutError = AddError;
+					return false;
+				}
+				continue;
+			}
 			UE_LOG(LogAssetFactory, Log, TEXT("[%s] Added widget to parent '%s'"), *JsonPath, *ParentName);
 			continue;
 		}
@@ -1466,6 +2592,8 @@ void FWidgetBlueprintGenerator::ProcessWidgetUpdates(
 
 		UE_LOG(LogAssetFactory, Warning, TEXT("[%s] Unknown action '%s'"), *JsonPath, *UpdateAction);
 	}
+
+	return true;
 }
 
 TOptional<FString> FWidgetBlueprintGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
@@ -1545,48 +2673,86 @@ TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::Extract(UObject* Asset, bool 
 		Config->SetStringField(TEXT("ParentClass"), Blueprint->ParentClass->GetPathName());
 	}
 
+	TMap<FString, TSharedPtr<FJsonObject>> BindingsByWidget;
+	TArray<TSharedPtr<FJsonValue>> BindingDiagnostics;
+	TArray<TSharedPtr<FJsonValue>> ExtractWarnings;
+
+	auto AddExtractWarning = [&ExtractWarnings](const FString& Warning)
+	{
+		ExtractWarnings.Add(MakeShared<FJsonValueString>(Warning));
+	};
+
+	for (const FDelegateEditorBinding& Binding : Blueprint->Bindings)
+	{
+		if (Binding.ObjectName.IsEmpty() || Binding.PropertyName.IsNone())
+		{
+			const FString Warning = FString::Printf(TEXT("Skipping malformed binding during extract: ObjectName='%s', PropertyName='%s'"),
+				*Binding.ObjectName,
+				*Binding.PropertyName.ToString());
+			UE_LOG(LogAssetFactory, Warning, TEXT("%s"), *Warning);
+			AddExtractWarning(Warning);
+			continue;
+		}
+
+		BindingDiagnostics.Add(MakeShared<FJsonValueObject>(BindingToDiagnosticJsonObject(Binding)));
+
+		if (!Blueprint->WidgetTree || !Blueprint->WidgetTree->FindWidget(FName(*Binding.ObjectName)))
+		{
+			const FString Warning = FString::Printf(TEXT("Skipping unresolved binding during extract: target widget '%s' for property '%s' was not found"),
+				*Binding.ObjectName,
+				*Binding.PropertyName.ToString());
+			UE_LOG(LogAssetFactory, Warning, TEXT("%s"), *Warning);
+			AddExtractWarning(Warning);
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> BindingObj = BindingToJsonObject(Binding);
+		if (!BindingObj.IsValid())
+		{
+			const FString Warning = FString::Printf(TEXT("Skipping unsupported binding during extract: %s.%s"),
+				*Binding.ObjectName,
+				*Binding.PropertyName.ToString());
+			UE_LOG(LogAssetFactory, Warning, TEXT("%s"), *Warning);
+			AddExtractWarning(Warning);
+			continue;
+		}
+
+		TSharedPtr<FJsonObject>* ExistingWidgetBindings = BindingsByWidget.Find(Binding.ObjectName);
+		if (!ExistingWidgetBindings)
+		{
+			BindingsByWidget.Add(Binding.ObjectName, MakeShared<FJsonObject>());
+			ExistingWidgetBindings = BindingsByWidget.Find(Binding.ObjectName);
+		}
+
+		if (ExistingWidgetBindings && ExistingWidgetBindings->IsValid())
+		{
+			(*ExistingWidgetBindings)->SetObjectField(Binding.PropertyName.ToString(), BindingObj);
+		}
+	}
+
 	// RootWidget
 	if (Blueprint->WidgetTree && Blueprint->WidgetTree->RootWidget)
 	{
-		TSharedPtr<FJsonObject> RootWidgetJson = ExtractWidgetTree(Blueprint->WidgetTree->RootWidget);
+		TSharedPtr<FJsonObject> RootWidgetJson = ExtractWidgetTree(Blueprint->WidgetTree->RootWidget, &BindingsByWidget);
 		if (RootWidgetJson.IsValid())
 		{
 			Config->SetObjectField(TEXT("RootWidget"), RootWidgetJson);
 		}
 	}
 
-	// Bindings
-	if (Blueprint->Bindings.Num() > 0)
+	if (BindingDiagnostics.Num() > 0)
 	{
-		TSharedPtr<FJsonObject> BindingsJson = MakeShared<FJsonObject>();
-		for (const FDelegateEditorBinding& Binding : Blueprint->Bindings)
-		{
-			TSharedPtr<FJsonObject> BindingObj = MakeShared<FJsonObject>();
-			if (Binding.Kind == EBindingKind::Function)
-			{
-				BindingObj->SetStringField(TEXT("Function"), Binding.FunctionName.ToString());
-				BindingObj->SetStringField(TEXT("Kind"), TEXT("Function"));
-			}
-			else
-			{
-				BindingObj->SetStringField(TEXT("Property"), Binding.SourceProperty.ToString());
-				BindingObj->SetStringField(TEXT("Kind"), TEXT("Property"));
-			}
-
-			// Key format: "WidgetName.PropertyName"
-			FString BindingKey = FString::Printf(TEXT("%s.%s"), *Binding.ObjectName, *Binding.PropertyName.ToString());
-			BindingsJson->SetObjectField(BindingKey, BindingObj);
-		}
-		if (BindingsJson->Values.Num() > 0)
-		{
-			Config->SetObjectField(TEXT("Bindings"), BindingsJson);
-		}
+		Config->SetArrayField(TEXT("BindingDiagnostics"), BindingDiagnostics);
+	}
+	if (ExtractWarnings.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("Warnings"), ExtractWarnings);
 	}
 
 	return Config;
 }
 
-TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetTree(UWidget* Widget) const
+TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetTree(UWidget* Widget, const TMap<FString, TSharedPtr<FJsonObject>>* BindingsByWidget) const
 {
 	if (!Widget)
 	{
@@ -1629,6 +2795,18 @@ TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetTree(UWidget* Wi
 		}
 	}
 
+	if (BindingsByWidget)
+	{
+		if (const TSharedPtr<FJsonObject>* WidgetBindings = BindingsByWidget->Find(Widget->GetName()))
+		{
+			if (WidgetBindings->IsValid() && (*WidgetBindings)->Values.Num() > 0)
+			{
+				WidgetJson->SetObjectField(TEXT("Bindings"), *WidgetBindings);
+				WidgetJson->SetBoolField(TEXT("IsVariable"), true);
+			}
+		}
+	}
+
 	// Children - if this is a panel widget
 	UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget);
 	if (PanelWidget && PanelWidget->GetChildrenCount() > 0)
@@ -1639,7 +2817,7 @@ TSharedPtr<FJsonObject> FWidgetBlueprintGenerator::ExtractWidgetTree(UWidget* Wi
 			UWidget* ChildWidget = PanelWidget->GetChildAt(i);
 			if (ChildWidget)
 			{
-				TSharedPtr<FJsonObject> ChildJson = ExtractWidgetTree(ChildWidget);
+				TSharedPtr<FJsonObject> ChildJson = ExtractWidgetTree(ChildWidget, BindingsByWidget);
 				if (ChildJson.IsValid())
 				{
 					ChildrenArray.Add(MakeShared<FJsonValueObject>(ChildJson));

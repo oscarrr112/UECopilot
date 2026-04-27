@@ -26,3 +26,18 @@ bool UTestUserWidget::IsTextEnabled() const
 {
 	return bTextEnabled;
 }
+
+UObject* UTestUserWidget::GetObjectForText() const
+{
+	return nullptr;
+}
+
+FText UTestUserWidget::GetImpureDisplayText()
+{
+	return DisplayText;
+}
+
+FText UTestUserWidget::GetTextWithParameter(int32 Value) const
+{
+	return FText::AsNumber(Value);
+}

@@ -23,6 +23,7 @@ When `Action` is `"Update"`, only fields present in the JSON are processed — m
 | `RebuildTree` | bool | No | `false` | Required confirmation flag when using `RootWidget` with `Action: "Update"`. Must be `true` to allow full tree rebuild. |
 | `ParentClass` | string | No | `"UserWidget"` | Parent widget class |
 | `ClassDefaults` | object | No | | CDO properties set via reflection (see ClassDefaults section) |
+| `Bindings` | object | No | | Compatibility input for extracted or legacy top-level bindings keyed by `"WidgetName.PropertyName"`. Prefer widget-level `Bindings` for new authoring. Extract now emits widget-level bindings. |
 
 ## WidgetUpdates (Element-Level Patch) — Recommended for Updates
 
@@ -43,6 +44,8 @@ Each entry in the `WidgetUpdates` array:
 | `Slot` | object | No (Update) | Slot/layout configuration |
 | `IsVariable` | bool | No (Update) | Expose as blueprint variable |
 | `Bindings` | object | No (Update) | Property bindings |
+
+`WidgetUpdates[].Bindings` uses the same widget-level binding value format shown in Bindings Format.
 
 ### WidgetUpdates Example: Update a Widget
 
@@ -306,25 +309,63 @@ Supports all property types: primitives, enums, structs (array shorthand `[1,2,3
 
 ## Bindings Format
 
-Widget-level property bindings:
+Widget-level `Bindings` is the canonical authoring and extract format. Place it on the widget node that owns the target property:
 
 ```json
 {
+  "Type": "TextBlock",
+  "Name": "ScoreText",
   "Bindings": {
     "Text": "GetDisplayText",
     "Visibility": {
-      "Function": "GetTextVisibility",
-      "Kind": "Function"
+      "Kind": "Function",
+      "Function": "GetTextVisibility"
+    },
+    "ColorAndOpacity": {
+      "Kind": "Property",
+      "Property": "TextColor"
+    },
+    "ToolTipText": {
+      "Kind": "Property",
+      "SourcePath": ["ViewModel", "DisplayText"]
     }
   }
 }
 ```
 
-- Simple: `"PropertyName": "FunctionName"`
-- Full: `"PropertyName": {"Function": "FunctionName", "Kind": "Function"}`
-- Property binding: `"PropertyName": {"Property": "SourceProperty", "Kind": "Property"}`
-- Functions validated against C++ base class and blueprint graphs
-- Auto-sets `IsVariable: true`
+Supported binding value forms:
+
+- Simple function binding: `"PropertyName": "FunctionName"`
+- Full function binding: `"PropertyName": { "Kind": "Function", "Function": "FunctionName" }`
+- Property binding shorthand: `"PropertyName": { "Kind": "Property", "Property": "SourceProperty" }`
+- Property binding path: `"PropertyName": { "Kind": "Property", "SourcePath": ["ViewModel", "DisplayText"] }`
+
+Compatibility input is also accepted at the asset config top level:
+
+```json
+{
+  "Bindings": {
+    "ScoreText.Text": {
+      "Kind": "Function",
+      "Function": "GetDisplayText"
+    }
+  }
+}
+```
+
+Top-level binding keys use `"WidgetName.PropertyName"`. This form is accepted for compatibility, but extraction emits widget-level `Bindings`.
+If both formats target the same widget property in one request, the widget-level binding wins and the top-level compatibility entry is skipped with a warning.
+
+Binding validation:
+
+- The target widget is auto-exposed as `IsVariable: true`.
+- The target property must have a reflected bindable delegate, usually `PropertyNameDelegate`.
+- Function bindings must point to an existing function.
+- Function signatures must match the target delegate or be supported by UMG's property binding adapter.
+- Property delegate function bindings must be `const` or `BlueprintPure`.
+- Property bindings are resolved through UE reflection and stored with `SourcePath`; single-segment paths may be displayed as `Property`.
+- Invalid bindings fail generation with a specific error instead of being saved as broken bindings.
+- Extraction may include read-only `BindingDiagnostics` and `Warnings` fields for verification and skipped-binding diagnostics. These fields are not authoring inputs.
 
 ## Complete Example
 
