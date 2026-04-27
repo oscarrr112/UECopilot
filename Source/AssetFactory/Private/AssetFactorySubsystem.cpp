@@ -1007,11 +1007,10 @@ TSharedPtr<FJsonObject> UAssetFactorySubsystem::ExtractAsset(const FString& Asse
 	}
 
 	// Find a generator that can extract this asset
-	TArray<FString> AssetTypes = FAssetGeneratorRegistry::Get().GetRegisteredTypes();
-	for (const FString& AssetType : AssetTypes)
+	TArray<TSharedRef<IAssetGenerator>> Generators = FAssetGeneratorRegistry::Get().GetGeneratorsSortedByPriority();
+	for (const TSharedRef<IAssetGenerator>& Generator : Generators)
 	{
-		IAssetGenerator* Generator = FAssetGeneratorRegistry::Get().FindGenerator(AssetType);
-		if (Generator && Generator->CanExtract(Asset))
+		if (Generator->CanExtract(Asset))
 		{
 			TSharedPtr<FJsonObject> Config = Generator->Extract(Asset, bDiffOnly);
 			if (Config.IsValid())
@@ -1024,7 +1023,7 @@ TSharedPtr<FJsonObject> UAssetFactorySubsystem::ExtractAsset(const FString& Asse
 				Config->SetStringField(TEXT("Name"), AssetName);
 				Config->SetStringField(TEXT("Path"), AssetDir);
 
-				UE_LOG(LogAssetFactory, Log, TEXT("Extracted asset: %s (type: %s)"), *AssetPath, *AssetType);
+				UE_LOG(LogAssetFactory, Log, TEXT("Extracted asset: %s (type: %s)"), *AssetPath, *Generator->GetAssetType());
 				return Config;
 			}
 		}

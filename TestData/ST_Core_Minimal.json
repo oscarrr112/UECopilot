@@ -1,0 +1,7 @@
+{
+  "AssetType": "StateTree",
+  "Name": "ST_Core_Minimal",
+  "Path": "/Game/Generated/StateTree",
+  "Action": "CreateOrUpdate",
+  "SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema"
+}

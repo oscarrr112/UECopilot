@@ -1,0 +1,11 @@
+{
+  "AssetType": "StateTree",
+  "Name": "ST_Core_AIComponentSchema",
+  "Path": "/Game/Generated/StateTree",
+  "Action": "CreateOrUpdate",
+  "SchemaClass": "/Script/GameplayStateTreeModule.StateTreeAIComponentSchema",
+  "SchemaProperties": {
+    "ContextActorClass": "/Script/Engine.Pawn",
+    "AIControllerClass": "/Script/AIModule.AIController"
+  }
+}
