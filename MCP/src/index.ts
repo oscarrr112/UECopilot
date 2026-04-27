@@ -69,7 +69,7 @@ async function loadSchema(assetType: string): Promise<string> {
     const filePath = join(SCHEMAS_DIR, `${assetType}.md`);
     return await readFile(filePath, "utf-8");
   } catch {
-    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag`;
+    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, StateTree, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag`;
   }
 }
 
@@ -212,7 +212,7 @@ const tools: Tool[] = [
   {
     name: "generate_assets",
     description:
-      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint (any parent class: Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, BTTaskNode, etc.), WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate. IMPORTANT for WidgetBlueprint Update: use 'WidgetUpdates' array for safe incremental changes; do NOT use 'RootWidget' in Update mode unless you intend to destroy and fully rebuild the widget tree (requires '\"RebuildTree\": true').",
+      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint (any parent class: Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, BTTaskNode, etc.), WidgetBlueprint, StateTree, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate. IMPORTANT for WidgetBlueprint Update: use 'WidgetUpdates' array for safe incremental changes; do NOT use 'RootWidget' in Update mode unless you intend to destroy and fully rebuild the widget tree (requires '\"RebuildTree\": true').",
     inputSchema: {
       type: "object",
       properties: {
@@ -225,7 +225,7 @@ const tools: Tool[] = [
               AssetType: {
                 type: "string",
                 description:
-                  "Type of asset: Blueprint (any parent class including GameplayEffect, GameplayAbility, Actor, Character, AnimInstance, etc.), WidgetBlueprint, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
+                  "Type of asset: Blueprint (any parent class including GameplayEffect, GameplayAbility, Actor, Character, AnimInstance, etc.), WidgetBlueprint, StateTree, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
               },
               Name: {
                 type: "string",
@@ -258,10 +258,11 @@ const tools: Tool[] = [
         asset_type: {
           type: "string",
           description:
-            "The asset type to get schema for: Blueprint, WidgetBlueprint, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
+            "The asset type to get schema for: Blueprint, WidgetBlueprint, StateTree, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
           enum: [
             "Blueprint",
             "WidgetBlueprint",
+            "StateTree",
             "Material",
             "DataAsset",
             "DataTable",

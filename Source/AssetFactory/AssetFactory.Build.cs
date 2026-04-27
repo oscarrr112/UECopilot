@@ -48,6 +48,15 @@ public class AssetFactory : ModuleRules
 			// GAS (Gameplay Ability System) - GameplayTags is always available
 			"GameplayTags",
 			"GameplayTagsEditor",
+			// StateTree generation
+			"StateTreeModule",
+			"StateTreeEditorModule",
+			"StateTreeDeveloper",
+			"GameplayStateTreeModule",
+			"StructUtils",
+			"StructUtilsEditor",
+			"PropertyBindingUtils",
+			"PropertyBindingUtilsEditor",
 			// Editor state & Python execution
 			"ContentBrowser",
 			"LevelEditor",
