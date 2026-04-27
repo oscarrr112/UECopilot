@@ -2,7 +2,7 @@
 
 Creates UE StateTree assets using editor data and the official StateTree compiler.
 
-This schema covers schema selection, schema properties, dynamic editor nodes, state hierarchy, state fields, transitions, linked states/subtrees/assets, compile, save, and structure extraction. Parameters, property bags, and property bindings are covered by future StateTree specs.
+This schema covers schema selection, schema properties, dynamic editor nodes, state hierarchy, state fields, transitions, linked states/subtrees/assets, root/state parameters, linked parameter overrides, compile, save, and structure extraction. Property bindings are covered by a future StateTree spec.
 
 ## Top-Level Fields
 
@@ -17,6 +17,7 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 | `Evaluators` | array | No | Global evaluator nodes |
 | `GlobalTasks` | array | No | Global task nodes |
 | `GlobalTasksCompletion` | string | No | `"Any"` or `"All"` |
+| `RootParameters` | object | No | Root StateTree parameter property bag |
 | `SubTrees` | array | No | Top-level StateTree state roots |
 
 ## Minimal Example
@@ -120,6 +121,54 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 }
 ```
 
+## Parameters
+
+`RootParameters`, state `parameters`, and linked-state `parameterOverrides` use a typed property-bag shape. Parameter IDs are optional; when omitted, AssetFactory creates deterministic IDs from the parameter scope and name so extraction can round-trip stable identifiers.
+
+```json
+{
+	"RootParameters": {
+		"MoveSpeed": { "type": "Float", "value": 600.0 },
+		"CanAttack": { "type": "Bool", "value": true },
+		"SpawnOffset": {
+			"type": "Struct:/Script/CoreUObject.Vector",
+			"value": { "X": 0.0, "Y": 0.0, "Z": 80.0 }
+		},
+		"PatrolNames": { "type": "Set:Name", "value": ["North", "South"] }
+	}
+}
+```
+
+State-local parameters use the same entry shape:
+
+```json
+{
+	"id": "patrol",
+	"name": "Patrol",
+	"parameters": {
+		"LocalSpeed": { "type": "Float", "value": 250.0, "overridden": true }
+	}
+}
+```
+
+Linked and linked-asset states should use `parameterOverrides` instead of declaring a fresh local schema. AssetFactory resolves the linked target, syncs its parameter schema, then applies the listed overrides:
+
+```json
+{
+	"id": "use-linked-asset",
+	"name": "UseLinkedAsset",
+	"type": "LinkedAsset",
+	"linkedAsset": "/Game/AI/ST_Shared.ST_Shared",
+	"parameterOverrides": {
+		"LinkedSpeed": { "value": 350.0, "overridden": true }
+	}
+}
+```
+
+Supported generator types are `Bool`, `Float`, `Name`, `String`, `Text`, `Struct:<StructName>`, `Object:<ClassName>`, `SoftObject:<ClassName>`, `Class:<ClassName>`, `SoftClass:<ClassName>`, `Array:<ElementType>`, and `Set:<ElementType>`. `Struct` accepts loadable `UScriptStruct` paths/names and includes explicit support for `Vector`, `Vector2D`, and `Rotator` aliases. `Map` is rejected for StateTree parameters on UE 5.7 because `EPropertyBagContainerType` does not expose a map container.
+
+`parameterOverrides` may omit `type` because the linked target defines the schema. If `type` is provided, it must match the target parameter type. Unknown override names and type mismatches are rejected before the asset is saved.
+
 ## AI Component Schema Example
 
 ```json
@@ -153,6 +202,8 @@ State entries support:
 | `linkedState` | string | No | For `type: "Linked"`, legacy alias for `linkedSubtree`; target must resolve to a `Subtree` state |
 | `linkedSubtree` | string | No | For `type: "Linked"`, links to a `Subtree` state by `id`, canonical path, or unique leaf name |
 | `linkedAsset` | string | No | For `type: "LinkedAsset"`, object path to another `UStateTree` asset |
+| `parameters` | object | No | State-local parameter property bag. For non-linked states, extracted overridden entries include `overridden: true` |
+| `parameterOverrides` | object | No | Linked or linked-asset parameter overrides applied after the linked target schema is synchronized |
 | `tasks` | array | No | State task nodes |
 | `enterConditions` | array | No | State enter condition nodes |
 | `considerations` | array | No | Utility consideration nodes |
@@ -237,9 +288,12 @@ Blueprint node classes are resolved dynamically, validated against the expected 
 
 ## Extraction
 
-`extract_assets` emits state fields, linked asset references, linked state paths, transitions, transition condition nodes, and dynamic node skeletons with reflected `node`, `instance`, and `executionRuntimeData` properties. It intentionally omits runtime compact data, compiler handles, property binding internals, and property binding graphs.
+`extract_assets` emits root parameters, state-local parameters, linked parameter overrides, state fields, linked asset references, linked state paths, transitions, transition condition nodes, and dynamic node skeletons with reflected `node`, `instance`, and `executionRuntimeData` properties. For linked and linked-asset states, only overridden linked parameters are emitted under `parameterOverrides`; the full linked target schema is not copied into ordinary `parameters`.
+
+Extraction may describe existing editor-authored property bag types that are not accepted by the generator yet. Generator input is limited to the supported generator types listed above.
 
 ## Current Limitations
 
-- Root/state parameters and property bindings are reserved for later specs.
+- Property bindings are reserved for a later spec.
+- Numeric integer, double, byte, and enum parameter generation is intentionally not part of the current StateTree parameter slice.
 - `Update` cannot change `SchemaClass`; recreate the asset if the schema class must change.
