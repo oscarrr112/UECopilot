@@ -62,6 +62,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Bindings")
 	bool IsTextEnabled() const;
 
+	/** Invalid for Text binding: returns an unsupported object type */
+	UFUNCTION(BlueprintCallable, Category = "Bindings")
+	UObject* GetObjectForText() const;
+
+	/** Invalid for property delegates: not const and not BlueprintPure */
+	UFUNCTION(BlueprintCallable, Category = "Bindings")
+	FText GetImpureDisplayText();
+
+	/** Invalid for property delegates: has an input parameter */
+	UFUNCTION(BlueprintCallable, Category = "Bindings")
+	FText GetTextWithParameter(int32 Value) const;
+
 public:
 	//~ Properties that can affect bindings
 
