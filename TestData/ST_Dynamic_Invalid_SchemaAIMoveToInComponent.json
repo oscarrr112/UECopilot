@@ -1,0 +1,21 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Dynamic_Invalid_SchemaAIMoveToInComponent",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"tasks": [
+				{
+					"id": "move-to",
+					"kind": "task",
+					"type": "/Script/GameplayStateTreeModule.StateTreeMoveToTask"
+				}
+			]
+		}
+	]
+}

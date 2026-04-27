@@ -4,6 +4,8 @@
 
 #include "AssetFactoryModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Generators/StateTree/StateTreeExtract.h"
+#include "Generators/StateTree/StateTreeStateBuilder.h"
 #include "StateTreeFactory.h"
 #include "Misc/PackageName.h"
 #include "StateTree.h"
@@ -12,6 +14,7 @@
 #include "StateTreeEditorData.h"
 #include "StateTreeSchema.h"
 #include "StateTreeState.h"
+#include "StateTreeTasksStatus.h"
 #include "Utils/ClassFinderUtils.h"
 #include "Utils/PropertySetterUtils.h"
 #include "UObject/SavePackage.h"
@@ -127,9 +130,22 @@ TOptional<FString> FStateTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject> C
 		return FString(TEXT("StateTree SchemaProperties must be a JSON object"));
 	}
 
-	if (Config->HasField(TEXT("SubTrees")))
+	if ((Config->HasField(TEXT("SubTrees")) && !Config->HasTypedField<EJson::Array>(TEXT("SubTrees")))
+		|| (Config->HasField(TEXT("subTrees")) && !Config->HasTypedField<EJson::Array>(TEXT("subTrees"))))
 	{
-		return FString(TEXT("SubTrees input is not supported by the StateTree core lifecycle spec"));
+		return FString(TEXT("StateTree SubTrees must be an array"));
+	}
+
+	if ((Config->HasField(TEXT("Evaluators")) && !Config->HasTypedField<EJson::Array>(TEXT("Evaluators")))
+		|| (Config->HasField(TEXT("evaluators")) && !Config->HasTypedField<EJson::Array>(TEXT("evaluators"))))
+	{
+		return FString(TEXT("StateTree Evaluators must be an array"));
+	}
+
+	if ((Config->HasField(TEXT("GlobalTasks")) && !Config->HasTypedField<EJson::Array>(TEXT("GlobalTasks")))
+		|| (Config->HasField(TEXT("globalTasks")) && !Config->HasTypedField<EJson::Array>(TEXT("globalTasks"))))
+	{
+		return FString(TEXT("StateTree GlobalTasks must be an array"));
 	}
 
 	if (Config->HasField(TEXT("Bindings")))
@@ -326,6 +342,11 @@ FGenerationResult FStateTreeGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}
 
+	if (!UE::AssetFactory::StateTree::ApplyStateTreeConfig(*EditorData, Config, Error))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+	}
+
 	if (!CompileStateTree(StateTree, Error))
 	{
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
@@ -437,7 +458,14 @@ TSharedPtr<FJsonObject> FStateTreeGenerator::Extract(UObject* Asset, bool bDiffO
 		}
 	}
 
-	TArray<TSharedPtr<FJsonValue>> SubTrees = ExtractSubTreesSkeleton(EditorData);
+	if (EditorData)
+	{
+		OutJson->SetArrayField(TEXT("Evaluators"), UE::AssetFactory::StateTree::ExtractEditorNodes(EditorData->Evaluators, TEXT("evaluator"), bDiffOnly));
+		OutJson->SetArrayField(TEXT("GlobalTasks"), UE::AssetFactory::StateTree::ExtractEditorNodes(EditorData->GlobalTasks, TEXT("globalTask"), bDiffOnly));
+		OutJson->SetStringField(TEXT("GlobalTasksCompletion"), StaticEnum<EStateTreeTaskCompletionType>()->GetNameStringByValue(static_cast<int64>(EditorData->GlobalTasksCompletion)));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SubTrees = UE::AssetFactory::StateTree::ExtractSubTrees(EditorData, bDiffOnly);
 	OutJson->SetArrayField(TEXT("SubTrees"), SubTrees);
 
 	TSharedPtr<FJsonObject> CompiledJson = MakeShared<FJsonObject>();

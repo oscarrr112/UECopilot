@@ -27,7 +27,7 @@ struct ASSETFACTORYAI_API FBlueprintGenerationResult
 
 	/** Generated or modified blueprint */
 	UPROPERTY(BlueprintReadOnly, Category = "Result")
-	UBlueprint* Blueprint = nullptr;
+	TObjectPtr<UBlueprint> Blueprint = nullptr;
 
 	/** Error message if failed */
 	UPROPERTY(BlueprintReadOnly, Category = "Result")

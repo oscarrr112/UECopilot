@@ -1,0 +1,47 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Dynamic_DebugText_WithInstance",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "debug",
+					"name": "Debug",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "debug-text",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDebugTextTask",
+							"node": {
+								"properties": {
+									"Text": "Dynamic StateTree node",
+									"TextColor": {
+										"R": 0,
+										"G": 255,
+										"B": 128,
+										"A": 255
+									},
+									"FontScale": 1.25,
+									"Offset": [0.0, 0.0, 80.0],
+									"bEnabled": true
+								}
+							},
+							"instance": {
+								"properties": {
+									"BindableText": "Hello from AssetFactory"
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -17,6 +17,22 @@ UClass* FClassFinderUtils::FindClassByName(
 		return nullptr;
 	}
 
+	if (ClassName.StartsWith(TEXT("/")))
+	{
+		if (UClass* LoadedClass = FindObject<UClass>(nullptr, *ClassName))
+		{
+			return LoadedClass->IsChildOf(BaseClass) ? LoadedClass : nullptr;
+		}
+
+		if (UClass* LoadedClass = StaticLoadClass(BaseClass, nullptr, *ClassName, nullptr, LOAD_None, nullptr))
+		{
+			return LoadedClass;
+		}
+
+		UE_LOG(LogAssetFactory, Warning, TEXT("Could not find class '%s'"), *ClassName);
+		return nullptr;
+	}
+
 	// Normalize: remove A/U prefix if present (UE class paths don't include prefix)
 	FString SearchName = NormalizeClassName(ClassName, ClassName[0]);
 
@@ -278,6 +294,15 @@ UClass* FClassFinderUtils::TryLoadBlueprintClass(
 {
 	// Normalize the class name for Blueprint lookup
 	FString SearchName = ClassName;
+	if (SearchName.Contains(TEXT("/")) || SearchName.Contains(TEXT(".")))
+	{
+		if (UClass* LoadedClass = LoadClass<UObject>(nullptr, *SearchName))
+		{
+			return LoadedClass->IsChildOf(BaseClass) ? LoadedClass : nullptr;
+		}
+		return nullptr;
+	}
+
 	if (SearchName.StartsWith(TEXT("A")) || SearchName.StartsWith(TEXT("U")))
 	{
 		if (SearchName.Len() > 1 && FChar::IsUpper(SearchName[1]))
