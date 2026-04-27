@@ -1,0 +1,21 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_Invalid_MissingTransitionTarget",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"transitions": [
+				{
+					"id": "missing-target",
+					"trigger": "OnStateCompleted",
+					"type": "GotoState"
+				}
+			]
+		}
+	]
+}

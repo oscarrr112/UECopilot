@@ -1,0 +1,48 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_LinkedSubtree",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "use-reusable",
+					"name": "UseReusable",
+					"type": "Linked",
+					"linkedSubtree": "Reusable"
+				}
+			]
+		},
+		{
+			"id": "reusable",
+			"name": "Reusable",
+			"type": "Subtree",
+			"children": [
+				{
+					"id": "nested-idle",
+					"name": "NestedIdle",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "delay",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.1,
+									"RandomDeviation": 0.0,
+									"bRunForever": false
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

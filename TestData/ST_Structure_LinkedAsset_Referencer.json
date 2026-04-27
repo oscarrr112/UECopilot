@@ -1,0 +1,22 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_LinkedAsset_Referencer",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "external",
+					"name": "ExternalTree",
+					"type": "LinkedAsset",
+					"linkedAsset": "/Game/Generated/StateTree/ST_Structure_LinkedAsset_Target.ST_Structure_LinkedAsset_Target"
+				}
+			]
+		}
+	]
+}

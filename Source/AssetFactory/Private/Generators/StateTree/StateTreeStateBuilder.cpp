@@ -4,28 +4,19 @@
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
-#include "Generators/StateTree/StateTreeJsonTypes.h"
+#include "Generators/StateTree/StateTreeLinkResolver.h"
 #include "Generators/StateTree/StateTreeNodeBuilder.h"
+#include "Generators/StateTree/StateTreeStructureTypes.h"
+#include "Generators/StateTree/StateTreeTransitionBuilder.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
+#include "StateTree.h"
 #include "StateTreeSchema.h"
 #include "StateTreeState.h"
-#include "StateTreeTasksStatus.h"
 
 namespace
 {
-	bool TryGetArray(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
-	{
-		OutArray = nullptr;
-		return Object.IsValid() && Object->TryGetArrayField(FieldName, OutArray) && OutArray;
-	}
-
-	bool TryGetNamedArray(const TSharedPtr<FJsonObject>& Object, const TCHAR* LowerName, const TCHAR* UpperName, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
-	{
-		return TryGetArray(Object, LowerName, OutArray) || TryGetArray(Object, UpperName, OutArray);
-	}
-
-	FGuid MakeStateGuid(const FString& Id, const FString& Name)
+	FGuid MakeStateGuid(const FString& Id, const FString& CanonicalPath)
 	{
 		if (!Id.IsEmpty())
 		{
@@ -36,94 +27,49 @@ namespace
 			}
 			return FGuid::NewDeterministicGuid(TEXT("AssetFactory.StateTree.State.") + Id);
 		}
-		return FGuid::NewDeterministicGuid(TEXT("AssetFactory.StateTree.State.") + Name);
+		return FGuid::NewDeterministicGuid(TEXT("AssetFactory.StateTree.State.") + CanonicalPath);
 	}
 
-	bool ParseEnumByName(const FString& Value, UEnum* Enum, int64& OutValue)
-	{
-		if (!Enum)
-		{
-			return false;
-		}
-		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
-		{
-			if (Enum->HasMetaData(TEXT("Hidden"), Index))
-			{
-				continue;
-			}
-
-			const FString NameString = Enum->GetNameStringByIndex(Index);
-			if (NameString.Equals(Value, ESearchCase::IgnoreCase))
-			{
-				OutValue = Enum->GetValueByIndex(Index);
-				return true;
-			}
-		}
-		return false;
-	}
-
-	bool ParseStateType(const TSharedPtr<FJsonObject>& StateJson, EStateTreeStateType& OutType, FString& OutError)
-	{
-		OutType = EStateTreeStateType::State;
-		FString TypeString;
-		if (!StateJson->TryGetStringField(TEXT("type"), TypeString) && !StateJson->TryGetStringField(TEXT("Type"), TypeString))
-		{
-			return true;
-		}
-
-		int64 RawValue = 0;
-		if (!ParseEnumByName(TypeString, StaticEnum<EStateTreeStateType>(), RawValue))
-		{
-			OutError = FString::Printf(TEXT("Unknown StateTree state type: %s"), *TypeString);
-			return false;
-		}
-		OutType = static_cast<EStateTreeStateType>(RawValue);
-		return true;
-	}
-
-	bool ParseTaskCompletion(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, EStateTreeTaskCompletionType& OutValue, FString& OutError)
-	{
-		FString ValueString;
-		if (!Object->TryGetStringField(FieldName, ValueString))
-		{
-			return true;
-		}
-
-		int64 RawValue = 0;
-		if (!ParseEnumByName(ValueString, StaticEnum<EStateTreeTaskCompletionType>(), RawValue))
-		{
-			OutError = FString::Printf(TEXT("Unknown StateTree task completion value: %s"), *ValueString);
-			return false;
-		}
-		OutValue = static_cast<EStateTreeTaskCompletionType>(RawValue);
-		return true;
-	}
-
-	bool ParseNodeArray(
-		UObject* Outer,
-		const UStateTreeSchema& Schema,
-		const TSharedPtr<FJsonObject>& OwnerJson,
+	bool ParseNodeSpecsFromConfig(
+		const TSharedPtr<FJsonObject>& Config,
 		const TCHAR* LowerFieldName,
 		const TCHAR* UpperFieldName,
 		EAFStateTreeNodeKind Kind,
-		TArray<FStateTreeEditorNode>& OutNodes,
+		TArray<FAFStateTreeNodeSpec>& OutSpecs,
 		FString& OutError)
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
-		if (!TryGetNamedArray(OwnerJson, LowerFieldName, UpperFieldName, Array))
+		if (!UE::AssetFactory::StateTree::StructureJson::ReadOptionalArrayField(Config, LowerFieldName, UpperFieldName, Array, OutError))
+		{
+			return false;
+		}
+		if (!Array)
 		{
 			return true;
 		}
 
 		for (const TSharedPtr<FJsonValue>& Value : *Array)
 		{
-			TSharedPtr<FJsonObject> NodeObject = Value.IsValid() ? Value->AsObject() : nullptr;
 			FAFStateTreeNodeSpec Spec;
-			if (!UE::AssetFactory::StateTree::ParseNodeSpec(NodeObject, Kind, Spec, OutError))
+			if (!UE::AssetFactory::StateTree::ParseNodeSpec(Value.IsValid() ? Value->AsObject() : nullptr, Kind, Spec, OutError))
 			{
 				return false;
 			}
+			OutSpecs.Add(MoveTemp(Spec));
+		}
+		return true;
+	}
 
+	bool BuildEditorNodes(
+		UObject* Outer,
+		const UStateTreeSchema& Schema,
+		const TArray<FAFStateTreeNodeSpec>& Specs,
+		TArray<FStateTreeEditorNode>& OutNodes,
+		FString& OutError)
+	{
+		OutNodes.Reset();
+		for (const FAFStateTreeNodeSpec& Spec : Specs)
+		{
 			FStateTreeEditorNode EditorNode;
 			if (!UE::AssetFactory::StateTree::BuildEditorNode(Outer, Schema, Spec, EditorNode, OutError))
 			{
@@ -131,96 +77,65 @@ namespace
 			}
 			OutNodes.Add(MoveTemp(EditorNode));
 		}
-
 		return true;
 	}
 
-	bool ContainsUnsupportedStructure(const TSharedPtr<FJsonObject>& StateJson, FString& OutError)
+	bool ApplyStateProperties(UStateTreeState& State, const FAFStateTreeStateSpec& Spec)
 	{
-		if (StateJson->HasField(TEXT("transitions")) || StateJson->HasField(TEXT("Transitions")))
+		State.Name = FName(*Spec.Name);
+		State.ID = MakeStateGuid(Spec.Id, Spec.CanonicalPath);
+		State.Type = Spec.Type;
+		State.Description = Spec.Description;
+		State.Tag = Spec.Tag;
+		if (Spec.SelectionBehavior.IsSet())
 		{
-			OutError = TEXT("StateTree transitions input is not supported by the dynamic nodes spec");
-			return true;
+			State.SelectionBehavior = Spec.SelectionBehavior.GetValue();
 		}
-		if (StateJson->HasField(TEXT("linkedState")) || StateJson->HasField(TEXT("LinkedState"))
-			|| StateJson->HasField(TEXT("linkedSubtree")) || StateJson->HasField(TEXT("LinkedSubtree"))
-			|| StateJson->HasField(TEXT("linkedAsset")) || StateJson->HasField(TEXT("LinkedAsset")))
+		if (Spec.TasksCompletion.IsSet())
 		{
-			OutError = TEXT("StateTree linked states/assets input is not supported by the dynamic nodes spec");
-			return true;
+			State.TasksCompletion = Spec.TasksCompletion.GetValue();
 		}
-		return false;
-	}
-
-	bool ApplyStateProperties(UStateTreeState& State, const TSharedPtr<FJsonObject>& StateJson, FString& OutError)
-	{
-		FString Name;
-		if (!StateJson->TryGetStringField(TEXT("name"), Name) && !StateJson->TryGetStringField(TEXT("Name"), Name))
+		if (Spec.bEnabled.IsSet())
 		{
-			OutError = TEXT("StateTree state is missing required field 'name'");
-			return false;
+			State.bEnabled = Spec.bEnabled.GetValue();
 		}
-		if (Name.IsEmpty())
+		if (Spec.CustomTickRate.bTouched)
 		{
-			OutError = TEXT("StateTree state field 'name' must be non-empty");
-			return false;
+			State.bHasCustomTickRate = Spec.CustomTickRate.bEnabled;
+			State.CustomTickRate = Spec.CustomTickRate.Value;
 		}
-
-		FString Id;
-		StateJson->TryGetStringField(TEXT("id"), Id);
-		StateJson->TryGetStringField(TEXT("ID"), Id);
-
-		EStateTreeStateType StateType = EStateTreeStateType::State;
-		if (!ParseStateType(StateJson, StateType, OutError))
-		{
-			return false;
-		}
-
-		State.Name = FName(*Name);
-		State.ID = MakeStateGuid(Id, Name);
-		State.Type = StateType;
-
-		return ParseTaskCompletion(StateJson, TEXT("tasksCompletion"), State.TasksCompletion, OutError)
-			&& ParseTaskCompletion(StateJson, TEXT("TasksCompletion"), State.TasksCompletion, OutError);
+		return true;
 	}
 
 	bool BuildStateRecursive(
 		UStateTreeEditorData& EditorData,
+		const FAFStateTreeStateSpec& Spec,
 		UStateTreeState& State,
-		const TSharedPtr<FJsonObject>& StateJson,
+		FAFStateTreeStateIndex& Index,
 		FString& OutError)
 	{
-		if (!StateJson.IsValid())
-		{
-			OutError = TEXT("StateTree state entry must be a JSON object");
-			return false;
-		}
-		if (ContainsUnsupportedStructure(StateJson, OutError))
-		{
-			return false;
-		}
 		if (!EditorData.Schema)
 		{
 			OutError = TEXT("StateTree editor data has no schema instance");
 			return false;
 		}
 
-		if (!ApplyStateProperties(State, StateJson, OutError))
+		ApplyStateProperties(State, Spec);
+		if (!UE::AssetFactory::StateTree::RegisterStateReference(Index, Spec.Id, Spec.CanonicalPath, State, OutError))
 		{
 			return false;
 		}
 
 		TArray<FStateTreeEditorNode> Tasks;
-		if (!ParseNodeArray(&State, *EditorData.Schema, StateJson, TEXT("tasks"), TEXT("Tasks"), EAFStateTreeNodeKind::Task, Tasks, OutError))
+		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.Tasks, Tasks, OutError))
 		{
 			return false;
 		}
-
 		if (!EditorData.Schema->AllowMultipleTasks())
 		{
 			if (Tasks.Num() > 1)
 			{
-				OutError = FString::Printf(TEXT("StateTree schema '%s' does not allow multiple tasks in state '%s'"), *EditorData.Schema->GetClass()->GetPathName(), *State.Name.ToString());
+				OutError = FString::Printf(TEXT("StateTree schema '%s' does not allow multiple tasks in state '%s'"), *EditorData.Schema->GetClass()->GetPathName(), *Spec.CanonicalPath);
 				return false;
 			}
 			State.Tasks.Reset();
@@ -236,36 +151,148 @@ namespace
 			State.Tasks = MoveTemp(Tasks);
 		}
 
-		State.EnterConditions.Reset();
-		if (!ParseNodeArray(&State, *EditorData.Schema, StateJson, TEXT("enterConditions"), TEXT("EnterConditions"), EAFStateTreeNodeKind::EnterCondition, State.EnterConditions, OutError))
-		{
-			return false;
-		}
-
-		State.Considerations.Reset();
-		if (!ParseNodeArray(&State, *EditorData.Schema, StateJson, TEXT("considerations"), TEXT("Considerations"), EAFStateTreeNodeKind::Consideration, State.Considerations, OutError))
+		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.EnterConditions, State.EnterConditions, OutError)
+			|| !BuildEditorNodes(&State, *EditorData.Schema, Spec.Considerations, State.Considerations, OutError))
 		{
 			return false;
 		}
 
 		State.Children.Reset();
-		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
-		if (TryGetNamedArray(StateJson, TEXT("children"), TEXT("Children"), Children))
+		for (const FAFStateTreeStateSpec& ChildSpec : Spec.Children)
 		{
-			for (const TSharedPtr<FJsonValue>& ChildValue : *Children)
+			UStateTreeState& ChildState = State.AddChildState(FName(*ChildSpec.Name), ChildSpec.Type);
+			if (!BuildStateRecursive(EditorData, ChildSpec, ChildState, Index, OutError))
 			{
-				TSharedPtr<FJsonObject> ChildJson = ChildValue.IsValid() ? ChildValue->AsObject() : nullptr;
-				FString ChildName;
-				if (!ChildJson.IsValid() || (!ChildJson->TryGetStringField(TEXT("name"), ChildName) && !ChildJson->TryGetStringField(TEXT("Name"), ChildName)))
-				{
-					OutError = FString::Printf(TEXT("StateTree child of state '%s' must be an object with a non-empty name"), *State.Name.ToString());
-					return false;
-				}
-				UStateTreeState& ChildState = State.AddChildState(FName(*ChildName));
-				if (!BuildStateRecursive(EditorData, ChildState, ChildJson, OutError))
-				{
-					return false;
-				}
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	bool ParseSubTreeSpecs(
+		TSharedPtr<FJsonObject> Config,
+		TArray<FAFStateTreeStateSpec>& OutSpecs,
+		FString& OutError)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SubTrees = nullptr;
+		if (!UE::AssetFactory::StateTree::StructureJson::ReadOptionalArrayField(Config, TEXT("subTrees"), TEXT("SubTrees"), SubTrees, OutError))
+		{
+			return false;
+		}
+		if (!SubTrees)
+		{
+			return true;
+		}
+
+		for (const TSharedPtr<FJsonValue>& SubTreeValue : *SubTrees)
+		{
+			FAFStateTreeStateSpec SubTreeSpec;
+			if (!UE::AssetFactory::StateTree::ParseStateSpec(SubTreeValue.IsValid() ? SubTreeValue->AsObject() : nullptr, FString(), SubTreeSpec, OutError))
+			{
+				return false;
+			}
+			OutSpecs.Add(MoveTemp(SubTreeSpec));
+		}
+		return true;
+	}
+
+	bool ApplyLinkedState(
+		UStateTreeState& State,
+		const FAFStateTreeStateSpec& Spec,
+		const FAFStateTreeStateIndex& Index,
+		FString& OutError)
+	{
+		if (!Spec.LinkedState.IsEmpty() || !Spec.LinkedSubtree.IsEmpty())
+		{
+			if (Spec.Type != EStateTreeStateType::Linked)
+			{
+				OutError = FString::Printf(TEXT("StateTree state '%s' defines linkedState/linkedSubtree but is not type Linked"), *Spec.CanonicalPath);
+				return false;
+			}
+			if (!Spec.LinkedState.IsEmpty() && !Spec.LinkedSubtree.IsEmpty())
+			{
+				OutError = FString::Printf(TEXT("StateTree state '%s' cannot define both linkedState and linkedSubtree"), *Spec.CanonicalPath);
+				return false;
+			}
+
+			const FString& Reference = Spec.LinkedSubtree.IsEmpty() ? Spec.LinkedState : Spec.LinkedSubtree;
+			UStateTreeState* LinkedState = nullptr;
+			if (!UE::AssetFactory::StateTree::ResolveStateReference(Index, Reference, LinkedState, OutError))
+			{
+				OutError = FString::Printf(TEXT("StateTree linked state '%s' has invalid target: %s"), *Spec.CanonicalPath, *OutError);
+				return false;
+			}
+			if (LinkedState == &State)
+			{
+				OutError = FString::Printf(TEXT("StateTree linked state '%s' cannot link to itself"), *Spec.CanonicalPath);
+				return false;
+			}
+			if (LinkedState->Type != EStateTreeStateType::Subtree)
+			{
+				OutError = FString::Printf(TEXT("StateTree linked target '%s' must be type Subtree"), *Reference);
+				return false;
+			}
+			State.SetLinkedState(LinkedState->GetLinkToState());
+		}
+
+		if (!Spec.LinkedAsset.IsEmpty())
+		{
+			if (Spec.Type != EStateTreeStateType::LinkedAsset)
+			{
+				OutError = FString::Printf(TEXT("StateTree state '%s' defines linkedAsset but is not type LinkedAsset"), *Spec.CanonicalPath);
+				return false;
+			}
+
+			UStateTree* LinkedAsset = LoadObject<UStateTree>(nullptr, *Spec.LinkedAsset);
+			if (!LinkedAsset)
+			{
+				OutError = FString::Printf(TEXT("StateTree linkedAsset '%s' could not be loaded"), *Spec.LinkedAsset);
+				return false;
+			}
+			State.SetLinkedStateAsset(LinkedAsset);
+		}
+
+		if (Spec.Type == EStateTreeStateType::Linked && Spec.LinkedState.IsEmpty() && Spec.LinkedSubtree.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("StateTree linked state '%s' must define linkedState or linkedSubtree"), *Spec.CanonicalPath);
+			return false;
+		}
+		if (Spec.Type == EStateTreeStateType::LinkedAsset && Spec.LinkedAsset.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("StateTree linked asset state '%s' must define linkedAsset"), *Spec.CanonicalPath);
+			return false;
+		}
+
+		return true;
+	}
+
+	bool FinalizeStateRecursive(
+		UStateTreeEditorData& EditorData,
+		const FAFStateTreeStateSpec& Spec,
+		UStateTreeState& State,
+		const FAFStateTreeStateIndex& Index,
+		FString& OutError)
+	{
+		if (!ApplyLinkedState(State, Spec, Index, OutError))
+		{
+			return false;
+		}
+		if (!UE::AssetFactory::StateTree::BuildTransitionsForState(&State, *EditorData.Schema, Index, Spec, State, OutError))
+		{
+			return false;
+		}
+
+		if (Spec.Children.Num() != State.Children.Num())
+		{
+			OutError = FString::Printf(TEXT("StateTree state '%s' child count mismatch during finalize"), *Spec.CanonicalPath);
+			return false;
+		}
+		for (int32 ChildIndex = 0; ChildIndex < Spec.Children.Num(); ++ChildIndex)
+		{
+			if (!State.Children[ChildIndex] || !FinalizeStateRecursive(EditorData, Spec.Children[ChildIndex], *State.Children[ChildIndex], Index, OutError))
+			{
+				return false;
 			}
 		}
 
@@ -289,43 +316,53 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 		return false;
 	}
 
-	EditorData.Evaluators.Reset();
-	if (!ParseNodeArray(&EditorData, *EditorData.Schema, Config, TEXT("evaluators"), TEXT("Evaluators"), EAFStateTreeNodeKind::Evaluator, EditorData.Evaluators, OutError))
+	TArray<FAFStateTreeNodeSpec> EvaluatorSpecs;
+	TArray<FAFStateTreeNodeSpec> GlobalTaskSpecs;
+	TArray<FAFStateTreeStateSpec> SubTreeSpecs;
+	if (!ParseNodeSpecsFromConfig(Config, TEXT("evaluators"), TEXT("Evaluators"), EAFStateTreeNodeKind::Evaluator, EvaluatorSpecs, OutError)
+		|| !ParseNodeSpecsFromConfig(Config, TEXT("globalTasks"), TEXT("GlobalTasks"), EAFStateTreeNodeKind::GlobalTask, GlobalTaskSpecs, OutError)
+		|| !ParseSubTreeSpecs(Config, SubTreeSpecs, OutError))
 	{
 		return false;
 	}
 
-	EditorData.GlobalTasks.Reset();
-	if (!ParseNodeArray(&EditorData, *EditorData.Schema, Config, TEXT("globalTasks"), TEXT("GlobalTasks"), EAFStateTreeNodeKind::GlobalTask, EditorData.GlobalTasks, OutError))
+	FString CompletionString;
+	if (UE::AssetFactory::StateTree::StructureJson::TryGetStringField(Config, TEXT("globalTasksCompletion"), TEXT("GlobalTasksCompletion"), CompletionString))
 	{
-		return false;
+		EStateTreeTaskCompletionType CompletionType = EStateTreeTaskCompletionType::Any;
+		if (!UE::AssetFactory::StateTree::TryParseTaskCompletionType(CompletionString, CompletionType))
+		{
+			OutError = FString::Printf(TEXT("Unknown StateTree global task completion value: %s"), *CompletionString);
+			return false;
+		}
+		EditorData.GlobalTasksCompletion = CompletionType;
 	}
 
-	if (!ParseTaskCompletion(Config, TEXT("GlobalTasksCompletion"), EditorData.GlobalTasksCompletion, OutError)
-		|| !ParseTaskCompletion(Config, TEXT("globalTasksCompletion"), EditorData.GlobalTasksCompletion, OutError))
+	if (!BuildEditorNodes(&EditorData, *EditorData.Schema, EvaluatorSpecs, EditorData.Evaluators, OutError)
+		|| !BuildEditorNodes(&EditorData, *EditorData.Schema, GlobalTaskSpecs, EditorData.GlobalTasks, OutError))
 	{
 		return false;
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* SubTrees = nullptr;
-	if (!TryGetNamedArray(Config, TEXT("subTrees"), TEXT("SubTrees"), SubTrees))
-	{
-		return true;
 	}
 
 	EditorData.SubTrees.Reset();
-	for (const TSharedPtr<FJsonValue>& SubTreeValue : *SubTrees)
+	FAFStateTreeStateIndex Index;
+	for (const FAFStateTreeStateSpec& SubTreeSpec : SubTreeSpecs)
 	{
-		TSharedPtr<FJsonObject> SubTreeJson = SubTreeValue.IsValid() ? SubTreeValue->AsObject() : nullptr;
-		FString SubTreeName;
-		if (!SubTreeJson.IsValid() || (!SubTreeJson->TryGetStringField(TEXT("name"), SubTreeName) && !SubTreeJson->TryGetStringField(TEXT("Name"), SubTreeName)) || SubTreeName.IsEmpty())
+		UStateTreeState& SubTree = EditorData.AddSubTree(FName(*SubTreeSpec.Name));
+		if (!BuildStateRecursive(EditorData, SubTreeSpec, SubTree, Index, OutError))
 		{
-			OutError = TEXT("SubTrees must be an array of state objects with non-empty names");
 			return false;
 		}
+	}
 
-		UStateTreeState& SubTree = EditorData.AddSubTree(FName(*SubTreeName));
-		if (!BuildStateRecursive(EditorData, SubTree, SubTreeJson, OutError))
+	if (SubTreeSpecs.Num() != EditorData.SubTrees.Num())
+	{
+		OutError = TEXT("StateTree subtree count mismatch during finalize");
+		return false;
+	}
+	for (int32 SubTreeIndex = 0; SubTreeIndex < SubTreeSpecs.Num(); ++SubTreeIndex)
+	{
+		if (!EditorData.SubTrees[SubTreeIndex] || !FinalizeStateRecursive(EditorData, SubTreeSpecs[SubTreeIndex], *EditorData.SubTrees[SubTreeIndex], Index, OutError))
 		{
 			return false;
 		}

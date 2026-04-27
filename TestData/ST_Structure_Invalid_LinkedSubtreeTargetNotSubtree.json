@@ -1,0 +1,27 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_Invalid_LinkedSubtreeTargetNotSubtree",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "regular",
+					"name": "Regular",
+					"type": "State"
+				},
+				{
+					"id": "link",
+					"name": "BadLink",
+					"type": "Linked",
+					"linkedSubtree": "Regular"
+				}
+			]
+		}
+	]
+}
