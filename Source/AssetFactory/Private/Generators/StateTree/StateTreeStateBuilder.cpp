@@ -319,6 +319,24 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 	TArray<FAFStateTreeNodeSpec> EvaluatorSpecs;
 	TArray<FAFStateTreeNodeSpec> GlobalTaskSpecs;
 	TArray<FAFStateTreeStateSpec> SubTreeSpecs;
+	TSharedPtr<FJsonObject> RootParametersObject;
+	FAFStateTreeParameterBagSpec RootParametersSpec;
+	if (!UE::AssetFactory::StateTree::StructureJson::ReadOptionalObjectField(Config, TEXT("rootParameters"), TEXT("RootParameters"), RootParametersObject, OutError))
+	{
+		return false;
+	}
+	if (!RootParametersObject.IsValid()
+		&& !UE::AssetFactory::StateTree::StructureJson::ReadOptionalObjectField(Config, TEXT("parameters"), TEXT("Parameters"), RootParametersObject, OutError))
+	{
+		return false;
+	}
+	if (RootParametersObject.IsValid())
+	{
+		if (!UE::AssetFactory::StateTree::ParseParameterBagSpec(RootParametersObject, TEXT("root"), RootParametersSpec, OutError))
+		{
+			return false;
+		}
+	}
 	if (!ParseNodeSpecsFromConfig(Config, TEXT("evaluators"), TEXT("Evaluators"), EAFStateTreeNodeKind::Evaluator, EvaluatorSpecs, OutError)
 		|| !ParseNodeSpecsFromConfig(Config, TEXT("globalTasks"), TEXT("GlobalTasks"), EAFStateTreeNodeKind::GlobalTask, GlobalTaskSpecs, OutError)
 		|| !ParseSubTreeSpecs(Config, SubTreeSpecs, OutError))

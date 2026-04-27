@@ -6,6 +6,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Generators/StateTree/StateTreeJsonTypes.h"
+#include "Generators/StateTree/StateTreePropertyBagAdapter.h"
 #include "GameplayTagContainer.h"
 #include "StateTreeState.h"
 #include "StateTreeTasksStatus.h"
@@ -53,6 +54,8 @@ struct FAFStateTreeStateSpec
 	FString LinkedState;
 	FString LinkedSubtree;
 	FString LinkedAsset;
+	FAFStateTreeParameterBagSpec Parameters;
+	FAFStateTreeParameterBagSpec ParameterOverrides;
 	TArray<FAFStateTreeNodeSpec> Tasks;
 	TArray<FAFStateTreeNodeSpec> EnterConditions;
 	TArray<FAFStateTreeNodeSpec> Considerations;
@@ -82,6 +85,30 @@ namespace UE::AssetFactory::StateTree
 		inline bool TryGetObjectField(const TSharedPtr<FJsonObject>& Object, const TCHAR* LowerName, const TCHAR* UpperName, TSharedPtr<FJsonObject>& OutValue)
 		{
 			return TryGetObject(Object, LowerName, OutValue) || TryGetObject(Object, UpperName, OutValue);
+		}
+
+		inline bool ReadOptionalObjectField(
+			const TSharedPtr<FJsonObject>& Object,
+			const TCHAR* LowerName,
+			const TCHAR* UpperName,
+			TSharedPtr<FJsonObject>& OutValue,
+			FString& OutError)
+		{
+			OutValue.Reset();
+			if (!Object.IsValid())
+			{
+				return true;
+			}
+			if (!Object->HasField(LowerName) && !Object->HasField(UpperName))
+			{
+				return true;
+			}
+			if (TryGetObjectField(Object, LowerName, UpperName, OutValue))
+			{
+				return true;
+			}
+			OutError = FString::Printf(TEXT("StateTree field '%s' must be an object"), LowerName);
+			return false;
 		}
 
 		inline bool TryGetArrayField(const TSharedPtr<FJsonObject>& Object, const TCHAR* LowerName, const TCHAR* UpperName, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
@@ -561,6 +588,37 @@ namespace UE::AssetFactory::StateTree
 			OutError = FString::Printf(TEXT("Unknown StateTree state tag: %s"), *StringValue);
 			return false;
 		}
+
+		TSharedPtr<FJsonObject> ParametersObject;
+		if (!StructureJson::ReadOptionalObjectField(StateObject, TEXT("parameters"), TEXT("Parameters"), ParametersObject, OutError))
+		{
+			return false;
+		}
+		if (ParametersObject.IsValid())
+		{
+			if (!ParseParameterBagSpec(ParametersObject, OutSpec.CanonicalPath, OutSpec.Parameters, OutError))
+			{
+				return false;
+			}
+		}
+
+		TSharedPtr<FJsonObject> OverridesObject;
+		if (!StructureJson::ReadOptionalObjectField(StateObject, TEXT("parameterOverrides"), TEXT("ParameterOverrides"), OverridesObject, OutError))
+		{
+			return false;
+		}
+		if (OverridesObject.IsValid())
+		{
+			if (!ParseParameterBagSpec(OverridesObject, OutSpec.CanonicalPath + TEXT(".overrides"), OutSpec.ParameterOverrides, OutError, false))
+			{
+				return false;
+			}
+			for (FAFStateTreeParameterSpec& OverrideSpec : OutSpec.ParameterOverrides.Parameters)
+			{
+				OverrideSpec.bOverridden = true;
+			}
+		}
+
 		bool bBoolValue = false;
 		if (StructureJson::TryGetBoolField(StateObject, TEXT("enabled"), TEXT("Enabled"), bBoolValue))
 		{
