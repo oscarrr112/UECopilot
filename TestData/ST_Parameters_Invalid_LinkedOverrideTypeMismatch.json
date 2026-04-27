@@ -1,0 +1,29 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Parameters_Invalid_LinkedOverrideTypeMismatch",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "use-linked-asset",
+					"name": "UseLinkedAsset",
+					"type": "LinkedAsset",
+					"linkedAsset": "/Game/AFSmoke/ST_Parameters_LinkedTarget.ST_Parameters_LinkedTarget",
+					"parameterOverrides": {
+						"LinkedSpeed": {
+							"type": "String",
+							"value": "fast",
+							"overridden": true
+						}
+					}
+				}
+			]
+		}
+	]
+}

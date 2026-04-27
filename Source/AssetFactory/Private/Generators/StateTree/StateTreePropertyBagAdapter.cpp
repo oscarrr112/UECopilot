@@ -2,6 +2,7 @@
 
 #include "Generators/StateTree/StateTreePropertyBagAdapter.h"
 
+#include "StateTreeState.h"
 #include "Utils/ClassFinderUtils.h"
 #include "Utils/PropertySetterUtils.h"
 #include "UObject/UnrealType.h"
@@ -286,6 +287,41 @@ namespace
 			|| ValueType == EPropertyBagPropertyType::Class
 			|| ValueType == EPropertyBagPropertyType::SoftClass;
 	}
+
+	bool ContainsPropertyID(TConstArrayView<FGuid> PropertyIDs, const FGuid& PropertyID)
+	{
+		for (const FGuid& ExistingID : PropertyIDs)
+		{
+			if (ExistingID == PropertyID)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool DoesResolvedTypeMatchDesc(const FAFResolvedParameterType& ResolvedType, const FPropertyBagPropertyDesc& Desc)
+	{
+		if (ResolvedType.ValueType != Desc.ValueType || ResolvedType.ValueTypeObject != Desc.ValueTypeObject)
+		{
+			return false;
+		}
+
+		if (ResolvedType.ContainerTypes.Num() != Desc.ContainerTypes.Num())
+		{
+			return false;
+		}
+
+		for (int32 Index = 0; Index < ResolvedType.ContainerTypes.Num(); ++Index)
+		{
+			if (ResolvedType.ContainerTypes[Index] != Desc.ContainerTypes[Index])
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
 }
 
 bool UE::AssetFactory::StateTree::ParseParameterBagSpec(
@@ -456,9 +492,109 @@ bool UE::AssetFactory::StateTree::ApplyParameterBagSpec(
 	return true;
 }
 
+bool UE::AssetFactory::StateTree::ApplyParameterOverrides(
+	FStateTreeStateParameters& Parameters,
+	const FAFStateTreeParameterBagSpec& OverrideSpec,
+	const FString& ScopeLabel,
+	FString& OutError)
+{
+	if (!OverrideSpec.bSpecified)
+	{
+		return true;
+	}
+
+	const UPropertyBag* BagStruct = Parameters.Parameters.GetPropertyBagStruct();
+	FStructView MutableValue = Parameters.Parameters.GetMutableValue();
+	void* BagMemory = MutableValue.GetMemory();
+
+	TArray<TPair<FGuid, bool>> OverrideStates;
+	OverrideStates.Reserve(OverrideSpec.Parameters.Num());
+	TSharedPtr<FJsonObject> ValuesObject = MakeShared<FJsonObject>();
+
+	for (const FAFStateTreeParameterSpec& Override : OverrideSpec.Parameters)
+	{
+		const FPropertyBagPropertyDesc* Desc = BagStruct
+			? BagStruct->FindPropertyDescByName(FName(*Override.Name))
+			: nullptr;
+		if (!Desc)
+		{
+			OutError = FString::Printf(
+				TEXT("StateTree parameter override '%s.%s' references unknown parameter '%s'"),
+				*ScopeLabel,
+				*Override.Name,
+				*Override.Name);
+			return false;
+		}
+
+		if (!Override.Type.IsEmpty())
+		{
+			FAFResolvedParameterType OverrideType;
+			if (!ResolveParameterType(Override, ScopeLabel, OverrideType, OutError))
+			{
+				return false;
+			}
+
+			if (!DoesResolvedTypeMatchDesc(OverrideType, *Desc))
+			{
+				OutError = FString::Printf(
+					TEXT("StateTree parameter override '%s.%s' type mismatch: expected '%s', got '%s'"),
+					*ScopeLabel,
+					*Override.Name,
+					*MakeTypeString(*Desc),
+					*Override.Type);
+				return false;
+			}
+		}
+
+		OverrideStates.Add(TPair<FGuid, bool>(Desc->ID, Override.bOverridden || Override.bHasValue));
+		if (Override.bHasValue)
+		{
+			ValuesObject->SetField(Override.Name, Override.Value);
+		}
+	}
+
+	if (ValuesObject->Values.Num() > 0)
+	{
+		if (!BagStruct || !BagMemory)
+		{
+			OutError = FString::Printf(TEXT("StateTree parameter bag memory for override scope '%s' was not created"), *ScopeLabel);
+			return false;
+		}
+
+		if (!FPropertySetterUtils::SetStructFromJson(const_cast<UPropertyBag*>(BagStruct), BagMemory, MakeShared<FJsonValueObject>(ValuesObject)))
+		{
+			OutError = FString::Printf(TEXT("Failed to set StateTree parameter overrides for scope '%s'"), *ScopeLabel);
+			return false;
+		}
+	}
+
+	for (const TPair<FGuid, bool>& OverrideState : OverrideStates)
+	{
+		if (OverrideState.Value)
+		{
+			Parameters.PropertyOverrides.AddUnique(OverrideState.Key);
+		}
+		else
+		{
+			Parameters.PropertyOverrides.Remove(OverrideState.Key);
+		}
+	}
+
+	return true;
+}
+
 TSharedPtr<FJsonObject> UE::AssetFactory::StateTree::ExtractParameterBag(
 	const FInstancedPropertyBag& Bag,
 	bool bDiffOnly)
+{
+	return UE::AssetFactory::StateTree::ExtractParameterBag(Bag, bDiffOnly, TConstArrayView<FGuid>(), false);
+}
+
+TSharedPtr<FJsonObject> UE::AssetFactory::StateTree::ExtractParameterBag(
+	const FInstancedPropertyBag& Bag,
+	bool bDiffOnly,
+	TConstArrayView<FGuid> OverriddenPropertyIDs,
+	bool bOverridesOnly)
 {
 	(void)bDiffOnly;
 
@@ -483,10 +619,20 @@ TSharedPtr<FJsonObject> UE::AssetFactory::StateTree::ExtractParameterBag(
 			continue;
 		}
 
+		const bool bIsOverridden = ContainsPropertyID(OverriddenPropertyIDs, Desc.ID);
+		if (bOverridesOnly && !bIsOverridden)
+		{
+			continue;
+		}
+
 		const void* ValuePtr = Desc.CachedProperty->ContainerPtrToValuePtr<void>(BagMemory);
 		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 		Entry->SetStringField(TEXT("id"), Desc.ID.ToString(EGuidFormats::DigitsWithHyphensLower));
 		Entry->SetStringField(TEXT("type"), MakeTypeString(Desc));
+		if (bIsOverridden)
+		{
+			Entry->SetBoolField(TEXT("overridden"), true);
+		}
 		if (TSharedPtr<FJsonValue> JsonValue = FPropertySetterUtils::ExtractPropertyToJson(const_cast<FProperty*>(Desc.CachedProperty), ValuePtr);
 			JsonValue.IsValid() && !(IsReferenceType(Desc.ValueType) && JsonValue->Type == EJson::Null))
 		{

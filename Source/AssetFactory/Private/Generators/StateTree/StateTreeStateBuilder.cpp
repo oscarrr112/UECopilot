@@ -85,6 +85,8 @@ namespace
 		State.Name = FName(*Spec.Name);
 		State.ID = MakeStateGuid(Spec.Id, Spec.CanonicalPath);
 		State.Type = Spec.Type;
+		State.Parameters.bFixedLayout = Spec.Type == EStateTreeStateType::Linked
+			|| Spec.Type == EStateTreeStateType::LinkedAsset;
 		State.Description = Spec.Description;
 		State.Tag = Spec.Tag;
 		if (Spec.SelectionBehavior.IsSet())
@@ -105,6 +107,31 @@ namespace
 			State.CustomTickRate = Spec.CustomTickRate.Value;
 		}
 		return true;
+	}
+
+	bool ApplyInlineParameterOverrideFlags(
+		FStateTreeStateParameters& Parameters,
+		const FAFStateTreeParameterBagSpec& ParameterSpec,
+		const FString& ScopeLabel,
+		FString& OutError)
+	{
+		FAFStateTreeParameterBagSpec OverrideFlags;
+		OverrideFlags.bSpecified = ParameterSpec.bSpecified;
+		for (const FAFStateTreeParameterSpec& Parameter : ParameterSpec.Parameters)
+		{
+			if (!Parameter.bOverridden)
+			{
+				continue;
+			}
+
+			FAFStateTreeParameterSpec Override = Parameter;
+			Override.bHasValue = false;
+			Override.Value.Reset();
+			OverrideFlags.Parameters.Add(MoveTemp(Override));
+		}
+
+		return OverrideFlags.Parameters.IsEmpty()
+			|| UE::AssetFactory::StateTree::ApplyParameterOverrides(Parameters, OverrideFlags, ScopeLabel, OutError);
 	}
 
 	bool BuildStateRecursive(
@@ -132,6 +159,23 @@ namespace
 				State.Parameters.Parameters,
 				Spec.Parameters,
 				TEXT(""),
+				Spec.CanonicalPath,
+				OutError))
+			{
+				return false;
+			}
+			if (!ApplyInlineParameterOverrideFlags(State.Parameters, Spec.Parameters, Spec.CanonicalPath, OutError))
+			{
+				return false;
+			}
+		}
+		if (Spec.Type != EStateTreeStateType::Linked
+			&& Spec.Type != EStateTreeStateType::LinkedAsset
+			&& Spec.ParameterOverrides.bSpecified)
+		{
+			if (!UE::AssetFactory::StateTree::ApplyParameterOverrides(
+				State.Parameters,
+				Spec.ParameterOverrides,
 				Spec.CanonicalPath,
 				OutError))
 			{
@@ -290,6 +334,20 @@ namespace
 		if (!ApplyLinkedState(State, Spec, Index, OutError))
 		{
 			return false;
+		}
+		if (Spec.Type == EStateTreeStateType::Linked
+			|| Spec.Type == EStateTreeStateType::LinkedAsset)
+		{
+			State.UpdateParametersFromLinkedSubtree();
+			if (Spec.ParameterOverrides.bSpecified
+				&& !UE::AssetFactory::StateTree::ApplyParameterOverrides(
+					State.Parameters,
+					Spec.ParameterOverrides,
+					Spec.CanonicalPath,
+					OutError))
+			{
+				return false;
+			}
 		}
 		if (!UE::AssetFactory::StateTree::BuildTransitionsForState(&State, *EditorData.Schema, Index, Spec, State, OutError))
 		{

@@ -229,10 +229,16 @@ namespace
 			CustomTickRate->SetNumberField(TEXT("value"), State.CustomTickRate);
 			StateJson->SetObjectField(TEXT("customTickRate"), CustomTickRate);
 		}
-		TSharedPtr<FJsonObject> Parameters = UE::AssetFactory::StateTree::ExtractParameterBag(State.Parameters.Parameters, bDiffOnly);
+		const bool bLinkedParameters = State.Type == EStateTreeStateType::Linked
+			|| State.Type == EStateTreeStateType::LinkedAsset;
+		TSharedPtr<FJsonObject> Parameters = UE::AssetFactory::StateTree::ExtractParameterBag(
+			State.Parameters.Parameters,
+			bDiffOnly,
+			State.Parameters.PropertyOverrides,
+			bLinkedParameters);
 		if (Parameters.IsValid() && Parameters->Values.Num() > 0)
 		{
-			StateJson->SetObjectField(TEXT("parameters"), Parameters);
+			StateJson->SetObjectField(bLinkedParameters ? TEXT("parameterOverrides") : TEXT("parameters"), Parameters);
 		}
 		if (State.Type == EStateTreeStateType::Linked)
 		{

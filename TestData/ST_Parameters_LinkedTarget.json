@@ -1,0 +1,20 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Parameters_LinkedTarget",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"RootParameters": {
+		"LinkedSpeed": {
+			"type": "Float",
+			"value": 200.0
+		}
+	},
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State"
+		}
+	]
+}

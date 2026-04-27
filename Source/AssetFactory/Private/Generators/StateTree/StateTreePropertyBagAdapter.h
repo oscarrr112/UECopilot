@@ -7,6 +7,8 @@
 #include "Dom/JsonValue.h"
 #include "StructUtils/PropertyBag.h"
 
+struct FStateTreeStateParameters;
+
 struct FAFStateTreeParameterSpec
 {
 	FString Name;
@@ -40,7 +42,19 @@ namespace UE::AssetFactory::StateTree
 		const FString& ScopeLabel,
 		FString& OutError);
 
+	bool ApplyParameterOverrides(
+		FStateTreeStateParameters& Parameters,
+		const FAFStateTreeParameterBagSpec& OverrideSpec,
+		const FString& ScopeLabel,
+		FString& OutError);
+
 	TSharedPtr<FJsonObject> ExtractParameterBag(
 		const FInstancedPropertyBag& Bag,
 		bool bDiffOnly);
+
+	TSharedPtr<FJsonObject> ExtractParameterBag(
+		const FInstancedPropertyBag& Bag,
+		bool bDiffOnly,
+		TConstArrayView<FGuid> OverriddenPropertyIDs,
+		bool bOverridesOnly);
 }
