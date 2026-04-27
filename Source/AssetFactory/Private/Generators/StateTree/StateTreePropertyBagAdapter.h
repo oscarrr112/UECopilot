@@ -20,6 +20,7 @@ struct FAFStateTreeParameterSpec
 
 struct FAFStateTreeParameterBagSpec
 {
+	bool bSpecified = false;
 	TArray<FAFStateTreeParameterSpec> Parameters;
 };
 

@@ -1,0 +1,13 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Parameters_Invalid_UnknownType",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"rootParameters": {
+		"Bad": {
+			"type": "DefinitelyNotAType",
+			"value": 1
+		}
+	}
+}

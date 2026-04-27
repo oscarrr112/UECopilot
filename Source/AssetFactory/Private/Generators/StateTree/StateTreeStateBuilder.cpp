@@ -125,6 +125,19 @@ namespace
 		{
 			return false;
 		}
+		if (Spec.Parameters.bSpecified)
+		{
+			State.Parameters.ResetParametersAndOverrides();
+			if (!UE::AssetFactory::StateTree::ApplyParameterBagSpec(
+				State.Parameters.Parameters,
+				Spec.Parameters,
+				TEXT(""),
+				Spec.CanonicalPath,
+				OutError))
+			{
+				return false;
+			}
+		}
 
 		TArray<FStateTreeEditorNode> Tasks;
 		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.Tasks, Tasks, OutError))
@@ -360,6 +373,19 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 		|| !BuildEditorNodes(&EditorData, *EditorData.Schema, GlobalTaskSpecs, EditorData.GlobalTasks, OutError))
 	{
 		return false;
+	}
+	if (RootParametersObject.IsValid())
+	{
+		FInstancedPropertyBag& RootParameterBag = const_cast<FInstancedPropertyBag&>(EditorData.GetRootParametersPropertyBag());
+		if (!UE::AssetFactory::StateTree::ApplyParameterBagSpec(
+			RootParameterBag,
+			RootParametersSpec,
+			TEXT(""),
+			TEXT("root"),
+			OutError))
+		{
+			return false;
+		}
 	}
 
 	EditorData.SubTrees.Reset();
