@@ -1,0 +1,101 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_Transitions",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"selectionBehavior": "TrySelectChildrenInOrder",
+			"children": [
+				{
+					"id": "patrol",
+					"name": "Patrol",
+					"type": "State",
+					"description": "Transition smoke source",
+					"customTickRate": {
+						"enabled": true,
+						"value": 0.5
+					},
+					"tasks": [
+						{
+							"id": "debug-patrol",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDebugTextTask",
+							"node": {
+								"properties": {
+									"Text": "Spec3 transition smoke",
+									"FontScale": 1.0,
+									"bEnabled": true
+								}
+							}
+						}
+					],
+					"transitions": [
+						{
+							"id": "patrol-to-attack",
+							"trigger": "OnStateSucceeded",
+							"target": "attack",
+							"priority": "High",
+							"delay": {
+								"enabled": true,
+								"duration": 0.25,
+								"randomVariance": 0.05
+							},
+							"conditions": [
+								{
+									"id": "always",
+									"kind": "transitionCondition",
+									"type": "/Script/StateTreeModule.StateTreeRandomCondition",
+									"instance": {
+										"properties": {
+											"Threshold": 1.0
+										}
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"id": "attack",
+					"name": "Attack",
+					"type": "State",
+					"transitions": [
+						{
+							"id": "attack-to-recovery",
+							"trigger": "OnStateFailed",
+							"type": "GotoState",
+							"target": "Root/Recovery"
+						}
+					]
+				},
+				{
+					"id": "recovery",
+					"name": "Recovery",
+					"type": "State",
+					"transitions": [
+						{
+							"id": "recovery-next",
+							"trigger": "OnStateCompleted",
+							"type": "NextState"
+						},
+						{
+							"id": "recovery-succeeded",
+							"trigger": "OnStateCompleted",
+							"type": "Succeeded"
+						}
+					]
+				},
+				{
+					"id": "complete",
+					"name": "Complete",
+					"type": "State"
+				}
+			]
+		}
+	]
+}

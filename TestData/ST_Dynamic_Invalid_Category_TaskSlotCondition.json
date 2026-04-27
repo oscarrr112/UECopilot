@@ -1,0 +1,28 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Dynamic_Invalid_Category_TaskSlotCondition",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "bad",
+					"name": "Bad",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "condition-in-task-slot",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeCompareIntCondition"
+						}
+					]
+				}
+			]
+		}
+	]
+}

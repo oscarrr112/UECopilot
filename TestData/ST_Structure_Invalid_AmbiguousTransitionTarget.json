@@ -1,0 +1,51 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_Invalid_AmbiguousTransitionTarget",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "branch-a",
+					"name": "BranchA",
+					"type": "State",
+					"children": [
+						{
+							"id": "idle-a",
+							"name": "Idle",
+							"type": "State"
+						}
+					]
+				},
+				{
+					"id": "branch-b",
+					"name": "BranchB",
+					"type": "State",
+					"children": [
+						{
+							"id": "idle-b",
+							"name": "Idle",
+							"type": "State"
+						}
+					]
+				},
+				{
+					"id": "source",
+					"name": "Source",
+					"type": "State",
+					"transitions": [
+						{
+							"id": "ambiguous",
+							"target": "Idle"
+						}
+					]
+				}
+			]
+		}
+	]
+}

@@ -1,0 +1,21 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_Invalid_EventMissingTag",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"transitions": [
+				{
+					"id": "event-no-tag",
+					"trigger": "OnEvent",
+					"type": "Succeeded"
+				}
+			]
+		}
+	]
+}

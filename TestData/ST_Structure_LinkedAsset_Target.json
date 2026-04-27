@@ -1,0 +1,21 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Structure_LinkedAsset_Target",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "target-root",
+			"name": "TargetRoot",
+			"type": "State",
+			"children": [
+				{
+					"id": "target-idle",
+					"name": "TargetIdle",
+					"type": "State"
+				}
+			]
+		}
+	]
+}

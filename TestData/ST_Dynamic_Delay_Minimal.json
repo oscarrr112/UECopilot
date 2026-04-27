@@ -1,0 +1,35 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Dynamic_Delay_Minimal",
+	"Path": "/Game/Generated/StateTree",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "idle",
+					"name": "Idle",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "delay",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.1,
+									"RandomDeviation": 0.0,
+									"bRunForever": false
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}
