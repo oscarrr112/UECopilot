@@ -110,6 +110,93 @@ namespace
 			*ParameterSpec.Type);
 		return false;
 	}
+
+	FString MakeTypeString(const FPropertyBagPropertyDesc& Desc)
+	{
+		FString Base;
+		switch (Desc.ValueType)
+		{
+		case EPropertyBagPropertyType::Bool:
+			Base = TEXT("Bool");
+			break;
+		case EPropertyBagPropertyType::Byte:
+			Base = Desc.ValueTypeObject
+				? FString::Printf(TEXT("Enum:%s"), *Desc.ValueTypeObject->GetPathName())
+				: TEXT("Byte");
+			break;
+		case EPropertyBagPropertyType::Int32:
+			Base = TEXT("Int32");
+			break;
+		case EPropertyBagPropertyType::Int64:
+			Base = TEXT("Int64");
+			break;
+		case EPropertyBagPropertyType::UInt32:
+			Base = TEXT("UInt32");
+			break;
+		case EPropertyBagPropertyType::UInt64:
+			Base = TEXT("UInt64");
+			break;
+		case EPropertyBagPropertyType::Float:
+			Base = TEXT("Float");
+			break;
+		case EPropertyBagPropertyType::Double:
+			Base = TEXT("Double");
+			break;
+		case EPropertyBagPropertyType::Name:
+			Base = TEXT("Name");
+			break;
+		case EPropertyBagPropertyType::String:
+			Base = TEXT("String");
+			break;
+		case EPropertyBagPropertyType::Text:
+			Base = TEXT("Text");
+			break;
+		case EPropertyBagPropertyType::Enum:
+			Base = FString::Printf(TEXT("Enum:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		case EPropertyBagPropertyType::Struct:
+			Base = FString::Printf(TEXT("Struct:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		case EPropertyBagPropertyType::Object:
+			Base = FString::Printf(TEXT("Object:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		case EPropertyBagPropertyType::SoftObject:
+			Base = FString::Printf(TEXT("SoftObject:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		case EPropertyBagPropertyType::Class:
+			Base = FString::Printf(TEXT("Class:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		case EPropertyBagPropertyType::SoftClass:
+			Base = FString::Printf(TEXT("SoftClass:%s"), *GetPathNameSafe(Desc.ValueTypeObject));
+			break;
+		default:
+			Base = TEXT("None");
+			break;
+		}
+
+		for (int32 Index = static_cast<int32>(Desc.ContainerTypes.Num()) - 1; Index >= 0; --Index)
+		{
+			const EPropertyBagContainerType Container = Desc.ContainerTypes[Index];
+			if (Container == EPropertyBagContainerType::Array)
+			{
+				Base = TEXT("Array:") + Base;
+			}
+			else if (Container == EPropertyBagContainerType::Set)
+			{
+				Base = TEXT("Set:") + Base;
+			}
+		}
+
+		return Base;
+	}
+
+	bool IsReferenceType(const EPropertyBagPropertyType ValueType)
+	{
+		return ValueType == EPropertyBagPropertyType::Object
+			|| ValueType == EPropertyBagPropertyType::SoftObject
+			|| ValueType == EPropertyBagPropertyType::Class
+			|| ValueType == EPropertyBagPropertyType::SoftClass;
+	}
 }
 
 bool UE::AssetFactory::StateTree::ParseParameterBagSpec(
@@ -272,7 +359,41 @@ TSharedPtr<FJsonObject> UE::AssetFactory::StateTree::ExtractParameterBag(
 	const FInstancedPropertyBag& Bag,
 	bool bDiffOnly)
 {
-	(void)Bag;
 	(void)bDiffOnly;
-	return MakeShared<FJsonObject>();
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	const UPropertyBag* BagStruct = Bag.GetPropertyBagStruct();
+	if (!BagStruct)
+	{
+		return Result;
+	}
+
+	const FConstStructView Value = Bag.GetValue();
+	const void* BagMemory = Value.GetMemory();
+	if (!BagMemory)
+	{
+		return Result;
+	}
+
+	for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
+	{
+		if (!Desc.CachedProperty)
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Desc.CachedProperty->ContainerPtrToValuePtr<void>(BagMemory);
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("id"), Desc.ID.ToString(EGuidFormats::DigitsWithHyphensLower));
+		Entry->SetStringField(TEXT("type"), MakeTypeString(Desc));
+		if (TSharedPtr<FJsonValue> JsonValue = FPropertySetterUtils::ExtractPropertyToJson(const_cast<FProperty*>(Desc.CachedProperty), ValuePtr);
+			JsonValue.IsValid() && !(IsReferenceType(Desc.ValueType) && JsonValue->Type == EJson::Null))
+		{
+			Entry->SetField(TEXT("value"), JsonValue);
+		}
+
+		Result->SetObjectField(Desc.Name.ToString(), Entry);
+	}
+
+	return Result;
 }

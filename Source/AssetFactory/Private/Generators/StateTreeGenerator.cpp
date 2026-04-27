@@ -5,6 +5,7 @@
 #include "AssetFactoryModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Generators/StateTree/StateTreeExtract.h"
+#include "Generators/StateTree/StateTreePropertyBagAdapter.h"
 #include "Generators/StateTree/StateTreeStateBuilder.h"
 #include "StateTreeFactory.h"
 #include "Misc/PackageName.h"
@@ -463,6 +464,12 @@ TSharedPtr<FJsonObject> FStateTreeGenerator::Extract(UObject* Asset, bool bDiffO
 		OutJson->SetArrayField(TEXT("Evaluators"), UE::AssetFactory::StateTree::ExtractEditorNodes(EditorData->Evaluators, TEXT("evaluator"), bDiffOnly));
 		OutJson->SetArrayField(TEXT("GlobalTasks"), UE::AssetFactory::StateTree::ExtractEditorNodes(EditorData->GlobalTasks, TEXT("globalTask"), bDiffOnly));
 		OutJson->SetStringField(TEXT("GlobalTasksCompletion"), StaticEnum<EStateTreeTaskCompletionType>()->GetNameStringByValue(static_cast<int64>(EditorData->GlobalTasksCompletion)));
+
+		TSharedPtr<FJsonObject> RootParameters = UE::AssetFactory::StateTree::ExtractParameterBag(EditorData->GetRootParametersPropertyBag(), bDiffOnly);
+		if (RootParameters.IsValid() && RootParameters->Values.Num() > 0)
+		{
+			OutJson->SetObjectField(TEXT("RootParameters"), RootParameters);
+		}
 	}
 
 	TArray<TSharedPtr<FJsonValue>> SubTrees = UE::AssetFactory::StateTree::ExtractSubTrees(EditorData, bDiffOnly);

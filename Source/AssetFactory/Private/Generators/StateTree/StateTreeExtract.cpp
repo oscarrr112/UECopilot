@@ -9,6 +9,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Generators/StateTree/StateTreeJsonTypes.h"
+#include "Generators/StateTree/StateTreePropertyBagAdapter.h"
 #include "JsonObjectConverter.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
@@ -227,6 +228,11 @@ namespace
 			CustomTickRate->SetBoolField(TEXT("enabled"), State.bHasCustomTickRate);
 			CustomTickRate->SetNumberField(TEXT("value"), State.CustomTickRate);
 			StateJson->SetObjectField(TEXT("customTickRate"), CustomTickRate);
+		}
+		TSharedPtr<FJsonObject> Parameters = UE::AssetFactory::StateTree::ExtractParameterBag(State.Parameters.Parameters, bDiffOnly);
+		if (Parameters.IsValid() && Parameters->Values.Num() > 0)
+		{
+			StateJson->SetObjectField(TEXT("parameters"), Parameters);
 		}
 		if (State.Type == EStateTreeStateType::Linked)
 		{
