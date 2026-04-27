@@ -1,0 +1,20 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Parameters_Invalid_MapUnsupported",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"RootParameters": {
+		"BadMap": {
+			"type": "Map:String:Int32",
+			"value": {
+				"A": 1
+			}
+		}
+	},
+	"SubTrees": [
+		{
+			"name": "Root"
+		}
+	]
+}

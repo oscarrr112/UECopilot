@@ -12,6 +12,7 @@ namespace
 	{
 		EPropertyBagPropertyType ValueType = EPropertyBagPropertyType::None;
 		const UObject* ValueTypeObject = nullptr;
+		TArray<EPropertyBagContainerType> ContainerTypes;
 	};
 
 	FGuid MakeParameterGuid(const FString& ScopeLabel, const FString& Name)
@@ -30,6 +31,43 @@ namespace
 		return !OutBaseType.IsEmpty() && !OutClassName.IsEmpty();
 	}
 
+	UScriptStruct* ResolveStructTypeObject(const FString& StructName)
+	{
+		UScriptStruct* Struct = FindObject<UScriptStruct>(nullptr, *StructName);
+		if (!Struct)
+		{
+			Struct = LoadObject<UScriptStruct>(nullptr, *StructName);
+		}
+		if (Struct)
+		{
+			return Struct;
+		}
+
+		FString ShortStructName = StructName;
+		int32 DotIndex = INDEX_NONE;
+		if (ShortStructName.FindLastChar(TEXT('.'), DotIndex))
+		{
+			ShortStructName = ShortStructName.Mid(DotIndex + 1);
+		}
+
+		if (ShortStructName.Equals(TEXT("Vector"), ESearchCase::IgnoreCase)
+			|| ShortStructName.Equals(TEXT("FVector"), ESearchCase::IgnoreCase))
+		{
+			return TBaseStructure<FVector>::Get();
+		}
+		if (ShortStructName.Equals(TEXT("Vector2D"), ESearchCase::IgnoreCase)
+			|| ShortStructName.Equals(TEXT("FVector2D"), ESearchCase::IgnoreCase))
+		{
+			return TBaseStructure<FVector2D>::Get();
+		}
+		if (ShortStructName.Equals(TEXT("Rotator"), ESearchCase::IgnoreCase)
+			|| ShortStructName.Equals(TEXT("FRotator"), ESearchCase::IgnoreCase))
+		{
+			return TBaseStructure<FRotator>::Get();
+		}
+		return nullptr;
+	}
+
 	bool ResolveParameterType(
 		const FAFStateTreeParameterSpec& ParameterSpec,
 		const FString& ScopeLabel,
@@ -38,6 +76,42 @@ namespace
 	{
 		FString TypeString = ParameterSpec.Type;
 		TypeString.TrimStartAndEndInline();
+
+		FString BaseType;
+		FString SubType;
+		if (SplitReferenceType(TypeString, BaseType, SubType))
+		{
+			EPropertyBagContainerType ContainerType = EPropertyBagContainerType::None;
+			if (BaseType.Equals(TEXT("Array"), ESearchCase::IgnoreCase))
+			{
+				ContainerType = EPropertyBagContainerType::Array;
+			}
+			else if (BaseType.Equals(TEXT("Set"), ESearchCase::IgnoreCase))
+			{
+				ContainerType = EPropertyBagContainerType::Set;
+			}
+			else if (BaseType.Equals(TEXT("Map"), ESearchCase::IgnoreCase))
+			{
+				OutError = FString::Printf(
+					TEXT("StateTree parameters do not support Map containers in UE 5.7 for '%s.%s' type '%s'"),
+					*ScopeLabel,
+					*ParameterSpec.Name,
+					*ParameterSpec.Type);
+				return false;
+			}
+
+			if (ContainerType != EPropertyBagContainerType::None)
+			{
+				FAFStateTreeParameterSpec ElementSpec = ParameterSpec;
+				ElementSpec.Type = SubType;
+				if (!ResolveParameterType(ElementSpec, ScopeLabel, OutType, OutError))
+				{
+					return false;
+				}
+				OutType.ContainerTypes.Insert(ContainerType, 0);
+				return true;
+			}
+		}
 
 		if (TypeString.Equals(TEXT("Bool"), ESearchCase::IgnoreCase))
 		{
@@ -65,10 +139,25 @@ namespace
 			return true;
 		}
 
-		FString BaseType;
 		FString ClassName;
 		if (SplitReferenceType(TypeString, BaseType, ClassName))
 		{
+			if (BaseType.Equals(TEXT("Struct"), ESearchCase::IgnoreCase))
+			{
+				OutType.ValueType = EPropertyBagPropertyType::Struct;
+				UScriptStruct* ResolvedStruct = ResolveStructTypeObject(ClassName);
+				if (!ResolvedStruct)
+				{
+					OutError = FString::Printf(
+						TEXT("Unknown StateTree parameter struct for '%s.%s' type '%s'"),
+						*ScopeLabel,
+						*ParameterSpec.Name,
+						*ParameterSpec.Type);
+					return false;
+				}
+				OutType.ValueTypeObject = ResolvedStruct;
+				return true;
+			}
 			if (BaseType.Equals(TEXT("Object"), ESearchCase::IgnoreCase))
 			{
 				OutType.ValueType = EPropertyBagPropertyType::Object;
@@ -302,6 +391,18 @@ bool UE::AssetFactory::StateTree::ApplyParameterBagSpec(
 			ResolvedType.ValueType,
 			ResolvedType.ValueTypeObject));
 		Desc.ID = ParameterSpec.bHasExplicitID ? ParameterSpec.ID : MakeParameterGuid(ScopeLabel, ParameterSpec.Name);
+		for (const EPropertyBagContainerType ContainerType : ResolvedType.ContainerTypes)
+		{
+			if (!Desc.ContainerTypes.Add(ContainerType))
+			{
+				OutError = FString::Printf(
+					TEXT("StateTree parameter '%s.%s' has too many nested containers in type '%s'"),
+					*ScopeLabel,
+					*ParameterSpec.Name,
+					*ParameterSpec.Type);
+				return false;
+			}
+		}
 	}
 
 	Bag.Reset();

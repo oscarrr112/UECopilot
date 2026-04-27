@@ -1,0 +1,46 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Parameters_Complex",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"RootParameters": {
+		"SpawnOffset": {
+			"type": "Struct:/Script/CoreUObject.Vector",
+			"value": {
+				"X": 10,
+				"Y": 20,
+				"Z": 30
+			}
+		},
+		"Waypoints": {
+			"type": "Array:Struct:/Script/CoreUObject.Vector",
+			"value": [
+				{
+					"X": 0,
+					"Y": 0,
+					"Z": 0
+				},
+				{
+					"X": 300,
+					"Y": 0,
+					"Z": 0
+				}
+			]
+		},
+		"Names": {
+			"type": "Set:Name",
+			"value": [
+				"Alpha",
+				"Beta"
+			]
+		}
+	},
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State"
+		}
+	]
+}
