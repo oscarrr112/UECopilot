@@ -1,0 +1,61 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Bindings_Function",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"rootParameters": {
+		"BaseDelay": { "type": "Float", "value": 0.25 },
+		"BonusDelay": { "type": "Float", "value": 0.15 }
+	},
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "idle",
+					"name": "Idle",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "delay-task",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.1
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"bindings": [
+		{
+			"id": "duration-from-add-float",
+			"function": {
+				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
+				"output": ["Result"],
+				"inputs": {
+					"Left": {
+						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
+					},
+					"Right": {
+						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
+					}
+				}
+			},
+			"target": {
+				"kind": "task",
+				"state": "Root/Idle",
+				"node": "delay-task",
+				"section": "instance",
+				"path": ["Duration"]
+			}
+		}
+	]
+}

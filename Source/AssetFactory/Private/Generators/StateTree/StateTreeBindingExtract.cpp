@@ -29,6 +29,8 @@ namespace
 		TMap<FGuid, FString> StatePathByParameterId;
 		TMap<FGuid, FNodeEndpointReference> NodeById;
 		TMap<FGuid, FContextEndpointReference> ContextById;
+		TMultiMap<FGuid, const FPropertyBindingBinding*> BindingsByTargetStructId;
+		TSet<FGuid> PropertyFunctionNodeIds;
 	};
 
 	FString GuidToString(const FGuid& Guid)
@@ -216,17 +218,117 @@ namespace
 		return EndpointJson;
 	}
 
-	TSharedPtr<FJsonObject> ExtractBinding(const FBindingExtractContext& Context, const FPropertyBindingBinding& Binding)
+	const FStateTreeEditorNode* GetPropertyFunctionEditorNode(const FPropertyBindingBinding& Binding)
 	{
 #if WITH_EDITOR
 		if (Binding.GetPropertyFunctionNode().IsValid())
 		{
-			return nullptr;
+			return Binding.GetPropertyFunctionNode().GetPtr<const FStateTreeEditorNode>();
 		}
 #endif
+		return nullptr;
+	}
+
+	FString ExtractFunctionInputName(const FPropertyBindingPath& InputPath)
+	{
+		if (InputPath.NumSegments() == 1)
+		{
+			return InputPath.GetSegment(0).GetName().ToString();
+		}
+		return InputPath.ToString();
+	}
+
+	TSharedPtr<FJsonObject> ExtractFunctionSpec(
+		const FBindingExtractContext& Context,
+		const FPropertyBindingBinding& Binding,
+		TSet<FGuid>& VisitedFunctionIds);
+
+	TSharedPtr<FJsonObject> ExtractFunctionInputSpec(
+		const FBindingExtractContext& Context,
+		const FPropertyBindingBinding& Binding,
+		TSet<FGuid>& VisitedFunctionIds)
+	{
+		TSharedPtr<FJsonObject> InputJson = MakeShared<FJsonObject>();
+		if (GetPropertyFunctionEditorNode(Binding))
+		{
+			InputJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds));
+		}
+		else
+		{
+			InputJson->SetObjectField(TEXT("source"), ExtractEndpoint(Context, Binding.GetSourcePath()));
+		}
+		return InputJson;
+	}
+
+	TSharedPtr<FJsonObject> ExtractFunctionSpec(
+		const FBindingExtractContext& Context,
+		const FPropertyBindingBinding& Binding,
+		TSet<FGuid>& VisitedFunctionIds)
+	{
+		TSharedPtr<FJsonObject> FunctionJson = MakeShared<FJsonObject>();
+		const FStateTreeEditorNode* EditorNode = GetPropertyFunctionEditorNode(Binding);
+		if (!EditorNode || !EditorNode->Node.IsValid())
+		{
+			FunctionJson->SetStringField(TEXT("type"), TEXT(""));
+			FunctionJson->SetArrayField(TEXT("output"), ExtractPathSegments(Binding.GetSourcePath()));
+			FunctionJson->SetObjectField(TEXT("inputs"), MakeShared<FJsonObject>());
+			return FunctionJson;
+		}
+
+		if (const UScriptStruct* FunctionStruct = EditorNode->Node.GetScriptStruct())
+		{
+			FunctionJson->SetStringField(TEXT("type"), FunctionStruct->GetPathName());
+		}
+		FunctionJson->SetArrayField(TEXT("output"), ExtractPathSegments(Binding.GetSourcePath()));
+
+		TSharedPtr<FJsonObject> InputsJson = MakeShared<FJsonObject>();
+		const FGuid FunctionNodeId = EditorNode->ID.IsValid() ? EditorNode->ID : Binding.GetSourcePath().GetStructID();
+		if (!VisitedFunctionIds.Contains(FunctionNodeId))
+		{
+			VisitedFunctionIds.Add(FunctionNodeId);
+
+			TArray<const FPropertyBindingBinding*> InputBindings;
+			Context.BindingsByTargetStructId.MultiFind(FunctionNodeId, InputBindings);
+			InputBindings.Sort([](const FPropertyBindingBinding* A, const FPropertyBindingBinding* B)
+			{
+				return A && B ? A->GetTargetPath().ToString() < B->GetTargetPath().ToString() : A != nullptr;
+			});
+
+			for (const FPropertyBindingBinding* InputBinding : InputBindings)
+			{
+				if (!InputBinding)
+				{
+					continue;
+				}
+				const FString InputName = ExtractFunctionInputName(InputBinding->GetTargetPath());
+				InputsJson->SetObjectField(InputName, ExtractFunctionInputSpec(Context, *InputBinding, VisitedFunctionIds));
+			}
+
+			VisitedFunctionIds.Remove(FunctionNodeId);
+		}
+
+		FunctionJson->SetObjectField(TEXT("inputs"), InputsJson);
+		return FunctionJson;
+	}
+
+	TSharedPtr<FJsonObject> ExtractBinding(const FBindingExtractContext& Context, const FPropertyBindingBinding& Binding)
+	{
+		const FGuid TargetStructId = Binding.GetTargetPath().GetStructID();
+		if (Context.PropertyFunctionNodeIds.Contains(TargetStructId))
+		{
+			return nullptr;
+		}
 
 		TSharedPtr<FJsonObject> BindingJson = MakeShared<FJsonObject>();
-		BindingJson->SetObjectField(TEXT("source"), ExtractEndpoint(Context, Binding.GetSourcePath()));
+		if (GetPropertyFunctionEditorNode(Binding))
+		{
+			TSet<FGuid> VisitedFunctionIds;
+			BindingJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds));
+		}
+		else
+		{
+			BindingJson->SetObjectField(TEXT("source"), ExtractEndpoint(Context, Binding.GetSourcePath()));
+		}
 		BindingJson->SetObjectField(TEXT("target"), ExtractEndpoint(Context, Binding.GetTargetPath()));
 		return BindingJson;
 	}
@@ -247,9 +349,20 @@ TArray<TSharedPtr<FJsonValue>> UE::AssetFactory::StateTree::ExtractPropertyBindi
 	}
 
 	const FBindingExtractContext Context = BuildExtractContext(*EditorData);
-	EditorBindings->ForEachBinding([&Context, &Result](const FPropertyBindingBinding& Binding)
+	FBindingExtractContext ContextWithBindings = Context;
+	EditorBindings->ForEachBinding([&ContextWithBindings](const FPropertyBindingBinding& Binding)
 	{
-		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(Context, Binding);
+		ContextWithBindings.BindingsByTargetStructId.Add(Binding.GetTargetPath().GetStructID(), &Binding);
+		if (const FStateTreeEditorNode* EditorNode = GetPropertyFunctionEditorNode(Binding))
+		{
+			const FGuid FunctionNodeId = EditorNode->ID.IsValid() ? EditorNode->ID : Binding.GetSourcePath().GetStructID();
+			ContextWithBindings.PropertyFunctionNodeIds.Add(FunctionNodeId);
+		}
+	});
+
+	EditorBindings->ForEachBinding([&ContextWithBindings, &Result](const FPropertyBindingBinding& Binding)
+	{
+		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(ContextWithBindings, Binding);
 		if (BindingJson.IsValid())
 		{
 			Result.Add(MakeShared<FJsonValueObject>(BindingJson));
