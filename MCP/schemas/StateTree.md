@@ -2,7 +2,7 @@
 
 Creates UE StateTree assets using editor data and the official StateTree compiler.
 
-This schema covers schema selection, schema properties, dynamic editor nodes, state hierarchy, state fields, transitions, linked states/subtrees/assets, root/state parameters, linked parameter overrides, compile, save, and structure extraction. Property bindings are covered by a future StateTree spec.
+This schema covers schema selection, schema properties, dynamic editor nodes, state hierarchy, state fields, transitions, linked states/subtrees/assets, root/state parameters, linked parameter overrides, property bindings and property function bindings through the top-level `bindings` array, compile, save, and structure extraction.
 
 ## Top-Level Fields
 
@@ -19,6 +19,7 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 | `GlobalTasksCompletion` | string | No | `"Any"` or `"All"` |
 | `RootParameters` | object | No | Root StateTree parameter property bag |
 | `SubTrees` | array | No | Top-level StateTree state roots |
+| `bindings` | array | No | Property bindings and property function bindings |
 
 ## Minimal Example
 
@@ -286,6 +287,91 @@ C++ struct nodes are resolved dynamically from `type`, validated against the con
 
 Blueprint node classes are resolved dynamically, validated against the expected Blueprint node base class, checked through `UStateTreeSchema::IsClassAllowed()`, wrapped with the matching StateTree Blueprint wrapper struct, and initialized with a UObject instance.
 
+## Bindings
+
+Property bindings are declared in the top-level `bindings` array. Each binding entry must define exactly one source form and one `target`:
+
+- Ordinary binding: `source` + `target`
+- Property function binding: `function` + `target`
+
+Ordinary binding example:
+
+```json
+{
+	"bindings": [
+		{
+			"id": "duration-from-root-parameter",
+			"source": { "kind": "rootParameter", "path": ["DelaySeconds"] },
+			"target": {
+				"kind": "task",
+				"state": "Root/Idle",
+				"node": "delay-task",
+				"section": "instance",
+				"path": ["Duration"]
+			}
+		}
+	]
+}
+```
+
+Property function binding example:
+
+```json
+{
+	"bindings": [
+		{
+			"id": "duration-from-add-float",
+			"function": {
+				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
+				"output": ["Result"],
+				"inputs": {
+					"Left": {
+						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
+					},
+					"Right": {
+						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
+					}
+				}
+			},
+			"target": {
+				"kind": "task",
+				"state": "Root/Idle",
+				"node": "delay-task",
+				"section": "instance",
+				"path": ["Duration"]
+			}
+		}
+	]
+}
+```
+
+`source` and `target` endpoints use a JSON object with `kind`, optional owner selectors, optional `section`, and a `path` array. Supported endpoint `kind` values are `rootParameter`, `stateParameter`, `context`, `evaluator`, `globalTask`, `task`, `enterCondition`, `transitionCondition`, `consideration`, `function`, and `node`. Snake-case aliases are accepted for multi-word values, for example `root_parameter`, `global_task`, `enter_condition`, and `transition_condition`.
+
+Node-backed endpoints may select data with `section`: `instance`, `node`, or `executionRuntimeData`. The default is `instance`. State-scoped node targets use `state` plus `node`; transition condition endpoints also use `transition` to identify the transition.
+
+Each path segment supports either string shorthand or an explicit JSON object:
+
+```json
+{
+	"path": [
+		"Items",
+		{ "name": "Entry", "arrayIndex": 0 },
+		{
+			"name": "Value",
+			"guid": "00000000-0000-0000-0000-000000000000",
+			"instanceStruct": "/Script/CoreUObject.Vector",
+			"access": "Offset"
+		}
+	]
+}
+```
+
+The explicit object shape supports `name`, `arrayIndex`, `guid`, `instanceStruct`, and `access`. StateTree bindings do not support a string DSL such as `"Root/Idle.delay-task.Duration"`; use explicit JSON endpoint objects and path arrays so the generator can validate each owner and segment.
+
+Property function bindings use a `function` object with `type`, `output`, and `inputs`. The function `type` must resolve to a supported StateTree property function. `output` is a binding path array on the function result, and each input value must be a JSON object containing exactly one of `source` or nested `function`.
+
+Invalid diagnostics include the binding index or binding `id` where available. Common failures include unknown source, unknown target, bad path, duplicate target path, bad function type, and type mismatch.
+
 ## Extraction
 
 `extract_assets` emits root parameters, state-local parameters, linked parameter overrides, state fields, linked asset references, linked state paths, transitions, transition condition nodes, and dynamic node skeletons with reflected `node`, `instance`, and `executionRuntimeData` properties. For linked and linked-asset states, only overridden linked parameters are emitted under `parameterOverrides`; the full linked target schema is not copied into ordinary `parameters`.
@@ -294,6 +380,6 @@ Extraction may describe existing editor-authored property bag types that are not
 
 ## Current Limitations
 
-- Property bindings are reserved for a later spec.
+- Function input map keys currently support single property names. Multi-segment editor-authored function input target extraction is deferred.
 - Numeric integer, double, byte, and enum parameter generation is intentionally not part of the current StateTree parameter slice.
 - `Update` cannot change `SchemaClass`; recreate the asset if the schema class must change.
