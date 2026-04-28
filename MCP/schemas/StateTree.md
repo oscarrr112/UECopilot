@@ -1,27 +1,27 @@
-# StateTree Generator Schema
+# StateTree 生成器 Schema
 
-Creates UE StateTree assets using editor data and the official StateTree compiler.
+通过 editor data 和官方 StateTree compiler 创建 UE StateTree 资产。
 
-This schema covers schema selection, schema properties, dynamic editor nodes, state hierarchy, state fields, transitions, linked states/subtrees/assets, root/state parameters, linked parameter overrides, property bindings and property function bindings through the top-level `bindings` array, compile, save, and structure extraction.
+本文覆盖 schema 选择、schema properties、动态 editor nodes、state hierarchy、state fields、transitions、linked states/subtrees/assets、root/state parameters、linked parameter overrides、顶层 `bindings` 数组中的 property bindings / property function bindings、compile、save，以及结构提取。
 
-## Top-Level Fields
+## 顶层字段
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `AssetType` | string | Yes | Must be `"StateTree"` |
-| `Name` | string | Yes | Asset name |
-| `Path` | string | Yes | Content path, for example `"/Game/AI"` |
-| `Action` | string | No | `"Create"`, `"Update"`, or `"CreateOrUpdate"` |
-| `SchemaClass` | string | Yes | `UStateTreeSchema` subclass path or exact class name |
-| `SchemaProperties` | object | No | Properties applied to the schema instance via reflection |
-| `Evaluators` | array | No | Global evaluator nodes |
-| `GlobalTasks` | array | No | Global task nodes |
-| `GlobalTasksCompletion` | string | No | `"Any"` or `"All"` |
-| `RootParameters` | object | No | Root StateTree parameter property bag |
-| `SubTrees` | array | No | Top-level StateTree state roots |
-| `bindings` | array | No | Property bindings and property function bindings |
+| `AssetType` | string | 是 | 必须是 `"StateTree"` |
+| `Name` | string | 是 | 资产名 |
+| `Path` | string | 是 | Content path，例如 `"/Game/AI"` |
+| `Action` | string | 否 | `"Create"`、`"Update"` 或 `"CreateOrUpdate"` |
+| `SchemaClass` | string | 是 | `UStateTreeSchema` 子类 path 或精确 class name |
+| `SchemaProperties` | object | 否 | 通过反射写入 schema instance 的 properties |
+| `Evaluators` | array | 否 | global evaluator nodes |
+| `GlobalTasks` | array | 否 | global task nodes |
+| `GlobalTasksCompletion` | string | 否 | `"Any"` 或 `"All"` |
+| `RootParameters` | object | 否 | root StateTree parameter property bag |
+| `SubTrees` | array | 否 | 顶层 StateTree state roots |
+| `bindings` | array | 否 | property bindings 和 property function bindings |
 
-## Minimal Example
+## 最小示例
 
 ```json
 {
@@ -32,7 +32,7 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 }
 ```
 
-## Dynamic Node Example
+## 动态节点示例
 
 ```json
 {
@@ -71,7 +71,7 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 }
 ```
 
-## Structure And Transition Example
+## 结构与 Transition 示例
 
 ```json
 {
@@ -122,9 +122,9 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 }
 ```
 
-## Parameters
+## 参数
 
-`RootParameters`, state `parameters`, and linked-state `parameterOverrides` use a typed property-bag shape. Parameter IDs are optional; when omitted, AssetFactory creates deterministic IDs from the parameter scope and name so extraction can round-trip stable identifiers.
+`RootParameters`、state `parameters`、linked-state `parameterOverrides` 都使用 typed property-bag 形状。Parameter ID 可选；省略时，AssetFactory 会根据 parameter scope 和 name 生成 deterministic ID，让 extraction 能 round-trip stable identifiers。
 
 ```json
 {
@@ -140,7 +140,7 @@ This schema covers schema selection, schema properties, dynamic editor nodes, st
 }
 ```
 
-State-local parameters use the same entry shape:
+state-local parameters 使用同样的 entry 形状：
 
 ```json
 {
@@ -152,7 +152,7 @@ State-local parameters use the same entry shape:
 }
 ```
 
-Linked and linked-asset states should use `parameterOverrides` instead of declaring a fresh local schema. AssetFactory resolves the linked target, syncs its parameter schema, then applies the listed overrides:
+linked 和 linked-asset states 应使用 `parameterOverrides`，而不是声明新的 local schema。AssetFactory 会解析 linked target、同步它的 parameter schema，再应用列出的 overrides：
 
 ```json
 {
@@ -166,11 +166,11 @@ Linked and linked-asset states should use `parameterOverrides` instead of declar
 }
 ```
 
-Supported generator types are `Bool`, `Float`, `Name`, `String`, `Text`, `Struct:<StructName>`, `Object:<ClassName>`, `SoftObject:<ClassName>`, `Class:<ClassName>`, `SoftClass:<ClassName>`, `Array:<ElementType>`, and `Set:<ElementType>`. `Struct` accepts loadable `UScriptStruct` paths/names and includes explicit support for `Vector`, `Vector2D`, and `Rotator` aliases. `Map` is rejected for StateTree parameters on UE 5.7 because `EPropertyBagContainerType` does not expose a map container.
+支持的 generator types 包括 `Bool`、`Float`、`Name`、`String`、`Text`、`Struct:<StructName>`、`Object:<ClassName>`、`SoftObject:<ClassName>`、`Class:<ClassName>`、`SoftClass:<ClassName>`、`Array:<ElementType>` 和 `Set:<ElementType>`。`Struct` 接受可加载的 `UScriptStruct` path/name，并显式支持 `Vector`、`Vector2D`、`Rotator` aliases。UE 5.7 的 `EPropertyBagContainerType` 没有 map container，因此 StateTree parameters 会拒绝 `Map`。
 
-`parameterOverrides` may omit `type` because the linked target defines the schema. If `type` is provided, it must match the target parameter type. Unknown override names and type mismatches are rejected before the asset is saved.
+`parameterOverrides` 可以省略 `type`，因为 linked target 已经定义 schema。如果提供 `type`，它必须匹配目标 parameter type。未知 override name 和 type mismatch 会在保存资产前被拒绝。
 
-## AI Component Schema Example
+## AI Component Schema 示例
 
 ```json
 {
@@ -185,35 +185,35 @@ Supported generator types are `Bool`, `Float`, `Name`, `String`, `Text`, `Struct
 }
 ```
 
-## State Shape
+## State 形状
 
-State entries support:
+State entries 支持：
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `id` | string | No | Stable user-facing ID. GUID strings are preserved; other strings generate deterministic GUIDs |
-| `name` | string | Yes | State display name |
-| `type` | string | No | `State`, `Group`, `Linked`, `LinkedAsset`, or `Subtree` |
-| `selectionBehavior` | string | No | `None`, `TryEnterState`, `TrySelectChildrenInOrder`, `TrySelectChildrenAtRandom`, `TrySelectChildrenWithHighestUtility`, `TrySelectChildrenAtRandomWeightedByUtility`, or `TryFollowTransitions` |
-| `tasksCompletion` | string | No | `Any` or `All` |
-| `description` | string | No | State description |
-| `tag` | string | No | Gameplay tag assigned to the state |
-| `enabled` | bool | No | Whether the state is enabled |
-| `customTickRate` | number/object | No | Number shorthand enables the rate; object supports `enabled` and `value` |
-| `linkedState` | string | No | For `type: "Linked"`, legacy alias for `linkedSubtree`; target must resolve to a `Subtree` state |
-| `linkedSubtree` | string | No | For `type: "Linked"`, links to a `Subtree` state by `id`, canonical path, or unique leaf name |
-| `linkedAsset` | string | No | For `type: "LinkedAsset"`, object path to another `UStateTree` asset |
-| `parameters` | object | No | State-local parameter property bag. For non-linked states, extracted overridden entries include `overridden: true` |
-| `parameterOverrides` | object | No | Linked or linked-asset parameter overrides applied after the linked target schema is synchronized |
-| `tasks` | array | No | State task nodes |
-| `enterConditions` | array | No | State enter condition nodes |
-| `considerations` | array | No | Utility consideration nodes |
-| `transitions` | array | No | Transition entries |
-| `children` | array | No | Child state entries |
+| `id` | string | 否 | 面向用户的 stable ID。GUID strings 会被保留，其他 string 会生成 deterministic GUID |
+| `name` | string | 是 | State display name |
+| `type` | string | 否 | `State`、`Group`、`Linked`、`LinkedAsset` 或 `Subtree` |
+| `selectionBehavior` | string | 否 | `None`、`TryEnterState`、`TrySelectChildrenInOrder`、`TrySelectChildrenAtRandom`、`TrySelectChildrenWithHighestUtility`、`TrySelectChildrenAtRandomWeightedByUtility` 或 `TryFollowTransitions` |
+| `tasksCompletion` | string | 否 | `Any` 或 `All` |
+| `description` | string | 否 | State 描述 |
+| `tag` | string | 否 | 分配给 state 的 Gameplay tag |
+| `enabled` | bool | 否 | state 是否启用 |
+| `customTickRate` | number/object | 否 | number shorthand 会启用 tick rate；object 支持 `enabled` 和 `value` |
+| `linkedState` | string | 否 | `type: "Linked"` 时作为 `linkedSubtree` 的 legacy alias；target 必须解析为 `Subtree` state |
+| `linkedSubtree` | string | 否 | `type: "Linked"` 时，按 `id`、canonical path 或唯一 leaf name 链接到 `Subtree` state |
+| `linkedAsset` | string | 否 | `type: "LinkedAsset"` 时，指向另一个 `UStateTree` asset 的 object path |
+| `parameters` | object | 否 | state-local parameter property bag。对 non-linked states，提取出的 overridden entries 会包含 `overridden: true` |
+| `parameterOverrides` | object | 否 | linked 或 linked-asset parameter overrides，在 linked target schema 同步后应用 |
+| `tasks` | array | 否 | state task nodes |
+| `enterConditions` | array | 否 | state enter condition nodes |
+| `considerations` | array | 否 | utility consideration nodes |
+| `transitions` | array | 否 | transition entries |
+| `children` | array | 否 | child state entries |
 
-Canonical paths use slash-separated state names from the top-level subtree, for example `Root/Combat/Attack`. State references resolve in this order: stable `id`, canonical path, then unique leaf `name`. Ambiguous leaf names are rejected and the error lists all matching paths.
+Canonical path 使用从顶层 subtree 开始、以 slash 分隔的 state names，例如 `Root/Combat/Attack`。State reference 的解析顺序是 stable `id`、canonical path、唯一 leaf `name`。含糊的 leaf name 会被拒绝，错误会列出所有匹配路径。
 
-## Transition Shape
+## Transition 形状
 
 ```json
 {
@@ -229,21 +229,21 @@ Canonical paths use slash-separated state names from the top-level subtree, for 
 }
 ```
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `id` | string | No | Stable user-facing transition ID. GUID strings are preserved; other strings generate deterministic GUIDs |
-| `trigger` | string | No | `OnStateCompleted`, `OnStateSucceeded`, `OnStateFailed`, `OnTick`, or `OnEvent`. `OnDelegate` is intentionally rejected |
-| `type` | string | No | `None`, `Succeeded`, `Failed`, `GotoState`, `NextState`, or `NextSelectableState`. Defaults to `GotoState` when `target` is present, otherwise `Succeeded` |
-| `target` | string | Required for `GotoState` | State reference by `id`, canonical path, or unique leaf name |
-| `priority` | string | No | `Low`, `Normal`, `Medium`, `High`, or `Critical` |
-| `enabled` | bool | No | Whether the transition is enabled |
-| `delay` | number/object | No | Number shorthand enables the delay duration; object supports `enabled`, `duration`, and `randomVariance` |
-| `requiredEvent` | string/object | Required for `OnEvent` | Gameplay tag string or `{ "tag": "..." }` |
-| `conditions` | array | No | Dynamic condition nodes using `kind: "transitionCondition"` |
+| `id` | string | 否 | 面向用户的 stable transition ID。GUID strings 会被保留，其他 string 会生成 deterministic GUID |
+| `trigger` | string | 否 | `OnStateCompleted`、`OnStateSucceeded`、`OnStateFailed`、`OnTick` 或 `OnEvent`。`OnDelegate` 会被有意拒绝 |
+| `type` | string | 否 | `None`、`Succeeded`、`Failed`、`GotoState`、`NextState` 或 `NextSelectableState`。存在 `target` 时默认 `GotoState`，否则默认 `Succeeded` |
+| `target` | string | `GotoState` 必填 | 按 `id`、canonical path 或唯一 leaf name 引用 state |
+| `priority` | string | 否 | `Low`、`Normal`、`Medium`、`High` 或 `Critical` |
+| `enabled` | bool | 否 | transition 是否启用 |
+| `delay` | number/object | 否 | number shorthand 会启用 delay duration；object 支持 `enabled`、`duration`、`randomVariance` |
+| `requiredEvent` | string/object | `OnEvent` 必填 | Gameplay tag string 或 `{ "tag": "..." }` |
+| `conditions` | array | 否 | 使用 `kind: "transitionCondition"` 的 dynamic condition nodes |
 
-## Node Contract
+## 节点契约
 
-The same node shape is used for `Evaluators`, `GlobalTasks`, state `tasks`, state `enterConditions`, state `considerations`, and transition `conditions`.
+`Evaluators`、`GlobalTasks`、state `tasks`、state `enterConditions`、state `considerations`、transition `conditions` 使用同一个 node shape。
 
 ```json
 {
@@ -272,29 +272,29 @@ The same node shape is used for `Evaluators`, `GlobalTasks`, state `tasks`, stat
 }
 ```
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `id` | string | No | Stable user-facing node ID |
-| `kind` | string | No | Must match the containing slot when present: `evaluator`, `globalTask`, `task`, `enterCondition`, `transitionCondition`, or `consideration` |
-| `type` | string | Yes | `UScriptStruct` path/name for C++ nodes or `UClass` path/name for Blueprint nodes |
-| `node.properties` | object | No | Properties on the node template struct or Blueprint wrapper struct |
-| `instance.properties` | object | No | Properties on struct instance data or Blueprint UObject instance data |
-| `executionRuntimeData.properties` | object | No | Properties on execution runtime data |
-| `expression` | object | No | Condition/consideration expression metadata |
-| `properties` | object | No | Alias for `instance.properties` for simple C++ struct nodes |
+| `id` | string | 否 | 面向用户的 stable node ID |
+| `kind` | string | 否 | 存在时必须匹配所在 slot：`evaluator`、`globalTask`、`task`、`enterCondition`、`transitionCondition` 或 `consideration` |
+| `type` | string | 是 | C++ 节点的 `UScriptStruct` path/name，或 Blueprint 节点的 `UClass` path/name |
+| `node.properties` | object | 否 | node template struct 或 Blueprint wrapper struct 上的 properties |
+| `instance.properties` | object | 否 | struct instance data 或 Blueprint UObject instance data 上的 properties |
+| `executionRuntimeData.properties` | object | 否 | execution runtime data 上的 properties |
+| `expression` | object | 否 | condition/consideration expression metadata |
+| `properties` | object | 否 | 简单 C++ struct 节点的 `instance.properties` alias |
 
-C++ struct nodes are resolved dynamically from `type`, validated against the containing slot's expected StateTree base struct, checked through `UStateTreeSchema::IsStructAllowed()`, initialized as `FStateTreeEditorNode`, then compiled by the official compiler.
+C++ struct 节点会从 `type` 动态解析，按所在 slot 期望的 StateTree base struct 校验，再通过 `UStateTreeSchema::IsStructAllowed()` 检查，初始化为 `FStateTreeEditorNode`，最后交给官方 compiler 编译。
 
-Blueprint node classes are resolved dynamically, validated against the expected Blueprint node base class, checked through `UStateTreeSchema::IsClassAllowed()`, wrapped with the matching StateTree Blueprint wrapper struct, and initialized with a UObject instance.
+Blueprint 节点 class 会动态解析，按期望的 Blueprint node base class 校验，再通过 `UStateTreeSchema::IsClassAllowed()` 检查，使用匹配的 StateTree Blueprint wrapper struct 包装，并初始化 UObject instance。
 
-## Bindings
+## 绑定（bindings）
 
-Property bindings are declared in the top-level `bindings` array. Each binding entry must define exactly one source form and one `target`:
+Property bindings 声明在顶层 `bindings` 数组中。每个 binding entry 必须定义一种 source 形式和一个 `target`：
 
-- Ordinary binding: `source` + `target`
-- Property function binding: `function` + `target`
+- 普通 binding：`source` + `target`
+- property function binding：`function` + `target`
 
-Ordinary binding example:
+普通 binding 示例：
 
 ```json
 {
@@ -314,7 +314,7 @@ Ordinary binding example:
 }
 ```
 
-Property function binding example:
+property function binding 示例：
 
 ```json
 {
@@ -345,11 +345,11 @@ Property function binding example:
 }
 ```
 
-`source` and `target` endpoints use a JSON object with `kind`, optional owner selectors, optional `section`, and a `path` array. Supported endpoint `kind` values are `rootParameter`, `stateParameter`, `context`, `evaluator`, `globalTask`, `task`, `enterCondition`, `transitionCondition`, `consideration`, and `node`. Property functions are expressed with a binding-level or nested `function` object, not `kind: "function"`. Snake-case aliases are accepted for multi-word values, for example `root_parameter`, `global_task`, `enter_condition`, and `transition_condition`.
+`source` 和 `target` endpoints 使用 JSON object，包含 `kind`、可选 owner selectors、可选 `section`、以及 `path` 数组。支持的 endpoint `kind` 包括 `rootParameter`、`stateParameter`、`context`、`evaluator`、`globalTask`、`task`、`enterCondition`、`transitionCondition`、`consideration` 和 `node`。Property functions 使用 binding-level 或 nested `function` object 表达，不使用 `kind: "function"`。Multi-word value 接受 snake-case aliases，例如 `root_parameter`、`global_task`、`enter_condition`、`transition_condition`。
 
-Node-backed endpoints may select data with `section`: `instance`, `node`, or `executionRuntimeData`. The default is `instance`. State-scoped node targets use `state` plus `node`; transition condition endpoints also use `transition` to identify the transition.
+node-backed endpoints 可以通过 `section` 选择数据：`instance`、`node` 或 `executionRuntimeData`。默认是 `instance`。State-scoped node targets 使用 `state` 加 `node`；transition condition endpoints 还会使用 `transition` 标识 transition。
 
-Each path segment supports either string shorthand or an explicit JSON object:
+每个 path segment 支持 string shorthand 或显式 JSON object：
 
 ```json
 {
@@ -361,42 +361,42 @@ Each path segment supports either string shorthand or an explicit JSON object:
 }
 ```
 
-The explicit object shape supports `name`, `arrayIndex`, and `guid` for generator input. Extraction can preserve `instanceStruct` and `access` metadata from existing editor assets, but generation rejects those fields until instanced indirection support lands. StateTree bindings do not support a string DSL such as `"Root/Idle.delay-task.Duration"`; use explicit JSON endpoint objects and path arrays so the generator can validate each owner and segment.
+显式 object shape 在 generator input 中支持 `name`、`arrayIndex`、`guid`。Extraction 可以保留现有 editor assets 中的 `instanceStruct` 和 `access` metadata，但 generation 在 instanced indirection support 落地前会拒绝这些字段。StateTree bindings 不支持 `"Root/Idle.delay-task.Duration"` 这类 string DSL；请使用显式 JSON endpoint objects 和 path arrays，让 generator 能校验每个 owner 和 segment。
 
-Property function bindings use a `function` object with `type`, `output`, and `inputs`. The function `type` must resolve to a supported StateTree property function. `output` is a binding path array on the function result, and each input value must be a JSON object containing exactly one of `source` or nested `function`.
+Property function bindings 使用包含 `type`、`output`、`inputs` 的 `function` object。function `type` 必须解析为受支持的 StateTree property function。`output` 是 function result 上的 binding path array，每个 input value 必须是 JSON object，并且只能包含 `source` 或 nested `function` 二者之一。
 
-Invalid diagnostics include the binding index or binding `id` where available. Common failures include unknown source, unknown target, bad path, duplicate target path, bad function type, and type mismatch.
+无效配置的诊断会在可用时包含 binding index 或 binding `id`。常见失败包括 unknown source、unknown target、bad path、duplicate target path、bad function type 和 type mismatch。
 
-## Extraction and Round-trip
+## 提取与 Round-trip
 
-`extract_assets` emits generator-readable StateTree JSON for assets created through this generator. The supported round-trip path is:
+`extract_assets` 会为通过该 generator 创建的资产输出 generator-readable StateTree JSON。支持的 round-trip 路径是：
 
 ```text
 Generate -> Extract -> Generate from extracted JSON -> Extract -> semantic compare
 ```
 
-The project verifier is:
+项目 verifier：
 
 ```bash
 python3 docs/superpowers/verification/statetree_roundtrip_check.py /tmp/left.json /tmp/right.json --fixture ST_Name
 ```
 
-The full MCP smoke helper is:
+完整 MCP smoke helper：
 
 ```bash
 UE_API_BASE=http://127.0.0.1:8559 npm --prefix MCP run smoke:statetree-roundtrip
 ```
 
-Round-trip comparison is semantic, not byte-level. It ignores compile hashes, field order, empty containers that are equivalent to missing fields, and float noise within `1e-4`. It compares state paths, transitions, parameters, dynamic node fields, ordinary bindings, and property function bindings.
+Round-trip comparison 是语义比较，不是 byte-level 比较。它会忽略 compile hashes、字段顺序、等价于 missing fields 的 empty containers，以及 `1e-4` 以内的 float noise。它会比较 state paths、transitions、parameters、dynamic node fields、ordinary bindings 和 property function bindings。
 
-`extract_assets` emits root parameters, state-local parameters, linked parameter overrides, state fields, linked asset references, linked state paths, transitions, transition condition nodes, and dynamic node skeletons with reflected `node`, `instance`, and `executionRuntimeData` properties. For linked and linked-asset states, only overridden linked parameters are emitted under `parameterOverrides`; the full linked target schema is not copied into ordinary `parameters`.
+`extract_assets` 会输出 root parameters、state-local parameters、linked parameter overrides、state fields、linked asset references、linked state paths、transitions、transition condition nodes，以及带有 reflected `node`、`instance`、`executionRuntimeData` properties 的 dynamic node skeletons。对 linked 和 linked-asset states，只会在 `parameterOverrides` 下输出 overridden linked parameters；完整 linked target schema 不会复制到普通 `parameters`。
 
-Extraction may describe existing editor-authored assets outside the generator's input subset. Those fields remain extraction-only unless documented as generator-readable. Generator input is limited to the supported generator types listed above.
+Extraction 可能描述 generator input subset 之外的 existing editor-authored assets。这些字段除非明确标为 generator-readable，否则保持 extraction-only。Generator input 限于上面列出的支持类型。
 
-## Current Limitations
+## 当前限制
 
-- Function input map keys currently support single property names. Multi-segment editor-authored function input target extraction is deferred.
-- Generator input rejects path segment `instanceStruct` and `access`; extraction may emit them for editor-authored assets, but they are not round-trip supported yet.
-- `kind: "function"` is parsed for forward compatibility but is not resolved as a normal source or target endpoint; use a `function` object instead.
-- Numeric integer, double, byte, and enum parameter generation is intentionally not part of the current StateTree parameter slice.
-- `Update` cannot change `SchemaClass`; recreate the asset if the schema class must change.
+- Function input map keys 当前支持 single property names；multi-segment editor-authored function input target extraction 暂缓。
+- Generator input 会拒绝 path segment `instanceStruct` 和 `access`；extraction 可能为 editor-authored assets 输出它们，但它们目前不支持 round-trip。
+- `kind: "function"` 会为了 forward compatibility 被解析，但不会作为普通 source 或 target endpoint 解析；请使用 `function` object。
+- Numeric integer、double、byte、enum parameter generation 暂不属于当前 StateTree parameter slice。
+- `Update` 不能修改 `SchemaClass`；如果必须修改 schema class，请重新创建资产。

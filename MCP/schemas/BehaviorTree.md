@@ -1,4 +1,4 @@
-# BehaviorTree Generator Schema
+# BehaviorTree 生成器 Schema
 
 创建 UE `UBehaviorTree` 资产。本文档只描述当前 `BehaviorTreeGenerator` 已实现的 JSON contract；字段名、UE 类型名和 JSON 示例保持英文原文。
 
@@ -6,33 +6,33 @@
 
 ## 顶层字段
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `AssetType` | string | Yes | 必须是 `"BehaviorTree"` |
-| `Name` | string | Yes | Behavior Tree 资产名 |
-| `Path` | string | Yes | Content path，例如 `"/Game/AI"` |
-| `Action` | string | No | `"Create"`、`"Update"` 或 `"CreateOrUpdate"` |
-| `Blackboard` | string | Yes* | 已存在 `UBlackboardData` 资产路径，例如 `"/Game/AI/BB_Enemy"`；可省略 `.BB_Enemy` 后缀 |
-| `BlackboardInline` | object | Yes* | 内联 BlackboardData 配置，由 `BlackboardDataGenerator` 以 `CreateOrUpdate` 生成 |
-| `Root` | object | Yes | 行为树根节点；必须解析为 `UBTCompositeNode` 子类 |
+| `AssetType` | string | 是 | 必须是 `"BehaviorTree"` |
+| `Name` | string | 是 | Behavior Tree 资产名 |
+| `Path` | string | 是 | Content path，例如 `"/Game/AI"` |
+| `Action` | string | 否 | `"Create"`、`"Update"` 或 `"CreateOrUpdate"` |
+| `Blackboard` | string | 是* | 已存在 `UBlackboardData` 资产路径，例如 `"/Game/AI/BB_Enemy"`；可省略 `.BB_Enemy` 后缀 |
+| `BlackboardInline` | object | 是* | 内联 BlackboardData 配置，由 `BlackboardDataGenerator` 以 `CreateOrUpdate` 生成 |
+| `Root` | object | 是 | 行为树根节点；必须解析为 `UBTCompositeNode` 子类 |
 
 `Blackboard` 与 `BlackboardInline` 互斥。生成时必须能解析出一个 `UBlackboardData`：使用已有资产时提供 `Blackboard`，需要同步创建/更新黑板时提供 `BlackboardInline`。
 
 `BlackboardInline` 复用 `BlackboardDataGenerator` contract。若未提供 `Name`，当前生成器使用 `BB_<BehaviorTreeName>`；若未提供 `Path`，使用 BehaviorTree 的 `Path`。
 
-## 节点 Shape
+## 节点形状
 
 树节点使用 `Node` 指定 `UBTNode` 子类，附件节点使用 `Type` 指定 `UBTDecorator` 或 `UBTService` 子类。
 
-| Field | Applies To | Type | Required | Description |
+| 字段 | 适用对象 | 类型 | 必填 | 说明 |
 |-------|------------|------|----------|-------------|
-| `Node` | tree node | string | Yes | `UBTCompositeNode` 或 `UBTTaskNode` 子类名/路径，例如 `"BTComposite_Sequence"`、`"BTTask_Wait"` |
-| `Type` | decorator/service | string | Yes | `UBTDecorator` 或 `UBTService` 子类名/路径，例如 `"BTDecorator_Blackboard"` |
-| `InstanceName` | tree node | string | No | 写入 `UBTNode::NodeName`，用于实例显示名 |
-| `Properties` | node/decorator/service | object | No | 通过反射写入节点对象的属性 |
-| `Children` | composite node | array | Yes for composites | 子节点数组；`UBTCompositeNode` 必须定义且非空 |
-| `Decorators` | child node | array | No | 装饰器数组；当前实现把它们附着到父 composite 的 child link 上 |
-| `Services` | composite node | array | No | service 数组；当前 JSON contract 只支持 composite-level services |
+| `Node` | tree node | string | 是 | `UBTCompositeNode` 或 `UBTTaskNode` 子类名/路径，例如 `"BTComposite_Sequence"`、`"BTTask_Wait"` |
+| `Type` | decorator/service | string | 是 | `UBTDecorator` 或 `UBTService` 子类名/路径，例如 `"BTDecorator_Blackboard"` |
+| `InstanceName` | tree node | string | 否 | 写入 `UBTNode::NodeName`，用于实例显示名 |
+| `Properties` | node/decorator/service | object | 否 | 通过反射写入节点对象的属性 |
+| `Children` | composite node | array | composite 必填 | 子节点数组；`UBTCompositeNode` 必须定义且非空 |
+| `Decorators` | child node | array | 否 | 装饰器数组；当前实现把它们附着到父 composite 的 child link 上 |
+| `Services` | composite node | array | 否 | service 数组；当前 JSON contract 只支持 composite-level services |
 
 规则：
 
@@ -43,7 +43,7 @@
 - `Services` 必须是数组，且只能出现在 composite node 上；不要在 task 上声明 `Services`。
 - `Root.Decorators` 能通过结构校验，但生成阶段会记录 warning：`Root node decorators are not supported by UE BT model; ignored`。
 
-## Properties
+## 属性（Properties）
 
 `Properties` 使用 AssetFactory 的反射属性写入格式。简单值和对象值均取决于 UE 属性类型，例如 `FBlackboardKeySelector` 可以使用对象形式：
 
@@ -59,7 +59,7 @@
 
 对于 `BTTask_RunBehavior` 这类包含可编辑 `UBehaviorTree` 引用的节点，当前生成器会反射检查对应属性；`BehaviorAsset` 必须是非空 BehaviorTree 资产路径，并且在使用 `Blackboard` 时会校验子树 blackboard 与父树兼容。
 
-## Basic Tree Example
+## 基础行为树示例
 
 ```json
 {
@@ -106,7 +106,7 @@
 }
 ```
 
-## BlackboardInline Example
+## BlackboardInline 示例
 
 ```json
 {
@@ -143,7 +143,7 @@
 }
 ```
 
-## Decorator Example
+## Decorator 示例
 
 `Decorators` 写在被装饰的 child node 上；生成器会把它附着到父 composite 的对应 child link。
 
@@ -179,7 +179,7 @@
 }
 ```
 
-## Composite Service Example
+## Composite Service 示例
 
 `Services` 只能声明在 composite node 上。当前 generator 不支持 task-level services。
 
@@ -213,7 +213,7 @@
 }
 ```
 
-## BTTask_RunBehavior Subtree Example
+## BTTask_RunBehavior Subtree 示例
 
 ```json
 {
@@ -235,11 +235,11 @@
 }
 ```
 
-## Common Failures
+## 常见失败
 
 以下错误文本与 `BehaviorTreeGenerator.cpp` 当前诊断尽量保持一致：
 
-| Case | Diagnostic |
+| 情况 | 诊断 |
 |------|------------|
 | `AssetType` 缺失或不是精确 `"BehaviorTree"` | `AssetType must be 'BehaviorTree'` |
 | 同时提供 `Blackboard` 和 `BlackboardInline` | `Blackboard and BlackboardInline are mutually exclusive` |
@@ -275,4 +275,3 @@
 | 生成阶段 root 构建失败 | `Failed to build root node` |
 | 生成阶段 root 不是 composite | `Root node must be a Composite` |
 | editor graph 重建失败 | `Failed to rebuild behavior tree editor graph` |
-

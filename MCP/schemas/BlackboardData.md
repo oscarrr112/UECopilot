@@ -1,4 +1,4 @@
-# BlackboardData Generator Schema
+# BlackboardData 生成器 Schema
 
 创建 UE `UBlackboardData` 资产。本文档只描述当前 `BlackboardDataGenerator` 已实现的 JSON contract；字段名、UE 类型名和 JSON 示例保持英文原文。
 
@@ -6,29 +6,29 @@
 
 ## 顶层字段
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `AssetType` | string | Yes | 必须是 `"BlackboardData"` |
-| `Name` | string | Yes | BlackboardData 资产名 |
-| `Path` | string | Yes | Content path，例如 `"/Game/AI"` |
-| `Action` | string | No | `"Create"`、`"Update"` 或 `"CreateOrUpdate"` |
-| `Parent` | string | No | 已存在的 parent blackboard asset path，例如 `"/Game/AI/BB_BaseEnemy"`；可省略 `.BB_BaseEnemy` 后缀 |
-| `Keys` | array | Yes | 非空数组；每个元素描述一个 blackboard key |
+| `AssetType` | string | 是 | 必须是 `"BlackboardData"` |
+| `Name` | string | 是 | BlackboardData 资产名 |
+| `Path` | string | 是 | Content path，例如 `"/Game/AI"` |
+| `Action` | string | 否 | `"Create"`、`"Update"` 或 `"CreateOrUpdate"` |
+| `Parent` | string | 否 | 已存在的 parent blackboard asset path，例如 `"/Game/AI/BB_BaseEnemy"`；可省略 `.BB_BaseEnemy` 后缀 |
+| `Keys` | array | 是 | 非空数组；每个元素描述一个 blackboard key |
 
 `Parent` 会被加载为 `UBlackboardData` 并写入 `Blackboard->Parent`。如果提供 `Parent`，路径必须能解析到已有 blackboard asset。
 
-## Key Shape
+## Key 形状
 
-| Field | Type | Required | Description |
+| 字段 | 类型 | 必填 | 说明 |
 |-------|------|----------|-------------|
-| `Name` | string | Yes | Blackboard key 名称；同一个 `Keys` 数组内必须唯一 |
-| `Type` | string | Yes | key type；可用短名，也可用完整 `UBlackboardKeyType` class path |
-| `BaseClass` | string | Required for `Object` / `Class` | `Object` 或 `Class` key 的 UE class reference，例如 `"/Script/Engine.Actor"` |
-| `EnumName` | string | Required for `Enum` | `Enum` key 的 UE enum reference；可为 enum path 或可解析的 enum 名称 |
-| `bInstanceSynced` | boolean | No | 写入 `FBlackboardEntry::bInstanceSynced`；省略时保持默认值 |
-| `Description` | string | No | 写入 `FBlackboardEntry::EntryDescription` |
+| `Name` | string | 是 | Blackboard key 名称；同一个 `Keys` 数组内必须唯一 |
+| `Type` | string | 是 | key type；可用短名，也可用完整 `UBlackboardKeyType` class path |
+| `BaseClass` | string | `Object` / `Class` 必填 | `Object` 或 `Class` key 的 UE class reference，例如 `"/Script/Engine.Actor"` |
+| `EnumName` | string | `Enum` 必填 | `Enum` key 的 UE enum reference；可为 enum path 或可解析的 enum 名称 |
+| `bInstanceSynced` | boolean | 否 | 写入 `FBlackboardEntry::bInstanceSynced`；省略时保持默认值 |
+| `Description` | string | 否 | 写入 `FBlackboardEntry::EntryDescription` |
 
-## Key Types
+## Key 类型
 
 当前 contract 支持以下短名：
 
@@ -52,31 +52,20 @@
 - `Enum` key 必须提供非空 `EnumName`，且该 enum reference 必须能解析。
 - 其他 key type 不需要 `BaseClass` 或 `EnumName`。
 
-## Example
+## 实际 fixture 示例
 
-以下示例以 `TestData/BB_TestSample.json` 的字段和值为基础，并展示当前 contract 支持的 `Parent`、`Object`、`Class`、`Enum` key 写法：
+以下示例对应 `TestData/BB_TestSample.json`，可以直接作为基础 blackboard 生成输入：
 
 ```json
 {
 	"AssetType": "BlackboardData",
 	"Name": "BB_TestSample",
 	"Path": "/Game/UECopilotTests/AI",
-	"Parent": "/Game/UECopilotTests/AI/BB_BaseSample",
 	"Keys": [
 		{
 			"Name": "TargetActor",
 			"Type": "Object",
 			"BaseClass": "/Script/Engine.Actor"
-		},
-		{
-			"Name": "PreferredActorClass",
-			"Type": "Class",
-			"BaseClass": "/Script/Engine.Actor"
-		},
-		{
-			"Name": "MovementMode",
-			"Type": "Enum",
-			"EnumName": "/Script/Engine.EMovementMode"
 		},
 		{
 			"Name": "HasTarget",
@@ -104,11 +93,34 @@
 }
 ```
 
-`TestData/BB_TestSample.json` 当前实际内容不包含 `Parent`、`Class` 或 `Enum` key；上面的额外字段用于展示同一 generator contract 已支持的形状。
+## Parent / Class / Enum 示例
 
-## Common Failures
+下面的示例展示同一 generator contract 已支持的扩展形状。`Parent` 指向的 blackboard asset 必须已经存在，直接复制前请替换成项目里的真实路径。
 
-| Situation | Diagnostic |
+```json
+{
+	"AssetType": "BlackboardData",
+	"Name": "BB_Boss",
+	"Path": "/Game/AI",
+	"Parent": "/Game/AI/BB_BaseEnemy",
+	"Keys": [
+		{
+			"Name": "PreferredActorClass",
+			"Type": "Class",
+			"BaseClass": "/Script/Engine.Actor"
+		},
+		{
+			"Name": "MovementMode",
+			"Type": "Enum",
+			"EnumName": "/Script/Engine.EMovementMode"
+		}
+	]
+}
+```
+
+## 常见失败
+
+| 情况 | 诊断 |
 |-----------|------------|
 | 配置对象无效 | `Invalid configuration object` |
 | `Action` 为 `Create` 且资产已存在 | `Asset already exists` |
