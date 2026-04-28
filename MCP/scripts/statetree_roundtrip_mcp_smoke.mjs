@@ -198,6 +198,17 @@ function validateGenerationResult(result, phase, configs) {
 	);
 }
 
+function validateExtractedPaths(extractedByName, expectedConfigs, phase) {
+	for (const expectedConfig of expectedConfigs) {
+		const config = extractedByName.get(expectedConfig.Name);
+		assertCondition(config, `${phase} missing extracted config for ${expectedConfig.Name}`);
+		assertCondition(
+			assetPath(config) === assetPath(expectedConfig),
+			`${phase} extracted asset path mismatch for ${expectedConfig.Name}: expected ${assetPath(expectedConfig)}, got ${assetPath(config)}`,
+		);
+	}
+}
+
 async function generateAssetsSequentially(client, configs, phase) {
 	const aggregate = {
 		success: true,
@@ -277,6 +288,7 @@ async function main() {
 		);
 
 		const extractedByName = writeExtractedConfigs(extract1, "extract1", positiveFixtures);
+		validateExtractedPaths(extractedByName, positiveConfigs, "extract1");
 
 		const extractedConfigs = positiveFixtures.map((name) => {
 			const config = extractedByName.get(name);
@@ -289,7 +301,8 @@ async function main() {
 		console.log(`REGENERATE success=${regenerate.success} succeeded=${regenerate.succeeded} failed=${regenerate.failed}`);
 		validateGenerationResult(regenerate, "regenerate from extract", extractedConfigs);
 
-		const extract2 = await callJson(client, "extract_assets", { assets });
+		const regeneratedAssets = extractedConfigs.map(assetPath);
+		const extract2 = await callJson(client, "extract_assets", { assets: regeneratedAssets });
 		writeJson(join(outDir, "extract.2.json"), extract2);
 		console.log(`EXTRACT2 success=${extract2.success} succeeded=${extract2.succeeded} failed=${extract2.failed}`);
 		assertCondition(
@@ -297,7 +310,8 @@ async function main() {
 			`second extract failed: ${JSON.stringify(extract2)}`,
 		);
 
-		writeExtractedConfigs(extract2, "extract2", positiveFixtures);
+		const regeneratedByName = writeExtractedConfigs(extract2, "extract2", positiveFixtures);
+		validateExtractedPaths(regeneratedByName, extractedConfigs, "extract2");
 
 		for (const name of positiveFixtures) {
 			const left = join(outDir, `${name}.extract1.json`);

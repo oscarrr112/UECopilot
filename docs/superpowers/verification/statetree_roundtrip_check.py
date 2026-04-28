@@ -146,7 +146,9 @@ def _find_segment_mismatch(left, right, path):
 	if left.get("arrayIndex") != right.get("arrayIndex"):
 		return path + [".arrayIndex"], left.get("arrayIndex"), right.get("arrayIndex")
 
-	if "guid" in left and "guid" in right and left.get("guid") != right.get("guid"):
+	if ("guid" in left) != ("guid" in right):
+		return path + [".guid"], left.get("guid", "<missing>"), right.get("guid", "<missing>")
+	if left.get("guid") != right.get("guid"):
 		return path + [".guid"], left.get("guid"), right.get("guid")
 
 	return None
