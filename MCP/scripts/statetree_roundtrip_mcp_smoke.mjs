@@ -146,6 +146,58 @@ function assetPath(config) {
 	return `${config.Path}/${config.Name}`;
 }
 
+function validateGenerationResult(result, phase, configs) {
+	const expectedFullPaths = configs.map(assetPath);
+	const expectedNames = configs.map((config) => config.Name);
+	const expectedFullPathSet = new Set(expectedFullPaths);
+	const expectedNameSet = new Set(expectedNames);
+
+	assertCondition(result.success === true, `${phase} success expected true, got ${result.success}: ${JSON.stringify(result)}`);
+	assertCondition(result.total === configs.length, `${phase} total expected ${configs.length}, got ${result.total}`);
+	assertCondition(
+		result.succeeded === configs.length,
+		`${phase} succeeded expected ${configs.length}, got ${result.succeeded}`,
+	);
+	assertCondition(result.skipped === 0, `${phase} skipped expected 0, got ${result.skipped}`);
+	assertCondition(result.failed === 0, `${phase} failed expected 0, got ${result.failed}`);
+	assertCondition(Array.isArray(result.results), `${phase} results expected array: ${JSON.stringify(result)}`);
+	assertCondition(
+		result.results.length === configs.length,
+		`${phase} results.length expected ${configs.length}, got ${result.results.length}`,
+	);
+
+	const actualFullPaths = new Set();
+	const actualNames = new Set();
+	for (const item of result.results) {
+		assertCondition(item && typeof item === "object", `${phase} result item expected object: ${JSON.stringify(item)}`);
+		assertCondition(
+			item.status === "Success" || item.status === "Updated",
+			`${phase} status expected Success or Updated, got ${item.status}: ${JSON.stringify(item)}`,
+		);
+		assertCondition(expectedNameSet.has(item.name), `${phase} name unexpected: ${item.name}`);
+		assertCondition(expectedFullPathSet.has(item.fullPath), `${phase} fullPath unexpected: ${item.fullPath}`);
+		assertCondition(!actualNames.has(item.name), `${phase} name duplicated: ${item.name}`);
+		assertCondition(!actualFullPaths.has(item.fullPath), `${phase} fullPath duplicated: ${item.fullPath}`);
+		actualNames.add(item.name);
+		actualFullPaths.add(item.fullPath);
+	}
+
+	for (const name of expectedNames) {
+		assertCondition(actualNames.has(name), `${phase} name missing: ${name}`);
+	}
+	for (const fullPath of expectedFullPaths) {
+		assertCondition(actualFullPaths.has(fullPath), `${phase} fullPath missing: ${fullPath}`);
+	}
+	assertCondition(
+		actualNames.size === expectedNameSet.size,
+		`${phase} name set size expected ${expectedNameSet.size}, got ${actualNames.size}`,
+	);
+	assertCondition(
+		actualFullPaths.size === expectedFullPathSet.size,
+		`${phase} fullPath set size expected ${expectedFullPathSet.size}, got ${actualFullPaths.size}`,
+	);
+}
+
 function childEnv() {
 	return {
 		...Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string")),
@@ -182,10 +234,7 @@ async function main() {
 		console.log(
 			`GENERATE_INITIAL success=${generateInitial.success} succeeded=${generateInitial.succeeded} failed=${generateInitial.failed}`,
 		);
-		assertCondition(
-			generateInitial.success === true && generateInitial.failed === 0,
-			`initial generate failed: ${JSON.stringify(generateInitial)}`,
-		);
+		validateGenerationResult(generateInitial, "initial generate", positiveConfigs);
 
 		const assets = positiveConfigs.map(assetPath);
 		const extract1 = await callJson(client, "extract_assets", { assets });
@@ -207,10 +256,7 @@ async function main() {
 		const regenerate = await callJson(client, "generate_assets", { assets: extractedConfigs });
 		writeJson(join(outDir, "generate.from_extract.json"), regenerate);
 		console.log(`REGENERATE success=${regenerate.success} succeeded=${regenerate.succeeded} failed=${regenerate.failed}`);
-		assertCondition(
-			regenerate.success === true && regenerate.failed === 0,
-			`regenerate from extract failed: ${JSON.stringify(regenerate)}`,
-		);
+		validateGenerationResult(regenerate, "regenerate from extract", extractedConfigs);
 
 		const extract2 = await callJson(client, "extract_assets", { assets });
 		writeJson(join(outDir, "extract.2.json"), extract2);
@@ -245,8 +291,13 @@ async function main() {
 		const openAsset = await callJson(client, "execute_python", {
 			code: `import unreal
 asset = unreal.load_asset('/Game/AFSmoke/ST_RoundTrip_Comprehensive')
-unreal.get_editor_subsystem(unreal.AssetEditorSubsystem).open_editor_for_assets([asset])
-print('OPENED_ST_ROUNDTRIP_COMPREHENSIVE', bool(asset))`,
+if asset is None:
+    raise RuntimeError('Failed to load /Game/AFSmoke/ST_RoundTrip_Comprehensive')
+subsystem = unreal.get_editor_subsystem(unreal.AssetEditorSubsystem)
+opened = subsystem.open_editor_for_assets([asset])
+if not opened:
+    raise RuntimeError('open_editor_for_assets returned false for /Game/AFSmoke/ST_RoundTrip_Comprehensive')
+print('OPENED_ST_ROUNDTRIP_COMPREHENSIVE', opened)`,
 			description: "Open StateTree round-trip smoke asset",
 		});
 		const logs = Array.isArray(openAsset.logs)
@@ -254,6 +305,11 @@ print('OPENED_ST_ROUNDTRIP_COMPREHENSIVE', bool(asset))`,
 			: "";
 		console.log(`OPEN_ASSET success=${openAsset.success} logs=${logs}`);
 		assertCondition(openAsset.success === true, `open asset failed: ${JSON.stringify(openAsset)}`);
+		const openResult = typeof openAsset.result === "string" ? openAsset.result : JSON.stringify(openAsset.result || "");
+		assertCondition(
+			`${openResult}\n${logs}`.includes("OPENED_ST_ROUNDTRIP_COMPREHENSIVE"),
+			`open asset output missing OPENED_ST_ROUNDTRIP_COMPREHENSIVE: ${JSON.stringify(openAsset)}`,
+		);
 	} finally {
 		await client.close().catch(() => undefined);
 		await transport.close().catch(() => undefined);
