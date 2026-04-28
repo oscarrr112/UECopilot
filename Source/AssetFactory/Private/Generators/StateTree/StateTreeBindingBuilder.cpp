@@ -115,6 +115,7 @@ namespace
 			{
 				if (!AddFunctionBinding(EditorData, Index, *Pair.Value.Function, InputTargetPath, InputLabel, OutError))
 				{
+					OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *InputLabel, *OutError);
 					return false;
 				}
 			}
@@ -181,6 +182,7 @@ bool UE::AssetFactory::StateTree::ApplyPropertyBindings(
 		{
 			if (!AddFunctionBinding(EditorData, Index, Spec.Function, TargetPath, BindingLabel, OutError))
 			{
+				OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *BindingLabel, *OutError);
 				return false;
 			}
 			continue;

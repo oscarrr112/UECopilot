@@ -20,6 +20,11 @@ namespace
 	{
 		if (!Spec.Id.IsEmpty())
 		{
+			FGuid ParsedGuid;
+			if (FGuid::Parse(Spec.Id, ParsedGuid))
+			{
+				return ParsedGuid;
+			}
 			return FGuid::NewDeterministicGuid(FString::Printf(
 				TEXT("AssetFactory.StateTree.Node.%s.%s.%s"),
 				*UE::AssetFactory::StateTree::NodeKindToString(Spec.Kind),

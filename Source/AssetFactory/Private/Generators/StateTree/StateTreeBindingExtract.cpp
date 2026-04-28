@@ -38,6 +38,14 @@ namespace
 		return Guid.ToString(EGuidFormats::DigitsWithHyphensLower);
 	}
 
+	FString MakeBindingTargetKey(const FPropertyBindingPath& TargetPath)
+	{
+		return FString::Printf(
+			TEXT("%s:%s"),
+			*GuidToString(TargetPath.GetStructID()),
+			*TargetPath.ToString());
+	}
+
 	FString StatePath(const FString& ParentPath, const UStateTreeState& State)
 	{
 		const FString Name = State.Name.ToString();
@@ -360,14 +368,31 @@ TArray<TSharedPtr<FJsonValue>> UE::AssetFactory::StateTree::ExtractPropertyBindi
 		}
 	});
 
-	EditorBindings->ForEachBinding([&ContextWithBindings, &Result](const FPropertyBindingBinding& Binding)
+	TArray<const FPropertyBindingBinding*> TopLevelBindings;
+	EditorBindings->ForEachBinding([&ContextWithBindings, &TopLevelBindings](const FPropertyBindingBinding& Binding)
 	{
-		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(ContextWithBindings, Binding);
+		if (!ContextWithBindings.PropertyFunctionNodeIds.Contains(Binding.GetTargetPath().GetStructID()))
+		{
+			TopLevelBindings.Add(&Binding);
+		}
+	});
+	TopLevelBindings.Sort([](const FPropertyBindingBinding* A, const FPropertyBindingBinding* B)
+	{
+		return A && B ? MakeBindingTargetKey(A->GetTargetPath()) < MakeBindingTargetKey(B->GetTargetPath()) : A != nullptr;
+	});
+
+	for (const FPropertyBindingBinding* Binding : TopLevelBindings)
+	{
+		if (!Binding)
+		{
+			continue;
+		}
+		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(ContextWithBindings, *Binding);
 		if (BindingJson.IsValid())
 		{
 			Result.Add(MakeShared<FJsonValueObject>(BindingJson));
 		}
-	});
+	}
 
 	return Result;
 }
