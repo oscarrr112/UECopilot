@@ -215,6 +215,17 @@ namespace UE::AssetFactory::StateTree
 				|| (Object->TryGetArrayField(UpperName, OutArray) && OutArray));
 	}
 
+	inline bool IsValidBindingArrayIndex(double Value)
+	{
+		if (Value < 0.0 || Value > static_cast<double>(MAX_int32))
+		{
+			return false;
+		}
+
+		const int32 IntegerValue = static_cast<int32>(Value);
+		return static_cast<double>(IntegerValue) == Value;
+	}
+
 	inline bool TryGetObject(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName, TSharedPtr<FJsonObject>& OutObject)
 	{
 		OutObject.Reset();
@@ -267,8 +278,18 @@ namespace UE::AssetFactory::StateTree
 				(*SegmentObject)->TryGetStringField(TEXT("name"), Segment.Name);
 				(*SegmentObject)->TryGetStringField(TEXT("Name"), Segment.Name);
 				double ArrayIndex = static_cast<double>(INDEX_NONE);
-				if ((*SegmentObject)->TryGetNumberField(TEXT("arrayIndex"), ArrayIndex) || (*SegmentObject)->TryGetNumberField(TEXT("ArrayIndex"), ArrayIndex))
+				if ((*SegmentObject)->HasField(TEXT("arrayIndex")) || (*SegmentObject)->HasField(TEXT("ArrayIndex")))
 				{
+					if (!((*SegmentObject)->TryGetNumberField(TEXT("arrayIndex"), ArrayIndex) || (*SegmentObject)->TryGetNumberField(TEXT("ArrayIndex"), ArrayIndex)))
+					{
+						OutError = FString::Printf(TEXT("StateTree binding %s path segment %d has invalid arrayIndex; it must be a non-negative integer"), *Label, Index);
+						return false;
+					}
+					if (!IsValidBindingArrayIndex(ArrayIndex))
+					{
+						OutError = FString::Printf(TEXT("StateTree binding %s path segment %d has invalid arrayIndex; it must be a non-negative integer"), *Label, Index);
+						return false;
+					}
 					Segment.ArrayIndex = static_cast<int32>(ArrayIndex);
 				}
 				FString GuidString;
@@ -437,47 +458,65 @@ namespace UE::AssetFactory::StateTree
 			return false;
 		}
 
-		TryGetBindingStringField(FunctionObject, TEXT("type"), TEXT("Type"), OutSpec.Type);
-
-		if (HasBindingField(FunctionObject, TEXT("output"), TEXT("Output")))
+		if (!TryGetBindingStringField(FunctionObject, TEXT("type"), TEXT("Type"), OutSpec.Type) || OutSpec.Type.IsEmpty())
 		{
-			const TArray<TSharedPtr<FJsonValue>>* OutputValues = nullptr;
-			if (!TryGetBindingArrayField(FunctionObject, TEXT("output"), TEXT("Output"), OutputValues))
-			{
-				OutError = FString::Printf(TEXT("StateTree binding[%d] function output must be an array"), BindingIndex);
-				return false;
-			}
-			if (!ParseBindingPathSegments(*OutputValues, Label + TEXT(".output"), OutSpec.OutputPath, OutError))
-			{
-				return false;
-			}
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s field 'type' must be a non-empty string"), BindingIndex, *Label);
+			return false;
 		}
 
-		if (HasBindingField(FunctionObject, TEXT("inputs"), TEXT("Inputs")))
+		if (!HasBindingField(FunctionObject, TEXT("output"), TEXT("Output")))
 		{
-			TSharedPtr<FJsonObject> InputsObject;
-			if (!TryGetBindingObjectField(FunctionObject, TEXT("inputs"), TEXT("Inputs"), InputsObject))
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s is missing required field 'output'"), BindingIndex, *Label);
+			return false;
+		}
+		const TArray<TSharedPtr<FJsonValue>>* OutputValues = nullptr;
+		if (!TryGetBindingArrayField(FunctionObject, TEXT("output"), TEXT("Output"), OutputValues))
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s output must be an array"), BindingIndex, *Label);
+			return false;
+		}
+		if (!ParseBindingPathSegments(*OutputValues, Label + TEXT(".output"), OutSpec.OutputPath, OutError))
+		{
+			return false;
+		}
+		if (OutSpec.OutputPath.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s output must contain at least one path segment"), BindingIndex, *Label);
+			return false;
+		}
+
+		if (!HasBindingField(FunctionObject, TEXT("inputs"), TEXT("Inputs")))
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s is missing required field 'inputs'"), BindingIndex, *Label);
+			return false;
+		}
+		TSharedPtr<FJsonObject> InputsObject;
+		if (!TryGetBindingObjectField(FunctionObject, TEXT("inputs"), TEXT("Inputs"), InputsObject))
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must be a JSON object"), BindingIndex, *Label);
+			return false;
+		}
+		if (InputsObject->Values.Num() == 0)
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must contain at least one entry"), BindingIndex, *Label);
+			return false;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : InputsObject->Values)
+		{
+			const TSharedPtr<FJsonObject>* InputObject = nullptr;
+			if (!Pair.Value.IsValid() || !Pair.Value->TryGetObject(InputObject) || !InputObject || !InputObject->IsValid())
 			{
-				OutError = FString::Printf(TEXT("StateTree binding[%d] function inputs must be a JSON object"), BindingIndex);
+				OutError = FString::Printf(TEXT("StateTree binding[%d] function %s input '%s' must be a JSON object"), BindingIndex, *Label, *Pair.Key);
 				return false;
 			}
 
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : InputsObject->Values)
+			FAFStateTreeBindingFunctionInputSpec InputSpec;
+			if (!ParseBindingFunctionInputSpec(*InputObject, BindingIndex, Pair.Key, Label + TEXT(".inputs.") + Pair.Key, InputSpec, OutError))
 			{
-				const TSharedPtr<FJsonObject>* InputObject = nullptr;
-				if (!Pair.Value.IsValid() || !Pair.Value->TryGetObject(InputObject) || !InputObject || !InputObject->IsValid())
-				{
-					OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' must be a JSON object"), BindingIndex, *Pair.Key);
-					return false;
-				}
-
-				FAFStateTreeBindingFunctionInputSpec InputSpec;
-				if (!ParseBindingFunctionInputSpec(*InputObject, BindingIndex, Pair.Key, Label + TEXT(".inputs.") + Pair.Key, InputSpec, OutError))
-				{
-					return false;
-				}
-				OutSpec.Inputs.Add(Pair.Key, MoveTemp(InputSpec));
+				return false;
 			}
+			OutSpec.Inputs.Add(Pair.Key, MoveTemp(InputSpec));
 		}
 
 		return true;
@@ -500,7 +539,21 @@ namespace UE::AssetFactory::StateTree
 
 		TryGetBindingStringField(BindingObject, TEXT("id"), TEXT("ID"), OutSpec.Id);
 
-		if (HasBindingField(BindingObject, TEXT("source"), TEXT("Source")))
+		const bool bHasSourceField = HasBindingField(BindingObject, TEXT("source"), TEXT("Source"));
+		const bool bHasTargetField = HasBindingField(BindingObject, TEXT("target"), TEXT("Target"));
+		const bool bHasFunctionField = HasBindingField(BindingObject, TEXT("function"), TEXT("Function"));
+		if (!bHasTargetField)
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] is missing required field 'target'"), BindingIndex);
+			return false;
+		}
+		if (bHasSourceField == bHasFunctionField)
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] must define exactly one of 'source' or 'function'"), BindingIndex);
+			return false;
+		}
+
+		if (bHasSourceField)
 		{
 			TSharedPtr<FJsonObject> SourceObject;
 			if (!TryGetBindingObjectField(BindingObject, TEXT("source"), TEXT("Source"), SourceObject))
@@ -515,7 +568,7 @@ namespace UE::AssetFactory::StateTree
 			OutSpec.bHasSource = true;
 		}
 
-		if (HasBindingField(BindingObject, TEXT("target"), TEXT("Target")))
+		if (bHasTargetField)
 		{
 			TSharedPtr<FJsonObject> TargetObject;
 			if (!TryGetBindingObjectField(BindingObject, TEXT("target"), TEXT("Target"), TargetObject))
@@ -530,7 +583,7 @@ namespace UE::AssetFactory::StateTree
 			OutSpec.bHasTarget = true;
 		}
 
-		if (HasBindingField(BindingObject, TEXT("function"), TEXT("Function")))
+		if (bHasFunctionField)
 		{
 			TSharedPtr<FJsonObject> FunctionObject;
 			if (!TryGetBindingObjectField(BindingObject, TEXT("function"), TEXT("Function"), FunctionObject))
@@ -543,27 +596,6 @@ namespace UE::AssetFactory::StateTree
 				return false;
 			}
 			OutSpec.bHasFunction = true;
-		}
-
-		if (OutSpec.bHasFunction)
-		{
-			if (!OutSpec.bHasTarget)
-			{
-				OutError = FString::Printf(TEXT("StateTree binding[%d] is missing required field 'target'"), BindingIndex);
-				return false;
-			}
-			return true;
-		}
-
-		if (!OutSpec.bHasSource)
-		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] is missing required field 'source'"), BindingIndex);
-			return false;
-		}
-		if (!OutSpec.bHasTarget)
-		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] is missing required field 'target'"), BindingIndex);
-			return false;
 		}
 
 		return true;
