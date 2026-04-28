@@ -46,7 +46,7 @@ namespace
 			*TargetPath.ToString());
 	}
 
-	FString StatePath(const FString& ParentPath, const UStateTreeState& State)
+	FString BindingStatePath(const FString& ParentPath, const UStateTreeState& State)
 	{
 		const FString Name = State.Name.ToString();
 		return ParentPath.IsEmpty() ? Name : ParentPath + TEXT("/") + Name;
@@ -82,7 +82,7 @@ namespace
 		const FString& ParentPath,
 		FBindingExtractContext& Context)
 	{
-		const FString CurrentPath = StatePath(ParentPath, State);
+		const FString CurrentPath = BindingStatePath(ParentPath, State);
 		if (State.Parameters.ID.IsValid())
 		{
 			Context.StatePathByParameterId.Add(State.Parameters.ID, CurrentPath);
@@ -294,9 +294,9 @@ namespace
 
 			TArray<const FPropertyBindingBinding*> InputBindings;
 			Context.BindingsByTargetStructId.MultiFind(FunctionNodeId, InputBindings);
-			InputBindings.Sort([](const FPropertyBindingBinding* A, const FPropertyBindingBinding* B)
+			InputBindings.Sort([](const FPropertyBindingBinding& A, const FPropertyBindingBinding& B)
 			{
-				return A && B ? A->GetTargetPath().ToString() < B->GetTargetPath().ToString() : A != nullptr;
+				return A.GetTargetPath().ToString() < B.GetTargetPath().ToString();
 			});
 
 			for (const FPropertyBindingBinding* InputBinding : InputBindings)
@@ -378,9 +378,9 @@ TArray<TSharedPtr<FJsonValue>> UE::AssetFactory::StateTree::ExtractPropertyBindi
 			TopLevelBindings.Add(&Binding);
 		}
 	});
-	TopLevelBindings.Sort([](const FPropertyBindingBinding* A, const FPropertyBindingBinding* B)
+	TopLevelBindings.Sort([](const FPropertyBindingBinding& A, const FPropertyBindingBinding& B)
 	{
-		return A && B ? MakeBindingTargetKey(A->GetTargetPath()) < MakeBindingTargetKey(B->GetTargetPath()) : A != nullptr;
+		return MakeBindingTargetKey(A.GetTargetPath()) < MakeBindingTargetKey(B.GetTargetPath());
 	});
 
 	for (const FPropertyBindingBinding* Binding : TopLevelBindings)
