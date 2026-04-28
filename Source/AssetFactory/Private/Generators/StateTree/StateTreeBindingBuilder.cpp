@@ -287,7 +287,7 @@ bool UE::AssetFactory::StateTree::ApplyPropertyBindings(
 		if (TargetPaths.Contains(TargetPathKey))
 		{
 			OutError = FString::Printf(
-				TEXT("StateTree %s duplicates target binding path '%s'"),
+				TEXT("StateTree %s targets duplicate path '%s'"),
 				*BindingLabel,
 				*TargetPath.ToString());
 			return false;
