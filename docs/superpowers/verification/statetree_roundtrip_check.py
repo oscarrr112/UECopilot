@@ -7,13 +7,24 @@ import sys
 
 FLOAT_TOLERANCE = 1e-4
 
-KEY_ALIASES = {
-	"rootParameters": "RootParameters",
+CANONICAL_KEYS = {
+	"asset_type": "AssetType",
+	"assettype": "AssetType",
+	"bindings": "bindings",
+	"evaluators": "Evaluators",
+	"global_tasks": "GlobalTasks",
+	"globaltasks": "GlobalTasks",
+	"parameter_overrides": "parameterOverrides",
+	"parameteroverrides": "parameterOverrides",
 	"root_parameters": "RootParameters",
-	"subTrees": "SubTrees",
+	"rootparameters": "RootParameters",
+	"schema_class": "SchemaClass",
+	"schemaclass": "SchemaClass",
+	"schema_properties": "SchemaProperties",
+	"schemaproperties": "SchemaProperties",
+	"sub_trees": "SubTrees",
 	"subtrees": "SubTrees",
-	"Bindings": "bindings",
-	"Transitions": "transitions",
+	"transitions": "transitions",
 }
 
 IGNORED_KEYS = {
@@ -24,7 +35,8 @@ IGNORED_KEYS = {
 
 NODE_ARRAY_KEYS = (
 	"tasks",
-	"evaluators",
+	"GlobalTasks",
+	"Evaluators",
 	"conditions",
 	"enterConditions",
 	"utilityConsiderations",
@@ -37,7 +49,7 @@ def _load_json(path):
 
 
 def _canonical_key(key):
-	return KEY_ALIASES.get(key, key)
+	return CANONICAL_KEYS.get(key.lower(), key)
 
 
 def _normalize_path_segment(segment):
@@ -73,7 +85,7 @@ def _canonicalize(value, parent_key=None):
 				continue
 			if key == "id" and parent_key == "bindings":
 				continue
-			if key == "path" and isinstance(raw_child, list):
+			if key in ("path", "output") and isinstance(raw_child, list):
 				result[key] = [_normalize_path_segment(segment) for segment in raw_child]
 			else:
 				result[key] = _canonicalize(raw_child, key)
@@ -149,6 +161,21 @@ def _count_nodes_in_state(state):
 		value = state.get(key)
 		if isinstance(value, list):
 			total += len(value)
+	transitions = state.get("transitions")
+	if isinstance(transitions, list):
+		total += _count_nodes_in_transitions(transitions)
+	return total
+
+
+def _count_nodes_in_transitions(transitions):
+	total = 0
+	for transition in transitions:
+		if not isinstance(transition, dict):
+			continue
+		for key in NODE_ARRAY_KEYS:
+			value = transition.get(key)
+			if isinstance(value, list):
+				total += len(value)
 	return total
 
 
@@ -168,14 +195,29 @@ def _count_transitions(states, top_level_transitions):
 	return total
 
 
+def _count_parameter_entries(value):
+	if isinstance(value, dict):
+		return len(value)
+	if isinstance(value, list):
+		return len(value)
+	return 0
+
+
+def _count_parameters(states, root_parameters):
+	total = _count_parameter_entries(root_parameters)
+	for state in _iter_states(states):
+		total += _count_parameter_entries(state.get("parameters"))
+		total += _count_parameter_entries(state.get("parameterOverrides"))
+	return total
+
+
 def _summary(config):
 	states = list(_iter_states(config.get("SubTrees", [])))
-	parameters = config.get("RootParameters", {})
 	bindings = config.get("bindings", [])
 	return {
 		"states": len(states),
-		"nodes": _count_nodes(config.get("SubTrees", [])),
-		"parameters": len(parameters) if isinstance(parameters, dict) else 0,
+		"nodes": _count_nodes(config.get("SubTrees", [])) + _count_nodes_in_transitions(config.get("transitions", [])),
+		"parameters": _count_parameters(config.get("SubTrees", []), config.get("RootParameters")),
 		"bindings": len(bindings) if isinstance(bindings, list) else 0,
 		"transitions": _count_transitions(config.get("SubTrees", []), config.get("transitions", [])),
 	}
