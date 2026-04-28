@@ -167,7 +167,7 @@ Execution mode:
 ## Environment Variables
 
 - `UE_API_BASE`: Base URL for UE API (default: `http://localhost:8559`)
-- `UE_MCP_PYTHON`: Python launcher for sidecar (default: `py`)
+- `UE_MCP_PYTHON`: Python launcher for sidecar (default: `py` on Windows, `python3` on macOS/Linux)
 - `UE_MCP_SIDECAR_SCRIPT`: Absolute path to `assetfactory_mcp_server.py`
 - `UE_EDITOR_CMD`: Absolute path to `UnrealEditor-Cmd.exe` (required for offline fallback)
 - `UE_PROJECT_PATH`: Absolute path to `.uproject` (required for offline fallback)

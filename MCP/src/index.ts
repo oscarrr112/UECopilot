@@ -14,7 +14,7 @@ import {
   validateToolCatalogPolicy,
 } from "./broker/toolCatalog.js";
 import { readFile } from "fs/promises";
-import { tmpdir } from "os";
+import { platform, tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
@@ -48,7 +48,8 @@ const GENERATOR_ASSET_TYPES = [
 const GENERATOR_ASSET_TYPE_LIST = GENERATOR_ASSET_TYPES.join(", ");
 const SIDECAR_SCRIPT_DEFAULT = join(__dirname, "..", "assetfactory_mcp_server.py");
 const SIDECAR_SCRIPT = process.env.UE_MCP_SIDECAR_SCRIPT || SIDECAR_SCRIPT_DEFAULT;
-const PYTHON_CMD = process.env.UE_MCP_PYTHON || "py";
+const DEFAULT_PYTHON_CMD = platform() === "win32" ? "py" : "python3";
+const PYTHON_CMD = process.env.UE_MCP_PYTHON || DEFAULT_PYTHON_CMD;
 const UE_EDITOR_CMD = process.env.UE_EDITOR_CMD || "";
 const UE_PROJECT_PATH = process.env.UE_PROJECT_PATH || "";
 const execFileAsync = promisify(execFile);
