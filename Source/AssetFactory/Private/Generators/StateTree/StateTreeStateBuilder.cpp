@@ -4,6 +4,7 @@
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "Generators/StateTree/StateTreeBindingBuilder.h"
 #include "Generators/StateTree/StateTreeLinkResolver.h"
 #include "Generators/StateTree/StateTreeNodeBuilder.h"
 #include "Generators/StateTree/StateTreeStructureTypes.h"
@@ -468,6 +469,10 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 		{
 			return false;
 		}
+	}
+	if (!UE::AssetFactory::StateTree::ApplyPropertyBindings(EditorData, Index, Config, OutError))
+	{
+		return false;
 	}
 
 	return true;
