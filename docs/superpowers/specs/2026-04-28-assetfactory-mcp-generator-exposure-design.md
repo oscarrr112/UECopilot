@@ -1,8 +1,8 @@
 # AssetFactory MCP 生成器暴露设计
 
-**日期**：2026-04-28  
-**状态**：草稿（待用户审阅）  
-**范围**：StateTree generator Spec 7，同时补齐已有 BehaviorTree / BlackboardData generator 的 MCP 暴露  
+**日期**：2026-04-28
+**状态**：草稿（待用户审阅）
+**范围**：StateTree generator Spec 7，同时补齐已有 BehaviorTree / BlackboardData generator 的 MCP 暴露
 **依赖**：StateTree Spec 1-6 已完成；BehaviorTree / BlackboardData C++ generator 已存在
 
 ---
