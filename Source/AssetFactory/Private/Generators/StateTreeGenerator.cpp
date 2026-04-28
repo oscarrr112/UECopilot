@@ -149,9 +149,10 @@ TOptional<FString> FStateTreeGenerator::ValidateConfig(TSharedPtr<FJsonObject> C
 		return FString(TEXT("StateTree GlobalTasks must be an array"));
 	}
 
-	if (Config->HasField(TEXT("Bindings")))
+	if ((Config->HasField(TEXT("Bindings")) && !Config->HasTypedField<EJson::Array>(TEXT("Bindings")))
+		|| (Config->HasField(TEXT("bindings")) && !Config->HasTypedField<EJson::Array>(TEXT("bindings"))))
 	{
-		return FString(TEXT("Bindings input is not supported by the StateTree core lifecycle spec"));
+		return FString(TEXT("StateTree Bindings must be an array"));
 	}
 
 	return TOptional<FString>();
