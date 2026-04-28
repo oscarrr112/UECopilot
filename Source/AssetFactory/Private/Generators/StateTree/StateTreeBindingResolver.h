@@ -22,6 +22,10 @@ namespace UE::AssetFactory::StateTree
 		TMap<FString, const FStateTreeEditorNode*> GlobalTaskById;
 		TMap<FString, const FStateTreeEditorNode*> EvaluatorById;
 		TMap<const UStateTreeState*, TMap<FString, const FStateTreeEditorNode*>> StateNodeById;
+		TMap<const UStateTreeState*, TMap<FString, const FStateTreeEditorNode*>> StateTaskById;
+		TMap<const UStateTreeState*, TMap<FString, const FStateTreeEditorNode*>> StateEnterConditionById;
+		TMap<const UStateTreeState*, TMap<FString, const FStateTreeEditorNode*>> StateConsiderationById;
+		TMap<const UStateTreeState*, TMap<FString, TMap<FString, const FStateTreeEditorNode*>>> StateTransitionConditionByTransitionId;
 	};
 
 	bool BuildBindingIndex(

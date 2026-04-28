@@ -58,6 +58,13 @@ bool UE::AssetFactory::StateTree::RegisterStateReference(
 	Index.ByPath.Add(CanonicalPath, &State);
 	if (State.ID.IsValid())
 	{
+		if (Index.ByGuid.Contains(State.ID))
+		{
+			OutError = FString::Printf(
+				TEXT("Duplicate StateTree state GUID '%s'"),
+				*State.ID.ToString(EGuidFormats::DigitsWithHyphensLower));
+			return false;
+		}
 		Index.ByGuid.Add(State.ID, &State);
 	}
 	Index.PathByState.Add(&State, CanonicalPath);
