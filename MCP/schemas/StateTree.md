@@ -345,7 +345,7 @@ Property function binding example:
 }
 ```
 
-`source` and `target` endpoints use a JSON object with `kind`, optional owner selectors, optional `section`, and a `path` array. Supported endpoint `kind` values are `rootParameter`, `stateParameter`, `context`, `evaluator`, `globalTask`, `task`, `enterCondition`, `transitionCondition`, `consideration`, `function`, and `node`. Snake-case aliases are accepted for multi-word values, for example `root_parameter`, `global_task`, `enter_condition`, and `transition_condition`.
+`source` and `target` endpoints use a JSON object with `kind`, optional owner selectors, optional `section`, and a `path` array. Supported endpoint `kind` values are `rootParameter`, `stateParameter`, `context`, `evaluator`, `globalTask`, `task`, `enterCondition`, `transitionCondition`, `consideration`, and `node`. Property functions are expressed with a binding-level or nested `function` object, not `kind: "function"`. Snake-case aliases are accepted for multi-word values, for example `root_parameter`, `global_task`, `enter_condition`, and `transition_condition`.
 
 Node-backed endpoints may select data with `section`: `instance`, `node`, or `executionRuntimeData`. The default is `instance`. State-scoped node targets use `state` plus `node`; transition condition endpoints also use `transition` to identify the transition.
 
@@ -356,17 +356,12 @@ Each path segment supports either string shorthand or an explicit JSON object:
 	"path": [
 		"Items",
 		{ "name": "Entry", "arrayIndex": 0 },
-		{
-			"name": "Value",
-			"guid": "00000000-0000-0000-0000-000000000000",
-			"instanceStruct": "/Script/CoreUObject.Vector",
-			"access": "Offset"
-		}
+		{ "name": "Value", "guid": "00000000-0000-0000-0000-000000000000" }
 	]
 }
 ```
 
-The explicit object shape supports `name`, `arrayIndex`, `guid`, `instanceStruct`, and `access`. StateTree bindings do not support a string DSL such as `"Root/Idle.delay-task.Duration"`; use explicit JSON endpoint objects and path arrays so the generator can validate each owner and segment.
+The explicit object shape supports `name`, `arrayIndex`, and `guid` for generator input. Extraction can preserve `instanceStruct` and `access` metadata from existing editor assets, but generation rejects those fields until instanced indirection support lands. StateTree bindings do not support a string DSL such as `"Root/Idle.delay-task.Duration"`; use explicit JSON endpoint objects and path arrays so the generator can validate each owner and segment.
 
 Property function bindings use a `function` object with `type`, `output`, and `inputs`. The function `type` must resolve to a supported StateTree property function. `output` is a binding path array on the function result, and each input value must be a JSON object containing exactly one of `source` or nested `function`.
 
@@ -381,5 +376,7 @@ Extraction may describe existing editor-authored property bag types that are not
 ## Current Limitations
 
 - Function input map keys currently support single property names. Multi-segment editor-authored function input target extraction is deferred.
+- Generator input rejects path segment `instanceStruct` and `access`; extraction may emit them for editor-authored assets, but they are not round-trip supported yet.
+- `kind: "function"` is parsed for forward compatibility but is not resolved as a normal source or target endpoint; use a `function` object instead.
 - Numeric integer, double, byte, and enum parameter generation is intentionally not part of the current StateTree parameter slice.
 - `Update` cannot change `SchemaClass`; recreate the asset if the schema class must change.
