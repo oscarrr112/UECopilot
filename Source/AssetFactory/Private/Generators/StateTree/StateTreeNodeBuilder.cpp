@@ -101,7 +101,7 @@ namespace
 			return ApplyObjectProperties(ObjectData, Properties, Label, OutError);
 		}
 
-		if (Properties.IsValid())
+		if (Properties.IsValid() && Properties->Values.Num() > 0)
 		{
 			OutError = FString::Printf(TEXT("StateTree %s properties were provided, but the node does not expose %s data"), Label, Label);
 			return false;

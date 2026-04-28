@@ -99,23 +99,22 @@ namespace
 
 	TSharedPtr<FJsonObject> ExtractDataSection(const FInstancedStruct& StructData, UObject* ObjectData, bool bDiffOnly)
 	{
-		TSharedPtr<FJsonObject> Section = MakeShared<FJsonObject>();
 		if (StructData.IsValid())
 		{
+			TSharedPtr<FJsonObject> Section = MakeShared<FJsonObject>();
 			Section->SetStringField(TEXT("type"), StructData.GetScriptStruct()->GetPathName());
 			Section->SetObjectField(TEXT("properties"), ExtractStructProperties(StructData, bDiffOnly));
+			return Section;
 		}
-		else if (ObjectData)
+		if (ObjectData)
 		{
+			TSharedPtr<FJsonObject> Section = MakeShared<FJsonObject>();
 			Section->SetStringField(TEXT("type"), ObjectData->GetClass()->GetPathName());
 			TSharedPtr<FJsonObject> Properties = FPropertySetterUtils::ExtractPropertiesToJson(ObjectData, true, bDiffOnly);
 			Section->SetObjectField(TEXT("properties"), Properties.IsValid() ? Properties : MakeShared<FJsonObject>());
+			return Section;
 		}
-		else
-		{
-			Section->SetObjectField(TEXT("properties"), MakeShared<FJsonObject>());
-		}
-		return Section;
+		return nullptr;
 	}
 
 	FString ResolveNodeType(const FStateTreeEditorNode& Node)
@@ -149,8 +148,14 @@ namespace
 		TSharedPtr<FJsonObject> NodeSection = MakeShared<FJsonObject>();
 		NodeSection->SetObjectField(TEXT("properties"), ExtractStructProperties(Node.Node, bDiffOnly));
 		NodeJson->SetObjectField(TEXT("node"), NodeSection);
-		NodeJson->SetObjectField(TEXT("instance"), ExtractDataSection(Node.Instance, Node.InstanceObject, bDiffOnly));
-		NodeJson->SetObjectField(TEXT("executionRuntimeData"), ExtractDataSection(Node.ExecutionRuntimeData, Node.ExecutionRuntimeDataObject, bDiffOnly));
+		if (const TSharedPtr<FJsonObject> InstanceSection = ExtractDataSection(Node.Instance, Node.InstanceObject, bDiffOnly))
+		{
+			NodeJson->SetObjectField(TEXT("instance"), InstanceSection);
+		}
+		if (const TSharedPtr<FJsonObject> RuntimeSection = ExtractDataSection(Node.ExecutionRuntimeData, Node.ExecutionRuntimeDataObject, bDiffOnly))
+		{
+			NodeJson->SetObjectField(TEXT("executionRuntimeData"), RuntimeSection);
+		}
 
 		if (Kind.Equals(TEXT("enterCondition"), ESearchCase::CaseSensitive)
 			|| Kind.Equals(TEXT("transitionCondition"), ESearchCase::CaseSensitive)
