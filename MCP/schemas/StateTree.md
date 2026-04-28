@@ -367,11 +367,31 @@ Property function bindings use a `function` object with `type`, `output`, and `i
 
 Invalid diagnostics include the binding index or binding `id` where available. Common failures include unknown source, unknown target, bad path, duplicate target path, bad function type, and type mismatch.
 
-## Extraction
+## Extraction and Round-trip
+
+`extract_assets` emits generator-readable StateTree JSON for assets created through this generator. The supported round-trip path is:
+
+```text
+Generate -> Extract -> Generate from extracted JSON -> Extract -> semantic compare
+```
+
+The project verifier is:
+
+```bash
+python3 docs/superpowers/verification/statetree_roundtrip_check.py /tmp/left.json /tmp/right.json --fixture ST_Name
+```
+
+The full MCP smoke helper is:
+
+```bash
+UE_API_BASE=http://127.0.0.1:8559 npm --prefix MCP run smoke:statetree-roundtrip
+```
+
+Round-trip comparison is semantic, not byte-level. It ignores compile hashes, field order, empty containers that are equivalent to missing fields, and float noise within `1e-4`. It compares state paths, transitions, parameters, dynamic node fields, ordinary bindings, and property function bindings.
 
 `extract_assets` emits root parameters, state-local parameters, linked parameter overrides, state fields, linked asset references, linked state paths, transitions, transition condition nodes, and dynamic node skeletons with reflected `node`, `instance`, and `executionRuntimeData` properties. For linked and linked-asset states, only overridden linked parameters are emitted under `parameterOverrides`; the full linked target schema is not copied into ordinary `parameters`.
 
-Extraction may describe existing editor-authored property bag types that are not accepted by the generator yet. Generator input is limited to the supported generator types listed above.
+Extraction may describe existing editor-authored assets outside the generator's input subset. Those fields remain extraction-only unless documented as generator-readable. Generator input is limited to the supported generator types listed above.
 
 ## Current Limitations
 
