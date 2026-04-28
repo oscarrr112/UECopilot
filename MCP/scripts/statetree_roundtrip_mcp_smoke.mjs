@@ -198,6 +198,37 @@ function validateGenerationResult(result, phase, configs) {
 	);
 }
 
+async function generateAssetsSequentially(client, configs, phase) {
+	const aggregate = {
+		success: true,
+		total: 0,
+		succeeded: 0,
+		skipped: 0,
+		failed: 0,
+		summary: "",
+		results: [],
+	};
+	const summaries = [];
+
+	for (const config of configs) {
+		const response = await callJson(client, "generate_assets", { assets: [config] });
+		validateGenerationResult(response, `${phase} ${config.Name}`, [config]);
+
+		aggregate.success = aggregate.success && response.success === true;
+		aggregate.total += typeof response.total === "number" ? response.total : 0;
+		aggregate.succeeded += typeof response.succeeded === "number" ? response.succeeded : 0;
+		aggregate.skipped += typeof response.skipped === "number" ? response.skipped : 0;
+		aggregate.failed += typeof response.failed === "number" ? response.failed : 0;
+		if (typeof response.summary === "string" && response.summary.length > 0) {
+			summaries.push(response.summary);
+		}
+		aggregate.results.push(...response.results);
+	}
+
+	aggregate.summary = summaries.join("\n");
+	return aggregate;
+}
+
 function childEnv() {
 	return {
 		...Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string")),
@@ -229,7 +260,7 @@ async function main() {
 		console.log(`HEALTH success=${healthSuccess} service=${health.service} port=${health.port}`);
 		assertCondition(health.status === "ok", `health_check did not return ok: ${JSON.stringify(health)}`);
 
-		const generateInitial = await callJson(client, "generate_assets", { assets: positiveConfigs });
+		const generateInitial = await generateAssetsSequentially(client, positiveConfigs, "initial generate");
 		writeJson(join(outDir, "generate.initial.json"), generateInitial);
 		console.log(
 			`GENERATE_INITIAL success=${generateInitial.success} succeeded=${generateInitial.succeeded} failed=${generateInitial.failed}`,
@@ -253,7 +284,7 @@ async function main() {
 			return config;
 		});
 
-		const regenerate = await callJson(client, "generate_assets", { assets: extractedConfigs });
+		const regenerate = await generateAssetsSequentially(client, extractedConfigs, "regenerate from extract");
 		writeJson(join(outDir, "generate.from_extract.json"), regenerate);
 		console.log(`REGENERATE success=${regenerate.success} succeeded=${regenerate.succeeded} failed=${regenerate.failed}`);
 		validateGenerationResult(regenerate, "regenerate from extract", extractedConfigs);
