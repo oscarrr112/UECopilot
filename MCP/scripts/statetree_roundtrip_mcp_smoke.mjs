@@ -133,6 +133,9 @@ function writeJson(path, value) {
 }
 
 function cleanupExtractOutputs(fixtures) {
+	for (const name of ["generate.initial.json", "generate.from_extract.json", "extract.1.json", "extract.2.json", "summary.json"]) {
+		rmSync(join(outDir, name), { force: true });
+	}
 	for (const name of fixtures) {
 		rmSync(join(outDir, `${name}.extract1.json`), { force: true });
 		rmSync(join(outDir, `${name}.extract2.json`), { force: true });
@@ -169,20 +172,26 @@ function writeExtractedConfigs(result, phase, fixtures) {
 }
 
 function firstMessage(result) {
-	if (typeof result.error === "string" && result.error.length > 0) {
-		return result.error;
-	}
+	const messages = [];
 	if (Array.isArray(result.results)) {
-		const failed = result.results.find((item) => item && item.status === "Failed");
-		if (failed && typeof failed.message === "string" && failed.message.length > 0) {
-			return failed.message;
+		for (const item of result.results) {
+			if (item && item.status === "Failed" && typeof item.message === "string" && item.message.length > 0) {
+				messages.push(item.message);
+			}
 		}
-		const any = result.results.find((item) => item && typeof item.message === "string" && item.message.length > 0);
-		if (any) {
-			return any.message;
+		for (const item of result.results) {
+			if (item && item.status !== "Failed" && typeof item.message === "string" && item.message.length > 0) {
+				messages.push(item.message);
+			}
 		}
 	}
-	return "";
+	if (typeof result.error === "string" && result.error.length > 0) {
+		messages.push(result.error);
+	}
+	if (typeof result.raw === "string" && result.raw.length > 0) {
+		messages.push(result.raw);
+	}
+	return messages.join("\n");
 }
 
 function assetPath(config) {
