@@ -8,6 +8,7 @@
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorPropertyBindings.h"
 #include "StateTreePropertyFunctionBase.h"
+#include "StructUtils/InstancedStruct.h"
 
 namespace
 {
@@ -30,6 +31,26 @@ namespace
 			*TargetPath.ToString());
 	}
 
+	struct FPreparedFunctionBinding;
+
+	struct FPreparedFunctionInputBinding
+	{
+		FString InputName;
+		FPropertyBindingPath SourcePath;
+		TSharedPtr<FPreparedFunctionBinding> Function;
+		TArray<FPropertyBindingPathSegment> TargetSegments;
+		bool bHasSource = false;
+		bool bHasFunction = false;
+	};
+
+	struct FPreparedFunctionBinding
+	{
+		UScriptStruct* FunctionStruct = nullptr;
+		const UScriptStruct* InstanceStruct = nullptr;
+		TArray<FPropertyBindingPathSegment> OutputSegments;
+		TArray<FPreparedFunctionInputBinding> Inputs;
+	};
+
 	UScriptStruct* ResolvePropertyFunctionStruct(const FAFStateTreeBindingFunctionSpec& FunctionSpec, FString& OutError)
 	{
 		UScriptStruct* FunctionStruct = ResolveScriptStruct(FunctionSpec.Type);
@@ -46,27 +67,84 @@ namespace
 		return FunctionStruct;
 	}
 
-	bool AddFunctionBindingInputs(
-		UStateTreeEditorData& EditorData,
-		const FAFStateTreeBindingIndex& Index,
-		const FAFStateTreeBindingFunctionSpec& FunctionSpec,
-		const FGuid& FunctionNodeID,
-		const FString& BindingLabel,
-		FString& OutError);
+	const UScriptStruct* ResolvePropertyFunctionInstanceStruct(UScriptStruct* FunctionStruct, const FString& FunctionType, FString& OutError)
+	{
+		FInstancedStruct FunctionNode;
+		FunctionNode.InitializeAs(FunctionStruct);
+		const FStateTreePropertyFunctionBase* Function = FunctionNode.GetPtr<FStateTreePropertyFunctionBase>();
+		if (!Function)
+		{
+			OutError = FString::Printf(TEXT("StateTree property function type '%s' could not be instantiated"), *FunctionType);
+			return nullptr;
+		}
 
-	bool AddFunctionBinding(
-		UStateTreeEditorData& EditorData,
-		const FAFStateTreeBindingIndex& Index,
-		const FAFStateTreeBindingFunctionSpec& FunctionSpec,
-		const FPropertyBindingPath& TargetPath,
-		const FString& BindingLabel,
+		const UScriptStruct* InstanceStruct = Cast<UScriptStruct>(Function->GetInstanceDataType());
+		if (!InstanceStruct)
+		{
+			OutError = FString::Printf(TEXT("StateTree property function type '%s' has no struct instance data"), *FunctionType);
+			return nullptr;
+		}
+		return InstanceStruct;
+	}
+
+	bool ValidateFunctionPath(
+		const UScriptStruct* InstanceStruct,
+		const TArray<FPropertyBindingPathSegment>& Segments,
+		const FString& Label,
+		TArray<FPropertyBindingPathSegment>& OutSegments,
 		FString& OutError)
 	{
+		FPropertyBindingPath Path(FGuid::NewGuid(), Segments);
+		FString PathError;
+		if (!Path.UpdateSegments(InstanceStruct, &PathError))
+		{
+			OutError = PathError.IsEmpty()
+				? FString::Printf(TEXT("%s path '%s' could not be resolved against '%s'"), *Label, *Path.ToString(), *InstanceStruct->GetPathName())
+				: FString::Printf(TEXT("%s path '%s' could not be resolved: %s"), *Label, *Path.ToString(), *PathError);
+			return false;
+		}
+		OutSegments.Reset();
+		OutSegments.Append(Path.GetSegments().GetData(), Path.GetSegments().Num());
+		return true;
+	}
+
+	bool ValidateFunctionInputName(const FString& InputName, FString& OutError)
+	{
+		if (InputName.IsEmpty())
+		{
+			OutError = TEXT("function input name must be non-empty");
+			return false;
+		}
+		if (InputName.Contains(TEXT(".")) || InputName.Contains(TEXT("/")) || InputName.Contains(TEXT("\\")))
+		{
+			OutError = FString::Printf(TEXT("function input '%s' must be a single property name"), *InputName);
+			return false;
+		}
+		return true;
+	}
+
+	bool PrepareFunctionBinding(
+		const FAFStateTreeBindingIndex& Index,
+		const FAFStateTreeBindingFunctionSpec& FunctionSpec,
+		const FString& BindingLabel,
+		FPreparedFunctionBinding& OutPrepared,
+		FString& OutError)
+	{
+		OutPrepared = FPreparedFunctionBinding();
+
 		UScriptStruct* FunctionStruct = ResolvePropertyFunctionStruct(FunctionSpec, OutError);
 		if (!FunctionStruct)
 		{
 			return false;
 		}
+		OutPrepared.FunctionStruct = FunctionStruct;
+
+		const UScriptStruct* InstanceStruct = ResolvePropertyFunctionInstanceStruct(FunctionStruct, FunctionSpec.Type, OutError);
+		if (!InstanceStruct)
+		{
+			return false;
+		}
+		OutPrepared.InstanceStruct = InstanceStruct;
 
 		TArray<FPropertyBindingPathSegment> OutputSegments = MakeBindingPathSegments(FunctionSpec.OutputPath, OutError);
 		if (!OutError.IsEmpty())
@@ -74,7 +152,64 @@ namespace
 			OutError = FString::Printf(TEXT("StateTree %s function output could not be resolved: %s"), *BindingLabel, *OutError);
 			return false;
 		}
+		if (!ValidateFunctionPath(InstanceStruct, OutputSegments, TEXT("function output"), OutPrepared.OutputSegments, OutError))
+		{
+			return false;
+		}
 
+		for (const TPair<FString, FAFStateTreeBindingFunctionInputSpec>& Pair : FunctionSpec.Inputs)
+		{
+			if (!ValidateFunctionInputName(Pair.Key, OutError))
+			{
+				return false;
+			}
+
+			FPreparedFunctionInputBinding PreparedInput;
+			PreparedInput.InputName = Pair.Key;
+			const TArray<FPropertyBindingPathSegment> InputSegments = { FPropertyBindingPathSegment(FName(*Pair.Key)) };
+			if (!ValidateFunctionPath(
+				InstanceStruct,
+				InputSegments,
+				FString::Printf(TEXT("function input '%s'"), *Pair.Key),
+				PreparedInput.TargetSegments,
+				OutError))
+			{
+				return false;
+			}
+
+			const FString InputLabel = FString::Printf(TEXT("%s function input '%s'"), *BindingLabel, *Pair.Key);
+			if (Pair.Value.bHasSource)
+			{
+				if (!ResolveBindingEndpointPath(Index, Pair.Value.Source, PreparedInput.SourcePath, OutError))
+				{
+					OutError = FString::Printf(TEXT("StateTree %s source could not be resolved: %s"), *InputLabel, *OutError);
+					return false;
+				}
+				PreparedInput.bHasSource = true;
+			}
+			else if (Pair.Value.bHasFunction && Pair.Value.Function.IsValid())
+			{
+				PreparedInput.Function = MakeShared<FPreparedFunctionBinding>();
+				if (!PrepareFunctionBinding(Index, *Pair.Value.Function, InputLabel, *PreparedInput.Function, OutError))
+				{
+					OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *InputLabel, *OutError);
+					return false;
+				}
+				PreparedInput.bHasFunction = true;
+			}
+
+			OutPrepared.Inputs.Add(MoveTemp(PreparedInput));
+		}
+
+		return true;
+	}
+
+	bool AddFunctionBinding(
+		UStateTreeEditorData& EditorData,
+		const FPreparedFunctionBinding& PreparedFunction,
+		const FPropertyBindingPath& TargetPath,
+		FString& OutError)
+	{
 		FStateTreeEditorPropertyBindings* EditorBindings = EditorData.GetPropertyEditorBindings();
 		if (!EditorBindings)
 		{
@@ -82,40 +217,21 @@ namespace
 			return false;
 		}
 
-		const FPropertyBindingPath FunctionOutputPath = EditorBindings->AddFunctionBinding(FunctionStruct, OutputSegments, TargetPath);
-		return AddFunctionBindingInputs(EditorData, Index, FunctionSpec, FunctionOutputPath.GetStructID(), BindingLabel, OutError);
-	}
-
-	bool AddFunctionBindingInputs(
-		UStateTreeEditorData& EditorData,
-		const FAFStateTreeBindingIndex& Index,
-		const FAFStateTreeBindingFunctionSpec& FunctionSpec,
-		const FGuid& FunctionNodeID,
-		const FString& BindingLabel,
-		FString& OutError)
-	{
-		for (const TPair<FString, FAFStateTreeBindingFunctionInputSpec>& Pair : FunctionSpec.Inputs)
+		const FPropertyBindingPath FunctionOutputPath = EditorBindings->AddFunctionBinding(PreparedFunction.FunctionStruct, PreparedFunction.OutputSegments, TargetPath);
+		const FGuid FunctionNodeID = FunctionOutputPath.GetStructID();
+		for (const FPreparedFunctionInputBinding& Input : PreparedFunction.Inputs)
 		{
-			const FString InputLabel = FString::Printf(TEXT("%s function input '%s'"), *BindingLabel, *Pair.Key);
-			const FPropertyBindingPath InputTargetPath(FunctionNodeID, FName(*Pair.Key));
-			if (Pair.Value.bHasSource)
+			const FPropertyBindingPath InputTargetPath(FunctionNodeID, Input.TargetSegments);
+			if (Input.bHasSource)
 			{
-				FPropertyBindingPath SourcePath;
-				if (!ResolveBindingEndpointPath(Index, Pair.Value.Source, SourcePath, OutError))
-				{
-					OutError = FString::Printf(TEXT("StateTree %s source could not be resolved: %s"), *InputLabel, *OutError);
-					return false;
-				}
-
-				EditorData.AddPropertyBinding(SourcePath, InputTargetPath);
+				EditorData.AddPropertyBinding(Input.SourcePath, InputTargetPath);
 				continue;
 			}
 
-			if (Pair.Value.bHasFunction && Pair.Value.Function.IsValid())
+			if (Input.bHasFunction && Input.Function.IsValid())
 			{
-				if (!AddFunctionBinding(EditorData, Index, *Pair.Value.Function, InputTargetPath, InputLabel, OutError))
+				if (!AddFunctionBinding(EditorData, *Input.Function, InputTargetPath, OutError))
 				{
-					OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *InputLabel, *OutError);
 					return false;
 				}
 			}
@@ -180,7 +296,9 @@ bool UE::AssetFactory::StateTree::ApplyPropertyBindings(
 
 		if (Spec.bHasFunction)
 		{
-			if (!AddFunctionBinding(EditorData, Index, Spec.Function, TargetPath, BindingLabel, OutError))
+			FPreparedFunctionBinding PreparedFunction;
+			if (!PrepareFunctionBinding(Index, Spec.Function, BindingLabel, PreparedFunction, OutError)
+				|| !AddFunctionBinding(EditorData, PreparedFunction, TargetPath, OutError))
 			{
 				OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *BindingLabel, *OutError);
 				return false;

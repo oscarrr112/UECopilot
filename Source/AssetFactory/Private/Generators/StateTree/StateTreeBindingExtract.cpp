@@ -239,11 +239,8 @@ namespace
 
 	FString ExtractFunctionInputName(const FPropertyBindingPath& InputPath)
 	{
-		if (InputPath.NumSegments() == 1)
-		{
-			return InputPath.GetSegment(0).GetName().ToString();
-		}
-		return InputPath.ToString();
+		check(InputPath.NumSegments() == 1);
+		return InputPath.GetSegment(0).GetName().ToString();
 	}
 
 	TSharedPtr<FJsonObject> ExtractFunctionSpec(
@@ -306,6 +303,11 @@ namespace
 			{
 				if (!InputBinding)
 				{
+					continue;
+				}
+				if (InputBinding->GetTargetPath().NumSegments() != 1)
+				{
+					// Task 5 generation only accepts function input map keys as single property names.
 					continue;
 				}
 				const FString InputName = ExtractFunctionInputName(InputBinding->GetTargetPath());
