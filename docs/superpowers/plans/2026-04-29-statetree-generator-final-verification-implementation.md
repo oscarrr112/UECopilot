@@ -131,12 +131,14 @@ test("StateTree smoke manifest covers every final verification spec bucket", () 
 		specs.set(entry.spec, [...(specs.get(entry.spec) ?? []), entry]);
 	}
 
-	for (const spec of ["core", "dynamic", "structure", "parameters", "bindings", "roundtrip"]) {
+	for (const spec of ["core", "dynamic", "structure", "parameters", "bindings"]) {
 		const entries = specs.get(spec) ?? [];
 		assert.ok(entries.some((entry) => entry.kind === "positive"), `${spec} should have a positive fixture`);
 		assert.ok(entries.some((entry) => entry.kind === "negative"), `${spec} should have a negative fixture`);
 	}
 
+	const roundTripEntries = specs.get("roundtrip") ?? [];
+	assert.ok(roundTripEntries.some((entry) => entry.kind === "positive"), "roundtrip should have a positive fixture");
 	assert.ok(manifest.fixtures.filter((entry) => entry.kind === "positive").length >= 17);
 	assert.ok(manifest.fixtures.filter((entry) => entry.kind === "negative").length >= 20);
 	assert.ok(manifest.fixtures.filter((entry) => entry.roundTrip === true).length >= 17);
@@ -263,6 +265,8 @@ Create `TestData/ST_Bindings_GuidNodeIds.json`:
 - [ ] **Step 2: Create smoke manifest**
 
 Create `TestData/StateTreeSmokeManifest.json`:
+
+`roundtrip` is a process bucket for final extract/regenerate/open validation. It is not required to invent a negative fixture; the manifest keeps the expected negative total at 20 and binding type mismatch stays in the `bindings` bucket.
 
 ```json
 {

@@ -39,6 +39,6 @@
 		{ "name": "ST_Bindings_Invalid_BadPath", "kind": "negative", "spec": "bindings", "description": "Reject binding path segment that does not exist.", "expectedError": "could not be resolved" },
 		{ "name": "ST_Bindings_Invalid_DuplicateTarget", "kind": "negative", "spec": "bindings", "description": "Reject duplicate binding target path.", "expectedError": "targets duplicate path" },
 		{ "name": "ST_Bindings_Invalid_BadFunctionType", "kind": "negative", "spec": "bindings", "description": "Reject non-property-function struct in function binding.", "expectedError": "property function type" },
-		{ "name": "ST_Bindings_Invalid_TypeMismatch", "kind": "negative", "spec": "roundtrip", "description": "Reject binding source/target type mismatch.", "expectedError": "compile failed after applying property bindings" }
+		{ "name": "ST_Bindings_Invalid_TypeMismatch", "kind": "negative", "spec": "bindings", "description": "Reject binding source/target type mismatch.", "expectedError": "compile failed after applying property bindings" }
 	]
 }
