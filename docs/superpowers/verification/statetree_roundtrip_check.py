@@ -54,7 +54,14 @@ def _canonical_key(key):
 
 def _normalize_path_segment(segment):
 	if isinstance(segment, dict) and "name" in segment:
-		return segment["name"]
+		normalized = {"name": segment["name"]}
+		if "guid" in segment:
+			normalized["guid"] = segment["guid"]
+		if "arrayIndex" in segment:
+			normalized["arrayIndex"] = segment["arrayIndex"]
+		return normalized
+	if isinstance(segment, str):
+		return {"name": segment}
 	return _canonicalize(segment)
 
 
@@ -106,9 +113,36 @@ def _format_path(path):
 	return "$" + "".join(path)
 
 
+def _is_segment_dict(value):
+	return isinstance(value, dict) and set(value.keys()).issubset({"name", "guid", "arrayIndex"}) and "name" in value
+
+
+def _find_segment_mismatch(left, right, path):
+	if not _is_segment_dict(left) or not _is_segment_dict(right):
+		return None
+
+	if left.get("name") != right.get("name"):
+		return path + [".name"], left.get("name"), right.get("name")
+
+	if ("arrayIndex" in left) != ("arrayIndex" in right):
+		return path + [".arrayIndex"], left.get("arrayIndex", "<missing>"), right.get("arrayIndex", "<missing>")
+	if left.get("arrayIndex") != right.get("arrayIndex"):
+		return path + [".arrayIndex"], left.get("arrayIndex"), right.get("arrayIndex")
+
+	if "guid" in left and "guid" in right and left.get("guid") != right.get("guid"):
+		return path + [".guid"], left.get("guid"), right.get("guid")
+
+	return None
+
+
 def _find_mismatch(left, right, path=None):
 	if path is None:
 		path = []
+
+	if isinstance(left, bool) or isinstance(right, bool):
+		if isinstance(left, bool) and isinstance(right, bool) and left == right:
+			return None
+		return path, left, right
 
 	if isinstance(left, (int, float)) and isinstance(right, (int, float)):
 		if abs(float(left) - float(right)) <= FLOAT_TOLERANCE:
@@ -119,6 +153,12 @@ def _find_mismatch(left, right, path=None):
 		return path, left, right
 
 	if isinstance(left, dict):
+		segment_mismatch = _find_segment_mismatch(left, right, path)
+		if segment_mismatch:
+			return segment_mismatch
+		if _is_segment_dict(left) and _is_segment_dict(right):
+			return None
+
 		left_keys = set(left.keys())
 		right_keys = set(right.keys())
 		if left_keys != right_keys:
