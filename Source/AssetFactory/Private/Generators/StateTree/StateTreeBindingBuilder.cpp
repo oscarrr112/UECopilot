@@ -5,6 +5,7 @@
 #include "Generators/StateTree/StateTreeBindingResolver.h"
 #include "Generators/StateTree/StateTreeJsonTypes.h"
 #include "StateTreeEditorData.h"
+#include "StateTreeEditorPropertyBindings.h"
 
 namespace
 {
@@ -39,6 +40,15 @@ bool UE::AssetFactory::StateTree::ApplyPropertyBindings(
 	{
 		return false;
 	}
+
+	if (FStateTreeEditorPropertyBindings* EditorBindings = EditorData.GetPropertyEditorBindings())
+	{
+		EditorBindings->RemoveBindings([](FPropertyBindingBinding&)
+		{
+			return true;
+		});
+	}
+
 	if (Specs.IsEmpty())
 	{
 		return true;
