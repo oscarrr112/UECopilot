@@ -4,6 +4,7 @@
 
 #include "AssetFactoryModule.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Generators/StateTree/StateTreeBindingExtract.h"
 #include "Generators/StateTree/StateTreeExtract.h"
 #include "Generators/StateTree/StateTreePropertyBagAdapter.h"
 #include "Generators/StateTree/StateTreeStateBuilder.h"
@@ -470,6 +471,12 @@ TSharedPtr<FJsonObject> FStateTreeGenerator::Extract(UObject* Asset, bool bDiffO
 		if (RootParameters.IsValid() && RootParameters->Values.Num() > 0)
 		{
 			OutJson->SetObjectField(TEXT("RootParameters"), RootParameters);
+		}
+
+		TArray<TSharedPtr<FJsonValue>> Bindings = UE::AssetFactory::StateTree::ExtractPropertyBindings(EditorData);
+		if (!Bindings.IsEmpty())
+		{
+			OutJson->SetArrayField(TEXT("bindings"), Bindings);
 		}
 	}
 
