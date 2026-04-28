@@ -6,6 +6,7 @@
 #include "StateTreeTypes.h"
 
 class UStateTreeState;
+struct FStateTreeEditorNode;
 
 struct FAFStateTreeStateIndex
 {
@@ -14,6 +15,7 @@ struct FAFStateTreeStateIndex
 	TMap<FGuid, UStateTreeState*> ByGuid;
 	TMap<FString, TArray<UStateTreeState*>> ByName;
 	TMap<const UStateTreeState*, FString> PathByState;
+	TMap<FGuid, FString> NodeAliasByGuid;
 };
 
 namespace UE::AssetFactory::StateTree
@@ -23,6 +25,12 @@ namespace UE::AssetFactory::StateTree
 		const FString& Id,
 		const FString& CanonicalPath,
 		UStateTreeState& State,
+		FString& OutError);
+
+	bool RegisterNodeAlias(
+		FAFStateTreeStateIndex& Index,
+		const FString& Id,
+		const FStateTreeEditorNode& Node,
 		FString& OutError);
 
 	bool ResolveStateReference(

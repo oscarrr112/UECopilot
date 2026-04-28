@@ -83,6 +83,27 @@ namespace
 		return true;
 	}
 
+	bool AddNodeReferences(
+		const FAFStateTreeBindingIndex& Index,
+		TMap<FString, const FStateTreeEditorNode*>& ScopedById,
+		const FStateTreeEditorNode& Node,
+		const TCHAR* Label,
+		FString& OutError)
+	{
+		if (!AddNodeReference(ScopedById, MakeStableNodeId(Node), Node, Label, OutError))
+		{
+			return false;
+		}
+		if (Index.StateIndex)
+		{
+			if (const FString* Alias = Index.StateIndex->NodeAliasByGuid.Find(Node.ID))
+			{
+				return AddNodeReference(ScopedById, *Alias, Node, Label, OutError);
+			}
+		}
+		return true;
+	}
+
 	bool RegisterNode(
 		FAFStateTreeBindingIndex& Index,
 		const FStateTreeEditorNode& Node,
@@ -97,7 +118,7 @@ namespace
 
 		if (ScopedById)
 		{
-			return AddNodeReference(*ScopedById, MakeStableNodeId(Node), Node, Label, OutError);
+			return AddNodeReferences(Index, *ScopedById, Node, Label, OutError);
 		}
 		return true;
 	}
@@ -109,12 +130,11 @@ namespace
 		const TCHAR* Label,
 		FString& OutError)
 	{
-		const FString StableId = MakeStableNodeId(Node);
 		if (!RegisterNode(Index, Node, Label, &TypedById, OutError))
 		{
 			return false;
 		}
-		return AddNodeReference(Index.GlobalNodeById, StableId, Node, TEXT("global"), OutError);
+		return AddNodeReferences(Index, Index.GlobalNodeById, Node, TEXT("global"), OutError);
 	}
 
 	bool RegisterStateNodeArray(
@@ -128,7 +148,7 @@ namespace
 		for (const FStateTreeEditorNode& Node : Nodes)
 		{
 			if (!RegisterNode(Index, Node, Label, &ScopedById, OutError)
-				|| !AddNodeReference(TypedById, MakeStableNodeId(Node), Node, Label, OutError))
+				|| !AddNodeReferences(Index, TypedById, Node, Label, OutError))
 			{
 				return false;
 			}
@@ -147,7 +167,7 @@ namespace
 		TMap<FString, const FStateTreeEditorNode*>& ConsiderationById = Index.StateConsiderationById.FindOrAdd(&State);
 		if (!RegisterStateNodeArray(Index, State.Tasks, ScopedById, TaskById, TEXT("state task"), OutError)
 			|| !RegisterNode(Index, State.SingleTask, TEXT("single task"), &ScopedById, OutError)
-			|| !AddNodeReference(TaskById, MakeStableNodeId(State.SingleTask), State.SingleTask, TEXT("single task"), OutError)
+			|| !AddNodeReferences(Index, TaskById, State.SingleTask, TEXT("single task"), OutError)
 			|| !RegisterStateNodeArray(Index, State.EnterConditions, ScopedById, EnterConditionById, TEXT("enter condition"), OutError)
 			|| !RegisterStateNodeArray(Index, State.Considerations, ScopedById, ConsiderationById, TEXT("consideration"), OutError))
 		{

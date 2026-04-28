@@ -66,7 +66,8 @@ namespace
 		const UStateTreeSchema& Schema,
 		const TArray<FAFStateTreeNodeSpec>& Specs,
 		TArray<FStateTreeEditorNode>& OutNodes,
-		FString& OutError)
+		FString& OutError,
+		FAFStateTreeStateIndex* Index = nullptr)
 	{
 		OutNodes.Reset();
 		for (const FAFStateTreeNodeSpec& Spec : Specs)
@@ -77,6 +78,10 @@ namespace
 				return false;
 			}
 			OutNodes.Add(MoveTemp(EditorNode));
+			if (Index && !UE::AssetFactory::StateTree::RegisterNodeAlias(*Index, Spec.Id, OutNodes.Last(), OutError))
+			{
+				return false;
+			}
 		}
 		return true;
 	}
@@ -185,7 +190,7 @@ namespace
 		}
 
 		TArray<FStateTreeEditorNode> Tasks;
-		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.Tasks, Tasks, OutError))
+		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.Tasks, Tasks, OutError, &Index))
 		{
 			return false;
 		}
@@ -209,8 +214,8 @@ namespace
 			State.Tasks = MoveTemp(Tasks);
 		}
 
-		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.EnterConditions, State.EnterConditions, OutError)
-			|| !BuildEditorNodes(&State, *EditorData.Schema, Spec.Considerations, State.Considerations, OutError))
+		if (!BuildEditorNodes(&State, *EditorData.Schema, Spec.EnterConditions, State.EnterConditions, OutError, &Index)
+			|| !BuildEditorNodes(&State, *EditorData.Schema, Spec.Considerations, State.Considerations, OutError, &Index))
 		{
 			return false;
 		}
@@ -428,8 +433,9 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 		EditorData.GlobalTasksCompletion = CompletionType;
 	}
 
-	if (!BuildEditorNodes(&EditorData, *EditorData.Schema, EvaluatorSpecs, EditorData.Evaluators, OutError)
-		|| !BuildEditorNodes(&EditorData, *EditorData.Schema, GlobalTaskSpecs, EditorData.GlobalTasks, OutError))
+	FAFStateTreeStateIndex Index;
+	if (!BuildEditorNodes(&EditorData, *EditorData.Schema, EvaluatorSpecs, EditorData.Evaluators, OutError, &Index)
+		|| !BuildEditorNodes(&EditorData, *EditorData.Schema, GlobalTaskSpecs, EditorData.GlobalTasks, OutError, &Index))
 	{
 		return false;
 	}
@@ -448,7 +454,6 @@ bool UE::AssetFactory::StateTree::ApplyStateTreeConfig(
 	}
 
 	EditorData.SubTrees.Reset();
-	FAFStateTreeStateIndex Index;
 	for (const FAFStateTreeStateSpec& SubTreeSpec : SubTreeSpecs)
 	{
 		UStateTreeState& SubTree = EditorData.AddSubTree(FName(*SubTreeSpec.Name));

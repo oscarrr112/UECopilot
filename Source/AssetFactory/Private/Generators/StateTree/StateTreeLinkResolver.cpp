@@ -2,6 +2,7 @@
 
 #include "Generators/StateTree/StateTreeLinkResolver.h"
 
+#include "StateTreeEditorNode.h"
 #include "StateTreeState.h"
 
 namespace
@@ -74,6 +75,47 @@ bool UE::AssetFactory::StateTree::RegisterStateReference(
 		Index.ById.Add(Id, &State);
 	}
 
+	return true;
+}
+
+bool UE::AssetFactory::StateTree::RegisterNodeAlias(
+	FAFStateTreeStateIndex& Index,
+	const FString& Id,
+	const FStateTreeEditorNode& Node,
+	FString& OutError)
+{
+	if (Id.IsEmpty())
+	{
+		return true;
+	}
+
+	FGuid ParsedGuid;
+	if (FGuid::Parse(Id, ParsedGuid))
+	{
+		return true;
+	}
+
+	if (!Node.ID.IsValid())
+	{
+		OutError = FString::Printf(TEXT("StateTree node id '%s' produced an invalid GUID"), *Id);
+		return false;
+	}
+
+	if (const FString* ExistingAlias = Index.NodeAliasByGuid.Find(Node.ID))
+	{
+		if (*ExistingAlias != Id)
+		{
+			OutError = FString::Printf(
+				TEXT("StateTree node GUID '%s' has conflicting aliases '%s' and '%s'"),
+				*Node.ID.ToString(EGuidFormats::DigitsWithHyphensLower),
+				**ExistingAlias,
+				*Id);
+			return false;
+		}
+		return true;
+	}
+
+	Index.NodeAliasByGuid.Add(Node.ID, Id);
 	return true;
 }
 
