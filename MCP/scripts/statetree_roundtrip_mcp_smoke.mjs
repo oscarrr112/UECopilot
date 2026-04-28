@@ -99,10 +99,12 @@ function cleanupExtractOutputs(fixtures) {
 function writeExtractedConfigs(result, phase, fixtures) {
 	assertCondition(Array.isArray(result.results), `${phase} result missing results list: ${JSON.stringify(result)}`);
 
+	const expectedNames = new Set(fixtures);
 	const extractedByName = new Map();
 	for (const item of result.results) {
 		const config = item && item.config;
 		assertCondition(config && typeof config.Name === "string", `${phase} result missing config.Name: ${JSON.stringify(item)}`);
+		assertCondition(expectedNames.has(config.Name), `${phase} result unexpected config.Name: ${config.Name}`);
 		assertCondition(!extractedByName.has(config.Name), `${phase} result duplicated config.Name: ${config.Name}`);
 		config.Action = "CreateOrUpdate";
 		extractedByName.set(config.Name, config);
@@ -111,6 +113,10 @@ function writeExtractedConfigs(result, phase, fixtures) {
 	for (const name of fixtures) {
 		assertCondition(extractedByName.has(name), `${phase} missing extracted config for ${name}`);
 	}
+	assertCondition(
+		extractedByName.size === fixtures.length,
+		`${phase} result extracted ${extractedByName.size} configs, expected ${fixtures.length}`,
+	);
 
 	for (const config of extractedByName.values()) {
 		writeJson(join(outDir, `${config.Name}.${phase}.json`), config);
