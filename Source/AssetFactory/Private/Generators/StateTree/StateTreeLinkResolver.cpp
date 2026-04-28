@@ -56,6 +56,10 @@ bool UE::AssetFactory::StateTree::RegisterStateReference(
 	}
 
 	Index.ByPath.Add(CanonicalPath, &State);
+	if (State.ID.IsValid())
+	{
+		Index.ByGuid.Add(State.ID, &State);
+	}
 	Index.PathByState.Add(&State, CanonicalPath);
 	Index.ByName.FindOrAdd(LeafNameFromPath(CanonicalPath)).Add(&State);
 	if (!Id.IsEmpty())
@@ -77,6 +81,16 @@ bool UE::AssetFactory::StateTree::ResolveStateReference(
 	{
 		OutError = TEXT("StateTree state reference must be non-empty");
 		return false;
+	}
+
+	FGuid ParsedGuid;
+	if (FGuid::Parse(Reference, ParsedGuid))
+	{
+		if (UStateTreeState* const* StateByGuid = Index.ByGuid.Find(ParsedGuid))
+		{
+			OutState = *StateByGuid;
+			return true;
+		}
 	}
 
 	if (UStateTreeState* const* StateById = Index.ById.Find(Reference))

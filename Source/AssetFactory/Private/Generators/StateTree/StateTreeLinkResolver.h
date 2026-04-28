@@ -11,6 +11,7 @@ struct FAFStateTreeStateIndex
 {
 	TMap<FString, UStateTreeState*> ById;
 	TMap<FString, UStateTreeState*> ByPath;
+	TMap<FGuid, UStateTreeState*> ByGuid;
 	TMap<FString, TArray<UStateTreeState*>> ByName;
 	TMap<const UStateTreeState*, FString> PathByState;
 };
