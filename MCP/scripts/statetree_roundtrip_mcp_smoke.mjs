@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -120,6 +120,9 @@ function childEnv() {
 async function main() {
 	mkdirSync(outDir, { recursive: true });
 
+	const positiveConfigs = positiveFixtures.map(readFixture);
+	const invalidConfigs = invalidFixtures.map(readFixture);
+
 	const transport = new StdioClientTransport({
 		command: "node",
 		args: [join(mcpDir, "dist", "index.js")],
@@ -137,7 +140,6 @@ async function main() {
 		console.log(`HEALTH success=${healthSuccess} service=${health.service} port=${health.port}`);
 		assertCondition(health.status === "ok", `health_check did not return ok: ${JSON.stringify(health)}`);
 
-		const positiveConfigs = positiveFixtures.map(readFixture);
 		const generateInitial = await callJson(client, "generate_assets", { assets: positiveConfigs });
 		writeJson(join(outDir, "generate.initial.json"), generateInitial);
 		console.log(
@@ -205,12 +207,8 @@ async function main() {
 			assertCondition(check.status === 0, `round-trip check failed for ${name} with status ${check.status}`);
 		}
 
-		for (const name of invalidFixtures) {
-			const fixturePath = join(testDataDir, `${name}.json`);
-			if (!existsSync(fixturePath)) {
-				continue;
-			}
-			const invalidResult = await callJson(client, "generate_assets", { assets: [readFixture(name)] });
+		for (const [index, name] of invalidFixtures.entries()) {
+			const invalidResult = await callJson(client, "generate_assets", { assets: [invalidConfigs[index]] });
 			const message = firstMessage(invalidResult);
 			console.log(`INVALID ${name} success=${invalidResult.success} failed=${invalidResult.failed} message=${message}`);
 			assertCondition(
