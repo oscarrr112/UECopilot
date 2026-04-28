@@ -321,6 +321,7 @@ print('CLEANED_STATE_TREE_SMOKE_ROOT', asset_root)`,
 		`${result}\n${logs}`.includes("CLEANED_STATE_TREE_SMOKE_ROOT"),
 		`clean smoke assets did not confirm cleanup: ${JSON.stringify(cleanResult)}`,
 	);
+	console.log(`CLEANED_STATE_TREE_SMOKE_ROOT ${manifest.assetRoot}`);
 }
 
 function runPreflightBuild() {
