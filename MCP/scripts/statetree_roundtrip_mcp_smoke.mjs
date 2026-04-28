@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -89,6 +89,36 @@ function writeJson(path, value) {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function cleanupExtractOutputs(fixtures) {
+	for (const name of fixtures) {
+		rmSync(join(outDir, `${name}.extract1.json`), { force: true });
+		rmSync(join(outDir, `${name}.extract2.json`), { force: true });
+	}
+}
+
+function writeExtractedConfigs(result, phase, fixtures) {
+	assertCondition(Array.isArray(result.results), `${phase} result missing results list: ${JSON.stringify(result)}`);
+
+	const extractedByName = new Map();
+	for (const item of result.results) {
+		const config = item && item.config;
+		assertCondition(config && typeof config.Name === "string", `${phase} result missing config.Name: ${JSON.stringify(item)}`);
+		assertCondition(!extractedByName.has(config.Name), `${phase} result duplicated config.Name: ${config.Name}`);
+		config.Action = "CreateOrUpdate";
+		extractedByName.set(config.Name, config);
+	}
+
+	for (const name of fixtures) {
+		assertCondition(extractedByName.has(name), `${phase} missing extracted config for ${name}`);
+	}
+
+	for (const config of extractedByName.values()) {
+		writeJson(join(outDir, `${config.Name}.${phase}.json`), config);
+	}
+
+	return extractedByName;
+}
+
 function firstMessage(result) {
 	if (typeof result.error === "string" && result.error.length > 0) {
 		return result.error;
@@ -122,6 +152,7 @@ async function main() {
 
 	const positiveConfigs = positiveFixtures.map(readFixture);
 	const invalidConfigs = invalidFixtures.map(readFixture);
+	cleanupExtractOutputs(positiveFixtures);
 
 	const transport = new StdioClientTransport({
 		command: "node",
@@ -159,14 +190,7 @@ async function main() {
 			`first extract failed: ${JSON.stringify(extract1)}`,
 		);
 
-		const extractedByName = new Map();
-		for (const item of extract1.results || []) {
-			const config = item && item.config;
-			assertCondition(config && typeof config.Name === "string", `extract1 result missing config.Name: ${JSON.stringify(item)}`);
-			config.Action = "CreateOrUpdate";
-			extractedByName.set(config.Name, config);
-			writeJson(join(outDir, `${config.Name}.extract1.json`), config);
-		}
+		const extractedByName = writeExtractedConfigs(extract1, "extract1", positiveFixtures);
 
 		const extractedConfigs = positiveFixtures.map((name) => {
 			const config = extractedByName.get(name);
@@ -190,12 +214,7 @@ async function main() {
 			`second extract failed: ${JSON.stringify(extract2)}`,
 		);
 
-		for (const item of extract2.results || []) {
-			const config = item && item.config;
-			assertCondition(config && typeof config.Name === "string", `extract2 result missing config.Name: ${JSON.stringify(item)}`);
-			config.Action = "CreateOrUpdate";
-			writeJson(join(outDir, `${config.Name}.extract2.json`), config);
-		}
+		writeExtractedConfigs(extract2, "extract2", positiveFixtures);
 
 		for (const name of positiveFixtures) {
 			const left = join(outDir, `${name}.extract1.json`);
