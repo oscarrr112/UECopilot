@@ -69,6 +69,23 @@ def _stable_json(value):
 	return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _binding_sort_value(value):
+	if _is_segment_dict(value):
+		sort_value = {"name": value["name"]}
+		if "arrayIndex" in value:
+			sort_value["arrayIndex"] = value["arrayIndex"]
+		return sort_value
+	if isinstance(value, dict):
+		return {key: _binding_sort_value(child) for key, child in value.items()}
+	if isinstance(value, list):
+		return [_binding_sort_value(child) for child in value]
+	return value
+
+
+def _binding_sort_key(binding):
+	return _stable_json(_binding_sort_value(binding))
+
+
 def _strip_empty_noise(value):
 	if isinstance(value, dict):
 		stripped = {}
@@ -101,7 +118,7 @@ def _canonicalize(value, parent_key=None):
 	if isinstance(value, list):
 		items = [_canonicalize(child, parent_key) for child in value]
 		if parent_key == "bindings":
-			return sorted(items, key=_stable_json)
+			return sorted(items, key=_binding_sort_key)
 		return items
 
 	return value
