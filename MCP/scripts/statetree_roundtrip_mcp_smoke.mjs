@@ -12,54 +12,97 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const mcpDir = resolve(scriptDir, "..");
 const repoDir = resolve(mcpDir, "..");
 const testDataDir = join(repoDir, "TestData");
+const manifestPath = join(testDataDir, "StateTreeSmokeManifest.json");
 const checkerPath = join(repoDir, "docs", "superpowers", "verification", "statetree_roundtrip_check.py");
 const outDir = process.env.STATETREE_ROUNDTRIP_OUT || "/tmp/assetfactory-statetree-roundtrip";
 const ueApiBase = process.env.UE_API_BASE || "http://127.0.0.1:8559";
-
-const positiveFixtures = [
-	"ST_Core_Minimal",
-	"ST_Core_AIComponentSchema",
-	"ST_Dynamic_Delay_Minimal",
-	"ST_Dynamic_DebugText_WithInstance",
-	"ST_Dynamic_Condition_CompareInt",
-	"ST_Structure_Transitions",
-	"ST_Structure_LinkedSubtree",
-	"ST_Structure_LinkedAsset_Target",
-	"ST_Structure_LinkedAsset_Referencer",
-	"ST_Parameters_Basic",
-	"ST_Parameters_Complex",
-	"ST_Parameters_LinkedTarget",
-	"ST_Parameters_LinkedReferencer",
-	"ST_Bindings_Ordinary",
-	"ST_Bindings_Function",
-	"ST_RoundTrip_Comprehensive",
-];
-
-const invalidFixtures = [
-	"ST_Core_InvalidSchema",
-	"ST_Dynamic_Invalid_UnknownNode",
-	"ST_Dynamic_Invalid_Category_TaskSlotCondition",
-	"ST_Dynamic_Invalid_SchemaAIMoveToInComponent",
-	"ST_Structure_Invalid_MissingTransitionTarget",
-	"ST_Structure_Invalid_AmbiguousTransitionTarget",
-	"ST_Structure_Invalid_LinkedSubtreeTargetNotSubtree",
-	"ST_Structure_Invalid_EventMissingTag",
-	"ST_Parameters_Invalid_BadGuid",
-	"ST_Parameters_Invalid_BadValue",
-	"ST_Parameters_Invalid_UnknownType",
-	"ST_Parameters_Invalid_MapUnsupported",
-	"ST_Parameters_Invalid_LinkedOverrideUnknown",
-	"ST_Parameters_Invalid_LinkedOverrideTypeMismatch",
-	"ST_Bindings_Invalid_UnknownSource",
-	"ST_Bindings_Invalid_UnknownTarget",
-	"ST_Bindings_Invalid_BadPath",
-	"ST_Bindings_Invalid_DuplicateTarget",
-	"ST_Bindings_Invalid_BadFunctionType",
-	"ST_Bindings_Invalid_TypeMismatch",
-];
+const preflightBuild =
+	process.argv.includes("--preflight-build") || process.env.STATETREE_SMOKE_PREFLIGHT_BUILD === "1";
 
 function readFixture(name) {
 	return JSON.parse(readFileSync(join(testDataDir, `${name}.json`), "utf8"));
+}
+
+function readManifest() {
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	assertCondition(manifest && Array.isArray(manifest.fixtures), "StateTreeSmokeManifest.json missing fixtures array");
+	assertCondition(manifest.assetRoot === "/Game/AFSmoke", `unexpected assetRoot ${manifest.assetRoot}`);
+	return manifest;
+}
+
+function fixtureEntries(manifest, kind) {
+	return manifest.fixtures.filter((entry) => entry.kind === kind);
+}
+
+function topologicalFixtureOrder(entries) {
+	const byName = new Map(entries.map((entry) => [entry.name, entry]));
+	const ordered = [];
+	const visiting = new Set();
+	const visited = new Set();
+
+	function visit(name) {
+		if (visited.has(name)) {
+			return;
+		}
+		assertCondition(!visiting.has(name), `fixture dependency cycle at ${name}`);
+		const entry = byName.get(name);
+		assertCondition(entry, `fixture dependency missing from smoke set: ${name}`);
+		visiting.add(name);
+		for (const dependency of entry.dependsOn || []) {
+			if (byName.has(dependency)) {
+				visit(dependency);
+			}
+		}
+		visiting.delete(name);
+		visited.add(name);
+		ordered.push(entry);
+	}
+
+	for (const entry of entries) {
+		visit(entry.name);
+	}
+	return ordered;
+}
+
+function cloneJson(value) {
+	return JSON.parse(JSON.stringify(value));
+}
+
+function smokeObjectPath(name, assetRoot) {
+	return `${assetRoot}/${name}.${name}`;
+}
+
+function rewriteSmokeReferences(value, manifest) {
+	if (Array.isArray(value)) {
+		return value.map((entry) => rewriteSmokeReferences(entry, manifest));
+	}
+	if (value && typeof value === "object") {
+		for (const [key, child] of Object.entries(value)) {
+			value[key] = rewriteSmokeReferences(child, manifest);
+		}
+		return value;
+	}
+	if (typeof value !== "string") {
+		return value;
+	}
+
+	const fixtureNames = new Set(manifest.fixtures.map((entry) => entry.name));
+	const match = value.match(/^\/Game\/(?:Generated\/StateTree|AFSmoke)\/(ST_[A-Za-z0-9_]+)\.(ST_[A-Za-z0-9_]+)$/);
+	if (match && match[1] === match[2] && fixtureNames.has(match[1])) {
+		return smokeObjectPath(match[1], manifest.assetRoot);
+	}
+	return value;
+}
+
+function prepareSmokeConfig(name, manifest) {
+	const config = cloneJson(readFixture(name));
+	config.Path = manifest.assetRoot;
+	config.Action = "CreateOrUpdate";
+	return rewriteSmokeReferences(config, manifest);
+}
+
+function assetPathFromName(name, manifest) {
+	return `${manifest.assetRoot}/${name}`;
 }
 
 async function callJson(client, tool, args = {}) {
@@ -247,12 +290,86 @@ function childEnv() {
 	};
 }
 
+async function cleanSmokeAssets(client, manifest) {
+	const cleanResult = await callJson(client, "execute_python", {
+		code: `import unreal
+asset_root = '${manifest.assetRoot}'
+library = unreal.EditorAssetLibrary
+if library.does_directory_exist(asset_root):
+    if not library.delete_directory(asset_root):
+        raise RuntimeError(f'Failed to delete {asset_root}')
+if hasattr(library, 'make_directory'):
+    library.make_directory(asset_root)
+print('CLEANED_STATE_TREE_SMOKE_ROOT', asset_root)`,
+		description: `Clean ${manifest.assetRoot} before StateTree final smoke`,
+	});
+	assertCondition(cleanResult.success === true, `clean smoke assets failed: ${JSON.stringify(cleanResult)}`);
+	const logs = Array.isArray(cleanResult.logs)
+		? cleanResult.logs.map((entry) => entry.message || "").join("\n")
+		: "";
+	const result = typeof cleanResult.result === "string" ? cleanResult.result : JSON.stringify(cleanResult.result || "");
+	assertCondition(
+		`${result}\n${logs}`.includes("CLEANED_STATE_TREE_SMOKE_ROOT"),
+		`clean smoke assets did not confirm cleanup: ${JSON.stringify(cleanResult)}`,
+	);
+}
+
+function runPreflightBuild() {
+	if (!preflightBuild) {
+		console.log("PREFLIGHT_BUILD skipped=true");
+		return { enabled: false, status: "skipped" };
+	}
+
+	const buildScript = process.env.UE_BUILD_SCRIPT || join(process.env.HOME || "", "UnrealEngine/Engine/Build/BatchFiles/Mac/Build.sh");
+	const projectPath = process.env.UE_PROJECT_PATH || "/Volumes/Mac/GameDev/ProjectRPG/ProjectRPG.uproject";
+	const result = spawnSync(buildScript, ["ProjectRPGEditor", "Mac", "Development", `-Project=${projectPath}`, "-WaitMutex"], {
+		cwd: repoDir,
+		stdio: "inherit",
+	});
+	assertCondition(result.status === 0, `preflight build failed with status ${result.status}`);
+	console.log("PREFLIGHT_BUILD skipped=false status=0");
+	return { enabled: true, status: "passed" };
+}
+
+async function openFinalAsset(client, manifest) {
+	const finalPath = assetPathFromName(manifest.finalOpenAsset, manifest);
+	const marker = `OPENED_${manifest.finalOpenAsset}`;
+	const openAsset = await callJson(client, "execute_python", {
+		code: `import unreal
+asset = unreal.load_asset('${finalPath}')
+if asset is None:
+    raise RuntimeError('Failed to load ${finalPath}')
+subsystem = unreal.get_editor_subsystem(unreal.AssetEditorSubsystem)
+opened = subsystem.open_editor_for_assets([asset])
+if not opened:
+    raise RuntimeError('open_editor_for_assets returned false for ${finalPath}')
+print('${marker}', opened)`,
+		description: `Open StateTree final smoke asset ${finalPath}`,
+	});
+	const logs = Array.isArray(openAsset.logs)
+		? openAsset.logs.map((entry) => entry.message || "").filter(Boolean).join(" | ")
+		: "";
+	console.log(`OPEN_ASSET success=${openAsset.success} path=${finalPath} logs=${logs}`);
+	assertCondition(openAsset.success === true, `open asset failed: ${JSON.stringify(openAsset)}`);
+	const openResult = typeof openAsset.result === "string" ? openAsset.result : JSON.stringify(openAsset.result || "");
+	assertCondition(`${openResult}\n${logs}`.includes(marker), `open asset output missing ${marker}: ${JSON.stringify(openAsset)}`);
+	return openAsset;
+}
+
 async function main() {
 	mkdirSync(outDir, { recursive: true });
 
-	const positiveConfigs = positiveFixtures.map(readFixture);
-	const invalidConfigs = invalidFixtures.map(readFixture);
-	cleanupExtractOutputs(positiveFixtures);
+	const manifest = readManifest();
+	const preflight = runPreflightBuild();
+	const positiveEntries = topologicalFixtureOrder(fixtureEntries(manifest, "positive"));
+	const invalidEntries = topologicalFixtureOrder([...positiveEntries, ...fixtureEntries(manifest, "negative")])
+		.filter((entry) => entry.kind === "negative");
+	const roundTripEntries = positiveEntries.filter((entry) => entry.roundTrip === true);
+	const positiveNames = positiveEntries.map((entry) => entry.name);
+	const roundTripNames = roundTripEntries.map((entry) => entry.name);
+	const positiveConfigs = positiveNames.map((name) => prepareSmokeConfig(name, manifest));
+	const invalidConfigs = invalidEntries.map((entry) => prepareSmokeConfig(entry.name, manifest));
+	cleanupExtractOutputs(roundTripNames);
 
 	const transport = new StdioClientTransport({
 		command: "node",
@@ -261,7 +378,18 @@ async function main() {
 		env: childEnv(),
 		stderr: "pipe",
 	});
-	const client = new Client({ name: "assetfactory-statetree-roundtrip-smoke", version: "1.0.0" });
+	const client = new Client({ name: "assetfactory-statetree-final-smoke", version: "1.0.0" });
+
+	const summary = {
+		assetRoot: manifest.assetRoot,
+		preflight,
+		positive: { expected: positiveEntries.length, generated: 0 },
+		roundTrip: { expected: roundTripEntries.length, checked: 0 },
+		negative: { expected: invalidEntries.length, failed: 0 },
+		coverage: {},
+		finalOpenAsset: manifest.finalOpenAsset,
+		finalOpenPath: assetPathFromName(manifest.finalOpenAsset, manifest),
+	};
 
 	try {
 		await client.connect(transport);
@@ -271,14 +399,17 @@ async function main() {
 		console.log(`HEALTH success=${healthSuccess} service=${health.service} port=${health.port}`);
 		assertCondition(health.status === "ok", `health_check did not return ok: ${JSON.stringify(health)}`);
 
+		await cleanSmokeAssets(client, manifest);
+
 		const generateInitial = await generateAssetsSequentially(client, positiveConfigs, "initial generate");
 		writeJson(join(outDir, "generate.initial.json"), generateInitial);
 		console.log(
 			`GENERATE_INITIAL success=${generateInitial.success} succeeded=${generateInitial.succeeded} failed=${generateInitial.failed}`,
 		);
 		validateGenerationResult(generateInitial, "initial generate", positiveConfigs);
+		summary.positive.generated = generateInitial.succeeded;
 
-		const assets = positiveConfigs.map(assetPath);
+		const assets = roundTripNames.map((name) => assetPathFromName(name, manifest));
 		const extract1 = await callJson(client, "extract_assets", { assets });
 		writeJson(join(outDir, "extract.1.json"), extract1);
 		console.log(`EXTRACT1 success=${extract1.success} succeeded=${extract1.succeeded} failed=${extract1.failed}`);
@@ -287,12 +418,14 @@ async function main() {
 			`first extract failed: ${JSON.stringify(extract1)}`,
 		);
 
-		const extractedByName = writeExtractedConfigs(extract1, "extract1", positiveFixtures);
-		validateExtractedPaths(extractedByName, positiveConfigs, "extract1");
+		const extractedByName = writeExtractedConfigs(extract1, "extract1", roundTripNames);
+		validateExtractedPaths(extractedByName, roundTripNames.map((name) => prepareSmokeConfig(name, manifest)), "extract1");
 
-		const extractedConfigs = positiveFixtures.map((name) => {
+		const extractedConfigs = roundTripNames.map((name) => {
 			const config = extractedByName.get(name);
 			assertCondition(config, `missing extracted config for ${name}`);
+			config.Path = manifest.assetRoot;
+			config.Action = "CreateOrUpdate";
 			return config;
 		});
 
@@ -301,8 +434,7 @@ async function main() {
 		console.log(`REGENERATE success=${regenerate.success} succeeded=${regenerate.succeeded} failed=${regenerate.failed}`);
 		validateGenerationResult(regenerate, "regenerate from extract", extractedConfigs);
 
-		const regeneratedAssets = extractedConfigs.map(assetPath);
-		const extract2 = await callJson(client, "extract_assets", { assets: regeneratedAssets });
+		const extract2 = await callJson(client, "extract_assets", { assets });
 		writeJson(join(outDir, "extract.2.json"), extract2);
 		console.log(`EXTRACT2 success=${extract2.success} succeeded=${extract2.succeeded} failed=${extract2.failed}`);
 		assertCondition(
@@ -310,10 +442,10 @@ async function main() {
 			`second extract failed: ${JSON.stringify(extract2)}`,
 		);
 
-		const regeneratedByName = writeExtractedConfigs(extract2, "extract2", positiveFixtures);
+		const regeneratedByName = writeExtractedConfigs(extract2, "extract2", roundTripNames);
 		validateExtractedPaths(regeneratedByName, extractedConfigs, "extract2");
 
-		for (const name of positiveFixtures) {
+		for (const name of roundTripNames) {
 			const left = join(outDir, `${name}.extract1.json`);
 			const right = join(outDir, `${name}.extract2.json`);
 			const check = spawnSync("python3", [checkerPath, left, right, "--fixture", name], {
@@ -321,40 +453,30 @@ async function main() {
 				stdio: "inherit",
 			});
 			assertCondition(check.status === 0, `round-trip check failed for ${name} with status ${check.status}`);
+			summary.roundTrip.checked += 1;
 		}
 
-		for (const [index, name] of invalidFixtures.entries()) {
+		for (const [index, entry] of invalidEntries.entries()) {
 			const invalidResult = await callJson(client, "generate_assets", { assets: [invalidConfigs[index]] });
 			const message = firstMessage(invalidResult);
-			console.log(`INVALID ${name} success=${invalidResult.success} failed=${invalidResult.failed} message=${message}`);
+			console.log(`INVALID ${entry.name} success=${invalidResult.success} failed=${invalidResult.failed} message=${message}`);
 			assertCondition(
-				invalidResult.success === false && invalidResult.failed === 1 && message.length > 0,
-				`invalid fixture did not fail as expected for ${name}: ${JSON.stringify(invalidResult)}`,
+				invalidResult.success === false && invalidResult.failed === 1 && message.includes(entry.expectedError),
+				`invalid fixture did not match expected error for ${entry.name}: expected '${entry.expectedError}', got ${JSON.stringify(invalidResult)}`,
 			);
+			summary.negative.failed += 1;
 		}
 
-		const openAsset = await callJson(client, "execute_python", {
-			code: `import unreal
-asset = unreal.load_asset('/Game/AFSmoke/ST_RoundTrip_Comprehensive')
-if asset is None:
-    raise RuntimeError('Failed to load /Game/AFSmoke/ST_RoundTrip_Comprehensive')
-subsystem = unreal.get_editor_subsystem(unreal.AssetEditorSubsystem)
-opened = subsystem.open_editor_for_assets([asset])
-if not opened:
-    raise RuntimeError('open_editor_for_assets returned false for /Game/AFSmoke/ST_RoundTrip_Comprehensive')
-print('OPENED_ST_ROUNDTRIP_COMPREHENSIVE', opened)`,
-			description: "Open StateTree round-trip smoke asset",
-		});
-		const logs = Array.isArray(openAsset.logs)
-			? openAsset.logs.map((entry) => entry.message || "").filter(Boolean).join(" | ")
-			: "";
-		console.log(`OPEN_ASSET success=${openAsset.success} logs=${logs}`);
-		assertCondition(openAsset.success === true, `open asset failed: ${JSON.stringify(openAsset)}`);
-		const openResult = typeof openAsset.result === "string" ? openAsset.result : JSON.stringify(openAsset.result || "");
-		assertCondition(
-			`${openResult}\n${logs}`.includes("OPENED_ST_ROUNDTRIP_COMPREHENSIVE"),
-			`open asset output missing OPENED_ST_ROUNDTRIP_COMPREHENSIVE: ${JSON.stringify(openAsset)}`,
-		);
+		for (const entry of manifest.fixtures) {
+			const bucket = summary.coverage[entry.spec] || { positive: [], negative: [] };
+			bucket[entry.kind].push(entry.name);
+			summary.coverage[entry.spec] = bucket;
+		}
+
+		const openAsset = await openFinalAsset(client, manifest);
+		summary.finalOpenResult = openAsset.success === true ? "opened" : "failed";
+		writeJson(join(outDir, "summary.json"), summary);
+		console.log(`SUMMARY positive=${summary.positive.generated}/${summary.positive.expected} roundTrip=${summary.roundTrip.checked}/${summary.roundTrip.expected} negative=${summary.negative.failed}/${summary.negative.expected} finalOpen=${summary.finalOpenPath}`);
 	} finally {
 		await client.close().catch(() => undefined);
 		await transport.close().catch(() => undefined);

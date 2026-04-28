@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "watch": "node --watch dist/index.js",
     "dev": "tsc && node dist/index.js",
-    "smoke:statetree-roundtrip": "node scripts/statetree_roundtrip_mcp_smoke.mjs",
+    "smoke:statetree-final": "node scripts/statetree_roundtrip_mcp_smoke.mjs",
+    "smoke:statetree-roundtrip": "npm run smoke:statetree-final",
     "pretest": "node -e \"require('fs').rmSync('dist/broker',{recursive:true,force:true})\"",
     "test": "npm run build && node --test dist/broker/*.test.js"
   },
