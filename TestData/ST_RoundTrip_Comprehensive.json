@@ -1,0 +1,192 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_RoundTrip_Comprehensive",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"rootParameters": {
+		"BaseDelay": {
+			"type": "Float",
+			"value": 0.25
+		},
+		"BonusDelay": {
+			"type": "Float",
+			"value": 0.15
+		},
+		"DebugLabel": {
+			"type": "String",
+			"value": "RoundTrip comprehensive"
+		}
+	},
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"selectionBehavior": "TrySelectChildrenInOrder",
+			"children": [
+				{
+					"id": "idle",
+					"name": "Idle",
+					"type": "State",
+					"parameters": {
+						"IdleDuration": {
+							"type": "Float",
+							"value": 0.5
+						}
+					},
+					"tasks": [
+						{
+							"id": "idle-debug",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDebugTextTask",
+							"node": {
+								"properties": {
+									"Text": "RoundTrip idle",
+									"FontScale": 1.0,
+									"bEnabled": true
+								}
+							},
+							"instance": {
+								"properties": {
+									"BindableText": "RoundTrip comprehensive"
+								}
+							}
+						},
+						{
+							"id": "idle-delay",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.1
+								}
+							}
+						}
+					],
+					"transitions": [
+						{
+							"id": "idle-to-attack",
+							"trigger": "OnStateSucceeded",
+							"type": "GotoState",
+							"target": "Root/Attack",
+							"priority": "High",
+							"delay": {
+								"enabled": true,
+								"duration": 0.25,
+								"randomVariance": 0.05
+							},
+							"conditions": [
+								{
+									"id": "always-attack",
+									"kind": "transitionCondition",
+									"type": "/Script/StateTreeModule.StateTreeRandomCondition",
+									"instance": {
+										"properties": {
+											"Threshold": 1.0
+										}
+									}
+								}
+							]
+						}
+					]
+				},
+				{
+					"id": "attack",
+					"name": "Attack",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "attack-delay",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.2
+								}
+							}
+						}
+					],
+					"transitions": [
+						{
+							"id": "attack-to-recover",
+							"trigger": "OnStateFailed",
+							"type": "GotoState",
+							"target": "Root/Recover"
+						}
+					]
+				},
+				{
+					"id": "recover",
+					"name": "Recover",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "recover-debug",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDebugTextTask",
+							"node": {
+								"properties": {
+									"Text": "Recover",
+									"FontScale": 1.0,
+									"bEnabled": true
+								}
+							}
+						}
+					],
+					"transitions": [
+						{
+							"id": "recover-succeeded",
+							"trigger": "OnStateCompleted",
+							"type": "Succeeded"
+						}
+					]
+				}
+			]
+		}
+	],
+	"bindings": [
+		{
+			"id": "idle-debug-label",
+			"source": {
+				"kind": "rootParameter",
+				"path": ["DebugLabel"]
+			},
+			"target": {
+				"kind": "task",
+				"state": "Root/Idle",
+				"node": "idle-debug",
+				"section": "instance",
+				"path": ["BindableText"]
+			}
+		},
+		{
+			"id": "attack-delay-from-add",
+			"function": {
+				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
+				"output": ["Result"],
+				"inputs": {
+					"Left": {
+						"source": {
+							"kind": "rootParameter",
+							"path": ["BaseDelay"]
+						}
+					},
+					"Right": {
+						"source": {
+							"kind": "rootParameter",
+							"path": ["BonusDelay"]
+						}
+					}
+				}
+			},
+			"target": {
+				"kind": "task",
+				"state": "Root/Attack",
+				"node": "attack-delay",
+				"section": "instance",
+				"path": ["Duration"]
+			}
+		}
+	]
+}
