@@ -29,6 +29,23 @@ const API_PREFIX = "/assetfactory";
 // Resolve schemas directory (relative to dist/index.js -> ../schemas/)
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMAS_DIR = join(__dirname, "..", "schemas");
+const GENERATOR_ASSET_TYPES = [
+  "Blueprint",
+  "WidgetBlueprint",
+  "StateTree",
+  "BehaviorTree",
+  "BlackboardData",
+  "Material",
+  "DataAsset",
+  "DataTable",
+  "CurveFloat",
+  "CurveVector",
+  "InputAction",
+  "InputMappingContext",
+  "GameplayTag",
+] as const;
+
+const GENERATOR_ASSET_TYPE_LIST = GENERATOR_ASSET_TYPES.join(", ");
 const SIDECAR_SCRIPT_DEFAULT = join(__dirname, "..", "assetfactory_mcp_server.py");
 const SIDECAR_SCRIPT = process.env.UE_MCP_SIDECAR_SCRIPT || SIDECAR_SCRIPT_DEFAULT;
 const PYTHON_CMD = process.env.UE_MCP_PYTHON || "py";
@@ -69,7 +86,7 @@ async function loadSchema(assetType: string): Promise<string> {
     const filePath = join(SCHEMAS_DIR, `${assetType}.md`);
     return await readFile(filePath, "utf-8");
   } catch {
-    return `Schema not found for asset type: ${assetType}. Available types: Blueprint, WidgetBlueprint, StateTree, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag`;
+    return `Schema not found for asset type: ${assetType}. Available types: ${GENERATOR_ASSET_TYPE_LIST}`;
   }
 }
 
@@ -211,8 +228,7 @@ async function callSidecarTool(toolName: string, args: Record<string, unknown>):
 const tools: Tool[] = [
   {
     name: "generate_assets",
-    description:
-      "Generate Unreal Engine assets from JSON configuration. Supports Blueprint (any parent class: Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, BTTaskNode, etc.), WidgetBlueprint, StateTree, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate. IMPORTANT for WidgetBlueprint Update: use 'WidgetUpdates' array for safe incremental changes; do NOT use 'RootWidget' in Update mode unless you intend to destroy and fully rebuild the widget tree (requires '\"RebuildTree\": true').",
+    description: `Generate Unreal Engine assets from JSON configuration. Supports ${GENERATOR_ASSET_TYPE_LIST}. Blueprint covers arbitrary UObject-derived parent classes such as Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, and BTTaskNode. Supports Create, Update (field-level patch: only JSON-present fields are modified, missing fields are preserved), and CreateOrUpdate actions. IMPORTANT: Call get_generator_schema first to get the correct JSON field names and formats for the asset type you want to generate. IMPORTANT for WidgetBlueprint Update: use 'WidgetUpdates' array for safe incremental changes; do NOT use 'RootWidget' in Update mode unless you intend to destroy and fully rebuild the widget tree (requires '"RebuildTree": true').`,
     inputSchema: {
       type: "object",
       properties: {
@@ -224,8 +240,7 @@ const tools: Tool[] = [
             properties: {
               AssetType: {
                 type: "string",
-                description:
-                  "Type of asset: Blueprint (any parent class including GameplayEffect, GameplayAbility, Actor, Character, AnimInstance, etc.), WidgetBlueprint, StateTree, DataAsset, DataTable, Material, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
+                description: `Type of asset: ${GENERATOR_ASSET_TYPE_LIST}. Blueprint covers arbitrary UObject-derived parent classes such as Actor, Character, GameplayEffect, GameplayAbility, AnimInstance, and BTTaskNode.`,
               },
               Name: {
                 type: "string",
@@ -250,28 +265,14 @@ const tools: Tool[] = [
   },
   {
     name: "get_generator_schema",
-    description:
-      "Get the JSON schema documentation for a specific asset generator. Returns field names, types, formats, and examples. Always call this before generate_assets to ensure correct field usage.",
+    description: `Get the JSON schema documentation for a specific asset generator. Available types: ${GENERATOR_ASSET_TYPE_LIST}. Returns field names, types, formats, and examples. Always call this before generate_assets to ensure correct field usage.`,
     inputSchema: {
       type: "object",
       properties: {
         asset_type: {
           type: "string",
-          description:
-            "The asset type to get schema for: Blueprint, WidgetBlueprint, StateTree, Material, DataAsset, DataTable, CurveFloat, CurveVector, InputAction, InputMappingContext, GameplayTag",
-          enum: [
-            "Blueprint",
-            "WidgetBlueprint",
-            "StateTree",
-            "Material",
-            "DataAsset",
-            "DataTable",
-            "CurveFloat",
-            "CurveVector",
-            "InputAction",
-            "InputMappingContext",
-            "GameplayTag",
-          ],
+          description: `The asset type to get schema for: ${GENERATOR_ASSET_TYPE_LIST}`,
+          enum: [...GENERATOR_ASSET_TYPES],
         },
       },
       required: ["asset_type"],
