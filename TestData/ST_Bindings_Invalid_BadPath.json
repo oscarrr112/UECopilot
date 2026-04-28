@@ -1,0 +1,49 @@
+{
+	"AssetType": "StateTree",
+	"Name": "ST_Bindings_Invalid_BadPath",
+	"Path": "/Game/AFSmoke",
+	"Action": "CreateOrUpdate",
+	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
+	"rootParameters": {
+		"DelaySeconds": { "type": "Float", "value": 0.35 }
+	},
+	"SubTrees": [
+		{
+			"id": "root",
+			"name": "Root",
+			"type": "State",
+			"children": [
+				{
+					"id": "idle",
+					"name": "Idle",
+					"type": "State",
+					"tasks": [
+						{
+							"id": "delay-task",
+							"kind": "task",
+							"type": "/Script/StateTreeModule.StateTreeDelayTask",
+							"instance": {
+								"properties": {
+									"Duration": 0.1
+								}
+							}
+						}
+					]
+				}
+			]
+		}
+	],
+	"bindings": [
+		{
+			"id": "missing-duration-from-root-parameter",
+			"source": { "kind": "rootParameter", "path": ["DelaySeconds"] },
+			"target": {
+				"kind": "task",
+				"state": "Root/Idle",
+				"node": "delay-task",
+				"section": "instance",
+				"path": ["MissingDuration"]
+			}
+		}
+	]
+}

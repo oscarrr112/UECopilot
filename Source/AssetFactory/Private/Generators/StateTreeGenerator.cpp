@@ -47,6 +47,19 @@ namespace
 		}
 		return FullPath;
 	}
+
+	bool HasNonEmptyPropertyBindings(const TSharedPtr<FJsonObject>& Config)
+	{
+		if (!Config.IsValid())
+		{
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* Bindings = nullptr;
+		return ((Config->TryGetArrayField(TEXT("bindings"), Bindings) && Bindings)
+				|| (Config->TryGetArrayField(TEXT("Bindings"), Bindings) && Bindings))
+			&& Bindings->Num() > 0;
+	}
 }
 
 UClass* FStateTreeGenerator::ResolveSchemaClass(const FString& SchemaClassName) const
@@ -350,9 +363,13 @@ FGenerationResult FStateTreeGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}
 
+	const bool bHasPropertyBindings = HasNonEmptyPropertyBindings(Config);
 	if (!CompileStateTree(StateTree, Error))
 	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+		const FString FailureReason = bHasPropertyBindings
+			? FString::Printf(TEXT("StateTree compile failed after applying property bindings: %s"), *Error)
+			: Error;
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, FailureReason);
 	}
 
 	if (!bExists)
