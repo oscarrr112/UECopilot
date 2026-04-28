@@ -30,7 +30,7 @@
 - Modify: `MCP/src/index.ts` only if tests need exported helpers
 - Generated later: `MCP/dist/broker/generatorSchemas.test.js`
 
-- [ ] **Step 1: Create failing schema tests**
+- [x] **Step 1: Create failing schema tests**
 
 Create `MCP/src/broker/generatorSchemas.test.ts` with this content:
 
@@ -146,7 +146,7 @@ test("missing schema fallback lists StateTree, BehaviorTree, and BlackboardData"
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify it fails**
+- [x] **Step 2: Run the focused test and verify it fails**
 
 Run:
 
@@ -159,7 +159,7 @@ Expected before implementation:
 - Build succeeds.
 - Test fails because `BehaviorTree.md` and `BlackboardData.md` are missing, or because tool schema does not advertise them yet.
 
-- [ ] **Step 3: Commit failing tests**
+- [x] **Step 3: Commit failing tests**
 
 Remove dist artifacts produced by the failed test run; final dist sync happens in Task 6:
 
@@ -180,7 +180,7 @@ git commit -m "test: cover MCP generator schema exposure"
 - Modify: `MCP/src/index.ts`
 - Generated later: `MCP/dist/index.js`
 
-- [ ] **Step 1: Add generator asset type constants near the schema directory constants**
+- [x] **Step 1: Add generator asset type constants near the schema directory constants**
 
 In `MCP/src/index.ts`, after `const SCHEMAS_DIR = join(__dirname, "..", "schemas");`, add:
 
@@ -204,7 +204,7 @@ const GENERATOR_ASSET_TYPES = [
 const GENERATOR_ASSET_TYPE_LIST = GENERATOR_ASSET_TYPES.join(", ");
 ```
 
-- [ ] **Step 2: Replace the missing-schema fallback**
+- [x] **Step 2: Replace the missing-schema fallback**
 
 In `loadSchema()`, replace the hard-coded fallback string with:
 
@@ -212,7 +212,7 @@ In `loadSchema()`, replace the hard-coded fallback string with:
 return `Schema not found for asset type: ${assetType}. Available types: ${GENERATOR_ASSET_TYPE_LIST}`;
 ```
 
-- [ ] **Step 3: Replace tool descriptions and enum**
+- [x] **Step 3: Replace tool descriptions and enum**
 
 In the `generate_assets` tool description, include this exact supported-types sentence:
 
@@ -238,7 +238,7 @@ For `get_generator_schema.asset_type.enum`, use:
 enum: [...GENERATOR_ASSET_TYPES],
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -250,7 +250,7 @@ Expected:
 
 - Advertising and fallback tests pass once BT/BB schema files exist; before Task 3 they may still fail only on schema-read tests.
 
-- [ ] **Step 5: Commit centralized type list**
+- [x] **Step 5: Commit centralized type list**
 
 ```bash
 git add MCP/src/index.ts
@@ -267,7 +267,7 @@ git commit -m "fix: expose MCP generator asset types consistently"
 - Reference only: `TestData/BT_TestSample_Subtree.json`
 - Reference only: `TestData/BT_TestSample_inline_bb.json`
 
-- [ ] **Step 1: Add BehaviorTree schema doc**
+- [x] **Step 1: Add BehaviorTree schema doc**
 
 Create `MCP/schemas/BehaviorTree.md` with this content:
 
@@ -413,7 +413,7 @@ Generator 会反射检查 `FBlackboardKeySelector` 属性，并验证引用的 k
 - `Blackboard key '<name>' is not present in the behavior tree blackboard`：节点、decorator 或 service 引用了不存在的 blackboard key。
 ````
 
-- [ ] **Step 2: Verify doc matches fixtures**
+- [x] **Step 2: Verify doc matches fixtures**
 
 Run:
 
@@ -428,7 +428,7 @@ Expected:
 - All three commands exit 0.
 - The doc examples use only fields seen in those fixtures or `BehaviorTreeGenerator.cpp`.
 
-- [ ] **Step 3: Commit BehaviorTree schema**
+- [x] **Step 3: Commit BehaviorTree schema**
 
 ```bash
 git add MCP/schemas/BehaviorTree.md
@@ -443,7 +443,7 @@ git commit -m "docs: add BehaviorTree MCP schema"
 - Create: `MCP/schemas/BlackboardData.md`
 - Reference only: `TestData/BB_TestSample.json`
 
-- [ ] **Step 1: Add BlackboardData schema doc**
+- [x] **Step 1: Add BlackboardData schema doc**
 
 Create `MCP/schemas/BlackboardData.md` with this content:
 
@@ -543,7 +543,7 @@ Create `MCP/schemas/BlackboardData.md` with this content:
 - `Keys[n] ('<name>') requires a non-empty EnumName`：`Enum` key 缺少 `EnumName`。
 ````
 
-- [ ] **Step 2: Verify fixture JSON**
+- [x] **Step 2: Verify fixture JSON**
 
 Run:
 
@@ -556,7 +556,7 @@ Expected:
 - Command exits 0.
 - Doc example matches the key fields in `BB_TestSample.json`.
 
-- [ ] **Step 3: Commit BlackboardData schema**
+- [x] **Step 3: Commit BlackboardData schema**
 
 ```bash
 git add MCP/schemas/BlackboardData.md
@@ -570,7 +570,7 @@ git commit -m "docs: add BlackboardData MCP schema"
 **Files:**
 - Modify: `MCP/schemas/StateTree.md`
 
-- [ ] **Step 1: Translate the top-level prose and headings**
+- [x] **Step 1: Translate the top-level prose and headings**
 
 Update the visible prose in `MCP/schemas/StateTree.md` so the title and section headings are Chinese:
 
@@ -601,7 +601,7 @@ Translate section headings like these:
 
 Keep JSON field names, UE type names, command lines, and code blocks unchanged.
 
-- [ ] **Step 2: Preserve required technical terms**
+- [x] **Step 2: Preserve required technical terms**
 
 Run:
 
@@ -614,7 +614,7 @@ Expected:
 - Each term is still present.
 - `RootParameters`, `bindings`, and `Round-trip` remain easy for tests and LLMs to find.
 
-- [ ] **Step 3: Commit StateTree doc cleanup**
+- [x] **Step 3: Commit StateTree doc cleanup**
 
 ```bash
 git add MCP/schemas/StateTree.md
@@ -631,7 +631,7 @@ git commit -m "docs: localize StateTree MCP schema"
 - Generated: `MCP/dist/broker/generatorSchemas.test.d.ts`
 - Possibly generated: existing dist test files if TypeScript output changes
 
-- [ ] **Step 1: Run full MCP tests**
+- [x] **Step 1: Run full MCP tests**
 
 Run:
 
@@ -645,7 +645,7 @@ Expected:
 - Existing broker tests pass.
 - New generator schema tests pass.
 
-- [ ] **Step 2: Run diff whitespace check**
+- [x] **Step 2: Run diff whitespace check**
 
 Run:
 
@@ -658,7 +658,7 @@ Expected:
 - No output.
 - Exit code 0.
 
-- [ ] **Step 3: Inspect changed files**
+- [x] **Step 3: Inspect changed files**
 
 Run:
 
@@ -681,7 +681,7 @@ Expected changed files:
 
 It is acceptable if TypeScript also refreshes existing `.d.ts` files with no semantic change.
 
-- [ ] **Step 4: Commit implementation**
+- [x] **Step 4: Commit implementation**
 
 ```bash
 git add MCP/src/index.ts MCP/src/broker/generatorSchemas.test.ts MCP/dist/index.js MCP/dist/broker/generatorSchemas.test.js MCP/dist/broker/generatorSchemas.test.d.ts MCP/schemas/StateTree.md MCP/schemas/BehaviorTree.md MCP/schemas/BlackboardData.md
@@ -695,7 +695,7 @@ git commit -m "feat: expose AI generators in MCP schemas"
 **Files:**
 - All files changed by Tasks 1-6
 
-- [ ] **Step 1: Run final verification commands**
+- [x] **Step 1: Run final verification commands**
 
 Run:
 
@@ -711,7 +711,7 @@ Expected:
 - `git diff --check HEAD~1..HEAD` has no output.
 - Branch is clean.
 
-- [ ] **Step 2: Request code review**
+- [x] **Step 2: Request code review**
 
 Ask a reviewer to inspect:
 
@@ -723,7 +723,7 @@ Expected:
 
 - No Critical/Important findings, or findings are fixed before final delivery.
 
-- [ ] **Step 3: Prepare integration**
+- [x] **Step 3: Prepare integration**
 
 Run:
 

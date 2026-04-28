@@ -91,12 +91,17 @@ Generate Unreal Engine assets from JSON configuration.
 Supported asset types:
 - Blueprint
 - WidgetBlueprint
-- DataAsset
+- StateTree
+- BehaviorTree
+- BlackboardData
 - Material
+- DataAsset
+- DataTable
 - CurveFloat
 - CurveVector
 - InputAction
 - InputMappingContext
+- GameplayTag
 
 ### extract_assets
 Extract existing asset configurations as JSON.
