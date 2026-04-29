@@ -324,14 +324,16 @@ property function binding 示例：
 			"function": {
 				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
 				"output": ["Result"],
-				"inputs": {
-					"Left": {
+				"inputs": [
+					{
+						"target": ["Left"],
 						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
 					},
-					"Right": {
+					{
+						"target": ["Right"],
 						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
 					}
-				}
+				]
 			},
 			"target": {
 				"kind": "task",
@@ -356,14 +358,19 @@ node-backed endpoints 可以通过 `section` 选择数据：`instance`、`node` 
 	"path": [
 		"Items",
 		{ "name": "Entry", "arrayIndex": 0 },
-		{ "name": "Value", "guid": "00000000-0000-0000-0000-000000000000" }
+		{
+			"name": "Value",
+			"guid": "00000000-0000-0000-0000-000000000000",
+			"instanceStruct": "/Script/StateTreeModule.StateTreePropertyFunctionCommonBase",
+			"access": "StructInstance"
+		}
 	]
 }
 ```
 
-显式 object shape 在 generator input 中支持 `name`、`arrayIndex`、`guid`。Extraction 可以保留现有 editor assets 中的 `instanceStruct` 和 `access` metadata，但 generation 在 instanced indirection support 落地前会拒绝这些字段。StateTree bindings 不支持 `"Root/Idle.delay-task.Duration"` 这类 string DSL；请使用显式 JSON endpoint objects 和 path arrays，让 generator 能校验每个 owner 和 segment。
+显式 object shape 在 generator input 中支持 `name`、`arrayIndex`、`guid`、`instanceStruct` 和 `access`。`instanceStruct` 必须使用完整 script struct/object path，例如 `"/Script/StateTreeModule.StateTreePropertyFunctionCommonBase"`。`access` 支持 `StructInstance`、`ObjectInstance` 和 `Unset`；省略时默认 `Unset`。如果提供 `instanceStruct` 但省略 `access`，generator 会使用 `StructInstance`，因为该 segment 明确描述 instanced struct indirection。StateTree bindings 不支持 `"Root/Idle.delay-task.Duration"` 这类 string DSL；请使用显式 JSON endpoint objects 和 path arrays，让 generator 能校验每个 owner 和 segment。
 
-Property function bindings 使用包含 `type`、`output`、`inputs` 的 `function` object。function `type` 必须解析为受支持的 StateTree property function。`output` 是 function result 上的 binding path array，每个 input value 必须是 JSON object，并且只能包含 `source` 或 nested `function` 二者之一。
+Property function bindings 使用包含 `type`、`output`、`inputs` 的 `function` object。function `type` 必须解析为受支持的 StateTree property function。`output` 是 function result 上的 binding path array。Canonical `function.inputs` 是 array；每一项必须包含 `target` path array，并且只能包含 `source` 或 nested `function` 二者之一。Legacy object-shaped `inputs` 仍作为 generation compatibility input 接受，并按 object key 规范化为单段 `target`；extraction 和新 fixtures 只输出 canonical array。
 
 无效配置的诊断会在可用时包含 binding index 或 binding `id`。常见失败包括 unknown source、unknown target、bad path、duplicate target path、bad function type 和 type mismatch。
 
@@ -393,10 +400,28 @@ Round-trip comparison 是语义比较，不是 byte-level 比较。它会忽略 
 
 Extraction 可能描述 generator input subset 之外的 existing editor-authored assets。这些字段除非明确标为 generator-readable，否则保持 extraction-only。Generator input 限于上面列出的支持类型。
 
+当 extraction 检测到 nested property function input graph 循环引用已访问过的 function node 时，可能会输出只读 `diagnostics.bindings` warning：
+
+```json
+{
+	"diagnostics": {
+		"bindings": [
+			{
+				"code": "StateTree.Binding.FunctionCycle",
+				"severity": "warning",
+				"path": "$.bindings[0].function.inputs[0].function",
+				"bindingTarget": "Root/Idle/delay-task.Duration",
+				"message": "Skipped nested StateTree property function input because the graph references an already visited function node."
+			}
+		]
+	}
+}
+```
+
+Diagnostics 不是 authoring input，不应作为 contract data 发回 generation。Round-trip comparison 默认忽略 diagnostics；专门的 diagnostics 检查应断言稳定的 `code`，只有在测试明确覆盖可读输出时才比较 `message` 文本。当前 schema 只承诺 `StateTree.Binding.FunctionCycle` 这一类 extraction diagnostic；更丰富的 unsupported binding graph diagnostics 仍属于后续 diagnostics/polish。
+
 ## 当前限制
 
-- Function input map keys 当前支持 single property names；multi-segment editor-authored function input target extraction 暂缓。
-- Generator input 会拒绝 path segment `instanceStruct` 和 `access`；extraction 可能为 editor-authored assets 输出它们，但它们目前不支持 round-trip。
 - `kind: "function"` 会为了 forward compatibility 被解析，但不会作为普通 source 或 target endpoint 解析；请使用 `function` object。
 - Numeric integer、double、byte、enum parameter generation 暂不属于当前 StateTree parameter slice。
 - `Update` 不能修改 `SchemaClass`；如果必须修改 schema class，请重新创建资产。

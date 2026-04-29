@@ -4,18 +4,19 @@
 
 StateTree binding generation and extraction now cover ordinary bindings, property functions, GUID node references, and final smoke verification. The final verification spec deliberately left three binding edges deferred:
 
-- Editor-authored `instanceStruct` / `access` path metadata is extract-only. Generator input still rejects those path segments.
+- Editor-authored `instanceStruct` / `access` path metadata needed an authorable generator input contract.
 - Property function input target paths are generation-limited to a single property name because `inputs` is currently a JSON object keyed by input name.
-- Extraction avoids recursive property function graphs and skips unsupported multi-segment function inputs, but it does not emit rich diagnostics that explain what was skipped.
+- Extraction avoids recursive property function graphs, but it did not emit a stable diagnostic for cyclic nested function inputs.
 
-This spec removes the silent-skip and single-segment limits by making property function inputs explicit path entries, teaching generation to consume authorable rich path segment metadata, and adding extraction diagnostics for unsupported or cyclic function graphs. If UE does not expose an authoring API for a metadata field such as `access`, the field becomes a stable, tested negative contract rather than a silent ignore or vague future note.
+This spec removes the single-segment limit by making property function inputs explicit path entries, teaches generation to consume authorable rich path segment metadata, and adds extraction diagnostics for cyclic nested property function graphs. Unsupported function input target/source/path metadata diagnostics remain future diagnostics/polish, not part of the current final verification blocker completion scope.
 
 ## Goals
 
 - Define a canonical JSON shape for property function inputs that supports multi-segment target paths and rich path segment metadata.
-- Generate bindings from authorable `instanceStruct` / `access` path segment metadata when Unreal's property binding path APIs can validate and preserve the segment; otherwise produce stable, specific generation errors.
+- Generate bindings from authorable `instanceStruct` / `access` path segment metadata, and produce stable generation errors for malformed or unknown metadata.
 - Extract function input target paths without silently dropping multi-segment inputs.
-- Emit machine-readable extraction diagnostics for unsupported function inputs, cyclic function graphs, and other skipped function graph edges.
+- Emit a machine-readable extraction diagnostic for cyclic nested property function input graphs.
+- Record unsupported extraction diagnostics as future diagnostics/polish work.
 - Preserve round-trip stability for ordinary bindings, function bindings, GUID node IDs, and the final smoke fixture.
 
 ## Non-Goals
@@ -81,8 +82,8 @@ For rich path segment metadata:
 
 - `guid` continues to call `SetPropertyGuid()` under editor-only data.
 - `arrayIndex` continues to map into `FPropertyBindingPathSegment`.
-- `instanceStruct` and `access` are accepted by the JSON parser.
-- The generator should apply `instanceStruct` when Unreal exposes a stable setter or constructor path for the segment. If `access` is not authorable through available UE APIs, generation should fail with a clear error naming the segment and the unsupported field rather than silently ignoring it.
+- `instanceStruct` and `access` are accepted by the JSON parser and applied to generated path segments.
+- Invalid `access` values and unknown `instanceStruct` paths fail with clear generation errors rather than being silently ignored.
 
 The implementation should prefer one small adapter around `FPropertyBindingPathSegment` construction so endpoint paths and function input target paths use identical behavior.
 
@@ -100,7 +101,7 @@ The extractor should still protect against recursive graphs. Instead of silently
 
 ## Diagnostics Contract
 
-Extracted StateTree JSON may include a top-level `diagnostics` object:
+Extracted StateTree JSON may include a top-level `diagnostics` object when a nested property function input graph references an already visited function node:
 
 ```json
 "diagnostics": {
@@ -108,9 +109,9 @@ Extracted StateTree JSON may include a top-level `diagnostics` object:
     {
       "severity": "warning",
       "code": "StateTree.Binding.FunctionCycle",
-      "message": "Skipped cyclic property function input graph at binding 'duration-from-function'.",
-      "bindingId": "duration-from-function",
-      "path": "bindings[0].function.inputs[1]"
+      "message": "Skipped nested StateTree property function input because the graph references an already visited function node.",
+      "bindingTarget": "Root/Idle/delay-task.Duration",
+      "path": "$.bindings[0].function.inputs[0].function"
     }
   ]
 }
@@ -119,18 +120,17 @@ Extracted StateTree JSON may include a top-level `diagnostics` object:
 Rules:
 
 - Diagnostics are extraction-only metadata.
-- `severity` is `"warning"` for skipped representable-but-unsupported graph edges and `"error"` only when extraction cannot produce a usable binding representation.
+- Current implementation only emits `"warning"` diagnostics for cyclic nested property function input graphs.
 - `code` is stable and machine-readable.
 - `message` is human-readable.
-- `bindingId` is included when known.
+- `bindingTarget` is included when known.
 - `path` points to the extracted JSON location when known.
 
-Initial diagnostic codes:
+Current implemented diagnostic codes:
 
 - `StateTree.Binding.FunctionCycle`: recursive property function graph detected.
-- `StateTree.Binding.UnsupportedFunctionInputTarget`: input target path cannot be represented.
-- `StateTree.Binding.UnsupportedFunctionInputSource`: input source endpoint cannot be represented.
-- `StateTree.Binding.UnsupportedPathMetadata`: rich path metadata is present but cannot be generated or round-tripped safely.
+
+Unsupported function input target/source/path metadata diagnostics remain future diagnostics/polish work. They are not part of the current final verification blocker completion scope and should not be treated as implemented contract codes until generation or extraction emits them and dedicated checks assert them.
 
 Round-trip comparison tools should ignore `diagnostics` by default when comparing generated JSON, but dedicated diagnostics tests should assert exact expected diagnostic codes.
 
@@ -140,40 +140,50 @@ Add fixtures:
 
 - Positive: property function input with explicit single-segment array input targets.
 - Positive: property function input with multi-segment target path.
-- Positive: binding path with `instanceStruct` metadata when UE generation can author it.
-- Negative: unsupported `access` or unsupported rich path metadata when generation cannot safely author it.
-- Extraction-only: synthetic or editor-authored asset that produces `StateTree.Binding.FunctionCycle` or unsupported function diagnostics.
+- Positive: binding path with `instanceStruct` / `access` metadata.
+- Negative generation fixtures for malformed function input targets, bad `access`, and unknown `instanceStruct`.
+- Extraction-only: synthetic or editor-authored asset that produces `StateTree.Binding.FunctionCycle`.
 
 The final smoke manifest should grow only after the feature has focused tests. The final smoke should include:
 
 - Generation success for canonical `inputs[]`.
 - Round-trip stability for multi-segment function input targets.
-- Negative validation for unsupported rich metadata.
-- Summary/evidence that diagnostics are emitted rather than silent skip.
+- Negative validation for malformed or unknown rich metadata as generation errors.
+- Evidence that cyclic nested property function input diagnostics are emitted.
+- Normal smoke evidence that generated assets do not emit unexpected diagnostics.
 
 ## Testing Strategy
 
 Static and MCP tests:
 
 - Add JSON parser tests for canonical `inputs[]`, legacy object input normalization, missing `target`, empty `target`, and source/function exclusivity.
-- Add generation negative tests for malformed target paths and unsupported metadata.
+- Add generation negative tests for malformed target paths, bad `access`, and unknown `instanceStruct`.
 - Extend round-trip checks so canonical `inputs[]` order is stable and diagnostics do not cause false mismatches.
 
 Editor/MCP smoke:
 
 - Use the existing `smoke:statetree-final` runner pattern after focused tests pass.
 - Add one visual/openable asset that uses canonical function inputs.
-- Add one negative fixture proving unsupported metadata fails with a stable error.
-- Add extraction diagnostics evidence for cyclic or unsupported function graph edges.
+- Add generation negative fixtures proving malformed or unknown metadata fails with stable errors.
+- Add extraction diagnostics evidence for cyclic nested property function graph edges.
+- Assert normal smoke extraction has no unexpected diagnostics.
 
 ## Migration And Documentation
 
 Update docs and evidence notes so new fixtures use canonical `inputs[]`. Keep legacy object parsing only as a parser compatibility bridge during development; it should not appear in extracted output or newly-authored fixtures.
 
-When this spec is complete and smoked, remove the deferred limits block added to ProjectRPG `AGENTS.md` if all three deferred items are resolved. If any item remains impossible because UE does not expose a stable authoring API, narrow the `AGENTS.md` note to the remaining unsupported field and include the reason.
+When this spec is complete and smoked, remove or narrow the deferred limits block added to ProjectRPG `AGENTS.md` so it only names future diagnostics/polish that remains outside the current final verification blocker scope.
 
 ## Open Risks
 
-- UE may not expose a public setter for `access` metadata on `FPropertyBindingPathSegment`. If so, `access` should remain a documented negative case rather than being silently accepted.
+- Schema currently commits only to `StructInstance`, `ObjectInstance`, and `Unset`, while `TryParseBindingPathAccess` accepts the broader `EPropertyBindingPropertyAccessType` enum; this is tracked as deferred polish.
 - Building a real cyclic property function graph through generation may be impossible because generation itself is recursive and acyclic. Diagnostics may need a targeted extractor unit test or a deliberately editor-authored fixture.
 - Canonical `inputs[]` changes fixture readability; tests should keep fixture names and diagnostics precise so failures remain easy to debug.
+
+## Implementation Status
+
+- Branch: `feature/statetree-rich-binding-paths`.
+- Canonical property function input shape is `function.inputs[]`; each input carries an explicit `target` path array plus exactly one of `source` or nested `function`.
+- Legacy object-shaped function input maps remain generation compatibility input only. Extraction and new fixtures emit canonical `inputs[]`.
+- Rich path segment metadata is authorable through generator input for `name`, `arrayIndex`, `guid`, `instanceStruct`, and `access`.
+- Extraction diagnostics are read-only metadata under `diagnostics.bindings`; they are not authoring input, are ignored by default round-trip comparison, and the current implemented code is `StateTree.Binding.FunctionCycle`.
