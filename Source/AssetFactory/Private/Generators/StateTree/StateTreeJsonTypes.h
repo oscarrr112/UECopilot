@@ -215,6 +215,23 @@ namespace UE::AssetFactory::StateTree
 				|| (Object->TryGetArrayField(UpperName, OutArray) && OutArray));
 	}
 
+	inline TSharedPtr<FJsonValue> FindBindingFieldValue(const TSharedPtr<FJsonObject>& Object, const TCHAR* LowerName, const TCHAR* UpperName)
+	{
+		if (!Object.IsValid())
+		{
+			return nullptr;
+		}
+		if (const TSharedPtr<FJsonValue>* Value = Object->Values.Find(LowerName))
+		{
+			return *Value;
+		}
+		if (const TSharedPtr<FJsonValue>* Value = Object->Values.Find(UpperName))
+		{
+			return *Value;
+		}
+		return nullptr;
+	}
+
 	inline bool IsValidBindingArrayIndex(double Value)
 	{
 		if (Value < 0.0 || Value > static_cast<double>(MAX_int32))
@@ -392,7 +409,7 @@ namespace UE::AssetFactory::StateTree
 	inline bool ParseBindingFunctionInputSpec(
 		const TSharedPtr<FJsonObject>& InputObject,
 		int32 BindingIndex,
-		const FString& InputName,
+		int32 InputIndex,
 		const FString& Label,
 		FAFStateTreeBindingFunctionInputSpec& OutSpec,
 		FString& OutError)
@@ -400,7 +417,28 @@ namespace UE::AssetFactory::StateTree
 		OutSpec = FAFStateTreeBindingFunctionInputSpec();
 		if (!InputObject.IsValid())
 		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' must be a JSON object"), BindingIndex, *InputName);
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] must be a JSON object"), BindingIndex, InputIndex);
+			return false;
+		}
+
+		if (!HasBindingField(InputObject, TEXT("target"), TEXT("Target")))
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] must define required field 'target'"), BindingIndex, InputIndex);
+			return false;
+		}
+		const TArray<TSharedPtr<FJsonValue>>* TargetValues = nullptr;
+		if (!TryGetBindingArrayField(InputObject, TEXT("target"), TEXT("Target"), TargetValues))
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] target must be an array"), BindingIndex, InputIndex);
+			return false;
+		}
+		if (TargetValues->IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] target must contain at least one path segment"), BindingIndex, InputIndex);
+			return false;
+		}
+		if (!ParseBindingPathSegments(*TargetValues, Label + TEXT(".target"), OutSpec.TargetPath, OutError))
+		{
 			return false;
 		}
 
@@ -408,7 +446,7 @@ namespace UE::AssetFactory::StateTree
 		const bool bHasFunctionField = HasBindingField(InputObject, TEXT("function"), TEXT("Function"));
 		if (bHasSourceField == bHasFunctionField)
 		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' must define exactly one of 'source' or 'function'"), BindingIndex, *InputName);
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] must define exactly one of 'source' or 'function'"), BindingIndex, InputIndex);
 			return false;
 		}
 
@@ -417,13 +455,14 @@ namespace UE::AssetFactory::StateTree
 			TSharedPtr<FJsonObject> SourceObject;
 			if (!TryGetBindingObjectField(InputObject, TEXT("source"), TEXT("Source"), SourceObject))
 			{
-				OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' source must be a JSON object"), BindingIndex, *InputName);
+				OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] source must be a JSON object"), BindingIndex, InputIndex);
 				return false;
 			}
 			if (!ParseBindingEndpointSpec(SourceObject, Label + TEXT(".source"), OutSpec.Source, OutError))
 			{
 				return false;
 			}
+			OutSpec.SourceLabel = Label + TEXT(".source");
 			OutSpec.bHasSource = true;
 			return true;
 		}
@@ -431,7 +470,7 @@ namespace UE::AssetFactory::StateTree
 		TSharedPtr<FJsonObject> FunctionObject;
 		if (!TryGetBindingObjectField(InputObject, TEXT("function"), TEXT("Function"), FunctionObject))
 		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' function must be a JSON object"), BindingIndex, *InputName);
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input[%d] function must be a JSON object"), BindingIndex, InputIndex);
 			return false;
 		}
 
@@ -442,6 +481,31 @@ namespace UE::AssetFactory::StateTree
 		}
 		OutSpec.bHasFunction = true;
 		return true;
+	}
+
+	inline bool ParseLegacyBindingFunctionInputSpec(
+		const TSharedPtr<FJsonObject>& InputObject,
+		const FString& InputName,
+		int32 BindingIndex,
+		int32 InputIndex,
+		const FString& Label,
+		FAFStateTreeBindingFunctionInputSpec& OutSpec,
+		FString& OutError)
+	{
+		if (!InputObject.IsValid())
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function input '%s' must be a JSON object"), BindingIndex, *InputName);
+			return false;
+		}
+
+		TSharedPtr<FJsonObject> NormalizedInputObject = MakeShared<FJsonObject>();
+		NormalizedInputObject->Values = InputObject->Values;
+
+		TArray<TSharedPtr<FJsonValue>> TargetValues;
+		TargetValues.Add(MakeShared<FJsonValueString>(InputName));
+		NormalizedInputObject->SetArrayField(TEXT("target"), TargetValues);
+
+		return ParseBindingFunctionInputSpec(NormalizedInputObject, BindingIndex, InputIndex, Label, OutSpec, OutError);
 	}
 
 	inline bool ParseBindingFunctionSpec(
@@ -490,18 +554,61 @@ namespace UE::AssetFactory::StateTree
 			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s is missing required field 'inputs'"), BindingIndex, *Label);
 			return false;
 		}
-		TSharedPtr<FJsonObject> InputsObject;
-		if (!TryGetBindingObjectField(FunctionObject, TEXT("inputs"), TEXT("Inputs"), InputsObject))
+		TSharedPtr<FJsonValue> InputsValue = FindBindingFieldValue(FunctionObject, TEXT("inputs"), TEXT("Inputs"));
+		if (!InputsValue.IsValid() || (InputsValue->Type != EJson::Array && InputsValue->Type != EJson::Object))
 		{
-			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must be a JSON object"), BindingIndex, *Label);
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must be an array or legacy JSON object"), BindingIndex, *Label);
 			return false;
 		}
+
+		if (InputsValue->Type == EJson::Array)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* InputValues = nullptr;
+			if (!InputsValue->TryGetArray(InputValues) || !InputValues)
+			{
+				OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must be an array or legacy JSON object"), BindingIndex, *Label);
+				return false;
+			}
+			if (InputValues->IsEmpty())
+			{
+				OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must contain at least one entry"), BindingIndex, *Label);
+				return false;
+			}
+
+			for (int32 InputIndex = 0; InputIndex < InputValues->Num(); ++InputIndex)
+			{
+				const TSharedPtr<FJsonObject>* InputObject = nullptr;
+				if (!(*InputValues)[InputIndex].IsValid() || !(*InputValues)[InputIndex]->TryGetObject(InputObject) || !InputObject || !InputObject->IsValid())
+				{
+					OutError = FString::Printf(TEXT("StateTree binding[%d] function %s input[%d] must be a JSON object"), BindingIndex, *Label, InputIndex);
+					return false;
+				}
+
+				FAFStateTreeBindingFunctionInputSpec InputSpec;
+				if (!ParseBindingFunctionInputSpec(*InputObject, BindingIndex, InputIndex, FString::Printf(TEXT("%s.inputs[%d]"), *Label, InputIndex), InputSpec, OutError))
+				{
+					return false;
+				}
+				OutSpec.Inputs.Add(MoveTemp(InputSpec));
+			}
+			return true;
+		}
+
+		TSharedPtr<FJsonObject> InputsObject;
+		const TSharedPtr<FJsonObject>* InputsObjectPtr = nullptr;
+		if (!InputsValue->TryGetObject(InputsObjectPtr) || !InputsObjectPtr || !InputsObjectPtr->IsValid())
+		{
+			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must be an array or legacy JSON object"), BindingIndex, *Label);
+			return false;
+		}
+		InputsObject = *InputsObjectPtr;
 		if (InputsObject->Values.Num() == 0)
 		{
 			OutError = FString::Printf(TEXT("StateTree binding[%d] function %s inputs must contain at least one entry"), BindingIndex, *Label);
 			return false;
 		}
 
+		int32 InputIndex = 0;
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : InputsObject->Values)
 		{
 			const TSharedPtr<FJsonObject>* InputObject = nullptr;
@@ -512,11 +619,12 @@ namespace UE::AssetFactory::StateTree
 			}
 
 			FAFStateTreeBindingFunctionInputSpec InputSpec;
-			if (!ParseBindingFunctionInputSpec(*InputObject, BindingIndex, Pair.Key, Label + TEXT(".inputs.") + Pair.Key, InputSpec, OutError))
+			if (!ParseLegacyBindingFunctionInputSpec(*InputObject, Pair.Key, BindingIndex, InputIndex, Label + TEXT(".inputs.") + Pair.Key, InputSpec, OutError))
 			{
 				return false;
 			}
-			OutSpec.Inputs.Add(Pair.Key, MoveTemp(InputSpec));
+			OutSpec.Inputs.Add(MoveTemp(InputSpec));
+			++InputIndex;
 		}
 
 		return true;

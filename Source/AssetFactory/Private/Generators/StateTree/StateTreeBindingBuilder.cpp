@@ -108,21 +108,6 @@ namespace
 		return true;
 	}
 
-	bool ValidateFunctionInputName(const FString& InputName, FString& OutError)
-	{
-		if (InputName.IsEmpty())
-		{
-			OutError = TEXT("function input name must be non-empty");
-			return false;
-		}
-		if (InputName.Contains(TEXT(".")) || InputName.Contains(TEXT("/")) || InputName.Contains(TEXT("\\")))
-		{
-			OutError = FString::Printf(TEXT("function input '%s' must be a single property name"), *InputName);
-			return false;
-		}
-		return true;
-	}
-
 	bool PrepareFunctionBinding(
 		const FAFStateTreeBindingIndex& Index,
 		const FAFStateTreeBindingFunctionSpec& FunctionSpec,
@@ -157,40 +142,42 @@ namespace
 			return false;
 		}
 
-		for (const TPair<FString, FAFStateTreeBindingFunctionInputSpec>& Pair : FunctionSpec.Inputs)
+		for (int32 InputIndex = 0; InputIndex < FunctionSpec.Inputs.Num(); ++InputIndex)
 		{
-			if (!ValidateFunctionInputName(Pair.Key, OutError))
+			const FAFStateTreeBindingFunctionInputSpec& InputSpec = FunctionSpec.Inputs[InputIndex];
+			TArray<FPropertyBindingPathSegment> InputSegments = MakeBindingPathSegments(InputSpec.TargetPath, OutError);
+			if (!OutError.IsEmpty())
 			{
+				OutError = FString::Printf(TEXT("StateTree %s function input[%d] target could not be resolved: %s"), *BindingLabel, InputIndex, *OutError);
 				return false;
 			}
 
 			FPreparedFunctionInputBinding PreparedInput;
-			PreparedInput.InputName = Pair.Key;
-			const TArray<FPropertyBindingPathSegment> InputSegments = { FPropertyBindingPathSegment(FName(*Pair.Key)) };
+			PreparedInput.InputName = FPropertyBindingPath(FGuid::NewGuid(), InputSegments).ToString();
 			if (!ValidateFunctionPath(
 				InstanceStruct,
 				InputSegments,
-				FString::Printf(TEXT("function input '%s'"), *Pair.Key),
+				FString::Printf(TEXT("function input '%s'"), *PreparedInput.InputName),
 				PreparedInput.TargetSegments,
 				OutError))
 			{
 				return false;
 			}
 
-			const FString InputLabel = FString::Printf(TEXT("%s function input '%s'"), *BindingLabel, *Pair.Key);
-			if (Pair.Value.bHasSource)
+			const FString InputLabel = FString::Printf(TEXT("%s function input '%s'"), *BindingLabel, *PreparedInput.InputName);
+			if (InputSpec.bHasSource)
 			{
-				if (!ResolveBindingEndpointPath(Index, Pair.Value.Source, PreparedInput.SourcePath, OutError))
+				if (!ResolveBindingEndpointPath(Index, InputSpec.Source, PreparedInput.SourcePath, OutError))
 				{
 					OutError = FString::Printf(TEXT("StateTree %s source could not be resolved: %s"), *InputLabel, *OutError);
 					return false;
 				}
 				PreparedInput.bHasSource = true;
 			}
-			else if (Pair.Value.bHasFunction && Pair.Value.Function.IsValid())
+			else if (InputSpec.bHasFunction && InputSpec.Function.IsValid())
 			{
 				PreparedInput.Function = MakeShared<FPreparedFunctionBinding>();
-				if (!PrepareFunctionBinding(Index, *Pair.Value.Function, InputLabel, *PreparedInput.Function, OutError))
+				if (!PrepareFunctionBinding(Index, *InputSpec.Function, InputLabel, *PreparedInput.Function, OutError))
 				{
 					OutError = FString::Printf(TEXT("StateTree %s function failed: %s"), *InputLabel, *OutError);
 					return false;

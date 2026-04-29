@@ -54,8 +54,10 @@ struct FAFStateTreeBindingFunctionSpec;
 
 struct FAFStateTreeBindingFunctionInputSpec
 {
+	TArray<FAFStateTreeBindingPathSegmentSpec> TargetPath;
 	FAFStateTreeBindingEndpointSpec Source;
 	TSharedPtr<FAFStateTreeBindingFunctionSpec> Function;
+	FString SourceLabel;
 	bool bHasSource = false;
 	bool bHasFunction = false;
 };
@@ -64,7 +66,7 @@ struct FAFStateTreeBindingFunctionSpec
 {
 	FString Type;
 	TArray<FAFStateTreeBindingPathSegmentSpec> OutputPath;
-	TMap<FString, FAFStateTreeBindingFunctionInputSpec> Inputs;
+	TArray<FAFStateTreeBindingFunctionInputSpec> Inputs;
 };
 
 struct FAFStateTreeBindingSpec
