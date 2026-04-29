@@ -490,10 +490,28 @@ TSharedPtr<FJsonObject> FStateTreeGenerator::Extract(UObject* Asset, bool bDiffO
 			OutJson->SetObjectField(TEXT("RootParameters"), RootParameters);
 		}
 
-		TArray<TSharedPtr<FJsonValue>> Bindings = UE::AssetFactory::StateTree::ExtractPropertyBindings(EditorData);
-		if (!Bindings.IsEmpty())
+		UE::AssetFactory::StateTree::FAFStateTreeBindingExtractionResult BindingExtraction = UE::AssetFactory::StateTree::ExtractPropertyBindings(EditorData);
+		if (!BindingExtraction.Bindings.IsEmpty())
 		{
-			OutJson->SetArrayField(TEXT("bindings"), Bindings);
+			OutJson->SetArrayField(TEXT("bindings"), BindingExtraction.Bindings);
+		}
+		if (!BindingExtraction.Diagnostics.IsEmpty())
+		{
+			TArray<TSharedPtr<FJsonValue>> BindingDiagnostics;
+			for (const UE::AssetFactory::StateTree::FAFStateTreeBindingDiagnostic& Diagnostic : BindingExtraction.Diagnostics)
+			{
+				TSharedPtr<FJsonObject> DiagnosticJson = MakeShared<FJsonObject>();
+				DiagnosticJson->SetStringField(TEXT("code"), Diagnostic.Code);
+				DiagnosticJson->SetStringField(TEXT("severity"), Diagnostic.Severity);
+				DiagnosticJson->SetStringField(TEXT("path"), Diagnostic.Path);
+				DiagnosticJson->SetStringField(TEXT("bindingTarget"), Diagnostic.BindingTarget);
+				DiagnosticJson->SetStringField(TEXT("message"), Diagnostic.Message);
+				BindingDiagnostics.Add(MakeShared<FJsonValueObject>(DiagnosticJson));
+			}
+
+			TSharedPtr<FJsonObject> DiagnosticsJson = MakeShared<FJsonObject>();
+			DiagnosticsJson->SetArrayField(TEXT("bindings"), BindingDiagnostics);
+			OutJson->SetObjectField(TEXT("diagnostics"), DiagnosticsJson);
 		}
 	}
 

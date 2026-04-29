@@ -9,5 +9,20 @@ class UStateTreeEditorData;
 
 namespace UE::AssetFactory::StateTree
 {
-	TArray<TSharedPtr<FJsonValue>> ExtractPropertyBindings(const UStateTreeEditorData* EditorData);
+	struct FAFStateTreeBindingDiagnostic
+	{
+		FString Code;
+		FString Severity;
+		FString Path;
+		FString BindingTarget;
+		FString Message;
+	};
+
+	struct FAFStateTreeBindingExtractionResult
+	{
+		TArray<TSharedPtr<FJsonValue>> Bindings;
+		TArray<FAFStateTreeBindingDiagnostic> Diagnostics;
+	};
+
+	FAFStateTreeBindingExtractionResult ExtractPropertyBindings(const UStateTreeEditorData* EditorData);
 }

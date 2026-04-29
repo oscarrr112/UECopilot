@@ -31,6 +31,7 @@ namespace
 		TMap<FGuid, FContextEndpointReference> ContextById;
 		TMultiMap<FGuid, const FPropertyBindingBinding*> BindingsByTargetStructId;
 		TSet<FGuid> PropertyFunctionNodeIds;
+		TArray<UE::AssetFactory::StateTree::FAFStateTreeBindingDiagnostic> Diagnostics;
 	};
 
 	FString GuidToString(const FGuid& Guid)
@@ -44,6 +45,22 @@ namespace
 			TEXT("%s:%s"),
 			*GuidToString(TargetPath.GetStructID()),
 			*TargetPath.ToString());
+	}
+
+	void AddBindingDiagnostic(
+		FBindingExtractContext& Context,
+		const FString& Code,
+		const FString& JsonPath,
+		const FPropertyBindingPath& BindingTarget,
+		const FString& Message)
+	{
+		UE::AssetFactory::StateTree::FAFStateTreeBindingDiagnostic Diagnostic;
+		Diagnostic.Code = Code;
+		Diagnostic.Severity = TEXT("warning");
+		Diagnostic.Path = JsonPath;
+		Diagnostic.BindingTarget = MakeBindingTargetKey(BindingTarget);
+		Diagnostic.Message = Message;
+		Context.Diagnostics.Add(MoveTemp(Diagnostic));
 	}
 
 	FString BindingStatePath(const FString& ParentPath, const UStateTreeState& State)
@@ -141,12 +158,14 @@ namespace
 		const FString Name = Segment.GetName().ToString();
 		const int32 ArrayIndex = Segment.GetArrayIndex();
 		const UStruct* InstanceStruct = Segment.GetInstanceStruct();
+		const EPropertyBindingPropertyAccessType AccessType = Segment.GetInstancedStructAccessType();
 #if WITH_EDITORONLY_DATA
 		const FGuid PropertyGuid = Segment.GetPropertyGuid();
 #endif
 
 		if (ArrayIndex == INDEX_NONE
 			&& InstanceStruct == nullptr
+			&& AccessType == EPropertyBindingPropertyAccessType::Unset
 #if WITH_EDITORONLY_DATA
 			&& !PropertyGuid.IsValid()
 #endif
@@ -170,6 +189,13 @@ namespace
 		if (InstanceStruct)
 		{
 			SegmentJson->SetStringField(TEXT("instanceStruct"), InstanceStruct->GetPathName());
+		}
+		if (AccessType != EPropertyBindingPropertyAccessType::Unset)
+		{
+			if (const UEnum* AccessEnum = StaticEnum<EPropertyBindingPropertyAccessType>())
+			{
+				SegmentJson->SetStringField(TEXT("access"), AccessEnum->GetNameStringByValue(static_cast<int64>(AccessType)));
+			}
 		}
 		return MakeShared<FJsonValueObject>(SegmentJson);
 	}
@@ -237,26 +263,23 @@ namespace
 		return nullptr;
 	}
 
-	FString ExtractFunctionInputName(const FPropertyBindingPath& InputPath)
-	{
-		check(InputPath.NumSegments() == 1);
-		return InputPath.GetSegment(0).GetName().ToString();
-	}
-
 	TSharedPtr<FJsonObject> ExtractFunctionSpec(
-		const FBindingExtractContext& Context,
+		FBindingExtractContext& Context,
 		const FPropertyBindingBinding& Binding,
-		TSet<FGuid>& VisitedFunctionIds);
+		TSet<FGuid>& VisitedFunctionIds,
+		const FString& JsonPath);
 
 	TSharedPtr<FJsonObject> ExtractFunctionInputSpec(
-		const FBindingExtractContext& Context,
+		FBindingExtractContext& Context,
 		const FPropertyBindingBinding& Binding,
-		TSet<FGuid>& VisitedFunctionIds)
+		TSet<FGuid>& VisitedFunctionIds,
+		const FString& JsonPath)
 	{
 		TSharedPtr<FJsonObject> InputJson = MakeShared<FJsonObject>();
+		InputJson->SetArrayField(TEXT("target"), ExtractPathSegments(Binding.GetTargetPath()));
 		if (GetPropertyFunctionEditorNode(Binding))
 		{
-			InputJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds));
+			InputJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds, JsonPath + TEXT(".function")));
 		}
 		else
 		{
@@ -266,9 +289,10 @@ namespace
 	}
 
 	TSharedPtr<FJsonObject> ExtractFunctionSpec(
-		const FBindingExtractContext& Context,
+		FBindingExtractContext& Context,
 		const FPropertyBindingBinding& Binding,
-		TSet<FGuid>& VisitedFunctionIds)
+		TSet<FGuid>& VisitedFunctionIds,
+		const FString& JsonPath)
 	{
 		TSharedPtr<FJsonObject> FunctionJson = MakeShared<FJsonObject>();
 		const FStateTreeEditorNode* EditorNode = GetPropertyFunctionEditorNode(Binding);
@@ -276,7 +300,7 @@ namespace
 		{
 			FunctionJson->SetStringField(TEXT("type"), TEXT(""));
 			FunctionJson->SetArrayField(TEXT("output"), ExtractPathSegments(Binding.GetSourcePath()));
-			FunctionJson->SetObjectField(TEXT("inputs"), MakeShared<FJsonObject>());
+			FunctionJson->SetArrayField(TEXT("inputs"), TArray<TSharedPtr<FJsonValue>>{});
 			return FunctionJson;
 		}
 
@@ -286,42 +310,51 @@ namespace
 		}
 		FunctionJson->SetArrayField(TEXT("output"), ExtractPathSegments(Binding.GetSourcePath()));
 
-		TSharedPtr<FJsonObject> InputsJson = MakeShared<FJsonObject>();
+		TArray<TSharedPtr<FJsonValue>> InputsJson;
 		const FGuid FunctionNodeId = EditorNode->ID.IsValid() ? EditorNode->ID : Binding.GetSourcePath().GetStructID();
-		if (!VisitedFunctionIds.Contains(FunctionNodeId))
+		if (VisitedFunctionIds.Contains(FunctionNodeId))
 		{
-			VisitedFunctionIds.Add(FunctionNodeId);
-
-			TArray<const FPropertyBindingBinding*> InputBindings;
-			Context.BindingsByTargetStructId.MultiFind(FunctionNodeId, InputBindings);
-			InputBindings.Sort([](const FPropertyBindingBinding& A, const FPropertyBindingBinding& B)
-			{
-				return A.GetTargetPath().ToString() < B.GetTargetPath().ToString();
-			});
-
-			for (const FPropertyBindingBinding* InputBinding : InputBindings)
-			{
-				if (!InputBinding)
-				{
-					continue;
-				}
-				if (InputBinding->GetTargetPath().NumSegments() != 1)
-				{
-					// Task 5 generation only accepts function input map keys as single property names.
-					continue;
-				}
-				const FString InputName = ExtractFunctionInputName(InputBinding->GetTargetPath());
-				InputsJson->SetObjectField(InputName, ExtractFunctionInputSpec(Context, *InputBinding, VisitedFunctionIds));
-			}
-
-			VisitedFunctionIds.Remove(FunctionNodeId);
+			AddBindingDiagnostic(
+				Context,
+				TEXT("StateTree.Binding.FunctionCycle"),
+				JsonPath,
+				Binding.GetTargetPath(),
+				TEXT("Skipped nested StateTree property function input because the graph references an already visited function node."));
+			FunctionJson->SetArrayField(TEXT("inputs"), InputsJson);
+			return FunctionJson;
 		}
 
-		FunctionJson->SetObjectField(TEXT("inputs"), InputsJson);
+		VisitedFunctionIds.Add(FunctionNodeId);
+
+		TArray<const FPropertyBindingBinding*> InputBindings;
+		Context.BindingsByTargetStructId.MultiFind(FunctionNodeId, InputBindings);
+		InputBindings.Sort([](const FPropertyBindingBinding& A, const FPropertyBindingBinding& B)
+		{
+			return A.GetTargetPath().ToString() < B.GetTargetPath().ToString();
+		});
+
+		for (const FPropertyBindingBinding* InputBinding : InputBindings)
+		{
+			if (!InputBinding)
+			{
+				continue;
+			}
+			const int32 InputIndex = InputsJson.Num();
+			TSharedPtr<FJsonObject> InputJson = ExtractFunctionInputSpec(
+				Context,
+				*InputBinding,
+				VisitedFunctionIds,
+				FString::Printf(TEXT("%s.inputs[%d]"), *JsonPath, InputIndex));
+			InputsJson.Add(MakeShared<FJsonValueObject>(InputJson));
+		}
+
+		VisitedFunctionIds.Remove(FunctionNodeId);
+
+		FunctionJson->SetArrayField(TEXT("inputs"), InputsJson);
 		return FunctionJson;
 	}
 
-	TSharedPtr<FJsonObject> ExtractBinding(const FBindingExtractContext& Context, const FPropertyBindingBinding& Binding)
+	TSharedPtr<FJsonObject> ExtractBinding(FBindingExtractContext& Context, const FPropertyBindingBinding& Binding, const FString& JsonPath)
 	{
 		const FGuid TargetStructId = Binding.GetTargetPath().GetStructID();
 		if (Context.PropertyFunctionNodeIds.Contains(TargetStructId))
@@ -333,7 +366,7 @@ namespace
 		if (GetPropertyFunctionEditorNode(Binding))
 		{
 			TSet<FGuid> VisitedFunctionIds;
-			BindingJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds));
+			BindingJson->SetObjectField(TEXT("function"), ExtractFunctionSpec(Context, Binding, VisitedFunctionIds, JsonPath + TEXT(".function")));
 		}
 		else
 		{
@@ -344,9 +377,9 @@ namespace
 	}
 }
 
-TArray<TSharedPtr<FJsonValue>> UE::AssetFactory::StateTree::ExtractPropertyBindings(const UStateTreeEditorData* EditorData)
+UE::AssetFactory::StateTree::FAFStateTreeBindingExtractionResult UE::AssetFactory::StateTree::ExtractPropertyBindings(const UStateTreeEditorData* EditorData)
 {
-	TArray<TSharedPtr<FJsonValue>> Result;
+	FAFStateTreeBindingExtractionResult Result;
 	if (!EditorData)
 	{
 		return Result;
@@ -389,12 +422,17 @@ TArray<TSharedPtr<FJsonValue>> UE::AssetFactory::StateTree::ExtractPropertyBindi
 		{
 			continue;
 		}
-		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(ContextWithBindings, *Binding);
+		const int32 BindingIndex = Result.Bindings.Num();
+		TSharedPtr<FJsonObject> BindingJson = ExtractBinding(
+			ContextWithBindings,
+			*Binding,
+			FString::Printf(TEXT("$.bindings[%d]"), BindingIndex));
 		if (BindingJson.IsValid())
 		{
-			Result.Add(MakeShared<FJsonValueObject>(BindingJson));
+			Result.Bindings.Add(MakeShared<FJsonValueObject>(BindingJson));
 		}
 	}
 
+	Result.Diagnostics = MoveTemp(ContextWithBindings.Diagnostics);
 	return Result;
 }
