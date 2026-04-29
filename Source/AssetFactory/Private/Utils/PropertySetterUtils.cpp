@@ -16,6 +16,8 @@
 #include "Layout/Margin.h"
 #include "Widgets/Layout/Anchors.h"
 #include "GameplayTagsManager.h"
+#include "StateTree.h"
+#include "StateTreeReference.h"
 #if WITH_GAMEPLAY_ABILITIES
 #include "AttributeSet.h"
 #endif
@@ -840,6 +842,33 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 
 	const FString EffectivePath = PropertyPath.IsEmpty() ? Property->GetName() : PropertyPath;
 
+	if (JsonValue->Type == EJson::Null)
+	{
+		if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+		{
+			SoftObjProp->SetPropertyValue(ValuePtr, FSoftObjectPtr());
+			return true;
+		}
+
+		if (FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Property))
+		{
+			SoftClassProp->SetPropertyValue(ValuePtr, FSoftObjectPtr());
+			return true;
+		}
+
+		if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
+		{
+			ClassProp->SetPropertyValue(ValuePtr, nullptr);
+			return true;
+		}
+
+		if (FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Property))
+		{
+			ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
+			return true;
+		}
+	}
+
 	// --- Enum types (must come before FNumericProperty since FByteProperty inherits from it) ---
 
 	if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Property))
@@ -1511,16 +1540,29 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 		// FGameplayTag - string → RequestGameplayTag (strict: tag must exist)
 		SafeAdd(FindStructByName(TEXT("GameplayTag")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
+			FGameplayTag* GameplayTag = static_cast<FGameplayTag*>(ValuePtr);
+			if (JsonValue->Type == EJson::Null)
+			{
+				*GameplayTag = FGameplayTag();
+				return true;
+			}
+
 			FString TagStr;
 			if (JsonValue->TryGetString(TagStr))
 			{
+				if (TagStr.IsEmpty() || TagStr == TEXT("None"))
+				{
+					*GameplayTag = FGameplayTag();
+					return true;
+				}
+
 				FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
 				if (!Tag.IsValid())
 				{
 					UE_LOG(LogAssetFactory, Warning, TEXT("FGameplayTag: tag '%s' not found. Register it first (e.g. via GameplayTag generator)."), *TagStr);
 					return false;
 				}
-				*static_cast<FGameplayTag*>(ValuePtr) = Tag;
+				*GameplayTag = Tag;
 				return true;
 			}
 			return false;
@@ -1540,6 +1582,11 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 					FString TagStr;
 					if (Elem->TryGetString(TagStr))
 					{
+						if (TagStr.IsEmpty() || TagStr == TEXT("None"))
+						{
+							continue;
+						}
+
 						FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
 						if (!Tag.IsValid())
 						{
@@ -1554,14 +1601,64 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 			return false;
 		});
 
+		// FStateTreeReference - string or { "StateTree": "/Game/Path.Asset" }.
+		SafeAdd(FindStructByName(TEXT("StateTreeReference")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
+		{
+			FStateTreeReference* Reference = static_cast<FStateTreeReference*>(ValuePtr);
+			if (JsonValue->Type == EJson::Null)
+			{
+				Reference->SetStateTree(nullptr);
+				return true;
+			}
+
+			FString StateTreePath;
+			if (!JsonValue->TryGetString(StateTreePath))
+			{
+				const TSharedPtr<FJsonObject>* Obj;
+				if (JsonValue->TryGetObject(Obj))
+				{
+					(*Obj)->TryGetStringField(TEXT("StateTree"), StateTreePath);
+				}
+			}
+
+			if (StateTreePath.IsEmpty())
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("FStateTreeReference: expected StateTree asset path"));
+				return false;
+			}
+
+			UStateTree* StateTree = LoadObject<UStateTree>(nullptr, *StateTreePath);
+			if (!StateTree)
+			{
+				UE_LOG(LogAssetFactory, Warning, TEXT("FStateTreeReference: failed to load StateTree '%s'"), *StateTreePath);
+				return false;
+			}
+
+			Reference->SetStateTree(StateTree);
+			return true;
+		});
+
 		// FGameplayAttribute - "ClassName.PropertyName" → SetUProperty
 #if WITH_GAMEPLAY_ABILITIES
 		SafeAdd(FindStructByName(TEXT("GameplayAttribute")), [](void* ValuePtr, TSharedPtr<FJsonValue> JsonValue) -> bool
 		{
+			FGameplayAttribute* Attr = static_cast<FGameplayAttribute*>(ValuePtr);
+			if (JsonValue->Type == EJson::Null)
+			{
+				*Attr = FGameplayAttribute();
+				return true;
+			}
+
 			FString AttrStr;
 			if (!JsonValue->TryGetString(AttrStr))
 			{
 				return false;
+			}
+
+			if (AttrStr.IsEmpty() || AttrStr == TEXT("None"))
+			{
+				*Attr = FGameplayAttribute();
+				return true;
 			}
 
 			FString ClassName, PropName;
@@ -1585,7 +1682,6 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructDeserializer>& FPropertySetter
 				return false;
 			}
 
-			FGameplayAttribute* Attr = static_cast<FGameplayAttribute*>(ValuePtr);
 			Attr->SetUProperty(AttrProp);
 			return true;
 		});
@@ -1673,6 +1769,10 @@ TMap<UScriptStruct*, FPropertySetterUtils::FStructSerializer>& FPropertySetterUt
 		SafeAdd(FindStructByName(TEXT("GameplayTag")), [](const void* ValuePtr) -> TSharedPtr<FJsonValue>
 		{
 			const FGameplayTag* Tag = static_cast<const FGameplayTag*>(ValuePtr);
+			if (!Tag->IsValid())
+			{
+				return MakeShared<FJsonValueNull>();
+			}
 			return MakeShared<FJsonValueString>(Tag->GetTagName().ToString());
 		});
 

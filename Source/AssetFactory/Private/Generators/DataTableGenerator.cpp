@@ -7,6 +7,19 @@
 #include "UObject/SavePackage.h"
 #include "Misc/FileHelper.h"
 
+namespace
+{
+	FString ResolveCSVFilePath(const FString& CSVFilePath)
+	{
+		if (CSVFilePath.IsEmpty() || !FPaths::IsRelative(CSVFilePath))
+		{
+			return CSVFilePath;
+		}
+
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), CSVFilePath));
+	}
+}
+
 FGenerationResult FDataTableGenerator::Generate(
 	const FString& Name,
 	const FString& Path,
@@ -52,6 +65,7 @@ FGenerationResult FDataTableGenerator::Generate(
 
 	if (!CSVFilePath.IsEmpty())
 	{
+		CSVFilePath = ResolveCSVFilePath(CSVFilePath);
 		if (!FPaths::FileExists(CSVFilePath))
 		{
 			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path,
@@ -178,6 +192,7 @@ TOptional<FString> FDataTableGenerator::ValidateConfig(TSharedPtr<FJsonObject> C
 	FString CSVFilePath;
 	if (Config->TryGetStringField(TEXT("CSVFilePath"), CSVFilePath) && !CSVFilePath.IsEmpty())
 	{
+		CSVFilePath = ResolveCSVFilePath(CSVFilePath);
 		if (!FPaths::FileExists(CSVFilePath))
 		{
 			return FString::Printf(TEXT("CSV file not found: %s"), *CSVFilePath);
