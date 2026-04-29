@@ -234,6 +234,60 @@ namespace
 		return nullptr;
 	}
 
+	const UStruct* ResolveBindingPathInstanceStruct(const FString& Path)
+	{
+		if (Path.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (const UStruct* Struct = FindObject<UStruct>(nullptr, *Path))
+		{
+			return Struct;
+		}
+
+		return Cast<UStruct>(StaticLoadObject(UStruct::StaticClass(), nullptr, *Path));
+	}
+
+	bool TryParseBindingPathAccess(const FString& Access, EPropertyBindingPropertyAccessType& OutAccessType)
+	{
+		const FString TrimmedAccess = Access.TrimStartAndEnd();
+		if (TrimmedAccess.IsEmpty() || TrimmedAccess == TEXT("Unset"))
+		{
+			OutAccessType = EPropertyBindingPropertyAccessType::Unset;
+			return true;
+		}
+		if (TrimmedAccess == TEXT("StructInstance"))
+		{
+			OutAccessType = EPropertyBindingPropertyAccessType::StructInstance;
+			return true;
+		}
+		if (TrimmedAccess == TEXT("ObjectInstance"))
+		{
+			OutAccessType = EPropertyBindingPropertyAccessType::ObjectInstance;
+			return true;
+		}
+
+		const UEnum* AccessEnum = StaticEnum<EPropertyBindingPropertyAccessType>();
+		if (!AccessEnum)
+		{
+			return false;
+		}
+
+		int64 AccessValue = AccessEnum->GetValueByNameString(TrimmedAccess);
+		if (AccessValue == INDEX_NONE && !TrimmedAccess.Contains(TEXT("::")))
+		{
+			AccessValue = AccessEnum->GetValueByNameString(FString::Printf(TEXT("EPropertyBindingPropertyAccessType::%s"), *TrimmedAccess));
+		}
+		if (AccessValue == INDEX_NONE)
+		{
+			return false;
+		}
+
+		OutAccessType = static_cast<EPropertyBindingPropertyAccessType>(AccessValue);
+		return true;
+	}
+
 	bool ApplyFirstPropertyBagSegmentGuid(
 		const FInstancedPropertyBag& Bag,
 		FPropertyBindingPath& Path,
@@ -748,13 +802,39 @@ TArray<FPropertyBindingPathSegment> UE::AssetFactory::StateTree::MakeBindingPath
 			OutError = TEXT("StateTree binding path segment name must be non-empty");
 			return {};
 		}
-		if (!Spec.InstanceStruct.IsEmpty() || !Spec.Access.IsEmpty())
+
+		EPropertyBindingPropertyAccessType AccessType = EPropertyBindingPropertyAccessType::Unset;
+		if (!TryParseBindingPathAccess(Spec.Access, AccessType))
 		{
-			OutError = FString::Printf(TEXT("StateTree binding path segment '%s' instanceStruct/access is not supported for generation yet"), *Spec.Name);
+			OutError = FString::Printf(TEXT("StateTree binding path segment '%s' has unknown access '%s'"), *Spec.Name, *Spec.Access);
+			return {};
+		}
+
+		const UStruct* InstanceStruct = nullptr;
+		if (!Spec.InstanceStruct.IsEmpty())
+		{
+			InstanceStruct = ResolveBindingPathInstanceStruct(Spec.InstanceStruct);
+			if (!InstanceStruct)
+			{
+				OutError = FString::Printf(TEXT("StateTree binding path segment '%s' has unknown instanceStruct '%s'"), *Spec.Name, *Spec.InstanceStruct);
+				return {};
+			}
+			if (AccessType == EPropertyBindingPropertyAccessType::Unset)
+			{
+				AccessType = EPropertyBindingPropertyAccessType::StructInstance;
+			}
+		}
+		else if (AccessType != EPropertyBindingPropertyAccessType::Unset)
+		{
+			OutError = FString::Printf(TEXT("StateTree binding path segment '%s' access requires instanceStruct"), *Spec.Name);
 			return {};
 		}
 
 		FPropertyBindingPathSegment Segment(FName(*Spec.Name), Spec.ArrayIndex);
+		if (InstanceStruct)
+		{
+			Segment.SetInstanceStruct(InstanceStruct, AccessType);
+		}
 #if WITH_EDITORONLY_DATA
 		if (Spec.bHasGuid)
 		{
