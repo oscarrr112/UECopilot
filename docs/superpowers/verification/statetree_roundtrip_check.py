@@ -33,6 +33,11 @@ IGNORED_KEYS = {
 	"lastCompiledEditorDataHash",
 }
 
+ROOT_IGNORED_KEYS = {
+	"diagnostics",
+	"Diagnostics",
+}
+
 NODE_ARRAY_KEYS = (
 	"tasks",
 	"GlobalTasks",
@@ -52,17 +57,64 @@ def _canonical_key(key):
 	return CANONICAL_KEYS.get(key.lower(), key)
 
 
+def _without_root_ignored_keys(value):
+	if not isinstance(value, dict):
+		return value
+	result = copy.deepcopy(value)
+	for key in ROOT_IGNORED_KEYS:
+		result.pop(key, None)
+	return result
+
+
 def _normalize_path_segment(segment):
 	if isinstance(segment, dict) and "name" in segment:
 		normalized = {"name": segment["name"]}
-		if "guid" in segment:
-			normalized["guid"] = segment["guid"]
-		if "arrayIndex" in segment:
-			normalized["arrayIndex"] = segment["arrayIndex"]
+		for key in ("guid", "arrayIndex", "instanceStruct", "access"):
+			if key in segment:
+				normalized[key] = segment[key]
 		return normalized
 	if isinstance(segment, str):
 		return {"name": segment}
 	return _canonicalize(segment)
+
+
+def _normalize_path_segments(value):
+	if not isinstance(value, list):
+		return _canonicalize(value)
+	return [_normalize_path_segment(segment) for segment in value]
+
+
+def _normalize_function_input(value):
+	if isinstance(value, dict):
+		result = {}
+		for raw_key, raw_child in value.items():
+			key = _canonical_key(raw_key)
+			if key in IGNORED_KEYS:
+				continue
+			if key == "target":
+				result[key] = _normalize_path_segments(raw_child)
+			else:
+				result[key] = _canonicalize(raw_child, key)
+		return _strip_empty_noise(result)
+	return _canonicalize(value)
+
+
+def _normalize_function_inputs(value):
+	if isinstance(value, dict):
+		items = []
+		for raw_target, raw_input in value.items():
+			item = _normalize_function_input(raw_input)
+			if not isinstance(item, dict):
+				item = {"source": item}
+			item["target"] = _normalize_path_segments([raw_target])
+			items.append(item)
+		return sorted(items, key=_binding_sort_key)
+
+	if isinstance(value, list):
+		items = [_normalize_function_input(child) for child in value]
+		return sorted(items, key=_binding_sort_key)
+
+	return _canonicalize(value)
 
 
 def _stable_json(value):
@@ -109,7 +161,9 @@ def _canonicalize(value, parent_key=None):
 				continue
 			if key == "id" and parent_key == "bindings":
 				continue
-			if key in ("path", "output") and isinstance(raw_child, list):
+			if key == "inputs" and parent_key == "function":
+				result[key] = _normalize_function_inputs(raw_child)
+			elif key in ("path", "output") and isinstance(raw_child, list):
 				result[key] = [_normalize_path_segment(segment) for segment in raw_child]
 			else:
 				result[key] = _canonicalize(raw_child, key)
@@ -131,7 +185,11 @@ def _format_path(path):
 
 
 def _is_segment_dict(value):
-	return isinstance(value, dict) and set(value.keys()).issubset({"name", "guid", "arrayIndex"}) and "name" in value
+	return (
+		isinstance(value, dict)
+		and set(value.keys()).issubset({"name", "guid", "arrayIndex", "instanceStruct", "access"})
+		and "name" in value
+	)
 
 
 def _find_segment_mismatch(left, right, path):
@@ -150,6 +208,16 @@ def _find_segment_mismatch(left, right, path):
 		return path + [".guid"], left.get("guid", "<missing>"), right.get("guid", "<missing>")
 	if left.get("guid") != right.get("guid"):
 		return path + [".guid"], left.get("guid"), right.get("guid")
+
+	if ("instanceStruct" in left) != ("instanceStruct" in right):
+		return path + [".instanceStruct"], left.get("instanceStruct", "<missing>"), right.get("instanceStruct", "<missing>")
+	if left.get("instanceStruct") != right.get("instanceStruct"):
+		return path + [".instanceStruct"], left.get("instanceStruct"), right.get("instanceStruct")
+
+	if ("access" in left) != ("access" in right):
+		return path + [".access"], left.get("access", "<missing>"), right.get("access", "<missing>")
+	if left.get("access") != right.get("access"):
+		return path + [".access"], left.get("access"), right.get("access")
 
 	return None
 
@@ -296,8 +364,8 @@ def _parse_args(argv):
 
 def main(argv):
 	args = _parse_args(argv)
-	left = _canonicalize(copy.deepcopy(_load_json(args.left)))
-	right = _canonicalize(copy.deepcopy(_load_json(args.right)))
+	left = _canonicalize(_without_root_ignored_keys(_load_json(args.left)))
+	right = _canonicalize(_without_root_ignored_keys(_load_json(args.right)))
 
 	mismatch = _find_mismatch(left, right)
 	if mismatch:

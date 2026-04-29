@@ -128,6 +128,16 @@ function assertCondition(condition, message) {
 	}
 }
 
+function assertNoUnexpectedDiagnostics(config, phase) {
+	const diagnostics = config && config.diagnostics;
+	const bindingDiagnostics = diagnostics && diagnostics.bindings;
+	if (Array.isArray(bindingDiagnostics) && bindingDiagnostics.length > 0) {
+		throw new Error(
+			`${phase} extracted ${config.Name} had unexpected binding diagnostics: ${JSON.stringify(bindingDiagnostics)}`,
+		);
+	}
+}
+
 function writeJson(path, value) {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -153,6 +163,7 @@ function writeExtractedConfigs(result, phase, fixtures) {
 		assertCondition(expectedNames.has(config.Name), `${phase} result unexpected config.Name: ${config.Name}`);
 		assertCondition(!extractedByName.has(config.Name), `${phase} result duplicated config.Name: ${config.Name}`);
 		config.Action = "CreateOrUpdate";
+		assertNoUnexpectedDiagnostics(config, phase);
 		extractedByName.set(config.Name, config);
 	}
 
