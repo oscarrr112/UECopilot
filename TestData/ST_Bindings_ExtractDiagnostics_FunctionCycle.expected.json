@@ -1,0 +1,13 @@
+{
+	"diagnostics": {
+		"bindings": [
+			{
+				"code": "StateTree.Binding.FunctionCycle",
+				"severity": "warning",
+				"path": "bindings[0].function.inputs[0].function",
+				"bindingTarget": "Root/Idle.delay-task.instance.Duration",
+				"message": "Detected a cyclic StateTree property function binding graph while extracting function inputs."
+			}
+		]
+	}
+}

@@ -1,6 +1,6 @@
 {
 	"AssetType": "StateTree",
-	"Name": "ST_Bindings_Function",
+	"Name": "ST_Bindings_Function_LegacyInputsObject",
 	"Path": "/Game/AFSmoke",
 	"Action": "CreateOrUpdate",
 	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
@@ -36,20 +36,18 @@
 	],
 	"bindings": [
 		{
-			"id": "duration-from-add-float",
+			"id": "duration-from-add-float-legacy-input-object",
 			"function": {
 				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
 				"output": ["Result"],
-				"inputs": [
-					{
-						"target": ["Left"],
+				"inputs": {
+					"Left": {
 						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
 					},
-					{
-						"target": ["Right"],
+					"Right": {
 						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
 					}
-				]
+				}
 			},
 			"target": {
 				"kind": "task",

@@ -40,14 +40,16 @@
 			"function": {
 				"type": "/Script/StateTreeModule.StateTreeDelayTask",
 				"output": ["Result"],
-				"inputs": {
-					"Left": {
+				"inputs": [
+					{
+						"target": ["Left"],
 						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
 					},
-					"Right": {
+					{
+						"target": ["Right"],
 						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
 					}
-				}
+				]
 			},
 			"target": {
 				"kind": "task",

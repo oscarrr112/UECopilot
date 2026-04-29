@@ -17,6 +17,8 @@
 		{ "name": "ST_Parameters_LinkedReferencer", "kind": "positive", "spec": "parameters", "description": "Linked asset parameter override smoke.", "dependsOn": ["ST_Parameters_LinkedTarget"], "roundTrip": true },
 		{ "name": "ST_Bindings_Ordinary", "kind": "positive", "spec": "bindings", "description": "Root parameter to task property binding.", "roundTrip": true },
 		{ "name": "ST_Bindings_Function", "kind": "positive", "spec": "bindings", "description": "Property function binding with two root parameter inputs.", "roundTrip": true },
+		{ "name": "ST_Bindings_Function_LegacyInputsObject", "kind": "positive", "spec": "bindings", "description": "Legacy object-shaped property function input compatibility.", "roundTrip": true },
+		{ "name": "ST_Bindings_Function_RichInputTargets", "kind": "positive", "spec": "bindings", "description": "Property function binding with rich input target path metadata.", "roundTrip": true },
 		{ "name": "ST_Bindings_GuidNodeIds", "kind": "positive", "spec": "bindings", "description": "Binding target resolves an explicit GUID node id and round-trips.", "roundTrip": true },
 		{ "name": "ST_RoundTrip_Comprehensive", "kind": "positive", "spec": "roundtrip", "description": "Comprehensive final verification StateTree opened in Editor.", "roundTrip": true, "openOnSuccess": true },
 
@@ -39,6 +41,10 @@
 		{ "name": "ST_Bindings_Invalid_BadPath", "kind": "negative", "spec": "bindings", "description": "Reject binding path segment that does not exist.", "expectedError": "could not be resolved" },
 		{ "name": "ST_Bindings_Invalid_DuplicateTarget", "kind": "negative", "spec": "bindings", "description": "Reject duplicate binding target path.", "expectedError": "targets duplicate path" },
 		{ "name": "ST_Bindings_Invalid_BadFunctionType", "kind": "negative", "spec": "bindings", "description": "Reject non-property-function struct in function binding.", "expectedError": "property function type" },
+		{ "name": "ST_Bindings_Invalid_FunctionInputMissingTarget", "kind": "negative", "spec": "bindings", "description": "Reject property function inputs missing a target path.", "expectedError": "must define required field 'target'" },
+		{ "name": "ST_Bindings_Invalid_FunctionInputEmptyTarget", "kind": "negative", "spec": "bindings", "description": "Reject property function inputs with an empty target path.", "expectedError": "target must contain at least one path segment" },
+		{ "name": "ST_Bindings_Invalid_FunctionInputBadAccess", "kind": "negative", "spec": "bindings", "description": "Reject unknown rich path segment access values.", "expectedError": "unknown access" },
+		{ "name": "ST_Bindings_Invalid_FunctionInputUnknownInstanceStruct", "kind": "negative", "spec": "bindings", "description": "Reject rich path segment instance structs that cannot resolve.", "expectedError": "unknown instanceStruct" },
 		{ "name": "ST_Bindings_Invalid_TypeMismatch", "kind": "negative", "spec": "bindings", "description": "Reject binding source/target type mismatch.", "expectedError": "compile failed after applying property bindings" }
 	]
 }

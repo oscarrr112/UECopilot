@@ -1,12 +1,11 @@
 {
 	"AssetType": "StateTree",
-	"Name": "ST_Bindings_Function",
+	"Name": "ST_Bindings_Invalid_FunctionInputEmptyTarget",
 	"Path": "/Game/AFSmoke",
 	"Action": "CreateOrUpdate",
 	"SchemaClass": "/Script/GameplayStateTreeModule.StateTreeComponentSchema",
 	"rootParameters": {
-		"BaseDelay": { "type": "Float", "value": 0.25 },
-		"BonusDelay": { "type": "Float", "value": 0.15 }
+		"BaseDelay": { "type": "Float", "value": 0.25 }
 	},
 	"SubTrees": [
 		{
@@ -36,18 +35,14 @@
 	],
 	"bindings": [
 		{
-			"id": "duration-from-add-float",
+			"id": "duration-from-empty-input-target",
 			"function": {
 				"type": "/Script/StateTreeModule.StateTreeAddFloatPropertyFunction",
 				"output": ["Result"],
 				"inputs": [
 					{
-						"target": ["Left"],
+						"target": [],
 						"source": { "kind": "rootParameter", "path": ["BaseDelay"] }
-					},
-					{
-						"target": ["Right"],
-						"source": { "kind": "rootParameter", "path": ["BonusDelay"] }
 					}
 				]
 			},
