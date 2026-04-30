@@ -1,33 +1,33 @@
-# Animation Generators Research
+# Animation Generators 研究记录
 
-- Date: 2026-04-30
-- Branch: `feature/animation-generators-specs`
-- Scope: AnimationBlueprint, BlendSpace, AimOffset, and animation graph authoring language research
-- Status: Research summary for spec planning; no implementation in this branch
+- 日期：2026-04-30
+- 分支：`feature/animation-generators-specs`
+- 范围：AnimationBlueprint、BlendSpace、AimOffset，以及动画图创作语言研究
+- 状态：用于规格规划的研究总结；本分支不包含实现
 
-## Goal
+## 目标
 
-The next generator family should cover animation authoring assets in a way that remains useful to agents. The target is not just creating an empty `UAnimBlueprint`, but eventually generating an Animation Blueprint that can express pose graphs, state machines, transition rules, and ordinary Blueprint logic while still using the existing AssetFactory JSON entry point.
+下一组 generator 家族应覆盖动画创作资产，并保持对 agent 有用。目标不只是创建一个空的 `UAnimBlueprint`，而是最终生成一个 Animation Blueprint，使其能够表达姿势图、状态机、过渡规则和普通 Blueprint 逻辑，同时仍然使用现有 AssetFactory JSON 入口点。
 
-The key design decision from brainstorming is:
+脑暴阶段得出的关键设计决策是：
 
-- keep top-level AssetFactory input as JSON;
-- keep ordinary Blueprint variables compatible with the existing `BlueprintGenerator` contract;
-- use animation-specific source blocks for AnimGraph and StateMachine authoring;
-- reuse BSL concepts for ordinary Blueprint/EventGraph/function logic where possible;
-- normalize all graph source into internal semantic IR before touching UE graphs.
+- 保持顶层 AssetFactory 输入为 JSON；
+- 保持普通 Blueprint 变量与现有 `BlueprintGenerator` 契约兼容；
+- 对 AnimGraph 和 StateMachine 创作使用动画专用源码块；
+- 尽可能为普通 Blueprint/EventGraph/function 逻辑复用 BSL 概念；
+- 在接触 UE 图之前，将所有图源码规范化为内部语义 IR。
 
-## Current Project Baseline
+## 当前项目基线
 
-Relevant existing generator patterns:
+相关的现有 generator 模式：
 
-- `IAssetGenerator` remains the common interface: `GetAssetType`, `Generate`, `ValidateConfig`, `CanExtract`, `Extract`, and priority.
-- Simple asset generators such as curves use `AssetTools.CreateAsset` with a factory, then mark dirty and save.
-- `BlueprintGenerator` already supports general Blueprint variables and CDO default properties.
-- `StateTreeGenerator` is the best pattern for a complex generator: lifecycle code stays in the main generator, while parsing/building/extraction helpers live in a focused subdirectory.
-- Existing BSL separates language parsing from UE graph creation: source -> parser -> AST/compiler -> graph writer. Animation graph work should preserve this separation.
+- `IAssetGenerator` 仍是通用接口：`GetAssetType`、`Generate`、`ValidateConfig`、`CanExtract`、`Extract` 和优先级。
+- curve 等简单 asset generator 使用带 factory 的 `AssetTools.CreateAsset`，然后标记脏数据并保存。
+- `BlueprintGenerator` 已支持通用 Blueprint 变量和 CDO 默认属性。
+- `StateTreeGenerator` 是复杂 generator 的最佳模式：生命周期代码保留在主 generator 中，而解析、构建、提取 helper 放在聚焦的子目录里。
+- 现有 BSL 将语言解析与 UE 图创建分离：source -> parser -> AST/compiler -> graph writer。Animation graph 工作应保持这种分离。
 
-Important existing Blueprint variable contract:
+重要的现有 Blueprint 变量契约：
 
 ```json
 "Variables": [
@@ -36,13 +36,13 @@ Important existing Blueprint variable contract:
 ]
 ```
 
-`AnimationBlueprintGenerator` should reuse this shape instead of inventing `Default` or a second variable declaration format. Extraction may emit engine spellings such as `Boolean`; generation should accept both `Bool` and `Boolean` as aliases when they map to the same Blueprint pin/category.
+`AnimationBlueprintGenerator` 应复用这个形状，而不是发明 `Default` 或第二套变量声明格式。提取结果可能会输出 `Boolean` 这样的引擎拼写；生成流程在它们映射到同一个 Blueprint pin/category 时，应同时接受 `Bool` 和 `Boolean` 作为别名。
 
-## BlendSpace And AimOffset Findings
+## BlendSpace 和 AimOffset 发现
 
-BlendSpace assets should be their own generator, independent of AnimationBlueprint. They are animation assets that an Animation Blueprint later references.
+BlendSpace 资产应该有自己的 generator，并且独立于 AnimationBlueprint。它们是之后由 Animation Blueprint 引用的动画资产。
 
-Creation path:
+创建路径：
 
 ```cpp
 UBlendSpaceFactoryNew* Factory = NewObject<UBlendSpaceFactoryNew>();
@@ -54,34 +54,34 @@ UBlendSpace* BlendSpace = Cast<UBlendSpace>(
 );
 ```
 
-Factory variants:
+Factory 变体：
 
 - `UBlendSpaceFactoryNew` -> `UBlendSpace`
 - `UBlendSpaceFactory1D` -> `UBlendSpace1D`
 - `UAimOffsetBlendSpaceFactoryNew` -> `UAimOffsetBlendSpace`
 - `UAimOffsetBlendSpaceFactory1D` -> `UAimOffsetBlendSpace1D`
 
-Useful public API and fields:
+有用的公开 API 和字段：
 
-- `FBlendParameter` describes axis display name, min/max, grid count, snap, and wrap.
-- `FBlendSample` stores `UAnimSequence* Animation`, `SampleValue`, `RateScale`, and single-frame settings.
-- `UBlendSpace::AddSample(UAnimSequence*, FVector)` adds samples.
-- `UBlendSpace::ValidateSampleData()` validates sample data.
-- `UBlendSpace::ResampleData()` rebuilds internal sample data.
+- `FBlendParameter` 描述坐标轴显示名、最小值/最大值、网格数量、吸附和循环。
+- `FBlendSample` 存储 `UAnimSequence* Animation`、`SampleValue`、`RateScale` 和单帧设置。
+- `UBlendSpace::AddSample(UAnimSequence*, FVector)` 添加样本。
+- `UBlendSpace::ValidateSampleData()` 验证样本数据。
+- `UBlendSpace::ResampleData()` 重建内部样本数据。
 
-AimOffset should share the same generator and JSON shape as BlendSpace, with stricter validation. AimOffset samples must be mesh-space rotation offset additive animations.
+AimOffset 应与 BlendSpace 共享同一个 generator 和 JSON 形状，但需要更严格的验证。AimOffset 样本必须是 mesh-space rotation offset additive 动画。
 
-Recommended dependency order:
+推荐的依赖顺序：
 
 ```text
 Skeleton / SkeletalMesh / AnimSequence -> BlendSpace / AimOffset -> AnimationBlueprint
 ```
 
-## AnimationBlueprint Findings
+## AnimationBlueprint 发现
 
-`AnimationBlueprintGenerator` should not reuse the generic `BlueprintGenerator` as its implementation path. A plain Blueprint with `ParentClass = AnimInstance` is not enough, because a real `UAnimBlueprint` needs skeleton-aware creation and the animation compiler path.
+`AnimationBlueprintGenerator` 不应复用通用 `BlueprintGenerator` 作为实现路径。带有 `ParentClass = AnimInstance` 的普通 Blueprint 并不够，因为真正的 `UAnimBlueprint` 需要感知 skeleton 的创建流程和动画编译路径。
 
-Official creation path:
+官方创建路径：
 
 ```cpp
 UAnimBlueprintFactory* Factory = NewObject<UAnimBlueprintFactory>();
@@ -94,61 +94,61 @@ UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(
 );
 ```
 
-The factory internally calls `FKismetEditorUtilities::CreateBlueprint(..., UAnimBlueprint::StaticClass(), ...)` and then writes `TargetSkeleton` onto the blueprint, generated class, and skeleton generated class.
+factory 内部会调用 `FKismetEditorUtilities::CreateBlueprint(..., UAnimBlueprint::StaticClass(), ...)`，然后将 `TargetSkeleton` 写入 blueprint、generated class 和 skeleton generated class。
 
-Compile path:
+编译路径：
 
 ```cpp
 FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
 ```
 
-The AnimGraph module registers the specialized compiler for `UAnimBlueprint`. Save can use the same package save pattern as existing generators, or editor save helpers if needed.
+AnimGraph module 会为 `UAnimBlueprint` 注册专用 compiler。保存可以使用与现有 generators 相同的 package save 模式，必要时也可以使用 editor save helpers。
 
-Creation automatically gives the asset default EventGraph and AnimGraph scaffolding. AnimGraph graph mutation must use UE graph schema and node lifecycle rather than manually filling arrays.
+创建会自动为 asset 提供默认 EventGraph 和 AnimGraph 脚手架。AnimGraph 图修改必须使用 UE graph schema 和 node lifecycle，而不是手动填充数组。
 
-## AnimGraph And StateMachine Complexity
+## AnimGraph 和 StateMachine 复杂性
 
-AnimGraph and StateMachine generation is not a flat node list problem.
+AnimGraph 和 StateMachine generation 不是平坦节点列表问题。
 
-Important UE behavior:
+重要的 UE 行为：
 
-- `UAnimationGraphSchema::CreateDefaultNodesForGraph` creates the AnimGraph root node.
-- `UAnimationGraphSchema::SpawnNodeFromAsset` handles animation asset node spawning and skeleton compatibility, but mismatch handling can be a silent no-op, so the generator should prevalidate assets against the target skeleton or verify that a node was actually created.
-- State machine nodes create nested `UAnimationStateMachineGraph` subgraphs and default entry nodes during node placement.
-- State nodes create `UAnimationStateGraph` subgraphs with state result nodes.
-- Transition nodes create `UAnimationTransitionGraph` subgraphs with transition result nodes.
-- State machine schema can auto-insert transition nodes when connecting states.
+- `UAnimationGraphSchema::CreateDefaultNodesForGraph` 创建 AnimGraph root node。
+- `UAnimationGraphSchema::SpawnNodeFromAsset` 处理动画资产节点生成和 skeleton 兼容性，但不匹配时可能静默不创建节点，因此 generator 应预先根据目标 skeleton 验证资产，或确认节点确实已被创建。
+- State machine nodes 在 node placement 期间创建嵌套的 `UAnimationStateMachineGraph` 子图和默认 entry nodes。
+- State nodes 创建带有 state result nodes 的 `UAnimationStateGraph` 子图。
+- Transition nodes 创建带有 transition result nodes 的 `UAnimationTransitionGraph` 子图。
+- State machine schema 在连接 states 时可以自动插入 transition nodes。
 
-Therefore, generator code should call schema/actions/node lifecycle APIs where possible. It should not hand-write graph arrays, pins, or subgraphs as if they were stable data.
+因此，generator 代码应尽可能调用 schema/actions/node lifecycle APIs。不应把图数组、pins 或子图当作稳定数据手写。
 
-## Language And Contract Decision
+## 语言和契约决策
 
-For an agent-facing tool, the best contract is not a single unified human language. The best contract is explicit, isolated source blocks:
+对于面向 agent 的工具，最佳契约不是单一统一的人类语言。最佳契约是显式、隔离的源码块：
 
-- top-level JSON for asset shell and common Blueprint metadata;
-- `AnimGraph` block for pose graph expression;
-- `StateMachines[]` blocks for state machine expression;
-- `BlueprintGraphs[]` blocks using `BSLFragment` for ordinary K2/EventGraph/function logic.
+- 用于资产外壳和通用 Blueprint 元数据的顶层 JSON；
+- 用于姿势图表达的 `AnimGraph` block；
+- 用于状态机表达的 `StateMachines[]` blocks；
+- 使用 `BSLFragment` 表达普通 K2/EventGraph/function 逻辑的 `BlueprintGraphs[]` blocks。
 
-This keeps errors local. A parser error can point to `AnimGraph.Source`, `StateMachines[0].Source`, or `BlueprintGraphs[0].Source`.
+这能让错误保持局部化。解析错误可以指向 `AnimGraph.Source`、`StateMachines[0].Source` 或 `BlueprintGraphs[0].Source`。
 
-`BSLFragment` is intentionally named as a fragment contract. The current BSL parser expects a complete `blueprint ... extends ... { ... }` wrapper, so Animation Blueprint integration should wrap/reroute these blocks before invoking existing BSL infrastructure instead of pretending naked event snippets are accepted today.
+`BSLFragment` 被有意命名为 fragment 契约。当前 BSL parser 期望完整的 `blueprint ... extends ... { ... }` wrapper，因此 Animation Blueprint integration 应在调用现有 BSL infrastructure 之前包装并重定向这些 blocks，而不是假装目前已经接受裸露的 event snippets。
 
-YAML is not recommended as a primary design axis. It changes surface syntax but does not solve graph semantics. If a YAML frontend is ever useful, it should compile to the same canonical JSON/IR outside the UE-side generator.
+不建议将 YAML 作为主要设计轴。它改变的是表面语法，但不能解决图语义。如果某个 YAML frontend 将来有用，它应在 UE-side generator 之外编译为同一个 canonical JSON/IR。
 
-UE clipboard text (`FEdGraphUtilities::ExportNodesToText` / `ImportNodesFromText`) is useful for debugging or fallback import/export research, but it is too close to internal UObject text to be the long-term authoring format.
+UE clipboard text（`FEdGraphUtilities::ExportNodesToText` / `ImportNodesFromText`）对调试或 fallback 导入/导出研究有用，但它太接近内部 UObject text，不适合作为长期创作格式。
 
-## Recommended Spec Direction
+## 推荐的规格方向
 
-The animation generator family should be split into small, independently verifiable specs:
+animation generator 家族应拆分为小而可独立验证的 specs：
 
-- Animation generator spec map and language architecture.
-- BlendSpace/AimOffset generator.
-- AnimationBlueprint lifecycle generator.
-- Canonical AnimGraph IR and minimal pose graph builder.
-- StateMachine source/IR and transition rule builder.
-- BSLFragment integration for Animation Blueprint EventGraph/functions.
-- Advanced animation nodes and raw-node escape hatch.
-- Extraction, round-trip, MCP docs, and fixtures.
+- Animation generator spec map 和语言架构。
+- BlendSpace/AimOffset generator。
+- AnimationBlueprint 生命周期 generator。
+- Canonical AnimGraph IR 和最小姿势图 builder。
+- StateMachine source/IR 和 transition rule builder。
+- 面向 Animation Blueprint EventGraph/functions 的 BSLFragment integration。
+- 高级 animation nodes 和 raw-node escape hatch。
+- Extraction、round-trip、MCP docs 和 fixtures。
 
-This keeps BlendSpace useful immediately, keeps AnimationBlueprint lifecycle verifiable before graph complexity, and gives the graph language space to stabilize before implementation.
+这样能让 BlendSpace 立即可用，让 AnimationBlueprint lifecycle 在进入图复杂性之前可验证，并给图语言在实现前留下稳定空间。
