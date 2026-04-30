@@ -132,7 +132,7 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 	}
 
 	FString SkeletonPath;
-	if (Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath) && !SkeletonPath.IsEmpty())
+	if (Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath))
 	{
 		if (!LoadSkeleton(SkeletonPath))
 		{
