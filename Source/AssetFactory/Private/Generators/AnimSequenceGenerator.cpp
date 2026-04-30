@@ -2,6 +2,7 @@
 
 #include "Generators/AnimSequenceGenerator.h"
 
+#include "AssetFactoryNamedAnimNotifyState.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimData/CurveIdentifier.h"
@@ -35,6 +36,63 @@ TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 	return FMath::IsFinite(PlayLength) && PlayLength >= 0.0f
 		? TOptional<float>(PlayLength)
 		: TOptional<float>();
+}
+
+FFrameRate GetEffectiveFrameRate(const UAnimSequence* AnimSequence, const TSharedPtr<FJsonObject>& Config)
+{
+	FFrameRate FrameRate(30, 1);
+	if (const IAnimationDataModel* DataModel = AnimSequence ? AnimSequence->GetDataModel() : nullptr)
+	{
+		FrameRate = DataModel->GetFrameRate();
+	}
+
+	if (Config.IsValid())
+	{
+		if (Config->HasTypedField<EJson::Object>(TEXT("FrameRate")))
+		{
+			const TSharedPtr<FJsonObject> FrameRateObject = Config->GetObjectField(TEXT("FrameRate"));
+			double Numerator = FrameRate.Numerator;
+			double Denominator = FrameRate.Denominator;
+			FrameRateObject->TryGetNumberField(TEXT("Numerator"), Numerator);
+			FrameRateObject->TryGetNumberField(TEXT("Denominator"), Denominator);
+			FrameRate = FFrameRate(static_cast<int32>(Numerator), static_cast<int32>(Denominator));
+		}
+	}
+
+	return FrameRate;
+}
+
+int32 GetEffectiveNumberOfFrames(const UAnimSequence* AnimSequence, const TSharedPtr<FJsonObject>& Config)
+{
+	int32 NumberOfFrames = 1;
+	if (const IAnimationDataModel* DataModel = AnimSequence ? AnimSequence->GetDataModel() : nullptr)
+	{
+		NumberOfFrames = DataModel->GetNumberOfFrames();
+	}
+
+	if (Config.IsValid())
+	{
+		double NumberOfFramesValue = NumberOfFrames;
+		if (Config->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFramesValue))
+		{
+			NumberOfFrames = static_cast<int32>(NumberOfFramesValue);
+		}
+	}
+
+	return NumberOfFrames;
+}
+
+TOptional<float> GetExpectedPlayLength(const UAnimSequence* AnimSequence, const TSharedPtr<FJsonObject>& Config)
+{
+	const FFrameRate FrameRate = GetEffectiveFrameRate(AnimSequence, Config);
+	const int32 NumberOfFrames = GetEffectiveNumberOfFrames(AnimSequence, Config);
+	const double FrameRateValue = FrameRate.AsDecimal();
+	if (NumberOfFrames < 0 || !FMath::IsFinite(FrameRateValue) || FrameRateValue <= 0.0)
+	{
+		return TOptional<float>();
+	}
+
+	return static_cast<float>(static_cast<double>(NumberOfFrames) / FrameRateValue);
 }
 
 bool TryGetEntryObject(
@@ -126,6 +184,12 @@ bool TryGetTrackIndex(
 	int32& OutTrackIndex,
 	FString& OutError)
 {
+	if (!EntryObject->HasField(TEXT("TrackIndex")))
+	{
+		OutTrackIndex = 0;
+		return true;
+	}
+
 	double RawTrackIndex = 0.0;
 	if (!EntryObject->TryGetNumberField(TEXT("TrackIndex"), RawTrackIndex))
 	{
@@ -144,6 +208,12 @@ bool TryGetTrackIndex(
 	}
 
 	OutTrackIndex = static_cast<int32>(RoundedTrackIndex);
+	if (OutTrackIndex != 0)
+	{
+		OutError = FString::Printf(TEXT("%s TrackIndex %d is not supported; AnimSequence Part 1 only supports TrackIndex 0"), *Context, OutTrackIndex);
+		return false;
+	}
+
 	return true;
 }
 
@@ -201,12 +271,25 @@ bool ValidateTimeRangeWithinPlayLength(
 
 bool IsSupportedNamedNotify(const FAnimNotifyEvent& NotifyEvent)
 {
-	return !NotifyEvent.IsBlueprintNotify() && !NotifyEvent.NotifyName.IsNone() && NotifyEvent.Duration <= 0.0f;
+	return !NotifyEvent.Notify &&
+		!NotifyEvent.NotifyStateClass &&
+		!NotifyEvent.NotifyName.IsNone() &&
+		NotifyEvent.Duration <= 0.0f;
 }
 
 bool IsSupportedNamedNotifyState(const FAnimNotifyEvent& NotifyEvent)
 {
-	return !NotifyEvent.IsBlueprintNotify() && !NotifyEvent.NotifyName.IsNone() && NotifyEvent.Duration > 0.0f;
+	return NotifyEvent.NotifyStateClass &&
+		NotifyEvent.NotifyStateClass->IsA<UAssetFactoryNamedAnimNotifyState>() &&
+		!NotifyEvent.NotifyName.IsNone();
+}
+
+bool IsLegacyNamedNotifyState(const FAnimNotifyEvent& NotifyEvent)
+{
+	return !NotifyEvent.Notify &&
+		!NotifyEvent.NotifyStateClass &&
+		!NotifyEvent.NotifyName.IsNone() &&
+		NotifyEvent.Duration > 0.0f;
 }
 
 void RefreshNotifyData(UAnimSequence* AnimSequence)
@@ -491,7 +574,7 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 	}
 
-	const TOptional<float> ExistingPlayLength = GetValidatedPlayLength(ExistingAnimSequence);
+	const TOptional<float> EffectivePlayLength = GetExpectedPlayLength(ExistingAnimSequence, Config);
 	if (Config->HasField(TEXT("Notifies")))
 	{
 		const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
@@ -501,7 +584,7 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 
 		FString Error;
-		if (!ValidateNotifies(*Notifies, ExistingPlayLength, Error))
+		if (!ValidateNotifies(*Notifies, EffectivePlayLength, Error))
 		{
 			return Error;
 		}
@@ -516,7 +599,7 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 
 		FString Error;
-		if (!ValidateNotifyStates(*NotifyStates, ExistingPlayLength, Error))
+		if (!ValidateNotifyStates(*NotifyStates, EffectivePlayLength, Error))
 		{
 			return Error;
 		}
@@ -531,7 +614,7 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 
 		FString Error;
-		if (!ValidateSyncMarkers(*SyncMarkers, ExistingPlayLength, Error))
+		if (!ValidateSyncMarkers(*SyncMarkers, EffectivePlayLength, Error))
 		{
 			return Error;
 		}
@@ -605,7 +688,7 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 
 			if (IsSupportedNamedNotifyState(NotifyEvent))
 			{
-				NotifyJson->SetNumberField(TEXT("Duration"), NotifyEvent.Duration);
+				NotifyJson->SetNumberField(TEXT("Duration"), NotifyEvent.GetDuration());
 				NotifyStateValues.Add(MakeShared<FJsonValueObject>(NotifyJson));
 			}
 			else
@@ -1119,7 +1202,7 @@ bool FAnimSequenceGenerator::ApplyNotifyStates(
 	UpdatedNotifies.Reserve(AnimSequence->Notifies.Num() + NotifyStates.Num());
 	for (const FAnimNotifyEvent& ExistingNotify : AnimSequence->Notifies)
 	{
-		if (!IsSupportedNamedNotifyState(ExistingNotify))
+		if (!IsSupportedNamedNotifyState(ExistingNotify) && !IsLegacyNamedNotifyState(ExistingNotify))
 		{
 			UpdatedNotifies.Add(ExistingNotify);
 		}
@@ -1153,6 +1236,7 @@ bool FAnimSequenceGenerator::ApplyNotifyStates(
 
 		FAnimNotifyEvent NotifyEvent;
 		NotifyEvent.NotifyName = NotifyFName;
+		NotifyEvent.NotifyStateClass = NewObject<UAssetFactoryNamedAnimNotifyState>(AnimSequence, NAME_None, RF_Transactional);
 		NotifyEvent.TrackIndex = TrackIndex;
 		NotifyEvent.SetTime(Time);
 		NotifyEvent.SetDuration(Duration);
@@ -1291,6 +1375,47 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 	{
 		OutError = TEXT("Invalid configuration object");
 		return false;
+	}
+
+	const TOptional<float> EffectivePlayLength = GetExpectedPlayLength(AnimSequence, Config);
+	if (Config->HasField(TEXT("Notifies")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
+		if (!Config->TryGetArrayField(TEXT("Notifies"), Notifies) || !Notifies)
+		{
+			OutError = TEXT("'Notifies' must be an array");
+			return false;
+		}
+		if (!ValidateNotifies(*Notifies, EffectivePlayLength, OutError))
+		{
+			return false;
+		}
+	}
+	if (Config->HasField(TEXT("NotifyStates")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
+		if (!Config->TryGetArrayField(TEXT("NotifyStates"), NotifyStates) || !NotifyStates)
+		{
+			OutError = TEXT("'NotifyStates' must be an array");
+			return false;
+		}
+		if (!ValidateNotifyStates(*NotifyStates, EffectivePlayLength, OutError))
+		{
+			return false;
+		}
+	}
+	if (Config->HasField(TEXT("SyncMarkers")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SyncMarkers = nullptr;
+		if (!Config->TryGetArrayField(TEXT("SyncMarkers"), SyncMarkers) || !SyncMarkers)
+		{
+			OutError = TEXT("'SyncMarkers' must be an array");
+			return false;
+		}
+		if (!ValidateSyncMarkers(*SyncMarkers, EffectivePlayLength, OutError))
+		{
+			return false;
+		}
 	}
 
 	if (Config->HasField(TEXT("Skeleton")))
