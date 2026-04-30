@@ -33,7 +33,7 @@ function textContent(result) {
         .map((entry) => entry.text)
         .join("\n");
 }
-test("generator schemas are readable for StateTree, BehaviorTree, and BlackboardData", async () => {
+test("generator schemas are readable for StateTree, BehaviorTree, BlackboardData, and AnimSequence", async () => {
     await withClient(async (client) => {
         const expected = [
             {
@@ -47,6 +47,17 @@ test("generator schemas are readable for StateTree, BehaviorTree, and Blackboard
             {
                 assetType: "BlackboardData",
                 patterns: [/BlackboardData/, /Keys/, /BaseClass/, /bInstanceSynced/],
+            },
+            {
+                assetType: "AnimSequence",
+                patterns: [
+                    /AnimSequence/,
+                    /Skeleton/,
+                    /FloatCurves/,
+                    /Notifies/,
+                    /SyncMarkers/,
+                    /does not support raw animation/i,
+                ],
             },
         ];
         for (const entry of expected) {
@@ -62,7 +73,7 @@ test("generator schemas are readable for StateTree, BehaviorTree, and Blackboard
         }
     });
 });
-test("generate_assets and get_generator_schema advertise StateTree, BehaviorTree, and BlackboardData", async () => {
+test("generate_assets and get_generator_schema advertise StateTree, BehaviorTree, BlackboardData, and AnimSequence", async () => {
     await withClient(async (client) => {
         const listed = await client.listTools();
         const generateAssets = listed.tools.find((tool) => tool.name === "generate_assets");
@@ -71,13 +82,13 @@ test("generate_assets and get_generator_schema advertise StateTree, BehaviorTree
         assert.ok(getSchema, "get_generator_schema should be visible");
         const generateSchema = JSON.stringify(generateAssets.inputSchema);
         const getSchemaInput = JSON.stringify(getSchema.inputSchema);
-        for (const assetType of ["StateTree", "BehaviorTree", "BlackboardData"]) {
+        for (const assetType of ["StateTree", "BehaviorTree", "BlackboardData", "AnimSequence"]) {
             assert.match(generateSchema, new RegExp(assetType), `generate_assets should mention ${assetType}`);
             assert.match(getSchemaInput, new RegExp(assetType), `get_generator_schema should mention ${assetType}`);
         }
     });
 });
-test("missing schema fallback lists StateTree, BehaviorTree, and BlackboardData", async () => {
+test("missing schema fallback lists StateTree, BehaviorTree, BlackboardData, and AnimSequence", async () => {
     await withClient(async (client) => {
         const result = await client.callTool({
             name: "get_generator_schema",
@@ -85,7 +96,7 @@ test("missing schema fallback lists StateTree, BehaviorTree, and BlackboardData"
         });
         assert.notEqual(result.isError, true);
         const text = textContent(result);
-        for (const assetType of ["StateTree", "BehaviorTree", "BlackboardData"]) {
+        for (const assetType of ["StateTree", "BehaviorTree", "BlackboardData", "AnimSequence"]) {
             assert.match(text, new RegExp(assetType), `fallback should mention ${assetType}`);
         }
     });

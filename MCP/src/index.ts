@@ -35,6 +35,7 @@ const GENERATOR_ASSET_TYPES = [
   "StateTree",
   "BehaviorTree",
   "BlackboardData",
+  "AnimSequence",
   "Material",
   "DataAsset",
   "DataTable",
