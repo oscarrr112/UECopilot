@@ -44,7 +44,7 @@ USkeletalMesh* FAnimSequenceGenerator::LoadPreviewMesh(const FString& PreviewMes
 
 bool FAnimSequenceGenerator::IsPreviewMeshCompatible(USkeletalMesh* PreviewMesh, USkeleton* Skeleton) const
 {
-	return !PreviewMesh || !Skeleton || PreviewMesh->GetSkeleton() == Skeleton;
+	return !PreviewMesh || !Skeleton || Skeleton->IsCompatibleMesh(PreviewMesh);
 }
 
 FFrameRate FAnimSequenceGenerator::ParseFrameRate(TSharedPtr<FJsonObject> Config) const
@@ -160,27 +160,86 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 	}
 
-	FString SkeletonPath;
-	if (Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath))
+	FString Name;
+	FString Path;
+	const bool bHasAssetIdentity =
+		Config->TryGetStringField(TEXT("Name"), Name) &&
+		Config->TryGetStringField(TEXT("Path"), Path);
+
+	UAnimSequence* ExistingAnimSequence = nullptr;
+	if ((Action == EGenerationAction::Update || Action == EGenerationAction::CreateOrUpdate) && bHasAssetIdentity)
 	{
-		if (!LoadSkeleton(SkeletonPath))
+		const bool bExistingAsset = DoesAssetExist(Path, Name);
+		if (Action == EGenerationAction::Update && !bExistingAsset)
+		{
+			return FString::Printf(TEXT("Asset does not exist for AnimSequence update: %s"), *BuildLongPackageName(Path, Name));
+		}
+
+		if (bExistingAsset)
+		{
+			UObject* ExistingAsset = LoadExistingAsset(Path, Name);
+			ExistingAnimSequence = Cast<UAnimSequence>(ExistingAsset);
+			if (!ExistingAnimSequence)
+			{
+				return ExistingAsset
+					? FString::Printf(TEXT("Existing asset is not a UAnimSequence: %s"), *BuildLongPackageName(Path, Name))
+					: FString::Printf(TEXT("Failed to load existing AnimSequence: %s"), *BuildLongPackageName(Path, Name));
+			}
+		}
+	}
+
+	USkeleton* EffectiveSkeleton = ExistingAnimSequence ? ExistingAnimSequence->GetSkeleton() : nullptr;
+	FString SkeletonPath;
+	if (Config->HasField(TEXT("Skeleton")))
+	{
+		if (!Config->HasTypedField<EJson::String>(TEXT("Skeleton")))
+		{
+			return FString(TEXT("'Skeleton' must be a string asset path"));
+		}
+
+		Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath);
+		USkeleton* RequestedSkeleton = LoadSkeleton(SkeletonPath);
+		if (!RequestedSkeleton)
 		{
 			return FString::Printf(TEXT("Skeleton not found or not a USkeleton: %s"), *SkeletonPath);
 		}
-	}
-	else if (Action != EGenerationAction::Update)
-	{
-		FString Name;
-		FString Path;
-		const bool bCanUseExistingForCreateOrUpdate =
-			Action == EGenerationAction::CreateOrUpdate &&
-			Config->TryGetStringField(TEXT("Name"), Name) &&
-			Config->TryGetStringField(TEXT("Path"), Path) &&
-			DoesAssetExist(Path, Name);
 
-		if (!bCanUseExistingForCreateOrUpdate)
+		if (ExistingAnimSequence && RequestedSkeleton != EffectiveSkeleton)
 		{
-			return FString(TEXT("Missing required field 'Skeleton' for AnimSequence create"));
+			return FString::Printf(
+				TEXT("Skeleton does not match existing AnimSequence: requested %s, existing %s"),
+				*SkeletonPath,
+				EffectiveSkeleton ? *EffectiveSkeleton->GetPathName() : TEXT("<none>"));
+		}
+
+		EffectiveSkeleton = RequestedSkeleton;
+	}
+	else if (!ExistingAnimSequence && Action != EGenerationAction::Update)
+	{
+		return FString(TEXT("Missing required field 'Skeleton' for AnimSequence create"));
+	}
+
+	if (Config->HasField(TEXT("PreviewMesh")))
+	{
+		if (!Config->HasTypedField<EJson::String>(TEXT("PreviewMesh")))
+		{
+			return FString(TEXT("'PreviewMesh' must be a string asset path"));
+		}
+
+		FString PreviewMeshPath;
+		Config->TryGetStringField(TEXT("PreviewMesh"), PreviewMeshPath);
+		USkeletalMesh* PreviewMesh = LoadPreviewMesh(PreviewMeshPath);
+		if (!PreviewMesh)
+		{
+			return FString::Printf(TEXT("PreviewMesh not found or not a USkeletalMesh: %s"), *PreviewMeshPath);
+		}
+		if (!EffectiveSkeleton)
+		{
+			return FString(TEXT("Cannot validate PreviewMesh because the AnimSequence has no Skeleton"));
+		}
+		if (!IsPreviewMeshCompatible(PreviewMesh, EffectiveSkeleton))
+		{
+			return FString::Printf(TEXT("PreviewMesh is not compatible with Skeleton: %s"), *PreviewMeshPath);
 		}
 	}
 
@@ -239,7 +298,7 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 {
 	(void)bDiffOnly;
 
-	const UAnimSequence* AnimSequence = Cast<UAnimSequence>(Asset);
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(Asset);
 	if (!AnimSequence)
 	{
 		return nullptr;
@@ -247,6 +306,10 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 
 	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
 	Config->SetStringField(TEXT("Skeleton"), AnimSequence->GetSkeleton() ? AnimSequence->GetSkeleton()->GetPathName() : TEXT(""));
+	if (USkeletalMesh* PreviewMesh = AnimSequence->GetPreviewMesh(false))
+	{
+		Config->SetStringField(TEXT("PreviewMesh"), PreviewMesh->GetPathName());
+	}
 	Config->SetNumberField(TEXT("NumberOfFrames"), AnimSequence->GetNumberOfSampledKeys());
 	return Config;
 }
@@ -326,6 +389,61 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 	{
 		OutError = TEXT("Invalid configuration object");
 		return false;
+	}
+
+	if (Config->HasField(TEXT("Skeleton")))
+	{
+		FString SkeletonPath;
+		if (!Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath))
+		{
+			OutError = TEXT("'Skeleton' must be a string asset path");
+			return false;
+		}
+
+		USkeleton* RequestedSkeleton = LoadSkeleton(SkeletonPath);
+		if (!RequestedSkeleton)
+		{
+			OutError = FString::Printf(TEXT("Skeleton not found or not a USkeleton: %s"), *SkeletonPath);
+			return false;
+		}
+
+		if (RequestedSkeleton != AnimSequence->GetSkeleton())
+		{
+			OutError = FString::Printf(
+				TEXT("Skeleton does not match existing AnimSequence: requested %s, existing %s"),
+				*SkeletonPath,
+				AnimSequence->GetSkeleton() ? *AnimSequence->GetSkeleton()->GetPathName() : TEXT("<none>"));
+			return false;
+		}
+	}
+
+	if (Config->HasField(TEXT("PreviewMesh")))
+	{
+		FString PreviewMeshPath;
+		if (!Config->TryGetStringField(TEXT("PreviewMesh"), PreviewMeshPath))
+		{
+			OutError = TEXT("'PreviewMesh' must be a string asset path");
+			return false;
+		}
+
+		USkeletalMesh* PreviewMesh = LoadPreviewMesh(PreviewMeshPath);
+		if (!PreviewMesh)
+		{
+			OutError = FString::Printf(TEXT("PreviewMesh not found or not a USkeletalMesh: %s"), *PreviewMeshPath);
+			return false;
+		}
+		if (!AnimSequence->GetSkeleton())
+		{
+			OutError = TEXT("Cannot validate PreviewMesh because the AnimSequence has no Skeleton");
+			return false;
+		}
+		if (!IsPreviewMeshCompatible(PreviewMesh, AnimSequence->GetSkeleton()))
+		{
+			OutError = FString::Printf(TEXT("PreviewMesh is not compatible with Skeleton: %s"), *PreviewMeshPath);
+			return false;
+		}
+
+		AnimSequence->SetPreviewMesh(PreviewMesh, false);
 	}
 
 	IAnimationDataController& Controller = AnimSequence->GetController();
