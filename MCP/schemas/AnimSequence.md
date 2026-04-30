@@ -14,7 +14,7 @@ This contract is intended for creating or patching AnimSequence asset metadata, 
 | `Action` | string | No | `"Create"`, `"Update"`, or `"CreateOrUpdate"` |
 | `Skeleton` | string | Yes (Create) / No (Update) | Skeleton asset path or loadable object reference |
 | `PreviewMesh` | string | No | Skeletal mesh asset path used as the animation preview mesh |
-| `FrameRate` | number or object | No | Display/sample frame rate, either a number or a `{ "Numerator": 30, "Denominator": 1 }` object |
+| `FrameRate` | object | No | Display/sample frame rate, for example `{ "Numerator": 30, "Denominator": 1 }` |
 | `NumberOfFrames` | number | No | Sequence frame count for minimal asset setup |
 | `RateScale` | number | No | Playback rate multiplier |
 | `Properties` | object | No | Additional AnimSequence properties set through reflection |
@@ -55,11 +55,7 @@ Use Unreal's import pipeline for source animation data. This MCP contract only d
 ```json
 {
   "Notifies": [
-    {
-      "Name": "Footstep_L",
-      "Time": 0.2,
-      "NotifyClass": "/Script/Engine.AnimNotify"
-    }
+    { "Name": "Footstep", "Time": 0.1, "TrackIndex": 0 }
   ]
 }
 ```
@@ -71,12 +67,7 @@ Use Unreal's import pipeline for source animation data. This MCP contract only d
 ```json
 {
   "NotifyStates": [
-    {
-      "Name": "AttackWindow",
-      "Time": 0.35,
-      "Duration": 0.25,
-      "NotifyStateClass": "/Script/Engine.AnimNotifyState"
-    }
+    { "Name": "Window", "Time": 0.15, "Duration": 0.1, "TrackIndex": 0 }
   ]
 }
 ```
@@ -102,7 +93,7 @@ Use Unreal's import pipeline for source animation data. This MCP contract only d
   "Name": "AS_Idle_Minimal",
   "Path": "/Game/Animations",
   "Skeleton": "/Game/Characters/Hero/SKEL_Hero.SKEL_Hero",
-  "FrameRate": 30,
+  "FrameRate": { "Numerator": 30, "Denominator": 1 },
   "NumberOfFrames": 1
 }
 ```
@@ -131,10 +122,10 @@ Use Unreal's import pipeline for source animation data. This MCP contract only d
     }
   ],
   "Notifies": [
-    { "Name": "Swing", "Time": 0.25 }
+    { "Name": "Swing", "Time": 0.25, "TrackIndex": 0 }
   ],
   "NotifyStates": [
-    { "Name": "DamageWindow", "Time": 0.3, "Duration": 0.2 }
+    { "Name": "DamageWindow", "Time": 0.3, "Duration": 0.2, "TrackIndex": 0 }
   ],
   "SyncMarkers": [
     { "Name": "Impact", "Time": 0.42 }
