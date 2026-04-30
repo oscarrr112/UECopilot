@@ -306,10 +306,6 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 
 	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
 	Config->SetStringField(TEXT("Skeleton"), AnimSequence->GetSkeleton() ? AnimSequence->GetSkeleton()->GetPathName() : TEXT(""));
-	if (USkeletalMesh* PreviewMesh = AnimSequence->GetPreviewMesh(false))
-	{
-		Config->SetStringField(TEXT("PreviewMesh"), PreviewMesh->GetPathName());
-	}
 	Config->SetNumberField(TEXT("NumberOfFrames"), AnimSequence->GetNumberOfSampledKeys());
 	return Config;
 }
