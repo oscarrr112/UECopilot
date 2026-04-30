@@ -23,6 +23,7 @@
 #include "Generators/WidgetBlueprintGenerator.h"
 #include "Generators/MaterialGenerator.h"
 #include "Generators/DataTableGenerator.h"
+#include "Generators/AnimSequenceGenerator.h"
 #include "Generators/BlackboardDataGenerator.h"
 #include "Generators/BehaviorTreeGenerator.h"
 #include "Generators/StateTreeGenerator.h"
@@ -66,6 +67,7 @@ void FAssetFactoryModule::RegisterGenerators()
 
 	// Register all built-in generators
 	Registry.RegisterGenerator(MakeShared<FBlackboardDataGenerator>());
+	Registry.RegisterGenerator(MakeShared<FAnimSequenceGenerator>());  // Priority 20: AnimSequence after BB, before BT
 	Registry.RegisterGenerator(MakeShared<FBehaviorTreeGenerator>());  // Priority 30: BT after BB
 	Registry.RegisterGenerator(MakeShared<FGameplayTagGenerator>());  // Highest priority: tags must exist before other assets
 	Registry.RegisterGenerator(MakeShared<FStateTreeGenerator>());  // Priority 40: StateTree after BT/BB/tags, before generic assets

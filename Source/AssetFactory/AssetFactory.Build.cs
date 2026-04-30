@@ -36,6 +36,8 @@ public class AssetFactory : ModuleRules
 			"AIModule",
 			"UMG",
 			"UMGEditor",
+			// Animation generation
+			"AnimationDataController",
 			// Material generation
 			"RenderCore",
 			"MaterialEditor",
