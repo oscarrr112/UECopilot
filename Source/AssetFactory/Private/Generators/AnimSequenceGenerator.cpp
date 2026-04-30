@@ -306,7 +306,10 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 
 	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
 	Config->SetStringField(TEXT("Skeleton"), AnimSequence->GetSkeleton() ? AnimSequence->GetSkeleton()->GetPathName() : TEXT(""));
-	Config->SetNumberField(TEXT("NumberOfFrames"), AnimSequence->GetNumberOfSampledKeys());
+	if (const IAnimationDataModel* DataModel = AnimSequence->GetDataModel())
+	{
+		Config->SetNumberField(TEXT("NumberOfFrames"), DataModel->GetNumberOfFrames());
+	}
 	return Config;
 }
 
