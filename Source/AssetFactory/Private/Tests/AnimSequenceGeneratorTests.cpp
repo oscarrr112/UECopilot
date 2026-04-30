@@ -15,6 +15,8 @@ namespace
 const TCHAR* TestAnimPath = TEXT("/Game/Generated/Animation");
 const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
 const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
+const TCHAR* PropertiesMustBeObjectAssetName = TEXT("AS_PropertiesMustBeObject");
+const TCHAR* PropertiesPrevalidationAssetName = TEXT("AS_PropertiesPrevalidation");
 
 TSharedPtr<FJsonObject> MakeAnimSequenceBaseConfig()
 {
@@ -68,6 +70,24 @@ TSharedPtr<FJsonObject> MakeInvalidPropertiesConfig()
 {
 	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
 	Config->SetField(TEXT("Properties"), MakeShared<FJsonValueNumber>(1.0));
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeInvalidPropertiesPatchConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), 60);
+	FrameRate->SetNumberField(TEXT("Denominator"), 1);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
+	Config->SetNumberField(TEXT("NumberOfFrames"), 24);
+	Config->SetNumberField(TEXT("RateScale"), 1.75);
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("DefinitelyNotARealAnimSequenceProperty"), 42.0);
+	Config->SetObjectField(TEXT("Properties"), Properties);
+
 	return Config;
 }
 }
@@ -212,14 +232,111 @@ bool FAnimSequencePropertiesMustBeObjectTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
 
-	const FGenerationResult Result = Generator.Generate(
-		ReflectedPropertiesAssetName,
+	const TOptional<FString> ValidationError = Generator.ValidateConfig(MakeInvalidPropertiesConfig(), EGenerationAction::Update);
+	TestTrue(TEXT("ValidateConfig rejects non-object Properties"), ValidationError.IsSet());
+	if (!ValidationError.IsSet())
+	{
+		return false;
+	}
+	TestEqual(TEXT("ValidateConfig reports non-object Properties"), ValidationError.GetValue(), FString(TEXT("'Properties' must be an object")));
+
+	const FGenerationResult BaseResult = Generator.Generate(
+		PropertiesMustBeObjectAssetName,
 		TestAnimPath,
 		EGenerationAction::CreateOrUpdate,
+		MakeAnimSequenceBaseConfig());
+	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_PropertiesMustBeObject.AS_PropertiesMustBeObject"));
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const float OriginalRateScale = AnimSequence->RateScale;
+
+	const FGenerationResult Result = Generator.Generate(
+		PropertiesMustBeObjectAssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
 		MakeInvalidPropertiesConfig());
 
 	TestEqual(TEXT("Non-object Properties patch fails"), Result.Status, EGenerationStatus::Failed);
 	TestEqual(TEXT("Non-object Properties reports validation error"), Result.Message, FString(TEXT("'Properties' must be an object")));
+	TestEqual(TEXT("RateScale is unchanged after non-object Properties patch"), AnimSequence->RateScale, OriginalRateScale);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequencePrevalidatePropertiesBeforeMutationTest,
+	"AssetFactory.AnimSequence.PrevalidatePropertiesBeforeMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequencePrevalidatePropertiesBeforeMutationTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+
+	const FGenerationResult BaseResult = Generator.Generate(
+		PropertiesPrevalidationAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeAnimSequenceBaseConfig());
+	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_PropertiesPrevalidation.AS_PropertiesPrevalidation"));
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("Generated AnimSequence has a data model"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+
+	const FFrameRate OriginalFrameRate = DataModel->GetFrameRate();
+	const int32 OriginalNumberOfFrames = DataModel->GetNumberOfFrames();
+	const float OriginalRateScale = AnimSequence->RateScale;
+	const FString OriginalPreviewMeshPath = AnimSequence->GetPreviewMesh(false)
+		? AnimSequence->GetPreviewMesh(false)->GetPathName()
+		: FString();
+
+	const FGenerationResult InvalidResult = Generator.Generate(
+		PropertiesPrevalidationAssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
+		MakeInvalidPropertiesPatchConfig());
+
+	TestEqual(TEXT("Invalid Properties patch fails"), InvalidResult.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Invalid Properties patch reports generic properties failure"), InvalidResult.Message, FString(TEXT("Failed to apply AnimSequence Properties")));
+
+	DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("AnimSequence still has a data model after failed Properties patch"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("FrameRate is unchanged after failed Properties patch"), DataModel->GetFrameRate(), OriginalFrameRate);
+	TestEqual(TEXT("NumberOfFrames is unchanged after failed Properties patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
+	TestEqual(TEXT("RateScale is unchanged after failed Properties patch"), AnimSequence->RateScale, OriginalRateScale);
+	const FString CurrentPreviewMeshPath = AnimSequence->GetPreviewMesh(false)
+		? AnimSequence->GetPreviewMesh(false)->GetPathName()
+		: FString();
+	TestEqual(TEXT("PreviewMesh is unchanged after failed Properties patch"), CurrentPreviewMeshPath, OriginalPreviewMeshPath);
 
 	return true;
 }

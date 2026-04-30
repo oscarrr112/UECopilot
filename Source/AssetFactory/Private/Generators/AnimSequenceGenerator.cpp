@@ -16,6 +16,7 @@
 #include "Misc/PackageName.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UObjectGlobals.h"
 #include "Utils/PropertySetterUtils.h"
 
 namespace
@@ -66,6 +67,53 @@ bool ValidateNumberOfFramesField(const TSharedPtr<FJsonObject>& Config, FString&
 	if (!Config->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFrames) || !IsPositiveIntegerNumber(NumberOfFrames))
 	{
 		OutError = TEXT("'NumberOfFrames' must be a positive integer");
+		return false;
+	}
+
+	return true;
+}
+
+bool TryGetPropertiesObject(
+	const TSharedPtr<FJsonObject>& Config,
+	TSharedPtr<FJsonObject>& OutProperties,
+	FString& OutError)
+{
+	OutProperties.Reset();
+	if (!Config.IsValid() || !Config->HasField(TEXT("Properties")))
+	{
+		return true;
+	}
+
+	if (!Config->HasTypedField<EJson::Object>(TEXT("Properties")))
+	{
+		OutError = TEXT("'Properties' must be an object");
+		return false;
+	}
+
+	OutProperties = Config->GetObjectField(TEXT("Properties"));
+	if (!OutProperties.IsValid())
+	{
+		OutError = TEXT("'Properties' must be an object");
+		return false;
+	}
+
+	return true;
+}
+
+bool PreflightPropertiesPatch(
+	UAnimSequence* AnimSequence,
+	const TSharedPtr<FJsonObject>& Properties,
+	FString& OutError)
+{
+	if (!Properties.IsValid())
+	{
+		return true;
+	}
+
+	UAnimSequence* ValidationAnimSequence = Cast<UAnimSequence>(StaticDuplicateObject(AnimSequence, GetTransientPackage()));
+	if (!ValidationAnimSequence || !FPropertySetterUtils::SetPropertiesFromJson(ValidationAnimSequence, Properties))
+	{
+		OutError = TEXT("Failed to apply AnimSequence Properties");
 		return false;
 	}
 
@@ -410,6 +458,13 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Invalid configuration object"));
 	}
 
+	TSharedPtr<FJsonObject> Properties;
+	FString PropertiesError;
+	if (!TryGetPropertiesObject(Config, Properties, PropertiesError))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, PropertiesError);
+	}
+
 	const bool bExists = DoesAssetExist(Path, Name);
 	if (Action == EGenerationAction::Create && bExists)
 	{
@@ -483,6 +538,13 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		{
 			return FString::Printf(TEXT("AnimSequence generator does not support raw animation import field '%s'"), *Field);
 		}
+	}
+
+	TSharedPtr<FJsonObject> Properties;
+	FString PropertiesError;
+	if (!TryGetPropertiesObject(Config, Properties, PropertiesError))
+	{
+		return PropertiesError;
 	}
 
 	FString Name;
@@ -1422,6 +1484,16 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 		return false;
 	}
 
+	TSharedPtr<FJsonObject> Properties;
+	if (!TryGetPropertiesObject(Config, Properties, OutError))
+	{
+		return false;
+	}
+	if (!PreflightPropertiesPatch(AnimSequence, Properties, OutError))
+	{
+		return false;
+	}
+
 	const TOptional<float> EffectivePlayLength = GetExpectedPlayLength(AnimSequence, Config);
 	if (Config->HasField(TEXT("Notifies")))
 	{
@@ -1559,13 +1631,6 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 	}
 	if (Config->HasField(TEXT("Properties")))
 	{
-		if (!Config->HasTypedField<EJson::Object>(TEXT("Properties")))
-		{
-			OutError = TEXT("'Properties' must be an object");
-			return false;
-		}
-
-		const TSharedPtr<FJsonObject> Properties = Config->GetObjectField(TEXT("Properties"));
 		if (!FPropertySetterUtils::SetPropertiesFromJson(AnimSequence, Properties))
 		{
 			OutError = TEXT("Failed to apply AnimSequence Properties");
