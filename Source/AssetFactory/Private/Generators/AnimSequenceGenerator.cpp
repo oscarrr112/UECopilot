@@ -25,6 +25,53 @@ bool IsPositiveIntegerNumber(double Value)
 	return Value >= 1.0 && FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value));
 }
 
+bool ValidateFrameRateField(const TSharedPtr<FJsonObject>& Config, FString& OutError)
+{
+	if (!Config.IsValid() || !Config->HasField(TEXT("FrameRate")))
+	{
+		return true;
+	}
+
+	if (!Config->HasTypedField<EJson::Object>(TEXT("FrameRate")))
+	{
+		OutError = TEXT("'FrameRate' must be an object with positive Numerator and Denominator");
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> FrameRateObject = Config->GetObjectField(TEXT("FrameRate"));
+	double Numerator = 0.0;
+	double Denominator = 0.0;
+	if (!FrameRateObject->TryGetNumberField(TEXT("Numerator"), Numerator) || !IsPositiveIntegerNumber(Numerator))
+	{
+		OutError = TEXT("'FrameRate.Numerator' must be a positive integer");
+		return false;
+	}
+	if (!FrameRateObject->TryGetNumberField(TEXT("Denominator"), Denominator) || !IsPositiveIntegerNumber(Denominator))
+	{
+		OutError = TEXT("'FrameRate.Denominator' must be a positive integer");
+		return false;
+	}
+
+	return true;
+}
+
+bool ValidateNumberOfFramesField(const TSharedPtr<FJsonObject>& Config, FString& OutError)
+{
+	if (!Config.IsValid() || !Config->HasField(TEXT("NumberOfFrames")))
+	{
+		return true;
+	}
+
+	double NumberOfFrames = 0.0;
+	if (!Config->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFrames) || !IsPositiveIntegerNumber(NumberOfFrames))
+	{
+		OutError = TEXT("'NumberOfFrames' must be a positive integer");
+		return false;
+	}
+
+	return true;
+}
+
 TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 {
 	if (!AnimSequence)
@@ -521,33 +568,14 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 	}
 
-	if (Config->HasField(TEXT("FrameRate")))
+	FString TimingFieldError;
+	if (!ValidateFrameRateField(Config, TimingFieldError))
 	{
-		if (!Config->HasTypedField<EJson::Object>(TEXT("FrameRate")))
-		{
-			return FString(TEXT("'FrameRate' must be an object with positive Numerator and Denominator"));
-		}
-
-		const TSharedPtr<FJsonObject> FrameRateObject = Config->GetObjectField(TEXT("FrameRate"));
-		double Numerator = 0.0;
-		double Denominator = 0.0;
-		if (!FrameRateObject->TryGetNumberField(TEXT("Numerator"), Numerator) || !IsPositiveIntegerNumber(Numerator))
-		{
-			return FString(TEXT("'FrameRate.Numerator' must be a positive integer"));
-		}
-		if (!FrameRateObject->TryGetNumberField(TEXT("Denominator"), Denominator) || !IsPositiveIntegerNumber(Denominator))
-		{
-			return FString(TEXT("'FrameRate.Denominator' must be a positive integer"));
-		}
+		return TimingFieldError;
 	}
-
-	if (Config->HasField(TEXT("NumberOfFrames")))
+	if (!ValidateNumberOfFramesField(Config, TimingFieldError))
 	{
-		double NumberOfFrames = 0.0;
-		if (!Config->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFrames) || !IsPositiveIntegerNumber(NumberOfFrames))
-		{
-			return FString(TEXT("'NumberOfFrames' must be a positive integer"));
-		}
+		return TimingFieldError;
 	}
 
 	if (Config->HasField(TEXT("RateScale")))
@@ -1374,6 +1402,10 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 	if (!Config.IsValid())
 	{
 		OutError = TEXT("Invalid configuration object");
+		return false;
+	}
+	if (!ValidateFrameRateField(Config, OutError) || !ValidateNumberOfFramesField(Config, OutError))
+	{
 		return false;
 	}
 
