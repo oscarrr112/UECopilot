@@ -423,6 +423,7 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 	const TArray<TSharedPtr<FJsonValue>>& FloatCurves,
 	FString& OutError) const
 {
+	TSet<FName> CurveNames;
 	for (const TSharedPtr<FJsonValue>& CurveValue : FloatCurves)
 	{
 		const TSharedPtr<FJsonObject>* CurveObject = nullptr;
@@ -438,6 +439,13 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 			OutError = TEXT("FloatCurves entries require non-empty Name");
 			return false;
 		}
+		const FName CurveFName(*CurveName);
+		if (CurveNames.Contains(CurveFName))
+		{
+			OutError = FString::Printf(TEXT("FloatCurves contains duplicate Name '%s'"), *CurveName);
+			return false;
+		}
+		CurveNames.Add(CurveFName);
 
 		if (!(*CurveObject)->HasTypedField<EJson::Array>(TEXT("Keys")))
 		{
@@ -446,6 +454,8 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 		}
 
 		const TArray<TSharedPtr<FJsonValue>>& Keys = (*CurveObject)->GetArrayField(TEXT("Keys"));
+		bool bHasPreviousTime = false;
+		double PreviousTime = 0.0;
 		for (const TSharedPtr<FJsonValue>& KeyValue : Keys)
 		{
 			const TSharedPtr<FJsonObject>* KeyObject = nullptr;
@@ -461,11 +471,28 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Time"), *CurveName);
 				return false;
 			}
+			if (!FMath::IsFinite(Time) || Time < 0.0)
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key Time must be finite and non-negative"), *CurveName);
+				return false;
+			}
+			if (bHasPreviousTime && Time <= PreviousTime)
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key Time values must be strictly increasing"), *CurveName);
+				return false;
+			}
+			PreviousTime = Time;
+			bHasPreviousTime = true;
 
 			double Value = 0.0;
 			if (!(*KeyObject)->TryGetNumberField(TEXT("Value"), Value))
 			{
 				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Value"), *CurveName);
+				return false;
+			}
+			if (!FMath::IsFinite(Value))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key Value must be finite"), *CurveName);
 				return false;
 			}
 
@@ -504,6 +531,26 @@ bool FAnimSequenceGenerator::ApplyFloatCurves(
 	}
 
 	IAnimationDataController& Controller = AnimSequence->GetController();
+	TArray<FName> ExistingFloatCurveNames;
+	if (const IAnimationDataModel* DataModel = AnimSequence->GetDataModel())
+	{
+		ExistingFloatCurveNames.Reserve(DataModel->GetFloatCurves().Num());
+		for (const FFloatCurve& ExistingCurve : DataModel->GetFloatCurves())
+		{
+			ExistingFloatCurveNames.Add(ExistingCurve.GetName());
+		}
+	}
+
+	for (const FName& ExistingCurveName : ExistingFloatCurveNames)
+	{
+		const FAnimationCurveIdentifier ExistingCurveId(ExistingCurveName, ERawCurveTrackTypes::RCT_Float);
+		if (!Controller.RemoveCurve(ExistingCurveId, false))
+		{
+			OutError = FString::Printf(TEXT("Failed to remove existing float curve '%s'"), *ExistingCurveName.ToString());
+			return false;
+		}
+	}
+
 	for (const TSharedPtr<FJsonValue>& CurveValue : FloatCurves)
 	{
 		const TSharedPtr<FJsonObject>* CurveObject = nullptr;
@@ -574,12 +621,8 @@ bool FAnimSequenceGenerator::ApplyFloatCurves(
 		const FAnimationCurveIdentifier CurveId(FName(*CurveName), ERawCurveTrackTypes::RCT_Float);
 		if (!Controller.AddCurve(CurveId, AACF_Editable, false))
 		{
-			Controller.RemoveCurve(CurveId, false);
-			if (!Controller.AddCurve(CurveId, AACF_Editable, false))
-			{
-				OutError = FString::Printf(TEXT("Failed to add float curve '%s'"), *CurveName);
-				return false;
-			}
+			OutError = FString::Printf(TEXT("Failed to add float curve '%s'"), *CurveName);
+			return false;
 		}
 		if (!Controller.SetCurveKeys(CurveId, RichKeys, false))
 		{
