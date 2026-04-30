@@ -14,6 +14,7 @@ namespace
 {
 const TCHAR* TestAnimPath = TEXT("/Game/Generated/Animation");
 const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
+const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
 
 TSharedPtr<FJsonObject> MakeAnimSequenceBaseConfig()
 {
@@ -49,6 +50,24 @@ TSharedPtr<FJsonObject> MakeInvalidTimingPatchConfig()
 	NotifyStates.Add(MakeShared<FJsonValueObject>(NotifyState));
 	Config->SetArrayField(TEXT("NotifyStates"), NotifyStates);
 
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeReflectedPropertiesConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("RateScale"), 1.25);
+	Config->SetObjectField(TEXT("Properties"), Properties);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeInvalidPropertiesConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
+	Config->SetField(TEXT("Properties"), MakeShared<FJsonValueNumber>(1.0));
 	return Config;
 }
 }
@@ -110,6 +129,97 @@ bool FAnimSequencePrevalidateTimingFieldsTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("FrameRate is unchanged after failed patch"), DataModel->GetFrameRate(), OriginalFrameRate);
 	TestEqual(TEXT("NumberOfFrames is unchanged after failed patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
 	TestEqual(TEXT("Notifies are unchanged after failed patch"), AnimSequence->Notifies.Num(), OriginalNotifyCount);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequenceReflectedPropertiesExtractTest,
+	"AssetFactory.AnimSequence.ReflectedPropertiesAndScalarExtract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequenceReflectedPropertiesExtractTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+
+	const FGenerationResult Result = Generator.Generate(
+		ReflectedPropertiesAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeReflectedPropertiesConfig());
+	TestTrue(TEXT("AnimSequence with reflected Properties is generated"), Result.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(Result.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_ReflectedProperties.AS_ReflectedProperties"));
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("RateScale is applied through generic Properties"), AnimSequence->RateScale, 1.25f);
+
+	const TSharedPtr<FJsonObject> Extracted = Generator.Extract(AnimSequence, false);
+	TestTrue(TEXT("Extract returns a config object"), Extracted.IsValid());
+	if (!Extracted.IsValid())
+	{
+		return false;
+	}
+
+	FString SkeletonPath;
+	TestTrue(TEXT("Extract includes Skeleton"), Extracted->TryGetStringField(TEXT("Skeleton"), SkeletonPath));
+	TestEqual(TEXT("Extracted Skeleton path"), SkeletonPath, FString(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
+
+	FString PreviewMeshPath;
+	TestTrue(TEXT("Extract includes PreviewMesh"), Extracted->TryGetStringField(TEXT("PreviewMesh"), PreviewMeshPath));
+	TestEqual(TEXT("Extracted PreviewMesh path"), PreviewMeshPath, FString(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP")));
+
+	const TSharedPtr<FJsonObject>* FrameRateObject = nullptr;
+	TestTrue(TEXT("Extract includes FrameRate"), Extracted->TryGetObjectField(TEXT("FrameRate"), FrameRateObject));
+	TestTrue(TEXT("Extracted FrameRate object is valid"), FrameRateObject && FrameRateObject->IsValid());
+	if (!FrameRateObject || !FrameRateObject->IsValid())
+	{
+		return false;
+	}
+
+	double Numerator = 0.0;
+	double Denominator = 0.0;
+	TestTrue(TEXT("FrameRate includes Numerator"), (*FrameRateObject)->TryGetNumberField(TEXT("Numerator"), Numerator));
+	TestTrue(TEXT("FrameRate includes Denominator"), (*FrameRateObject)->TryGetNumberField(TEXT("Denominator"), Denominator));
+	TestEqual(TEXT("Extracted FrameRate Numerator"), static_cast<int32>(Numerator), 30);
+	TestEqual(TEXT("Extracted FrameRate Denominator"), static_cast<int32>(Denominator), 1);
+
+	double NumberOfFrames = 0.0;
+	TestTrue(TEXT("Extract includes NumberOfFrames"), Extracted->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFrames));
+	TestEqual(TEXT("Extracted NumberOfFrames"), static_cast<int32>(NumberOfFrames), 12);
+
+	double RateScale = 0.0;
+	TestTrue(TEXT("Extract includes RateScale"), Extracted->TryGetNumberField(TEXT("RateScale"), RateScale));
+	TestEqual(TEXT("Extracted RateScale"), static_cast<float>(RateScale), 1.25f);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequencePropertiesMustBeObjectTest,
+	"AssetFactory.AnimSequence.PropertiesMustBeObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequencePropertiesMustBeObjectTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+
+	const FGenerationResult Result = Generator.Generate(
+		ReflectedPropertiesAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeInvalidPropertiesConfig());
+
+	TestEqual(TEXT("Non-object Properties patch fails"), Result.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Non-object Properties reports validation error"), Result.Message, FString(TEXT("'Properties' must be an object")));
 
 	return true;
 }

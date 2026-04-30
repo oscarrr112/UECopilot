@@ -673,7 +673,20 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 
 	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
 	Config->SetStringField(TEXT("Skeleton"), AnimSequence->GetSkeleton() ? AnimSequence->GetSkeleton()->GetPathName() : TEXT(""));
-	if (const IAnimationDataModel* DataModel = AnimSequence->GetDataModel())
+	if (USkeletalMesh* PreviewMesh = AnimSequence->GetPreviewMesh(false))
+	{
+		Config->SetStringField(TEXT("PreviewMesh"), PreviewMesh->GetPathName());
+	}
+
+	TSharedPtr<FJsonObject> FrameRateJson = MakeShared<FJsonObject>();
+	const IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
+	const FFrameRate FrameRate = DataModel ? DataModel->GetFrameRate() : AnimSequence->GetSamplingFrameRate();
+	FrameRateJson->SetNumberField(TEXT("Numerator"), FrameRate.Numerator);
+	FrameRateJson->SetNumberField(TEXT("Denominator"), FrameRate.Denominator);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRateJson);
+	Config->SetNumberField(TEXT("RateScale"), AnimSequence->RateScale);
+
+	if (DataModel)
 	{
 		Config->SetNumberField(TEXT("NumberOfFrames"), DataModel->GetNumberOfFrames());
 
@@ -1541,6 +1554,21 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 		if (!RateScaleValue || !FPropertySetterUtils::SetPropertyFromJson(AnimSequence, RateScaleProperty, *RateScaleValue))
 		{
 			OutError = TEXT("Failed to set AnimSequence RateScale");
+			return false;
+		}
+	}
+	if (Config->HasField(TEXT("Properties")))
+	{
+		if (!Config->HasTypedField<EJson::Object>(TEXT("Properties")))
+		{
+			OutError = TEXT("'Properties' must be an object");
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject> Properties = Config->GetObjectField(TEXT("Properties"));
+		if (!FPropertySetterUtils::SetPropertiesFromJson(AnimSequence, Properties))
+		{
+			OutError = TEXT("Failed to apply AnimSequence Properties");
 			return false;
 		}
 	}
