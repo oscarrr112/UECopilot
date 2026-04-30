@@ -1,7 +1,16 @@
+import os
+
 import unreal
 
 
-ASSET_PATH = "/Game/Generated/Animation/AS_Minimal.AS_Minimal"
+ASSET_NAME = globals().get("ASSET_NAME", os.environ.get("ASSET_NAME", "AS_Minimal"))
+ASSET_PATH = globals().get(
+    "ASSET_PATH",
+    os.environ.get(
+        "ASSET_PATH",
+        "/Game/Generated/Animation/{0}.{0}".format(ASSET_NAME),
+    ),
+)
 
 
 def _try_call(target, method_name, *args):

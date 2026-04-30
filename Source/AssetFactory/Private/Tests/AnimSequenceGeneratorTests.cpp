@@ -89,6 +89,13 @@ TSharedPtr<FJsonObject> MakeHugeNumberOfFramesPatchConfig()
 	return Config;
 }
 
+TSharedPtr<FJsonObject> MakeNonFiniteFloatRateScalePatchConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+	Config->SetNumberField(TEXT("RateScale"), 1.0e100);
+	return Config;
+}
+
 TSharedPtr<FJsonObject> MakeFloatCurve(const TCHAR* CurveName)
 {
 	TSharedPtr<FJsonObject> Curve = MakeShared<FJsonObject>();
@@ -336,6 +343,50 @@ bool FAnimSequenceRejectsHugeTimingFieldsTest::RunTest(const FString& Parameters
 	}
 	TestEqual(TEXT("FrameRate is unchanged after huge NumberOfFrames patch"), DataModel->GetFrameRate(), OriginalFrameRate);
 	TestEqual(TEXT("NumberOfFrames is unchanged after huge NumberOfFrames patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequenceRejectsNonFiniteFloatRateScaleTest,
+	"AssetFactory.AnimSequence.RejectsNonFiniteFloatRateScaleBeforeMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequenceRejectsNonFiniteFloatRateScaleTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_RateScaleFiniteValidation"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
+
+	const FGenerationResult BaseResult = Generator.Generate(
+		AssetName,
+		TestAnimPath,
+		EGenerationAction::Create,
+		MakeAnimSequenceBaseConfig());
+	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const float OriginalRateScale = AnimSequence->RateScale;
+
+	const FGenerationResult Result = Generator.Generate(
+		AssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
+		MakeNonFiniteFloatRateScalePatchConfig());
+
+	TestEqual(TEXT("Non-finite float RateScale patch fails"), Result.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Non-finite float RateScale reports validation error"), Result.Message, FString(TEXT("'RateScale' must be a finite number")));
+	TestEqual(TEXT("RateScale is unchanged after non-finite float RateScale patch"), AnimSequence->RateScale, OriginalRateScale);
 
 	return true;
 }

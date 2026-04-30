@@ -140,6 +140,24 @@ bool PreflightCreatePropertiesPatch(const TSharedPtr<FJsonObject>& Properties, F
 	return true;
 }
 
+void CleanupUnsavedCreatedAnimSequence(UAnimSequence* AnimSequence)
+{
+	if (!AnimSequence)
+	{
+		return;
+	}
+
+	UPackage* Package = AnimSequence->GetOutermost();
+	if (Package)
+	{
+		Package->SetDirtyFlag(false);
+	}
+	AnimSequence->ClearFlags(RF_Public | RF_Standalone);
+	AnimSequence->SetFlags(RF_Transient);
+	AnimSequence->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty | REN_NonTransactional);
+	AnimSequence->MarkAsGarbage();
+}
+
 TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 {
 	if (!AnimSequence)
@@ -542,15 +560,18 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}
 
+	if (!SaveAnimSequence(AnimSequence, Error))
+	{
+		if (!bExists)
+		{
+			CleanupUnsavedCreatedAnimSequence(AnimSequence);
+		}
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+	}
+
 	if (!bExists)
 	{
 		FAssetRegistryModule::AssetCreated(AnimSequence);
-		AnimSequence->MarkPackageDirty();
-	}
-
-	if (!SaveAnimSequence(AnimSequence, Error))
-	{
-		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}
 
 	return bExists
@@ -687,6 +708,10 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		if (!Config->TryGetNumberField(TEXT("RateScale"), RateScale))
 		{
 			return FString(TEXT("'RateScale' must be a number"));
+		}
+		if (!FMath::IsFinite(RateScale) || !FMath::IsFinite(static_cast<float>(RateScale)))
+		{
+			return FString(TEXT("'RateScale' must be a finite number"));
 		}
 	}
 
