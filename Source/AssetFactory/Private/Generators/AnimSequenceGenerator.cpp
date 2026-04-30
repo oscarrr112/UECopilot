@@ -2,10 +2,16 @@
 
 #include "Generators/AnimSequenceGenerator.h"
 
+#include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/FrameRate.h"
+#include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"
+#include "Utils/PropertySetterUtils.h"
 
 FString FAnimSequenceGenerator::BuildLongPackageName(const FString& Path, const FString& Name) const
 {
@@ -104,12 +110,69 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 
 TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject> Config, EGenerationAction Action) const
 {
-	(void)Action;
-
 	if (!Config.IsValid())
 	{
 		return FString(TEXT("Invalid configuration object"));
 	}
+
+	static const TArray<FString> UnsupportedRawImportFields = {
+		TEXT("RawTracks"),
+		TEXT("BoneTracks"),
+		TEXT("CompressedData"),
+		TEXT("ImportFile"),
+		TEXT("SourceFile")
+	};
+
+	for (const FString& Field : UnsupportedRawImportFields)
+	{
+		if (Config->HasField(Field))
+		{
+			return FString::Printf(TEXT("AnimSequence generator does not support raw animation import field '%s'"), *Field);
+		}
+	}
+
+	FString SkeletonPath;
+	if (Config->TryGetStringField(TEXT("Skeleton"), SkeletonPath) && !SkeletonPath.IsEmpty())
+	{
+		if (!LoadSkeleton(SkeletonPath))
+		{
+			return FString::Printf(TEXT("Skeleton not found or not a USkeleton: %s"), *SkeletonPath);
+		}
+	}
+	else if (Action != EGenerationAction::Update)
+	{
+		return FString(TEXT("Missing required field 'Skeleton' for AnimSequence create"));
+	}
+
+	if (Config->HasField(TEXT("FrameRate")))
+	{
+		if (!Config->HasTypedField<EJson::Object>(TEXT("FrameRate")))
+		{
+			return FString(TEXT("'FrameRate' must be an object with positive Numerator and Denominator"));
+		}
+
+		const TSharedPtr<FJsonObject> FrameRateObject = Config->GetObjectField(TEXT("FrameRate"));
+		double Numerator = 0.0;
+		double Denominator = 0.0;
+		if (!FrameRateObject->TryGetNumberField(TEXT("Numerator"), Numerator) || Numerator <= 0.0)
+		{
+			return FString(TEXT("'FrameRate.Numerator' must be a positive number"));
+		}
+		if (!FrameRateObject->TryGetNumberField(TEXT("Denominator"), Denominator) || Denominator <= 0.0)
+		{
+			return FString(TEXT("'FrameRate.Denominator' must be a positive number"));
+		}
+	}
+
+	if (Config->HasField(TEXT("NumberOfFrames")))
+	{
+		double NumberOfFrames = 0.0;
+		if (!Config->TryGetNumberField(TEXT("NumberOfFrames"), NumberOfFrames) || NumberOfFrames < 1.0)
+		{
+			return FString(TEXT("'NumberOfFrames' must be greater than or equal to 1"));
+		}
+	}
+
 	return TOptional<FString>();
 }
 
@@ -145,27 +208,134 @@ UAnimSequence* FAnimSequenceGenerator::CreateAnimSequence(
 	TSharedPtr<FJsonObject> Config,
 	FString& OutError) const
 {
-	(void)Name;
-	(void)Path;
-	(void)Config;
+	const FString SkeletonPath = GetStringField(Config, TEXT("Skeleton"));
+	USkeleton* Skeleton = LoadSkeleton(SkeletonPath);
+	if (!Skeleton)
+	{
+		OutError = FString::Printf(TEXT("Skeleton not found or not a USkeleton: %s"), *SkeletonPath);
+		return nullptr;
+	}
 
-	OutError = TEXT("CreateAnimSequence is implemented in Task 3");
-	return nullptr;
+	USkeletalMesh* PreviewMesh = nullptr;
+	const FString PreviewMeshPath = GetStringField(Config, TEXT("PreviewMesh"));
+	if (!PreviewMeshPath.IsEmpty())
+	{
+		PreviewMesh = LoadPreviewMesh(PreviewMeshPath);
+		if (!PreviewMesh)
+		{
+			OutError = FString::Printf(TEXT("PreviewMesh not found or not a USkeletalMesh: %s"), *PreviewMeshPath);
+			return nullptr;
+		}
+		if (!IsPreviewMeshCompatible(PreviewMesh, Skeleton))
+		{
+			OutError = FString::Printf(TEXT("PreviewMesh is not compatible with Skeleton: %s"), *PreviewMeshPath);
+			return nullptr;
+		}
+	}
+
+	UPackage* Package = CreatePackage(*BuildLongPackageName(Path, Name));
+	if (!Package)
+	{
+		OutError = TEXT("Failed to create AnimSequence package");
+		return nullptr;
+	}
+
+	UAnimSequence* AnimSequence = NewObject<UAnimSequence>(Package, UAnimSequence::StaticClass(), *Name, RF_Public | RF_Standalone);
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Failed to create AnimSequence object");
+		return nullptr;
+	}
+
+	AnimSequence->SetSkeleton(Skeleton);
+
+	IAnimationDataController& Controller = AnimSequence->GetController();
+	Controller.InitializeModel();
+	Controller.SetFrameRate(ParseFrameRate(Config), false);
+	Controller.SetNumberOfFrames(FFrameNumber(ParseNumberOfFrames(Config)), false);
+	Controller.NotifyPopulated();
+
+	if (PreviewMesh)
+	{
+		AnimSequence->SetPreviewMesh(PreviewMesh, false);
+	}
+
+	FAssetRegistryModule::AssetCreated(AnimSequence);
+	AnimSequence->MarkPackageDirty();
+
+	return AnimSequence;
 }
 
 bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<FJsonObject> Config, FString& OutError) const
 {
-	(void)AnimSequence;
-	(void)Config;
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
+	if (!Config.IsValid())
+	{
+		OutError = TEXT("Invalid configuration object");
+		return false;
+	}
 
-	OutError = TEXT("AnimSequence patching is implemented in Task 3");
-	return false;
+	IAnimationDataController& Controller = AnimSequence->GetController();
+	if (Config->HasField(TEXT("FrameRate")))
+	{
+		Controller.SetFrameRate(ParseFrameRate(Config), false);
+	}
+	if (Config->HasField(TEXT("NumberOfFrames")))
+	{
+		Controller.SetNumberOfFrames(FFrameNumber(ParseNumberOfFrames(Config)), false);
+	}
+	if (Config->HasField(TEXT("RateScale")))
+	{
+		FProperty* RateScaleProperty = AnimSequence->GetClass()->FindPropertyByName(TEXT("RateScale"));
+		if (!RateScaleProperty)
+		{
+			OutError = TEXT("AnimSequence RateScale property was not found");
+			return false;
+		}
+
+		const TSharedPtr<FJsonValue>* RateScaleValue = Config->Values.Find(TEXT("RateScale"));
+		if (!RateScaleValue || !FPropertySetterUtils::SetPropertyFromJson(AnimSequence, RateScaleProperty, *RateScaleValue))
+		{
+			OutError = TEXT("Failed to set AnimSequence RateScale");
+			return false;
+		}
+	}
+
+	AnimSequence->MarkPackageDirty();
+
+	return true;
 }
 
 bool FAnimSequenceGenerator::SaveAnimSequence(UAnimSequence* AnimSequence, FString& OutError) const
 {
-	(void)AnimSequence;
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
 
-	OutError = TEXT("SaveAnimSequence is implemented in Task 3");
-	return false;
+	UPackage* Package = AnimSequence->GetOutermost();
+	if (!Package)
+	{
+		OutError = TEXT("AnimSequence package is invalid");
+		return false;
+	}
+
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(
+		Package->GetName(),
+		FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	if (!UPackage::SavePackage(Package, AnimSequence, *PackageFileName, SaveArgs))
+	{
+		OutError = FString::Printf(TEXT("Failed to save AnimSequence package: %s"), *Package->GetName());
+		return false;
+	}
+
+	return true;
 }

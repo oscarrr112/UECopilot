@@ -1,0 +1,10 @@
+{
+  "AssetType": "AnimSequence",
+  "Name": "AS_Minimal",
+  "Path": "/Game/Generated/Animation",
+  "Action": "CreateOrUpdate",
+  "Skeleton": "/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton",
+  "PreviewMesh": "/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP",
+  "FrameRate": { "Numerator": 30, "Denominator": 1 },
+  "NumberOfFrames": 12
+}

@@ -1,0 +1,8 @@
+{
+  "AssetType": "AnimSequence",
+  "Name": "AS_Invalid_RawTracks",
+  "Path": "/Game/Generated/Animation",
+  "Action": "CreateOrUpdate",
+  "Skeleton": "/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton",
+  "RawTracks": []
+}

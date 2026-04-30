@@ -1,0 +1,7 @@
+{
+  "AssetType": "AnimSequence",
+  "Name": "AS_Invalid_Skeleton",
+  "Path": "/Game/Generated/Animation",
+  "Action": "CreateOrUpdate",
+  "Skeleton": "/Game/DoesNotExist/SK_Missing_Skeleton.SK_Missing_Skeleton"
+}
