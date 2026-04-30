@@ -478,6 +478,16 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, TEXT("Invalid configuration object"));
 	}
 
+	TSharedPtr<FJsonObject> ValidationConfig = MakeShared<FJsonObject>();
+	ValidationConfig->Values = Config->Values;
+	ValidationConfig->SetStringField(TEXT("Name"), Name);
+	ValidationConfig->SetStringField(TEXT("Path"), Path);
+	const TOptional<FString> ValidationError = ValidateConfig(ValidationConfig, Action);
+	if (ValidationError.IsSet())
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, ValidationError.GetValue());
+	}
+
 	TSharedPtr<FJsonObject> Properties;
 	FString PropertiesError;
 	if (!TryGetPropertiesObject(Config, Properties, PropertiesError))
@@ -530,6 +540,12 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 	if (!ApplyPatch(AnimSequence, Config, Error))
 	{
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+	}
+
+	if (!bExists)
+	{
+		FAssetRegistryModule::AssetCreated(AnimSequence);
+		AnimSequence->MarkPackageDirty();
 	}
 
 	if (!SaveAnimSequence(AnimSequence, Error))
@@ -671,6 +687,25 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		if (!Config->TryGetNumberField(TEXT("RateScale"), RateScale))
 		{
 			return FString(TEXT("'RateScale' must be a number"));
+		}
+	}
+
+	if (Properties.IsValid())
+	{
+		FString Error;
+		if (ExistingAnimSequence)
+		{
+			if (!PreflightPropertiesPatch(ExistingAnimSequence, Properties, Error))
+			{
+				return Error;
+			}
+		}
+		else if (Action != EGenerationAction::Update)
+		{
+			if (!PreflightCreatePropertiesPatch(Properties, Error))
+			{
+				return Error;
+			}
 		}
 	}
 
@@ -916,9 +951,6 @@ UAnimSequence* FAnimSequenceGenerator::CreateAnimSequence(
 	{
 		AnimSequence->SetPreviewMesh(PreviewMesh, false);
 	}
-
-	FAssetRegistryModule::AssetCreated(AnimSequence);
-	AnimSequence->MarkPackageDirty();
 
 	return AnimSequence;
 }

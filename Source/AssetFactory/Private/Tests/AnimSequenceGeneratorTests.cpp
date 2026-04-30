@@ -15,16 +15,15 @@
 namespace
 {
 const TCHAR* TestAnimPath = TEXT("/Game/Generated/Animation");
-const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
-const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
-const TCHAR* PropertiesMustBeObjectAssetName = TEXT("AS_PropertiesMustBeObject");
-const TCHAR* PropertiesPrevalidationAssetName = TEXT("AS_PropertiesPrevalidation");
-const TCHAR* TimingUpperBoundAssetName = TEXT("AS_TimingUpperBoundPrevalidation");
-const TCHAR* FloatCurvesPrevalidationAssetName = TEXT("AS_FloatCurvesPrevalidation");
 
-FString MakeAnimSequenceObjectPath(const TCHAR* AssetName)
+FString MakeUniqueTestAssetName(const TCHAR* Prefix)
 {
-	return FString::Printf(TEXT("%s/%s.%s"), TestAnimPath, AssetName, AssetName);
+	return FString::Printf(TEXT("%s_%s"), Prefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+}
+
+FString MakeAnimSequenceObjectPath(const FString& AssetName)
+{
+	return FString::Printf(TEXT("%s/%s.%s"), TestAnimPath, *AssetName, *AssetName);
 }
 
 TSharedPtr<FJsonObject> MakeAnimSequenceBaseConfig()
@@ -140,6 +139,18 @@ TSharedPtr<FJsonObject> MakeInvalidFloatCurvesPatchConfig()
 	return Config;
 }
 
+TSharedPtr<FJsonObject> MakeInvalidFloatCurvesCreateConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
+
+	TArray<TSharedPtr<FJsonValue>> FloatCurves;
+	FloatCurves.Add(MakeShared<FJsonValueObject>(MakeFloatCurve(TEXT("DuplicateCurve"))));
+	FloatCurves.Add(MakeShared<FJsonValueObject>(MakeFloatCurve(TEXT("DuplicateCurve"))));
+	Config->SetArrayField(TEXT("FloatCurves"), FloatCurves);
+
+	return Config;
+}
+
 TSharedPtr<FJsonObject> MakeReflectedPropertiesConfig()
 {
 	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
@@ -196,18 +207,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePrevalidateTimingFieldsTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_PrevalidateTimingFields"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const FGenerationResult BaseResult = Generator.Generate(
-		TimingPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeAnimSequenceBaseConfig());
 	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_PrevalidateTimingFields.AS_PrevalidateTimingFields"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -227,7 +240,7 @@ bool FAnimSequencePrevalidateTimingFieldsTest::RunTest(const FString& Parameters
 	const int32 OriginalNotifyCount = AnimSequence->Notifies.Num();
 
 	const FGenerationResult InvalidResult = Generator.Generate(
-		TimingPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeInvalidTimingPatchConfig());
@@ -257,18 +270,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequenceRejectsHugeTimingFieldsTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_TimingUpperBoundPrevalidation"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const FGenerationResult BaseResult = Generator.Generate(
-		TimingUpperBoundAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeAnimSequenceBaseConfig());
 	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_TimingUpperBoundPrevalidation.AS_TimingUpperBoundPrevalidation"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -287,7 +302,7 @@ bool FAnimSequenceRejectsHugeTimingFieldsTest::RunTest(const FString& Parameters
 	const int32 OriginalNumberOfFrames = DataModel->GetNumberOfFrames();
 
 	const FGenerationResult HugeFrameRateResult = Generator.Generate(
-		TimingUpperBoundAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeHugeFrameRatePatchConfig());
@@ -305,7 +320,7 @@ bool FAnimSequenceRejectsHugeTimingFieldsTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("NumberOfFrames is unchanged after huge FrameRate patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
 
 	const FGenerationResult HugeNumberOfFramesResult = Generator.Generate(
-		TimingUpperBoundAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeHugeNumberOfFramesPatchConfig());
@@ -333,18 +348,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePrevalidateFloatCurvesBeforeMutationTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_FloatCurvesPrevalidation"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const FGenerationResult BaseResult = Generator.Generate(
-		FloatCurvesPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeSingleFloatCurveConfig());
 	TestTrue(TEXT("Base AnimSequence with FloatCurves is generated"), BaseResult.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_FloatCurvesPrevalidation.AS_FloatCurvesPrevalidation"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -371,7 +388,7 @@ bool FAnimSequencePrevalidateFloatCurvesBeforeMutationTest::RunTest(const FStrin
 	const float OriginalRateScale = AnimSequence->RateScale;
 
 	const FGenerationResult InvalidResult = Generator.Generate(
-		FloatCurvesPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeInvalidFloatCurvesPatchConfig());
@@ -407,18 +424,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequenceReflectedPropertiesExtractTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_ReflectedProperties"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const FGenerationResult Result = Generator.Generate(
-		ReflectedPropertiesAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeReflectedPropertiesConfig());
 	TestTrue(TEXT("AnimSequence with reflected Properties is generated"), Result.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(Result.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_ReflectedProperties.AS_ReflectedProperties"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -477,6 +496,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePropertiesMustBeObjectTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_PropertiesMustBeObject"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const TOptional<FString> ValidationError = Generator.ValidateConfig(MakeInvalidPropertiesConfig(), EGenerationAction::Update);
 	TestTrue(TEXT("ValidateConfig rejects non-object Properties"), ValidationError.IsSet());
@@ -487,16 +508,16 @@ bool FAnimSequencePropertiesMustBeObjectTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("ValidateConfig reports non-object Properties"), ValidationError.GetValue(), FString(TEXT("'Properties' must be an object")));
 
 	const FGenerationResult BaseResult = Generator.Generate(
-		PropertiesMustBeObjectAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeAnimSequenceBaseConfig());
 	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_PropertiesMustBeObject.AS_PropertiesMustBeObject"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -507,7 +528,7 @@ bool FAnimSequencePropertiesMustBeObjectTest::RunTest(const FString& Parameters)
 	const float OriginalRateScale = AnimSequence->RateScale;
 
 	const FGenerationResult Result = Generator.Generate(
-		PropertiesMustBeObjectAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeInvalidPropertiesConfig());
@@ -527,18 +548,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePrevalidatePropertiesBeforeMutationTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_PropertiesPrevalidation"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
 
 	const FGenerationResult BaseResult = Generator.Generate(
-		PropertiesPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeAnimSequenceBaseConfig());
 	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
 
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
 	if (!AnimSequence)
 	{
-		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_PropertiesPrevalidation.AS_PropertiesPrevalidation"));
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, *AssetObjectPath);
 	}
 	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
 	if (!AnimSequence)
@@ -561,7 +584,7 @@ bool FAnimSequencePrevalidatePropertiesBeforeMutationTest::RunTest(const FString
 		: FString();
 
 	const FGenerationResult InvalidResult = Generator.Generate(
-		PropertiesPrevalidationAssetName,
+		AssetName,
 		TestAnimPath,
 		EGenerationAction::Update,
 		MakeInvalidPropertiesPatchConfig());
@@ -595,10 +618,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePrevalidateCreatePropertiesBeforeAssetCreationTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
-	const FString InvalidCreatePropertiesPreflightAssetName = FString::Printf(
-		TEXT("AS_InvalidCreatePropertiesPreflight_%s"),
-		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
-	const FString InvalidAssetObjectPath = MakeAnimSequenceObjectPath(*InvalidCreatePropertiesPreflightAssetName);
+	const FString InvalidCreatePropertiesPreflightAssetName = MakeUniqueTestAssetName(TEXT("AS_InvalidCreatePropertiesPreflight"));
+	const FString InvalidAssetObjectPath = MakeAnimSequenceObjectPath(InvalidCreatePropertiesPreflightAssetName);
 
 	const FGenerationResult InvalidResult = Generator.Generate(
 		InvalidCreatePropertiesPreflightAssetName,
@@ -611,6 +632,64 @@ bool FAnimSequencePrevalidateCreatePropertiesBeforeAssetCreationTest::RunTest(co
 	TestNull(
 		TEXT("Invalid create Properties patch does not leave a loadable AnimSequence asset"),
 		LoadObject<UAnimSequence>(nullptr, *InvalidAssetObjectPath));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequenceCreateHugeTimingFailureDoesNotLeaveAssetTest,
+	"AssetFactory.AnimSequence.CreateHugeTimingFailureDoesNotLeaveAsset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequenceCreateHugeTimingFailureDoesNotLeaveAssetTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_CreateHugeTimingAtomicity"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
+
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), static_cast<double>(MAX_int32) + 1.0);
+	FrameRate->SetNumberField(TEXT("Denominator"), 1);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
+
+	const FGenerationResult Result = Generator.Generate(
+		AssetName,
+		TestAnimPath,
+		EGenerationAction::Create,
+		Config);
+
+	TestEqual(TEXT("Huge create FrameRate fails"), Result.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Huge create FrameRate reports validation"), Result.Message, FString(TEXT("'FrameRate.Numerator' must be a positive integer")));
+	TestNull(
+		TEXT("Huge create FrameRate failure does not leave a loadable AnimSequence asset"),
+		LoadObject<UAnimSequence>(nullptr, *AssetObjectPath));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequenceCreateInvalidFloatCurvesFailureDoesNotLeaveAssetTest,
+	"AssetFactory.AnimSequence.CreateInvalidFloatCurvesFailureDoesNotLeaveAsset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequenceCreateInvalidFloatCurvesFailureDoesNotLeaveAssetTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("AS_CreateInvalidFloatCurvesAtomicity"));
+	const FString AssetObjectPath = MakeAnimSequenceObjectPath(AssetName);
+
+	const FGenerationResult Result = Generator.Generate(
+		AssetName,
+		TestAnimPath,
+		EGenerationAction::Create,
+		MakeInvalidFloatCurvesCreateConfig());
+
+	TestEqual(TEXT("Invalid create FloatCurves fails"), Result.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Invalid create FloatCurves reports duplicate validation"), Result.Message, FString(TEXT("FloatCurves contains duplicate Name 'DuplicateCurve'")));
+	TestNull(
+		TEXT("Invalid create FloatCurves failure does not leave a loadable AnimSequence asset"),
+		LoadObject<UAnimSequence>(nullptr, *AssetObjectPath));
 
 	return true;
 }
