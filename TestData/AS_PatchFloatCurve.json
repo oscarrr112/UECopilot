@@ -1,0 +1,15 @@
+{
+  "AssetType": "AnimSequence",
+  "Name": "AS_Minimal",
+  "Path": "/Game/Generated/Animation",
+  "Action": "Update",
+  "FloatCurves": [
+    {
+      "Name": "Speed",
+      "Keys": [
+        { "Time": 0.0, "Value": 0.0, "InterpMode": "Linear" },
+        { "Time": 0.2, "Value": 120.0, "InterpMode": "Linear" }
+      ]
+    }
+  ]
+}

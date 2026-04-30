@@ -8,6 +8,7 @@
 class UAnimSequence;
 class USkeletalMesh;
 class USkeleton;
+enum ERichCurveInterpMode : int;
 struct FFrameRate;
 
 class ASSETFACTORY_API FAnimSequenceGenerator : public IAssetGenerator
@@ -37,5 +38,9 @@ private:
 	int32 ParseNumberOfFrames(TSharedPtr<FJsonObject> Config) const;
 	UAnimSequence* CreateAnimSequence(const FString& Name, const FString& Path, TSharedPtr<FJsonObject> Config, FString& OutError) const;
 	bool ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<FJsonObject> Config, FString& OutError) const;
+	bool ValidateFloatCurves(const TArray<TSharedPtr<FJsonValue>>& FloatCurves, FString& OutError) const;
+	bool ApplyFloatCurves(UAnimSequence* AnimSequence, const TArray<TSharedPtr<FJsonValue>>& FloatCurves, FString& OutError) const;
+	ERichCurveInterpMode ParseInterpMode(const FString& InterpMode) const;
+	FString InterpModeToString(ERichCurveInterpMode InterpMode) const;
 	bool SaveAnimSequence(UAnimSequence* AnimSequence, FString& OutError) const;
 };

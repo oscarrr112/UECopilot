@@ -4,6 +4,8 @@
 
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
+#include "Animation/AnimData/CurveIdentifier.h"
+#include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -281,6 +283,21 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 	}
 
+	if (Config->HasField(TEXT("FloatCurves")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* FloatCurves = nullptr;
+		if (!Config->TryGetArrayField(TEXT("FloatCurves"), FloatCurves) || !FloatCurves)
+		{
+			return FString(TEXT("'FloatCurves' must be an array"));
+		}
+
+		FString Error;
+		if (!ValidateFloatCurves(*FloatCurves, Error))
+		{
+			return Error;
+		}
+	}
+
 	return TOptional<FString>();
 }
 
@@ -309,6 +326,31 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 	if (const IAnimationDataModel* DataModel = AnimSequence->GetDataModel())
 	{
 		Config->SetNumberField(TEXT("NumberOfFrames"), DataModel->GetNumberOfFrames());
+
+		TArray<TSharedPtr<FJsonValue>> FloatCurveValues;
+		for (const FFloatCurve& FloatCurve : DataModel->GetFloatCurves())
+		{
+			TSharedPtr<FJsonObject> CurveJson = MakeShared<FJsonObject>();
+			CurveJson->SetStringField(TEXT("Name"), FloatCurve.GetName().ToString());
+
+			TArray<TSharedPtr<FJsonValue>> KeyValues;
+			for (const FRichCurveKey& Key : FloatCurve.FloatCurve.GetConstRefOfKeys())
+			{
+				TSharedPtr<FJsonObject> KeyJson = MakeShared<FJsonObject>();
+				KeyJson->SetNumberField(TEXT("Time"), Key.Time);
+				KeyJson->SetNumberField(TEXT("Value"), Key.Value);
+				KeyJson->SetStringField(TEXT("InterpMode"), InterpModeToString(Key.InterpMode));
+				KeyValues.Add(MakeShared<FJsonValueObject>(KeyJson));
+			}
+
+			CurveJson->SetArrayField(TEXT("Keys"), KeyValues);
+			FloatCurveValues.Add(MakeShared<FJsonValueObject>(CurveJson));
+		}
+
+		if (FloatCurveValues.Num() > 0)
+		{
+			Config->SetArrayField(TEXT("FloatCurves"), FloatCurveValues);
+		}
 	}
 	return Config;
 }
@@ -375,6 +417,205 @@ UAnimSequence* FAnimSequenceGenerator::CreateAnimSequence(
 	AnimSequence->MarkPackageDirty();
 
 	return AnimSequence;
+}
+
+bool FAnimSequenceGenerator::ValidateFloatCurves(
+	const TArray<TSharedPtr<FJsonValue>>& FloatCurves,
+	FString& OutError) const
+{
+	for (const TSharedPtr<FJsonValue>& CurveValue : FloatCurves)
+	{
+		const TSharedPtr<FJsonObject>* CurveObject = nullptr;
+		if (!CurveValue.IsValid() || !CurveValue->TryGetObject(CurveObject) || !CurveObject || !CurveObject->IsValid())
+		{
+			OutError = TEXT("FloatCurves entries must be objects");
+			return false;
+		}
+
+		FString CurveName;
+		if (!(*CurveObject)->TryGetStringField(TEXT("Name"), CurveName) || CurveName.IsEmpty())
+		{
+			OutError = TEXT("FloatCurves entries require non-empty Name");
+			return false;
+		}
+
+		if (!(*CurveObject)->HasTypedField<EJson::Array>(TEXT("Keys")))
+		{
+			OutError = FString::Printf(TEXT("Float curve '%s' requires Keys array"), *CurveName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>& Keys = (*CurveObject)->GetArrayField(TEXT("Keys"));
+		for (const TSharedPtr<FJsonValue>& KeyValue : Keys)
+		{
+			const TSharedPtr<FJsonObject>* KeyObject = nullptr;
+			if (!KeyValue.IsValid() || !KeyValue->TryGetObject(KeyObject) || !KeyObject || !KeyObject->IsValid())
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' contains a non-object key"), *CurveName);
+				return false;
+			}
+
+			double Time = 0.0;
+			if (!(*KeyObject)->TryGetNumberField(TEXT("Time"), Time))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Time"), *CurveName);
+				return false;
+			}
+
+			double Value = 0.0;
+			if (!(*KeyObject)->TryGetNumberField(TEXT("Value"), Value))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Value"), *CurveName);
+				return false;
+			}
+
+			FString InterpMode = TEXT("Linear");
+			if ((*KeyObject)->HasField(TEXT("InterpMode")) && !(*KeyObject)->TryGetStringField(TEXT("InterpMode"), InterpMode))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key InterpMode must be a string"), *CurveName);
+				return false;
+			}
+			if (!InterpMode.Equals(TEXT("Linear"), ESearchCase::IgnoreCase) &&
+				!InterpMode.Equals(TEXT("Constant"), ESearchCase::IgnoreCase) &&
+				!InterpMode.Equals(TEXT("Cubic"), ESearchCase::IgnoreCase))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key has unsupported InterpMode: %s"), *CurveName, *InterpMode);
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool FAnimSequenceGenerator::ApplyFloatCurves(
+	UAnimSequence* AnimSequence,
+	const TArray<TSharedPtr<FJsonValue>>& FloatCurves,
+	FString& OutError) const
+{
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
+	if (!ValidateFloatCurves(FloatCurves, OutError))
+	{
+		return false;
+	}
+
+	IAnimationDataController& Controller = AnimSequence->GetController();
+	for (const TSharedPtr<FJsonValue>& CurveValue : FloatCurves)
+	{
+		const TSharedPtr<FJsonObject>* CurveObject = nullptr;
+		if (!CurveValue.IsValid() || !CurveValue->TryGetObject(CurveObject) || !CurveObject || !CurveObject->IsValid())
+		{
+			OutError = TEXT("FloatCurves entries must be objects");
+			return false;
+		}
+
+		FString CurveName;
+		if (!(*CurveObject)->TryGetStringField(TEXT("Name"), CurveName) || CurveName.IsEmpty())
+		{
+			OutError = TEXT("FloatCurves entries require non-empty Name");
+			return false;
+		}
+
+		if (!(*CurveObject)->HasTypedField<EJson::Array>(TEXT("Keys")))
+		{
+			OutError = FString::Printf(TEXT("Float curve '%s' requires Keys array"), *CurveName);
+			return false;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>& Keys = (*CurveObject)->GetArrayField(TEXT("Keys"));
+		TArray<FRichCurveKey> RichKeys;
+		RichKeys.Reserve(Keys.Num());
+		for (const TSharedPtr<FJsonValue>& KeyValue : Keys)
+		{
+			const TSharedPtr<FJsonObject>* KeyObject = nullptr;
+			if (!KeyValue.IsValid() || !KeyValue->TryGetObject(KeyObject) || !KeyObject || !KeyObject->IsValid())
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' contains a non-object key"), *CurveName);
+				return false;
+			}
+
+			double Time = 0.0;
+			if (!(*KeyObject)->TryGetNumberField(TEXT("Time"), Time))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Time"), *CurveName);
+				return false;
+			}
+
+			double Value = 0.0;
+			if (!(*KeyObject)->TryGetNumberField(TEXT("Value"), Value))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Value"), *CurveName);
+				return false;
+			}
+
+			FString InterpMode = TEXT("Linear");
+			if ((*KeyObject)->HasField(TEXT("InterpMode")) && !(*KeyObject)->TryGetStringField(TEXT("InterpMode"), InterpMode))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key InterpMode must be a string"), *CurveName);
+				return false;
+			}
+			if (!InterpMode.Equals(TEXT("Linear"), ESearchCase::IgnoreCase) &&
+				!InterpMode.Equals(TEXT("Constant"), ESearchCase::IgnoreCase) &&
+				!InterpMode.Equals(TEXT("Cubic"), ESearchCase::IgnoreCase))
+			{
+				OutError = FString::Printf(TEXT("Float curve '%s' key has unsupported InterpMode: %s"), *CurveName, *InterpMode);
+				return false;
+			}
+
+			FRichCurveKey Key(static_cast<float>(Time), static_cast<float>(Value));
+			Key.InterpMode = ParseInterpMode(InterpMode);
+			RichKeys.Add(Key);
+		}
+
+		const FAnimationCurveIdentifier CurveId(FName(*CurveName), ERawCurveTrackTypes::RCT_Float);
+		if (!Controller.AddCurve(CurveId, AACF_Editable, false))
+		{
+			Controller.RemoveCurve(CurveId, false);
+			if (!Controller.AddCurve(CurveId, AACF_Editable, false))
+			{
+				OutError = FString::Printf(TEXT("Failed to add float curve '%s'"), *CurveName);
+				return false;
+			}
+		}
+		if (!Controller.SetCurveKeys(CurveId, RichKeys, false))
+		{
+			OutError = FString::Printf(TEXT("Failed to set keys for float curve '%s'"), *CurveName);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+ERichCurveInterpMode FAnimSequenceGenerator::ParseInterpMode(const FString& InterpMode) const
+{
+	if (InterpMode.Equals(TEXT("Constant"), ESearchCase::IgnoreCase))
+	{
+		return RCIM_Constant;
+	}
+	if (InterpMode.Equals(TEXT("Cubic"), ESearchCase::IgnoreCase))
+	{
+		return RCIM_Cubic;
+	}
+	return RCIM_Linear;
+}
+
+FString FAnimSequenceGenerator::InterpModeToString(ERichCurveInterpMode InterpMode) const
+{
+	switch (InterpMode)
+	{
+	case RCIM_Constant:
+		return TEXT("Constant");
+	case RCIM_Cubic:
+		return TEXT("Cubic");
+	case RCIM_Linear:
+	default:
+		return TEXT("Linear");
+	}
 }
 
 bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<FJsonObject> Config, FString& OutError) const
@@ -481,6 +722,21 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 		if (!RateScaleValue || !FPropertySetterUtils::SetPropertyFromJson(AnimSequence, RateScaleProperty, *RateScaleValue))
 		{
 			OutError = TEXT("Failed to set AnimSequence RateScale");
+			return false;
+		}
+	}
+
+	if (Config->HasField(TEXT("FloatCurves")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* FloatCurves = nullptr;
+		if (!Config->TryGetArrayField(TEXT("FloatCurves"), FloatCurves) || !FloatCurves)
+		{
+			OutError = TEXT("'FloatCurves' must be an array");
+			return false;
+		}
+
+		if (!ApplyFloatCurves(AnimSequence, *FloatCurves, OutError))
+		{
 			return false;
 		}
 	}
