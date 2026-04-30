@@ -12,10 +12,13 @@
 向 AssetFactory 添加一组动画生成器，使 agents 能够创建、更新、提取和验证 Unreal Engine 动画创作资产：
 
 - `BlendSpace`、`BlendSpace1D`、`AimOffset` 和 `AimOffset1D` 资产。
+- `AnimComposite`、`AnimMontage`、`PoseAsset` 和 `MirrorDataTable` 等动画组合/镜像/姿势资产。
 - 通过官方 AnimBlueprint factory 和 compiler 路径创建的 `AnimationBlueprint` 资产。
 - Animation Blueprint 姿势图。
 - 动画状态机和过渡规则。
 - 通过 BSLFragment 集成的普通 Blueprint/EventGraph/function 逻辑。
+- `IKRig`、`IKRetargeter`、`PoseSearchSchema`、`PoseSearchDatabase`、`ChooserTable` 和 `ControlRigBlueprint` lifecycle 等后续动画工作流资产。
+- `AnimSequence` 的受限 minimal/patch 能力，以及对 `Skeleton`、`SkeletalMesh` 这类 import-heavy 资产的引用/验证边界。
 - MCP schemas、fixtures、提取和 round-trip 检查。
 
 设计保留 AssetFactory 的顶层输入 JSON。Animation graph 创作委托给专用源码块，因为 AnimGraph 和 StateMachine 语义不适合、也不稳定于低层 JSON node/pin 数组表达。
@@ -313,23 +316,116 @@
 
 ---
 
-## 4. 推荐执行顺序
+## 4. 广义动画资产 Generator 路线图
+
+上面的 Anim Spec 1-8 是 AnimationBlueprint + BlendSpace 图栈的第一组实现切片。为了达到“功能完备的 animation generator family”，还需要把其它动画资产一次性纳入总规划，避免后续每做一个动画工作流都重新定义边界。
+
+### 4.1 分类原则
+
+- **一等 asset generator：** UE editor 中本来就是独立 asset、agent 会直接创建/更新/提取、且有明确 factory 或 editor API 的资产。
+- **AnimationBlueprint 内部能力：** AnimGraph、StateMachine、BSLFragment、AnimLayerInterface 等应进入 `AnimationBlueprintGenerator` 的子规格，而不是暴露成独立顶层 `AssetType`。
+- **边界型/patch 型能力：** `AnimSequence`、`Skeleton`、`SkeletalMesh` 等 import-heavy 资产不应被误设计成完全手写 JSON 资产。需要的是引用验证、最小 fixture、metadata/notifies/curves patch，或另一个 import pipeline。
+- **后续研究资产：** ControlRig RigVM、DeformerGraph、AnimNext 等可以规划，但不应该阻塞第一批 generator。
+
+### 4.2 必须规划的一等 generator
+
+| 优先级 | AssetType / 能力 | 建议规格 | 说明 |
+| --- | --- | --- | --- |
+| P0 | `BlendSpace` / `BlendSpace1D` / `AimOffset` / `AimOffset1D` | Anim Spec 1 | AnimationBlueprint 常用输入资产，factory 明确，验证边界清晰。 |
+| P0 | `AnimComposite` | 新增 Anim Asset Spec A | sequence 组合资产，复杂度低，适合作为 montage 前置验证。 |
+| P0 | `AnimMontage` | 新增 Anim Asset Spec A | runtime 播放、slot、section、branching point、notify 的核心资产。AnimGraph slot node 也应以它为目标场景。 |
+| P0 | `PoseAsset` | 新增 Anim Asset Spec B | pose driver、pose library 和 facial/pose workflow 的基础资产。 |
+| P0 | `MirrorDataTable` | 新增 Anim Asset Spec B | mirrored animation、retarget/IK 工作流的基础数据。 |
+| P0 | `AnimationBlueprint` | Anim Spec 2-7 | 需要 lifecycle、AnimGraph、StateMachine、BSLFragment 和高级节点逐层实现。 |
+| P1 | `IKRig` | 新增 Anim Asset Spec C | retarget pipeline 的第一半，依赖 skeleton/preview mesh 和 chain/goal contract。 |
+| P1 | `IKRetargeter` | 新增 Anim Asset Spec C | retarget pipeline 的第二半，依赖 source/target IKRig 和 retarget profiles。 |
+| P1 | `PoseSearchSchema` | 新增 Anim Asset Spec D | motion matching 的 schema/channel 定义。 |
+| P1 | `PoseSearchDatabase` | 新增 Anim Asset Spec D | motion matching 的 sequence/database 配置。 |
+| P1 | `ChooserTable` | 新增 Anim Asset Spec E | gameplay/context driven animation selection，适合作为数据驱动 generator。 |
+| P1 | `ControlRigBlueprint` lifecycle | 新增 Anim Asset Spec F | 先生成可打开、可编译、可绑定 preview 的 ControlRig asset；RigVM graph language 另拆研究。 |
+| P2 | `PhysicsAsset` | 新增辅助规格 | 与 SkeletalMesh 绑定，主要服务 preview/ragdoll，不是 AnimGraph/Montage 前置。 |
+| P2 | `AnimBoneCompressionSettings` / `AnimCurveCompressionSettings` | 新增辅助规格 | 简单配置资产，可低成本覆盖，但创作价值低于 P0/P1。 |
+| P2 | `AnimStreamable` | 新增辅助规格 | 从 source animation 派生，适合后续优化/streaming workflow。 |
+| P2 | `AnimationSharingSetup` | 新增辅助规格 | 有明确 plugin factory，但场景较窄。 |
+| P2 | `AnimationModifierOperation` | 新增操作规格 | 更像对现有 `AnimSequence` 执行批处理修改，而不是普通 asset generator。 |
+
+### 4.3 边界型规格
+
+| 能力 | 建议规格 | 明确不做 |
+| --- | --- | --- |
+| `AnimSequence` minimal/patch | 新增 Anim Asset Spec 0A：支持最小测试 fixture、skeleton/preview mesh、notifies、curves、sync markers、metadata patch。 | 不从 JSON 手写完整 raw/compressed bone track，不替代 FBX/Interchange/import pipeline。 |
+| `Skeleton` reference/patch | 新增辅助规格：验证兼容性、读取 skeleton metadata、必要时 patch slots/retarget source 等轻量字段。 | 不从零生成 production-ready skeleton hierarchy/bind pose。 |
+| `SkeletalMesh` reference/import boundary | 暂不纳入 animation generator 核心；由 mesh/import pipeline 负责。 | 不在 animation generator 中手写 mesh buffers、skin weights 或 LODs。 |
+
+### 4.4 不进入当前功能完备目标
+
+- 纯 JSON 创建完整 `SkeletalMesh`。
+- 从零手写完整 `Skeleton`。
+- 完整 raw `AnimSequence` import/压缩替代方案。
+- 第一阶段完整 `ControlRig` RigVM 图语言。
+- DeformerGraph、AnimNext、MetaHuman 专用资产或第三方插件动画资产。
+
+这些可以作为后续独立 research/spec，但不应阻塞当前 animation generator family 的主线。
+
+### 4.5 新增规格包建议
+
+在现有 Anim Spec 1-8 之外，建议新增这些规格包：
+
+1. **Anim Asset Spec 0A: Animation Import Boundary + AnimSequence Minimal/Patch**
+   目标是给后续 generator 和 smoke tests 提供稳定 sequence 输入，同时明确不替代 DCC/import pipeline。
+
+2. **Anim Asset Spec A: AnimComposite + AnimMontage Generator**
+   目标是生成 sequence timeline、montage slots、sections、notifies、branching points 和基础提取。
+
+3. **Anim Asset Spec B: PoseAsset + MirrorDataTable Generator**
+   目标是覆盖 pose library 和 mirrored animation 数据资产。
+
+4. **Anim Asset Spec C: IKRig + IKRetargeter Generator**
+   目标是覆盖 retarget chains、goals、source/target rig 绑定和基础 retarget settings。
+
+5. **Anim Asset Spec D: PoseSearchSchema + PoseSearchDatabase Generator**
+   目标是覆盖 motion matching schema、channels、database entries 和 indexing 前验证。
+
+6. **Anim Asset Spec E: ChooserTable Generator**
+   目标是覆盖 animation selection 的 table/schema/result assets，并与 AnimationBlueprint/StateTree 后续集成。
+
+7. **Anim Asset Spec F: ControlRigBlueprint Lifecycle Generator**
+   目标是先创建可打开、可编译、可提取 metadata 的 ControlRig asset；RigVM 图语言另起研究。
+
+8. **Anim Asset Spec G: Long-Tail Auxiliary Animation Assets**
+   目标是补齐 compression settings、AnimStreamable、PhysicsAsset、AnimationSharingSetup、AnimationModifierOperation 等低频但有 factory/API 的资产。
+
+---
+
+## 5. 推荐执行顺序
 
 ```mermaid
 flowchart TD
-    S0["Anim Spec 0: Research + spec map"]
+    S0["Anim Spec 0: Research + full spec map"]
+    SA0["Anim Asset Spec 0A: AnimSequence minimal/patch boundary"]
     S1["Anim Spec 1: BlendSpace + AimOffset"]
+    SA["Anim Asset Spec A: Composite + Montage"]
+    SB["Anim Asset Spec B: PoseAsset + MirrorDataTable"]
     S2["Anim Spec 2: AnimationBlueprint lifecycle"]
     S3["Anim Spec 3: Canonical AnimGraph IR + minimal pose graph"]
     S4["Anim Spec 4: AnimGraphDSL parser"]
     S5["Anim Spec 5: StateMachine DSL + transition rules"]
     S6["Anim Spec 6: BSL integration"]
     S7["Anim Spec 7: Advanced animation nodes"]
+    SC["Anim Asset Spec C: IKRig + IKRetargeter"]
+    SD["Anim Asset Spec D: PoseSearch"]
+    SE["Anim Asset Spec E: ChooserTable"]
+    SF["Anim Asset Spec F: ControlRig lifecycle"]
+    SG["Anim Asset Spec G: Auxiliary animation assets"]
     S8["Anim Spec 8: Extract + docs + fixtures"]
 
+    S0 --> SA0
     S0 --> S1
-    S0 --> S2
-    S1 --> S3
+    SA0 --> S1
+    SA0 --> SA
+    SA0 --> SB
+    S1 --> S2
+    SA --> S7
     S2 --> S3
     S3 --> S4
     S4 --> S5
@@ -337,34 +433,52 @@ flowchart TD
     S5 --> S6
     S4 --> S7
     S5 --> S7
+    SA0 --> SC
+    SB --> SC
+    SC --> SD
+    S2 --> SE
+    S5 --> SE
+    S2 --> SF
+    SA0 --> SG
     S1 --> S8
+    SA --> S8
+    SB --> S8
     S2 --> S8
-    S3 --> S8
-    S4 --> S8
-    S5 --> S8
-    S6 --> S8
     S7 --> S8
+    SC --> S8
+    SD --> S8
+    SE --> S8
+    SF --> S8
+    SG --> S8
 ```
 
 此文档分支之后推荐的第一个实现目标：
 
-1. `BlendSpace + AimOffset Generator`
-2. `AnimationBlueprint Lifecycle`
-3. `Canonical AnimGraph IR + Minimal Pose Graph`
+1. `AnimSequence minimal/patch boundary`，如果现有项目 fixtures 已足够，也可以只先写验证边界，不实现完整创建。
+2. `BlendSpace + AimOffset Generator`。
+3. `AnimComposite + AnimMontage Generator`。
+4. `PoseAsset + MirrorDataTable Generator`。
+5. `AnimationBlueprint Lifecycle`。
+6. `Canonical AnimGraph IR + Minimal Pose Graph`。
 
-这能快速产出有用资产，并将 DSL/parser 风险推迟到官方创建路径和 graph lifecycle 路径已经验证之后。
+这能先覆盖可独立打开和复用的动画资产，再进入 AnimationBlueprint 图语言。这样 `AnimMontage`、slot node、StateMachine 和 BSLFragment 的需求会在进入复杂图之前已经被资产侧验证过。
 
 ---
 
-## 5. Feature-Complete 定义
+## 6. Feature-Complete 定义
 
 动画生成器家族在满足以下条件时视为 feature-complete：
 
 - agents 能够创建带有已验证样本的 BlendSpace 和 AimOffset 资产；
+- agents 能够创建和提取 AnimComposite、AnimMontage、PoseAsset 和 MirrorDataTable；
 - agents 能够创建绑定到 skeletons 的真实、已编译 Animation Blueprints；
 - agents 能够表达 pose graphs，而无需编写 UE pin-level JSON；
 - agents 能够以语义化方式表达 state machines 和 transition rules；
 - 普通 Blueprint 逻辑通过 BSLFragment 或 BSL-compatible infrastructure 处理；
+- agents 能够生成 IKRig/IKRetargeter 的核心 retarget authoring 数据；
+- agents 能够生成 PoseSearch/Chooser 这类动画选择和 motion matching 数据资产；
+- ControlRig 至少具备 lifecycle 级 generator，完整 RigVM 图语言作为独立后续目标；
+- AnimSequence/Skeleton/SkeletalMesh 的边界被清晰处理：能验证和 patch 需要的元数据，但不把 import-heavy 数据伪装成手写 JSON；
 - 生成的资产能在 UE editor views 中打开，无需手动修复；
 - extract 能为受支持 features 返回稳定、generator-readable 的 JSON/IR；
 - MCP schemas 和 fixtures 对契约的解释足够清晰，使另一个 agent 可以继续推进。

@@ -2,7 +2,7 @@
 
 - 日期：2026-04-30
 - 分支：`feature/animation-generators-specs`
-- 范围：AnimationBlueprint、BlendSpace、AimOffset，以及动画图创作语言研究
+- 范围：AnimationBlueprint、BlendSpace、AimOffset、AnimMontage 等动画资产 generator 规划，以及动画图创作语言研究
 - 状态：用于规格规划的研究总结；本分支不包含实现
 
 ## 目标
@@ -77,6 +77,47 @@ AimOffset 应与 BlendSpace 共享同一个 generator 和 JSON 形状，但需�
 Skeleton / SkeletalMesh / AnimSequence -> BlendSpace / AimOffset -> AnimationBlueprint
 ```
 
+## 广义动画资产 generator 调研
+
+为了避免只规划 Animation Blueprint 和 BlendSpace 后再不断补洞，本轮额外搜索了 UE 5.7 本地源码中的 editor factories、animation editor plugins 和相关 asset classes。结论是：动画 generator 家族应覆盖“动画组合/选择/重定向/图逻辑”这几层，但不应把 DCC 导入类资产误设计成 JSON 手写资产。
+
+### 应规划为一等 generator 的资产
+
+| 资产 | 主要证据 | 规划结论 |
+| --- | --- | --- |
+| `AnimMontage` | `AnimMontageFactory` 支持 `TargetSkeleton`、`SourceAnimation`、`PreviewSkeletalMesh`，创建后设置 skeleton 和 preview mesh。 | 必须规划。它是 slot、section、notify、branching point 和 runtime playback 的核心资产，且会反向影响 AnimGraph 的 slot node 规划。 |
+| `AnimComposite` | `AnimCompositeFactory` 可从 `SourceAnimation` 创建并填充 `AnimationTrack`。 | 必须规划。它比 Montage 简单，是 sequence 组合和时间线片段 generator 的低风险入口。 |
+| `PoseAsset` | `PoseAssetFactory` 要求 `SourceAnimation`，调用 `CreatePoseFromAnimation` 并设置 skeleton。 | 必须规划。它服务 pose driver、pose library、facial/pose matching 等后续节点。 |
+| `MirrorDataTable` | `MirrorDataTableFactory` 使用 skeleton、find/replace expressions 和 `FMirrorTableRow`。 | 必须规划。它是动画镜像、IK/retarget authoring 的基础数据资产。 |
+| `IKRig` / `IKRetargeter` | `IKRigDefinitionFactory` 和 `IKRetargetFactory` 位于 IKRig editor plugin。 | 必须规划，但应放在核心组合资产之后。它们依赖 skeleton/preview mesh，契约会比 Montage 更结构化。 |
+| `PoseSearchSchema` / `PoseSearchDatabase` | PoseSearch editor plugin 提供 schema/database factories。 | 应规划为后续 specs。它们是 motion matching / pose search 工作流的核心，通常引用大量 sequences 和 schema channels。 |
+| `ChooserTable` | Chooser plugin 有 `ChooserFactory`。 | 应规划为后续 specs。它是 animation selection / gameplay-driven choice 的数据层，适合 agent 生成。 |
+| `ControlRigBlueprint` | ControlRig editor plugin 提供 `ControlRigBlueprintFactory`，并创建 root graph。 | 应规划，但第一阶段只做 asset lifecycle 和基础 metadata；完整 RigVM graph authoring 风险较高，应另拆 DSL/IR 研究。 |
+| `AnimLayerInterface` | `UAnimLayerInterfaceFactory` 与 Animation Blueprint factory 同文件族。 | 应作为 AnimationBlueprint family 的子规格，而不是完全独立的第一批 generator。 |
+
+### 应规划为边界型或 patch 型能力的资产
+
+| 资产 | 规划方式 | 原因 |
+| --- | --- | --- |
+| `AnimSequence` | 规划为受限 generator/patcher：创建最小 fixture、设置 skeleton/preview mesh、notifies、curves、metadata、sync markers；不承诺从 JSON 手写压缩后的骨骼关键帧。 | 许多下游资产需要 sequence fixtures，但完整 raw animation import/压缩链条更像 DCC/import pipeline，不适合作为第一版 JSON authoring。 |
+| `Skeleton` | 规划为引用/验证边界，必要时增加 `SkeletonPatch` 类能力。 | 从零创建可用 skeleton 通常依赖 skeletal mesh/import 数据。generator 更应该验证 skeleton 兼容性并读取 CDO/metadata。 |
+| `SkeletalMesh` | 不纳入当前 animation generator 核心。 | 它是 import-heavy 资产，应属于 mesh/import pipeline，不适合在 animation generator 内手写。 |
+| `PhysicsAsset` | 可作为后续辅助 generator。 | 它与 SkeletalMesh 强相关，对 animation preview 和 ragdoll 有价值，但不是 AnimGraph/Montage 的直接前置。 |
+| `AnimBoneCompressionSettings` / `AnimCurveCompressionSettings` | 可作为低风险配置资产补充。 | factory 存在，契约简单，但对 agent 创作动画行为的价值低于 Montage/IK/PoseSearch。 |
+| `AnimStreamable` | 暂列后续。 | factory 基于 `SourceAnimation` 调用 `InitFrom`，更像派生/优化资产。 |
+| `AnimationModifier` | 规划为 operation/pipeline step，而不是普通 asset generator。 | 它通常作用于 existing animation assets，适合作为“对 AnimSequence 执行修改”的命令式能力。 |
+| `AnimationSharingSetup` | 后续规划。 | 对大规模角色共享动画有价值，但应用场景更窄。 |
+
+### 暂不作为当前路线图目标
+
+- 纯 JSON 创建完整 `SkeletalMesh`。
+- 从零手写完整 `Skeleton` hierarchy、retarget base pose 和 bind pose 数据。
+- 从 JSON 直接描述完整 `AnimSequence` raw/compressed keyframe 数据并替代导入管线。
+- 第一阶段实现完整 `ControlRig` RigVM 图语言。
+- 第一阶段覆盖 DeformerGraph、AnimNext、MetaHuman 专用资产或第三方插件动画资产。
+
+这些项目不是永远不做，而是不应阻塞当前“功能完备的 animation generator family”。完整路线图可以先覆盖 agent 最常需要生成和组合的动画创作资产，再把 import-heavy 和 experimental systems 作为独立研究分支。
+
 ## AnimationBlueprint 发现
 
 `AnimationBlueprintGenerator` 不应复用通用 `BlueprintGenerator` 作为实现路径。带有 `ParentClass = AnimInstance` 的普通 Blueprint 并不够，因为真正的 `UAnimBlueprint` 需要感知 skeleton 的创建流程和动画编译路径。
@@ -143,12 +184,17 @@ UE clipboard text（`FEdGraphUtilities::ExportNodesToText` / `ImportNodesFromTex
 animation generator 家族应拆分为小而可独立验证的 specs：
 
 - Animation generator spec map 和语言架构。
+- 动画资产边界和 `AnimSequence` 受限 patch/minimal fixture contract。
 - BlendSpace/AimOffset generator。
+- AnimComposite、AnimMontage、PoseAsset 和 MirrorDataTable generator。
 - AnimationBlueprint 生命周期 generator。
 - Canonical AnimGraph IR 和最小姿势图 builder。
 - StateMachine source/IR 和 transition rule builder。
 - 面向 Animation Blueprint EventGraph/functions 的 BSLFragment integration。
 - 高级 animation nodes 和 raw-node escape hatch。
+- IKRig/IKRetargeter generator。
+- PoseSearchSchema、PoseSearchDatabase 和 ChooserTable generator。
+- ControlRigBlueprint lifecycle generator，以及后续 RigVM 图语言研究。
 - Extraction、round-trip、MCP docs 和 fixtures。
 
-这样能让 BlendSpace 立即可用，让 AnimationBlueprint lifecycle 在进入图复杂性之前可验证，并给图语言在实现前留下稳定空间。
+这样能让 BlendSpace、Montage 等可独立打开和复用的资产先落地，让 AnimationBlueprint lifecycle 在进入图复杂性之前可验证，并给图语言在实现前留下稳定空间。
