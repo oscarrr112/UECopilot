@@ -440,6 +440,11 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 			return false;
 		}
 		const FName CurveFName(*CurveName);
+		if (CurveFName.IsNone())
+		{
+			OutError = TEXT("FloatCurves entries require a valid non-None Name");
+			return false;
+		}
 		if (CurveNames.Contains(CurveFName))
 		{
 			OutError = FString::Printf(TEXT("FloatCurves contains duplicate Name '%s'"), *CurveName);
@@ -455,7 +460,7 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 
 		const TArray<TSharedPtr<FJsonValue>>& Keys = (*CurveObject)->GetArrayField(TEXT("Keys"));
 		bool bHasPreviousTime = false;
-		double PreviousTime = 0.0;
+		float PreviousTime = 0.0f;
 		for (const TSharedPtr<FJsonValue>& KeyValue : Keys)
 		{
 			const TSharedPtr<FJsonObject>* KeyObject = nullptr;
@@ -471,17 +476,18 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Time"), *CurveName);
 				return false;
 			}
-			if (!FMath::IsFinite(Time) || Time < 0.0)
+			const float TimeFloat = static_cast<float>(Time);
+			if (!FMath::IsFinite(TimeFloat) || TimeFloat < 0.0f)
 			{
 				OutError = FString::Printf(TEXT("Float curve '%s' key Time must be finite and non-negative"), *CurveName);
 				return false;
 			}
-			if (bHasPreviousTime && Time <= PreviousTime)
+			if (bHasPreviousTime && TimeFloat <= PreviousTime)
 			{
 				OutError = FString::Printf(TEXT("Float curve '%s' key Time values must be strictly increasing"), *CurveName);
 				return false;
 			}
-			PreviousTime = Time;
+			PreviousTime = TimeFloat;
 			bHasPreviousTime = true;
 
 			double Value = 0.0;
@@ -490,7 +496,8 @@ bool FAnimSequenceGenerator::ValidateFloatCurves(
 				OutError = FString::Printf(TEXT("Float curve '%s' key requires numeric Value"), *CurveName);
 				return false;
 			}
-			if (!FMath::IsFinite(Value))
+			const float ValueFloat = static_cast<float>(Value);
+			if (!FMath::IsFinite(ValueFloat))
 			{
 				OutError = FString::Printf(TEXT("Float curve '%s' key Value must be finite"), *CurveName);
 				return false;
