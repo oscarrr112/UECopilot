@@ -1,0 +1,15 @@
+{
+  "AssetType": "AnimSequence",
+  "Name": "AS_Minimal",
+  "Path": "/Game/Generated/Animation",
+  "Action": "Update",
+  "Notifies": [
+    { "Name": "Footstep", "Time": 0.1, "TrackIndex": 0 }
+  ],
+  "NotifyStates": [
+    { "Name": "Window", "Time": 0.15, "Duration": 0.1, "TrackIndex": 0 }
+  ],
+  "SyncMarkers": [
+    { "Name": "LeftFoot", "Time": 0.1, "TrackIndex": 0 }
+  ]
+}

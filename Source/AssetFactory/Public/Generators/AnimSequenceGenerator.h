@@ -40,6 +40,12 @@ private:
 	bool ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<FJsonObject> Config, FString& OutError) const;
 	bool ValidateFloatCurves(const TArray<TSharedPtr<FJsonValue>>& FloatCurves, FString& OutError) const;
 	bool ApplyFloatCurves(UAnimSequence* AnimSequence, const TArray<TSharedPtr<FJsonValue>>& FloatCurves, FString& OutError) const;
+	bool ValidateNotifies(const TArray<TSharedPtr<FJsonValue>>& Notifies, TOptional<float> PlayLength, FString& OutError) const;
+	bool ApplyNotifies(UAnimSequence* AnimSequence, const TArray<TSharedPtr<FJsonValue>>& Notifies, FString& OutError) const;
+	bool ValidateNotifyStates(const TArray<TSharedPtr<FJsonValue>>& NotifyStates, TOptional<float> PlayLength, FString& OutError) const;
+	bool ApplyNotifyStates(UAnimSequence* AnimSequence, const TArray<TSharedPtr<FJsonValue>>& NotifyStates, FString& OutError) const;
+	bool ValidateSyncMarkers(const TArray<TSharedPtr<FJsonValue>>& SyncMarkers, TOptional<float> PlayLength, FString& OutError) const;
+	bool ApplySyncMarkers(UAnimSequence* AnimSequence, const TArray<TSharedPtr<FJsonValue>>& SyncMarkers, FString& OutError) const;
 	ERichCurveInterpMode ParseInterpMode(const FString& InterpMode) const;
 	FString InterpModeToString(ERichCurveInterpMode InterpMode) const;
 	bool SaveAnimSequence(UAnimSequence* AnimSequence, FString& OutError) const;

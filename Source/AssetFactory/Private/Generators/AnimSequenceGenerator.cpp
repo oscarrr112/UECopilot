@@ -7,6 +7,7 @@
 #include "Animation/AnimData/CurveIdentifier.h"
 #include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimTypes.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/SkeletalMesh.h"
@@ -21,6 +22,198 @@ namespace
 bool IsPositiveIntegerNumber(double Value)
 {
 	return Value >= 1.0 && FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value));
+}
+
+TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
+{
+	if (!AnimSequence)
+	{
+		return TOptional<float>();
+	}
+
+	const float PlayLength = AnimSequence->GetPlayLength();
+	return FMath::IsFinite(PlayLength) && PlayLength >= 0.0f
+		? TOptional<float>(PlayLength)
+		: TOptional<float>();
+}
+
+bool TryGetEntryObject(
+	const TSharedPtr<FJsonValue>& EntryValue,
+	const TCHAR* FieldName,
+	TSharedPtr<FJsonObject>& OutObject,
+	FString& OutError)
+{
+	const TSharedPtr<FJsonObject>* EntryObject = nullptr;
+	if (!EntryValue.IsValid() || !EntryValue->TryGetObject(EntryObject) || !EntryObject || !EntryObject->IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s entries must be objects"), FieldName);
+		return false;
+	}
+
+	OutObject = *EntryObject;
+	return true;
+}
+
+bool TryGetValidName(
+	const TSharedPtr<FJsonObject>& EntryObject,
+	const TCHAR* FieldName,
+	FString& OutName,
+	FName& OutFName,
+	FString& OutError)
+{
+	if (!EntryObject->TryGetStringField(TEXT("Name"), OutName) || OutName.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("%s entries require non-empty Name"), FieldName);
+		return false;
+	}
+
+	OutFName = FName(*OutName);
+	if (OutFName.IsNone())
+	{
+		OutError = FString::Printf(TEXT("%s entries require a valid non-None Name"), FieldName);
+		return false;
+	}
+
+	return true;
+}
+
+bool TryGetFiniteFloatField(
+	const TSharedPtr<FJsonObject>& EntryObject,
+	const TCHAR* FieldName,
+	const FString& Context,
+	float& OutValue,
+	FString& OutError)
+{
+	double RawValue = 0.0;
+	if (!EntryObject->TryGetNumberField(FieldName, RawValue))
+	{
+		OutError = FString::Printf(TEXT("%s requires numeric %s"), *Context, FieldName);
+		return false;
+	}
+
+	const float FloatValue = static_cast<float>(RawValue);
+	if (!FMath::IsFinite(FloatValue))
+	{
+		OutError = FString::Printf(TEXT("%s %s must be finite"), *Context, FieldName);
+		return false;
+	}
+
+	OutValue = FloatValue;
+	return true;
+}
+
+bool RejectUnsupportedNotifyClassFields(
+	const TSharedPtr<FJsonObject>& EntryObject,
+	const TCHAR* FieldName,
+	const FString& Context,
+	FString& OutError)
+{
+	for (const TCHAR* UnsupportedField : { TEXT("NotifyClass"), TEXT("NotifyStateClass"), TEXT("Class") })
+	{
+		if (EntryObject->HasField(UnsupportedField))
+		{
+			OutError = FString::Printf(TEXT("%s does not support class-based %s field '%s'"), *Context, FieldName, UnsupportedField);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool TryGetTrackIndex(
+	const TSharedPtr<FJsonObject>& EntryObject,
+	const FString& Context,
+	int32& OutTrackIndex,
+	FString& OutError)
+{
+	double RawTrackIndex = 0.0;
+	if (!EntryObject->TryGetNumberField(TEXT("TrackIndex"), RawTrackIndex))
+	{
+		OutError = FString::Printf(TEXT("%s requires numeric TrackIndex"), *Context);
+		return false;
+	}
+
+	const double RoundedTrackIndex = FMath::RoundToDouble(RawTrackIndex);
+	if (!FMath::IsFinite(static_cast<float>(RawTrackIndex)) ||
+		RawTrackIndex < 0.0 ||
+		RawTrackIndex > static_cast<double>(MAX_int32) ||
+		RawTrackIndex != RoundedTrackIndex)
+	{
+		OutError = FString::Printf(TEXT("%s TrackIndex must be a non-negative integer"), *Context);
+		return false;
+	}
+
+	OutTrackIndex = static_cast<int32>(RoundedTrackIndex);
+	return true;
+}
+
+bool ValidateTimeWithinPlayLength(
+	float Time,
+	TOptional<float> PlayLength,
+	const FString& Context,
+	FString& OutError)
+{
+	if (Time < 0.0f)
+	{
+		OutError = FString::Printf(TEXT("%s Time must be non-negative"), *Context);
+		return false;
+	}
+	if (PlayLength.IsSet() && Time > PlayLength.GetValue() + KINDA_SMALL_NUMBER)
+	{
+		OutError = FString::Printf(TEXT("%s Time is outside sequence length"), *Context);
+		return false;
+	}
+
+	return true;
+}
+
+bool ValidateTimeRangeWithinPlayLength(
+	float Time,
+	float Duration,
+	TOptional<float> PlayLength,
+	const FString& Context,
+	FString& OutError)
+{
+	if (Duration <= 0.0f)
+	{
+		OutError = FString::Printf(TEXT("%s requires positive Duration"), *Context);
+		return false;
+	}
+	if (!ValidateTimeWithinPlayLength(Time, PlayLength, Context, OutError))
+	{
+		return false;
+	}
+
+	const float EndTime = Time + Duration;
+	if (!FMath::IsFinite(EndTime))
+	{
+		OutError = FString::Printf(TEXT("%s end time must be finite"), *Context);
+		return false;
+	}
+	if (PlayLength.IsSet() && EndTime > PlayLength.GetValue() + KINDA_SMALL_NUMBER)
+	{
+		OutError = FString::Printf(TEXT("%s time range is outside sequence length"), *Context);
+		return false;
+	}
+
+	return true;
+}
+
+bool IsSupportedNamedNotify(const FAnimNotifyEvent& NotifyEvent)
+{
+	return !NotifyEvent.IsBlueprintNotify() && !NotifyEvent.NotifyName.IsNone() && NotifyEvent.Duration <= 0.0f;
+}
+
+bool IsSupportedNamedNotifyState(const FAnimNotifyEvent& NotifyEvent)
+{
+	return !NotifyEvent.IsBlueprintNotify() && !NotifyEvent.NotifyName.IsNone() && NotifyEvent.Duration > 0.0f;
+}
+
+void RefreshNotifyData(UAnimSequence* AnimSequence)
+{
+	AnimSequence->SortNotifies();
+	AnimSequence->InitializeNotifyTrack();
+	AnimSequence->RefreshCacheData();
 }
 }
 
@@ -298,6 +491,52 @@ TOptional<FString> FAnimSequenceGenerator::ValidateConfig(TSharedPtr<FJsonObject
 		}
 	}
 
+	const TOptional<float> ExistingPlayLength = GetValidatedPlayLength(ExistingAnimSequence);
+	if (Config->HasField(TEXT("Notifies")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
+		if (!Config->TryGetArrayField(TEXT("Notifies"), Notifies) || !Notifies)
+		{
+			return FString(TEXT("'Notifies' must be an array"));
+		}
+
+		FString Error;
+		if (!ValidateNotifies(*Notifies, ExistingPlayLength, Error))
+		{
+			return Error;
+		}
+	}
+
+	if (Config->HasField(TEXT("NotifyStates")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
+		if (!Config->TryGetArrayField(TEXT("NotifyStates"), NotifyStates) || !NotifyStates)
+		{
+			return FString(TEXT("'NotifyStates' must be an array"));
+		}
+
+		FString Error;
+		if (!ValidateNotifyStates(*NotifyStates, ExistingPlayLength, Error))
+		{
+			return Error;
+		}
+	}
+
+	if (Config->HasField(TEXT("SyncMarkers")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SyncMarkers = nullptr;
+		if (!Config->TryGetArrayField(TEXT("SyncMarkers"), SyncMarkers) || !SyncMarkers)
+		{
+			return FString(TEXT("'SyncMarkers' must be an array"));
+		}
+
+		FString Error;
+		if (!ValidateSyncMarkers(*SyncMarkers, ExistingPlayLength, Error))
+		{
+			return Error;
+		}
+	}
+
 	return TOptional<FString>();
 }
 
@@ -351,6 +590,60 @@ TSharedPtr<FJsonObject> FAnimSequenceGenerator::Extract(UObject* Asset, bool bDi
 		{
 			Config->SetArrayField(TEXT("FloatCurves"), FloatCurveValues);
 		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> NotifyValues;
+	TArray<TSharedPtr<FJsonValue>> NotifyStateValues;
+	for (const FAnimNotifyEvent& NotifyEvent : AnimSequence->Notifies)
+	{
+		if (IsSupportedNamedNotify(NotifyEvent) || IsSupportedNamedNotifyState(NotifyEvent))
+		{
+			TSharedPtr<FJsonObject> NotifyJson = MakeShared<FJsonObject>();
+			NotifyJson->SetStringField(TEXT("Name"), NotifyEvent.NotifyName.ToString());
+			NotifyJson->SetNumberField(TEXT("Time"), NotifyEvent.GetTime());
+			NotifyJson->SetNumberField(TEXT("TrackIndex"), NotifyEvent.TrackIndex);
+
+			if (IsSupportedNamedNotifyState(NotifyEvent))
+			{
+				NotifyJson->SetNumberField(TEXT("Duration"), NotifyEvent.Duration);
+				NotifyStateValues.Add(MakeShared<FJsonValueObject>(NotifyJson));
+			}
+			else
+			{
+				NotifyValues.Add(MakeShared<FJsonValueObject>(NotifyJson));
+			}
+		}
+	}
+	if (NotifyValues.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("Notifies"), NotifyValues);
+	}
+	if (NotifyStateValues.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("NotifyStates"), NotifyStateValues);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SyncMarkerValues;
+	for (const FAnimSyncMarker& Marker : AnimSequence->AuthoredSyncMarkers)
+	{
+		if (Marker.MarkerName.IsNone())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> MarkerJson = MakeShared<FJsonObject>();
+		MarkerJson->SetStringField(TEXT("Name"), Marker.MarkerName.ToString());
+		MarkerJson->SetNumberField(TEXT("Time"), Marker.Time);
+#if WITH_EDITORONLY_DATA
+		MarkerJson->SetNumberField(TEXT("TrackIndex"), Marker.TrackIndex);
+#else
+		MarkerJson->SetNumberField(TEXT("TrackIndex"), 0);
+#endif
+		SyncMarkerValues.Add(MakeShared<FJsonValueObject>(MarkerJson));
+	}
+	if (SyncMarkerValues.Num() > 0)
+	{
+		Config->SetArrayField(TEXT("SyncMarkers"), SyncMarkerValues);
 	}
 	return Config;
 }
@@ -654,6 +947,325 @@ ERichCurveInterpMode FAnimSequenceGenerator::ParseInterpMode(const FString& Inte
 	return RCIM_Linear;
 }
 
+bool FAnimSequenceGenerator::ValidateNotifies(
+	const TArray<TSharedPtr<FJsonValue>>& Notifies,
+	TOptional<float> PlayLength,
+	FString& OutError) const
+{
+	for (const TSharedPtr<FJsonValue>& NotifyValue : Notifies)
+	{
+		TSharedPtr<FJsonObject> NotifyObject;
+		if (!TryGetEntryObject(NotifyValue, TEXT("Notifies"), NotifyObject, OutError))
+		{
+			return false;
+		}
+
+		FString NotifyName;
+		FName NotifyFName;
+		if (!TryGetValidName(NotifyObject, TEXT("Notifies"), NotifyName, NotifyFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("Notify '%s'"), *NotifyName);
+		if (!RejectUnsupportedNotifyClassFields(NotifyObject, TEXT("Notifies"), Context, OutError))
+		{
+			return false;
+		}
+
+		float Time = 0.0f;
+		if (!TryGetFiniteFloatField(NotifyObject, TEXT("Time"), Context, Time, OutError) ||
+			!ValidateTimeWithinPlayLength(Time, PlayLength, Context, OutError))
+		{
+			return false;
+		}
+
+		int32 TrackIndex = 0;
+		if (!TryGetTrackIndex(NotifyObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool FAnimSequenceGenerator::ApplyNotifies(
+	UAnimSequence* AnimSequence,
+	const TArray<TSharedPtr<FJsonValue>>& Notifies,
+	FString& OutError) const
+{
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
+	if (!ValidateNotifies(Notifies, GetValidatedPlayLength(AnimSequence), OutError))
+	{
+		return false;
+	}
+
+	TArray<FAnimNotifyEvent> UpdatedNotifies;
+	UpdatedNotifies.Reserve(AnimSequence->Notifies.Num() + Notifies.Num());
+	for (const FAnimNotifyEvent& ExistingNotify : AnimSequence->Notifies)
+	{
+		if (!IsSupportedNamedNotify(ExistingNotify))
+		{
+			UpdatedNotifies.Add(ExistingNotify);
+		}
+	}
+
+	for (const TSharedPtr<FJsonValue>& NotifyValue : Notifies)
+	{
+		TSharedPtr<FJsonObject> NotifyObject;
+		if (!TryGetEntryObject(NotifyValue, TEXT("Notifies"), NotifyObject, OutError))
+		{
+			return false;
+		}
+
+		FString NotifyName;
+		FName NotifyFName;
+		if (!TryGetValidName(NotifyObject, TEXT("Notifies"), NotifyName, NotifyFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("Notify '%s'"), *NotifyName);
+		float Time = 0.0f;
+		int32 TrackIndex = 0;
+		if (!TryGetFiniteFloatField(NotifyObject, TEXT("Time"), Context, Time, OutError) ||
+			!TryGetTrackIndex(NotifyObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+
+		FAnimNotifyEvent NotifyEvent;
+		NotifyEvent.NotifyName = NotifyFName;
+		NotifyEvent.TrackIndex = TrackIndex;
+		NotifyEvent.SetTime(Time);
+		NotifyEvent.RefreshTriggerOffset(AnimSequence->CalculateOffsetForNotify(Time));
+#if WITH_EDITORONLY_DATA
+		NotifyEvent.Guid = FGuid::NewGuid();
+#endif
+		UpdatedNotifies.Add(NotifyEvent);
+	}
+
+	AnimSequence->Notifies = MoveTemp(UpdatedNotifies);
+	RefreshNotifyData(AnimSequence);
+	return true;
+}
+
+bool FAnimSequenceGenerator::ValidateNotifyStates(
+	const TArray<TSharedPtr<FJsonValue>>& NotifyStates,
+	TOptional<float> PlayLength,
+	FString& OutError) const
+{
+	for (const TSharedPtr<FJsonValue>& NotifyValue : NotifyStates)
+	{
+		TSharedPtr<FJsonObject> NotifyObject;
+		if (!TryGetEntryObject(NotifyValue, TEXT("NotifyStates"), NotifyObject, OutError))
+		{
+			return false;
+		}
+
+		FString NotifyName;
+		FName NotifyFName;
+		if (!TryGetValidName(NotifyObject, TEXT("NotifyStates"), NotifyName, NotifyFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("NotifyState '%s'"), *NotifyName);
+		if (!RejectUnsupportedNotifyClassFields(NotifyObject, TEXT("NotifyStates"), Context, OutError))
+		{
+			return false;
+		}
+
+		float Time = 0.0f;
+		float Duration = 0.0f;
+		if (!TryGetFiniteFloatField(NotifyObject, TEXT("Time"), Context, Time, OutError) ||
+			!TryGetFiniteFloatField(NotifyObject, TEXT("Duration"), Context, Duration, OutError) ||
+			!ValidateTimeRangeWithinPlayLength(Time, Duration, PlayLength, Context, OutError))
+		{
+			return false;
+		}
+
+		int32 TrackIndex = 0;
+		if (!TryGetTrackIndex(NotifyObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool FAnimSequenceGenerator::ApplyNotifyStates(
+	UAnimSequence* AnimSequence,
+	const TArray<TSharedPtr<FJsonValue>>& NotifyStates,
+	FString& OutError) const
+{
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
+	if (!ValidateNotifyStates(NotifyStates, GetValidatedPlayLength(AnimSequence), OutError))
+	{
+		return false;
+	}
+
+	TArray<FAnimNotifyEvent> UpdatedNotifies;
+	UpdatedNotifies.Reserve(AnimSequence->Notifies.Num() + NotifyStates.Num());
+	for (const FAnimNotifyEvent& ExistingNotify : AnimSequence->Notifies)
+	{
+		if (!IsSupportedNamedNotifyState(ExistingNotify))
+		{
+			UpdatedNotifies.Add(ExistingNotify);
+		}
+	}
+
+	for (const TSharedPtr<FJsonValue>& NotifyValue : NotifyStates)
+	{
+		TSharedPtr<FJsonObject> NotifyObject;
+		if (!TryGetEntryObject(NotifyValue, TEXT("NotifyStates"), NotifyObject, OutError))
+		{
+			return false;
+		}
+
+		FString NotifyName;
+		FName NotifyFName;
+		if (!TryGetValidName(NotifyObject, TEXT("NotifyStates"), NotifyName, NotifyFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("NotifyState '%s'"), *NotifyName);
+		float Time = 0.0f;
+		float Duration = 0.0f;
+		int32 TrackIndex = 0;
+		if (!TryGetFiniteFloatField(NotifyObject, TEXT("Time"), Context, Time, OutError) ||
+			!TryGetFiniteFloatField(NotifyObject, TEXT("Duration"), Context, Duration, OutError) ||
+			!TryGetTrackIndex(NotifyObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+
+		FAnimNotifyEvent NotifyEvent;
+		NotifyEvent.NotifyName = NotifyFName;
+		NotifyEvent.TrackIndex = TrackIndex;
+		NotifyEvent.SetTime(Time);
+		NotifyEvent.SetDuration(Duration);
+		NotifyEvent.RefreshTriggerOffset(AnimSequence->CalculateOffsetForNotify(Time));
+		NotifyEvent.RefreshEndTriggerOffset(AnimSequence->CalculateOffsetForNotify(Time + Duration));
+#if WITH_EDITORONLY_DATA
+		NotifyEvent.Guid = FGuid::NewGuid();
+#endif
+		UpdatedNotifies.Add(NotifyEvent);
+	}
+
+	AnimSequence->Notifies = MoveTemp(UpdatedNotifies);
+	RefreshNotifyData(AnimSequence);
+	return true;
+}
+
+bool FAnimSequenceGenerator::ValidateSyncMarkers(
+	const TArray<TSharedPtr<FJsonValue>>& SyncMarkers,
+	TOptional<float> PlayLength,
+	FString& OutError) const
+{
+	for (const TSharedPtr<FJsonValue>& MarkerValue : SyncMarkers)
+	{
+		TSharedPtr<FJsonObject> MarkerObject;
+		if (!TryGetEntryObject(MarkerValue, TEXT("SyncMarkers"), MarkerObject, OutError))
+		{
+			return false;
+		}
+
+		FString MarkerName;
+		FName MarkerFName;
+		if (!TryGetValidName(MarkerObject, TEXT("SyncMarkers"), MarkerName, MarkerFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("Sync marker '%s'"), *MarkerName);
+		float Time = 0.0f;
+		if (!TryGetFiniteFloatField(MarkerObject, TEXT("Time"), Context, Time, OutError) ||
+			!ValidateTimeWithinPlayLength(Time, PlayLength, Context, OutError))
+		{
+			return false;
+		}
+
+		int32 TrackIndex = 0;
+		if (!TryGetTrackIndex(MarkerObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool FAnimSequenceGenerator::ApplySyncMarkers(
+	UAnimSequence* AnimSequence,
+	const TArray<TSharedPtr<FJsonValue>>& SyncMarkers,
+	FString& OutError) const
+{
+	if (!AnimSequence)
+	{
+		OutError = TEXT("Invalid AnimSequence");
+		return false;
+	}
+	if (!ValidateSyncMarkers(SyncMarkers, GetValidatedPlayLength(AnimSequence), OutError))
+	{
+		return false;
+	}
+
+	TArray<FAnimSyncMarker> UpdatedSyncMarkers;
+	UpdatedSyncMarkers.Reserve(SyncMarkers.Num());
+	for (const TSharedPtr<FJsonValue>& MarkerValue : SyncMarkers)
+	{
+		TSharedPtr<FJsonObject> MarkerObject;
+		if (!TryGetEntryObject(MarkerValue, TEXT("SyncMarkers"), MarkerObject, OutError))
+		{
+			return false;
+		}
+
+		FString MarkerName;
+		FName MarkerFName;
+		if (!TryGetValidName(MarkerObject, TEXT("SyncMarkers"), MarkerName, MarkerFName, OutError))
+		{
+			return false;
+		}
+
+		const FString Context = FString::Printf(TEXT("Sync marker '%s'"), *MarkerName);
+		float Time = 0.0f;
+		int32 TrackIndex = 0;
+		if (!TryGetFiniteFloatField(MarkerObject, TEXT("Time"), Context, Time, OutError) ||
+			!TryGetTrackIndex(MarkerObject, Context, TrackIndex, OutError))
+		{
+			return false;
+		}
+
+		FAnimSyncMarker Marker;
+		Marker.MarkerName = MarkerFName;
+		Marker.Time = Time;
+#if WITH_EDITORONLY_DATA
+		Marker.TrackIndex = TrackIndex;
+		Marker.Guid = FGuid::NewGuid();
+#endif
+		UpdatedSyncMarkers.Add(Marker);
+	}
+
+	AnimSequence->InitializeNotifyTrack();
+	AnimSequence->AuthoredSyncMarkers = MoveTemp(UpdatedSyncMarkers);
+	AnimSequence->SortSyncMarkers();
+	AnimSequence->RefreshSyncMarkerDataFromAuthored();
+	AnimSequence->RefreshCacheData();
+	return true;
+}
+
 FString FAnimSequenceGenerator::InterpModeToString(ERichCurveInterpMode InterpMode) const
 {
 	switch (InterpMode)
@@ -786,6 +1398,51 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 		}
 
 		if (!ApplyFloatCurves(AnimSequence, *FloatCurves, OutError))
+		{
+			return false;
+		}
+	}
+
+	if (Config->HasField(TEXT("Notifies")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
+		if (!Config->TryGetArrayField(TEXT("Notifies"), Notifies) || !Notifies)
+		{
+			OutError = TEXT("'Notifies' must be an array");
+			return false;
+		}
+
+		if (!ApplyNotifies(AnimSequence, *Notifies, OutError))
+		{
+			return false;
+		}
+	}
+
+	if (Config->HasField(TEXT("NotifyStates")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
+		if (!Config->TryGetArrayField(TEXT("NotifyStates"), NotifyStates) || !NotifyStates)
+		{
+			OutError = TEXT("'NotifyStates' must be an array");
+			return false;
+		}
+
+		if (!ApplyNotifyStates(AnimSequence, *NotifyStates, OutError))
+		{
+			return false;
+		}
+	}
+
+	if (Config->HasField(TEXT("SyncMarkers")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SyncMarkers = nullptr;
+		if (!Config->TryGetArrayField(TEXT("SyncMarkers"), SyncMarkers) || !SyncMarkers)
+		{
+			OutError = TEXT("'SyncMarkers' must be an array");
+			return false;
+		}
+
+		if (!ApplySyncMarkers(AnimSequence, *SyncMarkers, OutError))
 		{
 			return false;
 		}
