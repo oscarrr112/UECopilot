@@ -4,11 +4,10 @@
 
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
-#include "AssetRegistry/AssetData.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FrameRate.h"
-#include "ObjectTools.h"
+#include "Misc/Guid.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -19,27 +18,10 @@ const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
 const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
 const TCHAR* PropertiesMustBeObjectAssetName = TEXT("AS_PropertiesMustBeObject");
 const TCHAR* PropertiesPrevalidationAssetName = TEXT("AS_PropertiesPrevalidation");
-const TCHAR* InvalidCreatePropertiesPreflightAssetName = TEXT("AS_InvalidCreatePropertiesPreflight");
 
 FString MakeAnimSequenceObjectPath(const TCHAR* AssetName)
 {
 	return FString::Printf(TEXT("%s/%s.%s"), TestAnimPath, AssetName, AssetName);
-}
-
-bool DeleteTestAssetIfExists(const TCHAR* AssetName)
-{
-	UObject* ExistingAsset = LoadObject<UObject>(nullptr, *MakeAnimSequenceObjectPath(AssetName));
-	if (!ExistingAsset)
-	{
-		return true;
-	}
-
-	TArray<FAssetData> AssetsToDelete;
-	AssetsToDelete.Add(FAssetData(ExistingAsset));
-	const int32 DeletedAssetCount = ObjectTools::DeleteAssets(AssetsToDelete, false);
-	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
-
-	return DeletedAssetCount == 1 && !LoadObject<UObject>(nullptr, *MakeAnimSequenceObjectPath(AssetName));
 }
 
 TSharedPtr<FJsonObject> MakeAnimSequenceBaseConfig()
@@ -384,20 +366,15 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAnimSequencePrevalidateCreatePropertiesBeforeAssetCreationTest::RunTest(const FString& Parameters)
 {
 	FAnimSequenceGenerator Generator;
-	const FString InvalidAssetObjectPath = MakeAnimSequenceObjectPath(InvalidCreatePropertiesPreflightAssetName);
-
-	TestTrue(
-		TEXT("Existing deterministic test asset is removed before create preflight test"),
-		DeleteTestAssetIfExists(InvalidCreatePropertiesPreflightAssetName));
-	if (LoadObject<UAnimSequence>(nullptr, *InvalidAssetObjectPath))
-	{
-		return false;
-	}
+	const FString InvalidCreatePropertiesPreflightAssetName = FString::Printf(
+		TEXT("AS_InvalidCreatePropertiesPreflight_%s"),
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString InvalidAssetObjectPath = MakeAnimSequenceObjectPath(*InvalidCreatePropertiesPreflightAssetName);
 
 	const FGenerationResult InvalidResult = Generator.Generate(
 		InvalidCreatePropertiesPreflightAssetName,
 		TestAnimPath,
-		EGenerationAction::CreateOrUpdate,
+		EGenerationAction::Create,
 		MakeInvalidPropertiesCreateConfig());
 
 	TestEqual(TEXT("Invalid create Properties patch fails"), InvalidResult.Status, EGenerationStatus::Failed);
