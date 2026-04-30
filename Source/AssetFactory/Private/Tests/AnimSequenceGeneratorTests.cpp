@@ -4,9 +4,11 @@
 
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
+#include "AssetRegistry/AssetData.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FrameRate.h"
+#include "ObjectTools.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -17,6 +19,28 @@ const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
 const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
 const TCHAR* PropertiesMustBeObjectAssetName = TEXT("AS_PropertiesMustBeObject");
 const TCHAR* PropertiesPrevalidationAssetName = TEXT("AS_PropertiesPrevalidation");
+const TCHAR* InvalidCreatePropertiesPreflightAssetName = TEXT("AS_InvalidCreatePropertiesPreflight");
+
+FString MakeAnimSequenceObjectPath(const TCHAR* AssetName)
+{
+	return FString::Printf(TEXT("%s/%s.%s"), TestAnimPath, AssetName, AssetName);
+}
+
+bool DeleteTestAssetIfExists(const TCHAR* AssetName)
+{
+	UObject* ExistingAsset = LoadObject<UObject>(nullptr, *MakeAnimSequenceObjectPath(AssetName));
+	if (!ExistingAsset)
+	{
+		return true;
+	}
+
+	TArray<FAssetData> AssetsToDelete;
+	AssetsToDelete.Add(FAssetData(ExistingAsset));
+	const int32 DeletedAssetCount = ObjectTools::DeleteAssets(AssetsToDelete, false);
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+	return DeletedAssetCount == 1 && !LoadObject<UObject>(nullptr, *MakeAnimSequenceObjectPath(AssetName));
+}
 
 TSharedPtr<FJsonObject> MakeAnimSequenceBaseConfig()
 {
@@ -83,6 +107,17 @@ TSharedPtr<FJsonObject> MakeInvalidPropertiesPatchConfig()
 	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
 	Config->SetNumberField(TEXT("NumberOfFrames"), 24);
 	Config->SetNumberField(TEXT("RateScale"), 1.75);
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("DefinitelyNotARealAnimSequenceProperty"), 42.0);
+	Config->SetObjectField(TEXT("Properties"), Properties);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeInvalidPropertiesCreateConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
 
 	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
 	Properties->SetNumberField(TEXT("DefinitelyNotARealAnimSequenceProperty"), 42.0);
@@ -337,6 +372,39 @@ bool FAnimSequencePrevalidatePropertiesBeforeMutationTest::RunTest(const FString
 		? AnimSequence->GetPreviewMesh(false)->GetPathName()
 		: FString();
 	TestEqual(TEXT("PreviewMesh is unchanged after failed Properties patch"), CurrentPreviewMeshPath, OriginalPreviewMeshPath);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequencePrevalidateCreatePropertiesBeforeAssetCreationTest,
+	"AssetFactory.AnimSequence.PrevalidateCreatePropertiesBeforeAssetCreation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequencePrevalidateCreatePropertiesBeforeAssetCreationTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+	const FString InvalidAssetObjectPath = MakeAnimSequenceObjectPath(InvalidCreatePropertiesPreflightAssetName);
+
+	TestTrue(
+		TEXT("Existing deterministic test asset is removed before create preflight test"),
+		DeleteTestAssetIfExists(InvalidCreatePropertiesPreflightAssetName));
+	if (LoadObject<UAnimSequence>(nullptr, *InvalidAssetObjectPath))
+	{
+		return false;
+	}
+
+	const FGenerationResult InvalidResult = Generator.Generate(
+		InvalidCreatePropertiesPreflightAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeInvalidPropertiesCreateConfig());
+
+	TestEqual(TEXT("Invalid create Properties patch fails"), InvalidResult.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Invalid create Properties patch reports generic properties failure"), InvalidResult.Message, FString(TEXT("Failed to apply AnimSequence Properties")));
+	TestNull(
+		TEXT("Invalid create Properties patch does not leave a loadable AnimSequence asset"),
+		LoadObject<UAnimSequence>(nullptr, *InvalidAssetObjectPath));
 
 	return true;
 }

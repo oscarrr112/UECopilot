@@ -120,6 +120,23 @@ bool PreflightPropertiesPatch(
 	return true;
 }
 
+bool PreflightCreatePropertiesPatch(const TSharedPtr<FJsonObject>& Properties, FString& OutError)
+{
+	if (!Properties.IsValid())
+	{
+		return true;
+	}
+
+	UAnimSequence* ValidationAnimSequence = NewObject<UAnimSequence>(GetTransientPackage(), UAnimSequence::StaticClass());
+	if (!ValidationAnimSequence || !FPropertySetterUtils::SetPropertiesFromJson(ValidationAnimSequence, Properties))
+	{
+		OutError = TEXT("Failed to apply AnimSequence Properties");
+		return false;
+	}
+
+	return true;
+}
+
 TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 {
 	if (!AnimSequence)
@@ -476,6 +493,11 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 	}
 
 	FString Error;
+	if (!bExists && !PreflightCreatePropertiesPatch(Properties, Error))
+	{
+		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+	}
+
 	UAnimSequence* AnimSequence = nullptr;
 	if (bExists)
 	{
