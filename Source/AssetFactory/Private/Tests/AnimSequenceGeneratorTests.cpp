@@ -2,6 +2,7 @@
 
 #include "Generators/AnimSequenceGenerator.h"
 
+#include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
 #include "Dom/JsonValue.h"
@@ -18,6 +19,8 @@ const TCHAR* TimingPrevalidationAssetName = TEXT("AS_PrevalidateTimingFields");
 const TCHAR* ReflectedPropertiesAssetName = TEXT("AS_ReflectedProperties");
 const TCHAR* PropertiesMustBeObjectAssetName = TEXT("AS_PropertiesMustBeObject");
 const TCHAR* PropertiesPrevalidationAssetName = TEXT("AS_PropertiesPrevalidation");
+const TCHAR* TimingUpperBoundAssetName = TEXT("AS_TimingUpperBoundPrevalidation");
+const TCHAR* FloatCurvesPrevalidationAssetName = TEXT("AS_FloatCurvesPrevalidation");
 
 FString MakeAnimSequenceObjectPath(const TCHAR* AssetName)
 {
@@ -57,6 +60,82 @@ TSharedPtr<FJsonObject> MakeInvalidTimingPatchConfig()
 	NotifyState->SetNumberField(TEXT("TrackIndex"), 0);
 	NotifyStates.Add(MakeShared<FJsonValueObject>(NotifyState));
 	Config->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeHugeFrameRatePatchConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), static_cast<double>(MAX_int32) + 1.0);
+	FrameRate->SetNumberField(TEXT("Denominator"), 1);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
+	Config->SetNumberField(TEXT("NumberOfFrames"), 12);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeHugeNumberOfFramesPatchConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), 30);
+	FrameRate->SetNumberField(TEXT("Denominator"), 1);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
+	Config->SetNumberField(TEXT("NumberOfFrames"), static_cast<double>(MAX_int32) + 1.0);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeFloatCurve(const TCHAR* CurveName)
+{
+	TSharedPtr<FJsonObject> Curve = MakeShared<FJsonObject>();
+	Curve->SetStringField(TEXT("Name"), CurveName);
+
+	TArray<TSharedPtr<FJsonValue>> Keys;
+	TSharedPtr<FJsonObject> FirstKey = MakeShared<FJsonObject>();
+	FirstKey->SetNumberField(TEXT("Time"), 0.0);
+	FirstKey->SetNumberField(TEXT("Value"), 1.0);
+	Keys.Add(MakeShared<FJsonValueObject>(FirstKey));
+
+	TSharedPtr<FJsonObject> SecondKey = MakeShared<FJsonObject>();
+	SecondKey->SetNumberField(TEXT("Time"), 0.25);
+	SecondKey->SetNumberField(TEXT("Value"), 2.0);
+	Keys.Add(MakeShared<FJsonValueObject>(SecondKey));
+
+	Curve->SetArrayField(TEXT("Keys"), Keys);
+	return Curve;
+}
+
+TSharedPtr<FJsonObject> MakeSingleFloatCurveConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeAnimSequenceBaseConfig();
+
+	TArray<TSharedPtr<FJsonValue>> FloatCurves;
+	FloatCurves.Add(MakeShared<FJsonValueObject>(MakeFloatCurve(TEXT("ExistingCurve"))));
+	Config->SetArrayField(TEXT("FloatCurves"), FloatCurves);
+
+	return Config;
+}
+
+TSharedPtr<FJsonObject> MakeInvalidFloatCurvesPatchConfig()
+{
+	TSharedPtr<FJsonObject> Config = MakeShared<FJsonObject>();
+
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), 60);
+	FrameRate->SetNumberField(TEXT("Denominator"), 1);
+	Config->SetObjectField(TEXT("FrameRate"), FrameRate);
+	Config->SetNumberField(TEXT("NumberOfFrames"), 24);
+	Config->SetNumberField(TEXT("RateScale"), 1.75);
+
+	TArray<TSharedPtr<FJsonValue>> FloatCurves;
+	FloatCurves.Add(MakeShared<FJsonValueObject>(MakeFloatCurve(TEXT("DuplicateCurve"))));
+	FloatCurves.Add(MakeShared<FJsonValueObject>(MakeFloatCurve(TEXT("DuplicateCurve"))));
+	Config->SetArrayField(TEXT("FloatCurves"), FloatCurves);
 
 	return Config;
 }
@@ -166,6 +245,156 @@ bool FAnimSequencePrevalidateTimingFieldsTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("FrameRate is unchanged after failed patch"), DataModel->GetFrameRate(), OriginalFrameRate);
 	TestEqual(TEXT("NumberOfFrames is unchanged after failed patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
 	TestEqual(TEXT("Notifies are unchanged after failed patch"), AnimSequence->Notifies.Num(), OriginalNotifyCount);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequenceRejectsHugeTimingFieldsTest,
+	"AssetFactory.AnimSequence.RejectsHugeTimingFieldsBeforeMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequenceRejectsHugeTimingFieldsTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+
+	const FGenerationResult BaseResult = Generator.Generate(
+		TimingUpperBoundAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeAnimSequenceBaseConfig());
+	TestTrue(TEXT("Base AnimSequence is generated"), BaseResult.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_TimingUpperBoundPrevalidation.AS_TimingUpperBoundPrevalidation"));
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("Generated AnimSequence has a data model"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+
+	const FFrameRate OriginalFrameRate = DataModel->GetFrameRate();
+	const int32 OriginalNumberOfFrames = DataModel->GetNumberOfFrames();
+
+	const FGenerationResult HugeFrameRateResult = Generator.Generate(
+		TimingUpperBoundAssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
+		MakeHugeFrameRatePatchConfig());
+
+	TestEqual(TEXT("Huge FrameRate numerator patch fails"), HugeFrameRateResult.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Huge FrameRate numerator reports positive integer validation"), HugeFrameRateResult.Message, FString(TEXT("'FrameRate.Numerator' must be a positive integer")));
+
+	DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("AnimSequence still has a data model after huge FrameRate patch"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+	TestEqual(TEXT("FrameRate is unchanged after huge FrameRate patch"), DataModel->GetFrameRate(), OriginalFrameRate);
+	TestEqual(TEXT("NumberOfFrames is unchanged after huge FrameRate patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
+
+	const FGenerationResult HugeNumberOfFramesResult = Generator.Generate(
+		TimingUpperBoundAssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
+		MakeHugeNumberOfFramesPatchConfig());
+
+	TestEqual(TEXT("Huge NumberOfFrames patch fails"), HugeNumberOfFramesResult.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Huge NumberOfFrames reports positive integer validation"), HugeNumberOfFramesResult.Message, FString(TEXT("'NumberOfFrames' must be a positive integer")));
+
+	DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("AnimSequence still has a data model after huge NumberOfFrames patch"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+	TestEqual(TEXT("FrameRate is unchanged after huge NumberOfFrames patch"), DataModel->GetFrameRate(), OriginalFrameRate);
+	TestEqual(TEXT("NumberOfFrames is unchanged after huge NumberOfFrames patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimSequencePrevalidateFloatCurvesBeforeMutationTest,
+	"AssetFactory.AnimSequence.PrevalidateFloatCurvesBeforeMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimSequencePrevalidateFloatCurvesBeforeMutationTest::RunTest(const FString& Parameters)
+{
+	FAnimSequenceGenerator Generator;
+
+	const FGenerationResult BaseResult = Generator.Generate(
+		FloatCurvesPrevalidationAssetName,
+		TestAnimPath,
+		EGenerationAction::CreateOrUpdate,
+		MakeSingleFloatCurveConfig());
+	TestTrue(TEXT("Base AnimSequence with FloatCurves is generated"), BaseResult.IsSuccess());
+
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(BaseResult.GeneratedAsset);
+	if (!AnimSequence)
+	{
+		AnimSequence = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/Generated/Animation/AS_FloatCurvesPrevalidation.AS_FloatCurvesPrevalidation"));
+	}
+	TestNotNull(TEXT("Generated AnimSequence is loadable"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const IAnimationDataModel* DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("Generated AnimSequence has a data model"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Base AnimSequence has one float curve"), DataModel->GetFloatCurves().Num(), 1);
+	if (DataModel->GetFloatCurves().Num() != 1)
+	{
+		return false;
+	}
+
+	const FFrameRate OriginalFrameRate = DataModel->GetFrameRate();
+	const int32 OriginalNumberOfFrames = DataModel->GetNumberOfFrames();
+	const FName OriginalCurveName = DataModel->GetFloatCurves()[0].GetName();
+	const int32 OriginalCurveKeyCount = DataModel->GetFloatCurves()[0].FloatCurve.GetConstRefOfKeys().Num();
+	const float OriginalRateScale = AnimSequence->RateScale;
+
+	const FGenerationResult InvalidResult = Generator.Generate(
+		FloatCurvesPrevalidationAssetName,
+		TestAnimPath,
+		EGenerationAction::Update,
+		MakeInvalidFloatCurvesPatchConfig());
+
+	TestEqual(TEXT("Invalid FloatCurves patch fails"), InvalidResult.Status, EGenerationStatus::Failed);
+	TestEqual(TEXT("Invalid FloatCurves patch reports duplicate validation"), InvalidResult.Message, FString(TEXT("FloatCurves contains duplicate Name 'DuplicateCurve'")));
+
+	DataModel = AnimSequence->GetDataModel();
+	TestNotNull(TEXT("AnimSequence still has a data model after failed FloatCurves patch"), DataModel);
+	if (!DataModel)
+	{
+		return false;
+	}
+	TestEqual(TEXT("FrameRate is unchanged after failed FloatCurves patch"), DataModel->GetFrameRate(), OriginalFrameRate);
+	TestEqual(TEXT("NumberOfFrames is unchanged after failed FloatCurves patch"), DataModel->GetNumberOfFrames(), OriginalNumberOfFrames);
+	TestEqual(TEXT("RateScale is unchanged after failed FloatCurves patch"), AnimSequence->RateScale, OriginalRateScale);
+	TestEqual(TEXT("Float curve count is unchanged after failed FloatCurves patch"), DataModel->GetFloatCurves().Num(), 1);
+	if (DataModel->GetFloatCurves().Num() != 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Float curve name is unchanged after failed FloatCurves patch"), DataModel->GetFloatCurves()[0].GetName(), OriginalCurveName);
+	TestEqual(TEXT("Float curve key count is unchanged after failed FloatCurves patch"), DataModel->GetFloatCurves()[0].FloatCurve.GetConstRefOfKeys().Num(), OriginalCurveKeyCount);
 
 	return true;
 }

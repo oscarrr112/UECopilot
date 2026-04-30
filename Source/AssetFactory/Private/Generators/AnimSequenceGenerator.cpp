@@ -23,7 +23,10 @@ namespace
 {
 bool IsPositiveIntegerNumber(double Value)
 {
-	return Value >= 1.0 && FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value));
+	return FMath::IsFinite(Value) &&
+		Value >= 1.0 &&
+		Value <= static_cast<double>(MAX_int32) &&
+		FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value));
 }
 
 bool ValidateFrameRateField(const TSharedPtr<FJsonObject>& Config, FString& OutError)
@@ -1516,6 +1519,7 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 		return false;
 	}
 
+	const TArray<TSharedPtr<FJsonValue>>* FloatCurves = nullptr;
 	const TOptional<float> EffectivePlayLength = GetExpectedPlayLength(AnimSequence, Config);
 	if (Config->HasField(TEXT("Notifies")))
 	{
@@ -1552,6 +1556,25 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 			return false;
 		}
 		if (!ValidateSyncMarkers(*SyncMarkers, EffectivePlayLength, OutError))
+		{
+			return false;
+		}
+	}
+	if (Config->HasField(TEXT("FloatCurves")))
+	{
+		if (!Config->TryGetArrayField(TEXT("FloatCurves"), FloatCurves) || !FloatCurves)
+		{
+			OutError = TEXT("'FloatCurves' must be an array");
+			return false;
+		}
+
+		UAnimSequence* ValidationAnimSequence = Cast<UAnimSequence>(StaticDuplicateObject(AnimSequence, GetTransientPackage()));
+		if (!ValidationAnimSequence)
+		{
+			OutError = TEXT("Failed to duplicate AnimSequence for FloatCurves preflight");
+			return false;
+		}
+		if (!ApplyFloatCurves(ValidationAnimSequence, *FloatCurves, OutError))
 		{
 			return false;
 		}
@@ -1662,13 +1685,6 @@ bool FAnimSequenceGenerator::ApplyPatch(UAnimSequence* AnimSequence, TSharedPtr<
 
 	if (Config->HasField(TEXT("FloatCurves")))
 	{
-		const TArray<TSharedPtr<FJsonValue>>* FloatCurves = nullptr;
-		if (!Config->TryGetArrayField(TEXT("FloatCurves"), FloatCurves) || !FloatCurves)
-		{
-			OutError = TEXT("'FloatCurves' must be an array");
-			return false;
-		}
-
 		if (!ApplyFloatCurves(AnimSequence, *FloatCurves, OutError))
 		{
 			return false;
