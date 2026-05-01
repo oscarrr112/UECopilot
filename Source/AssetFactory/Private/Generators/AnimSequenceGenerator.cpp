@@ -176,6 +176,105 @@ void EnsureRestoreSnapshotCoversPatchFields(
 	}
 }
 
+struct FAnimSequenceReflectedPropertySnapshot
+{
+	explicit FAnimSequenceReflectedPropertySnapshot(UObject* SourceObject, FProperty* InProperty)
+		: Property(InProperty)
+	{
+		if (!SourceObject || !Property)
+		{
+			return;
+		}
+
+		StoredValue = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
+		Property->InitializeValue(StoredValue);
+		Property->CopyCompleteValue(StoredValue, Property->ContainerPtrToValuePtr<void>(SourceObject));
+	}
+
+	~FAnimSequenceReflectedPropertySnapshot()
+	{
+		if (StoredValue && Property)
+		{
+			Property->DestroyValue(StoredValue);
+			FMemory::Free(StoredValue);
+		}
+	}
+
+	FAnimSequenceReflectedPropertySnapshot(const FAnimSequenceReflectedPropertySnapshot&) = delete;
+	FAnimSequenceReflectedPropertySnapshot& operator=(const FAnimSequenceReflectedPropertySnapshot&) = delete;
+
+	bool IsValid() const
+	{
+		return Property && StoredValue;
+	}
+
+	void Restore(UObject* TargetObject) const
+	{
+		if (!TargetObject || !IsValid())
+		{
+			return;
+		}
+
+		Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(TargetObject), StoredValue);
+	}
+
+private:
+	FProperty* Property = nullptr;
+	void* StoredValue = nullptr;
+};
+
+using FAnimSequenceReflectedPropertySnapshots = TArray<TUniquePtr<FAnimSequenceReflectedPropertySnapshot>>;
+
+bool CapturePatchedReflectedProperties(
+	UAnimSequence* AnimSequence,
+	const TSharedPtr<FJsonObject>& Properties,
+	FAnimSequenceReflectedPropertySnapshots& OutSnapshots,
+	FString& OutError)
+{
+	OutSnapshots.Reset();
+	if (!AnimSequence || !Properties.IsValid())
+	{
+		return true;
+	}
+
+	UClass* AnimSequenceClass = AnimSequence->GetClass();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
+	{
+		FProperty* Property = AnimSequenceClass ? AnimSequenceClass->FindPropertyByName(*Pair.Key) : nullptr;
+		if (!Property)
+		{
+			OutError = FString::Printf(TEXT("AnimSequence property not found for rollback snapshot: %s"), *Pair.Key);
+			OutSnapshots.Reset();
+			return false;
+		}
+
+		TUniquePtr<FAnimSequenceReflectedPropertySnapshot> Snapshot = MakeUnique<FAnimSequenceReflectedPropertySnapshot>(AnimSequence, Property);
+		if (!Snapshot->IsValid())
+		{
+			OutError = FString::Printf(TEXT("Failed to snapshot AnimSequence property for rollback: %s"), *Pair.Key);
+			OutSnapshots.Reset();
+			return false;
+		}
+
+		OutSnapshots.Add(MoveTemp(Snapshot));
+	}
+
+	return true;
+}
+
+void RestorePatchedReflectedProperties(
+	UAnimSequence* AnimSequence,
+	const FAnimSequenceReflectedPropertySnapshots& Snapshots)
+{
+	for (const TUniquePtr<FAnimSequenceReflectedPropertySnapshot>& Snapshot : Snapshots)
+	{
+		if (Snapshot.IsValid())
+		{
+			Snapshot->Restore(AnimSequence);
+		}
+	}
+}
+
 TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 {
 	if (!AnimSequence)
@@ -574,12 +673,17 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 	}
 
 	TSharedPtr<FJsonObject> ExistingStateSnapshot;
+	FAnimSequenceReflectedPropertySnapshots ExistingReflectedPropertySnapshots;
 	USkeletalMesh* ExistingPreviewMesh = nullptr;
 	if (bExists)
 	{
 		ExistingStateSnapshot = Extract(AnimSequence, false);
 		EnsureRestoreSnapshotCoversPatchFields(ExistingStateSnapshot, Config);
 		ExistingPreviewMesh = AnimSequence->GetPreviewMesh(false);
+		if (!CapturePatchedReflectedProperties(AnimSequence, Properties, ExistingReflectedPropertySnapshots, Error))
+		{
+			return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
+		}
 	}
 
 	if (!ApplyPatch(AnimSequence, Config, Error))
@@ -608,6 +712,7 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 			{
 				AnimSequence->SetPreviewMesh(nullptr, false);
 			}
+			RestorePatchedReflectedProperties(AnimSequence, ExistingReflectedPropertySnapshots);
 		}
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}

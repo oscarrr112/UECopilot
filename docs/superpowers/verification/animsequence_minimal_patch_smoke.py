@@ -440,15 +440,21 @@ def _generate_smoke_assets():
     if subsystem is None:
         raise RuntimeError("AssetFactorySubsystem is unavailable")
 
-    payloads = [
+    create_payloads = [
         _retarget_payload(_load_fixture("AS_Minimal.json", _minimal_payload())),
+    ]
+    patch_payloads = [
         _retarget_payload(_load_fixture("AS_PatchFloatCurve.json", _float_curve_payload())),
         _retarget_payload(_load_fixture("AS_PatchNotifiesSyncMarkers.json", _notify_payload())),
     ]
 
-    report = subsystem.generate_from_string(json.dumps({"Assets": payloads}))
+    report = subsystem.generate_from_string(json.dumps({"Assets": create_payloads}))
     if _report_failures(report):
-        raise RuntimeError("AnimSequence smoke generation failed: {0}".format(_report_summary(report)))
+        raise RuntimeError("AnimSequence smoke create failed: {0}".format(_report_summary(report)))
+
+    report = subsystem.generate_from_string(json.dumps({"Assets": patch_payloads}))
+    if _report_failures(report):
+        raise RuntimeError("AnimSequence smoke patch failed: {0}".format(_report_summary(report)))
 
 
 if GENERATE_SMOKE_ASSETS:
