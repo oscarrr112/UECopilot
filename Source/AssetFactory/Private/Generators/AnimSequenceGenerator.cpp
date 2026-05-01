@@ -158,6 +158,24 @@ void CleanupUnsavedCreatedAnimSequence(UAnimSequence* AnimSequence)
 	AnimSequence->MarkAsGarbage();
 }
 
+void EnsureRestoreSnapshotCoversPatchFields(
+	const TSharedPtr<FJsonObject>& RestoreSnapshot,
+	const TSharedPtr<FJsonObject>& PatchConfig)
+{
+	if (!RestoreSnapshot.IsValid() || !PatchConfig.IsValid())
+	{
+		return;
+	}
+
+	for (const TCHAR* ArrayField : { TEXT("FloatCurves"), TEXT("Notifies"), TEXT("NotifyStates"), TEXT("SyncMarkers") })
+	{
+		if (PatchConfig->HasField(ArrayField) && !RestoreSnapshot->HasField(ArrayField))
+		{
+			RestoreSnapshot->SetArrayField(ArrayField, TArray<TSharedPtr<FJsonValue>>());
+		}
+	}
+}
+
 TOptional<float> GetValidatedPlayLength(const UAnimSequence* AnimSequence)
 {
 	if (!AnimSequence)
@@ -555,8 +573,21 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error.IsEmpty() ? TEXT("Failed to create or load AnimSequence") : Error);
 	}
 
+	TSharedPtr<FJsonObject> ExistingStateSnapshot;
+	USkeletalMesh* ExistingPreviewMesh = nullptr;
+	if (bExists)
+	{
+		ExistingStateSnapshot = Extract(AnimSequence, false);
+		EnsureRestoreSnapshotCoversPatchFields(ExistingStateSnapshot, Config);
+		ExistingPreviewMesh = AnimSequence->GetPreviewMesh(false);
+	}
+
 	if (!ApplyPatch(AnimSequence, Config, Error))
 	{
+		if (!bExists)
+		{
+			CleanupUnsavedCreatedAnimSequence(AnimSequence);
+		}
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}
 
@@ -565,6 +596,18 @@ FGenerationResult FAnimSequenceGenerator::Generate(
 		if (!bExists)
 		{
 			CleanupUnsavedCreatedAnimSequence(AnimSequence);
+		}
+		else if (ExistingStateSnapshot.IsValid())
+		{
+			FString RestoreError;
+			if (!ApplyPatch(AnimSequence, ExistingStateSnapshot, RestoreError))
+			{
+				Error += FString::Printf(TEXT("; additionally failed to restore in-memory AnimSequence state: %s"), *RestoreError);
+			}
+			else if (Config->HasField(TEXT("PreviewMesh")) && !ExistingPreviewMesh)
+			{
+				AnimSequence->SetPreviewMesh(nullptr, false);
+			}
 		}
 		return FGenerationResult::MakeFailed(GetAssetType(), Name, Path, Error);
 	}

@@ -1,15 +1,46 @@
+import copy
+import json
 import os
+import uuid
 
 import unreal
 
 
-ASSET_NAME = globals().get("ASSET_NAME", os.environ.get("ASSET_NAME", "AS_Minimal"))
-ASSET_PATH = globals().get(
-    "ASSET_PATH",
-    os.environ.get(
-        "ASSET_PATH",
-        "/Game/Generated/Animation/{0}.{0}".format(ASSET_NAME),
-    ),
+def _truthy_env(value, default):
+    if value is None:
+        return default
+    return str(value).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _object_name_from_path(asset_path):
+    leaf = asset_path.rsplit("/", 1)[-1]
+    return leaf.rsplit(".", 1)[-1] if "." in leaf else leaf
+
+
+def _package_path_from_object_path(asset_path):
+    package_part = asset_path.rsplit(".", 1)[0]
+    return package_part.rsplit("/", 1)[0]
+
+
+_MANUAL_ASSET_NAME = globals().get("ASSET_NAME", os.environ.get("ASSET_NAME"))
+_MANUAL_ASSET_PATH = globals().get("ASSET_PATH", os.environ.get("ASSET_PATH"))
+
+ASSET_PATH = _MANUAL_ASSET_PATH
+ASSET_NAME = _MANUAL_ASSET_NAME
+if ASSET_PATH and not ASSET_NAME:
+    ASSET_NAME = _object_name_from_path(ASSET_PATH)
+if not ASSET_NAME:
+    ASSET_NAME = "AS_Minimal_{0}".format(uuid.uuid4().hex[:12])
+if not ASSET_PATH:
+    ASSET_PATH = "/Game/Generated/Animation/{0}.{0}".format(ASSET_NAME)
+
+ASSET_PACKAGE_PATH = globals().get(
+    "ASSET_PACKAGE_PATH",
+    os.environ.get("ASSET_PACKAGE_PATH", _package_path_from_object_path(ASSET_PATH)),
+)
+GENERATE_SMOKE_ASSETS = _truthy_env(
+    globals().get("GENERATE_SMOKE_ASSETS", os.environ.get("GENERATE_SMOKE_ASSETS")),
+    True,
 )
 
 
@@ -268,6 +299,162 @@ def _get_marker_name(marker):
     return _name(marker)
 
 
+def _fixture_search_dirs():
+    dirs = []
+
+    explicit_dir = globals().get("TEST_DATA_DIR", os.environ.get("TEST_DATA_DIR"))
+    if explicit_dir:
+        dirs.append(explicit_dir)
+
+    script_file = globals().get("__file__")
+    if script_file:
+        dirs.append(os.path.abspath(os.path.join(os.path.dirname(script_file), "..", "..", "TestData")))
+
+    try:
+        dirs.append(os.path.join(os.getcwd(), "TestData"))
+    except Exception:
+        pass
+
+    paths = getattr(unreal, "Paths", None)
+    if paths is not None and getattr(paths, "project_plugins_dir", None) is not None:
+        try:
+            plugins_dir = paths.project_plugins_dir()
+            dirs.append(os.path.join(plugins_dir, "UECopilot", "TestData"))
+            dirs.append(os.path.join(plugins_dir, "AssetFactory", "TestData"))
+        except Exception:
+            pass
+
+    unique_dirs = []
+    for candidate in dirs:
+        if not candidate:
+            continue
+        candidate = os.path.abspath(candidate)
+        if candidate not in unique_dirs:
+            unique_dirs.append(candidate)
+    return unique_dirs
+
+
+def _load_fixture(filename, fallback):
+    for directory in _fixture_search_dirs():
+        path = os.path.join(directory, filename)
+        if not os.path.exists(path):
+            continue
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    return copy.deepcopy(fallback)
+
+
+def _minimal_payload():
+    return {
+        "AssetType": "AnimSequence",
+        "Name": "AS_Minimal",
+        "Path": "/Game/Generated/Animation",
+        "Action": "CreateOrUpdate",
+        "Skeleton": "/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton",
+        "PreviewMesh": "/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP",
+        "FrameRate": {"Numerator": 30, "Denominator": 1},
+        "NumberOfFrames": 12,
+    }
+
+
+def _float_curve_payload():
+    return {
+        "AssetType": "AnimSequence",
+        "Name": "AS_Minimal",
+        "Path": "/Game/Generated/Animation",
+        "Action": "Update",
+        "FloatCurves": [
+            {
+                "Name": "Speed",
+                "Keys": [
+                    {"Time": 0.0, "Value": 0.0, "InterpMode": "Linear"},
+                    {"Time": 0.2, "Value": 120.0, "InterpMode": "Linear"},
+                ],
+            }
+        ],
+    }
+
+
+def _notify_payload():
+    return {
+        "AssetType": "AnimSequence",
+        "Name": "AS_Minimal",
+        "Path": "/Game/Generated/Animation",
+        "Action": "Update",
+        "Notifies": [
+            {"Name": "Footstep", "Time": 0.1, "TrackIndex": 0},
+        ],
+        "NotifyStates": [
+            {"Name": "Window", "Time": 0.15, "Duration": 0.1, "TrackIndex": 0},
+        ],
+        "SyncMarkers": [
+            {"Name": "LeftFoot", "Time": 0.1, "TrackIndex": 0},
+        ],
+    }
+
+
+def _retarget_payload(payload):
+    result = copy.deepcopy(payload)
+    result["Name"] = ASSET_NAME
+    result["Path"] = ASSET_PACKAGE_PATH
+    return result
+
+
+def _enum_name(value):
+    display_name = getattr(value, "name", None)
+    if display_name:
+        return str(display_name)
+    return str(value)
+
+
+def _report_failures(report):
+    failed_count = _get_property(report, "failed_count", "FailedCount")
+    if failed_count is not None:
+        try:
+            if int(failed_count) > 0:
+                return True
+        except Exception:
+            pass
+
+    for result in _as_list(_get_property(report, "results", "Results")):
+        status = _enum_name(_get_property(result, "status", "Status"))
+        if "Failed" in status:
+            return True
+
+    return False
+
+
+def _report_summary(report):
+    parts = []
+    for result in _as_list(_get_property(report, "results", "Results")):
+        status = _enum_name(_get_property(result, "status", "Status"))
+        asset_name = _get_property(result, "asset_name", "AssetName") or ""
+        message = _get_property(result, "message", "Message") or ""
+        parts.append("{0}:{1}:{2}".format(asset_name, status, message))
+    return "; ".join(parts)
+
+
+def _generate_smoke_assets():
+    subsystem = unreal.get_editor_subsystem(unreal.AssetFactorySubsystem)
+    if subsystem is None:
+        raise RuntimeError("AssetFactorySubsystem is unavailable")
+
+    payloads = [
+        _retarget_payload(_load_fixture("AS_Minimal.json", _minimal_payload())),
+        _retarget_payload(_load_fixture("AS_PatchFloatCurve.json", _float_curve_payload())),
+        _retarget_payload(_load_fixture("AS_PatchNotifiesSyncMarkers.json", _notify_payload())),
+    ]
+
+    report = subsystem.generate_from_string(json.dumps({"Assets": payloads}))
+    if _report_failures(report):
+        raise RuntimeError("AnimSequence smoke generation failed: {0}".format(_report_summary(report)))
+
+
+if GENERATE_SMOKE_ASSETS:
+    _generate_smoke_assets()
+
+
 asset = unreal.load_asset(ASSET_PATH)
 if asset is None:
     raise RuntimeError("Missing generated AnimSequence: {0}".format(ASSET_PATH))
@@ -305,4 +492,4 @@ marker_names = {_get_marker_name(marker) for marker in _get_sync_markers(asset)}
 if not _names_match(marker_names, "LeftFoot"):
     raise RuntimeError("Expected LeftFoot sync marker, found: {0}".format(sorted(marker_names)))
 
-unreal.log("AnimSequence minimal/patch smoke passed")
+unreal.log("AnimSequence minimal/patch smoke passed for {0}".format(ASSET_PATH))
