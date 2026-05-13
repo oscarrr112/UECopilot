@@ -71,6 +71,7 @@ enum class EBlueprintNodeType : uint8
 	Array_Clear				UMETA(DisplayName = "Array Clear"),
 
 	// Delegates
+	Delegate_Create			UMETA(DisplayName = "Create Delegate"),
 	Delegate_Bind			UMETA(DisplayName = "Bind Delegate"),
 	Delegate_Unbind			UMETA(DisplayName = "Unbind Delegate"),
 	Delegate_Execute		UMETA(DisplayName = "Execute Delegate"),
@@ -116,7 +117,8 @@ enum class EBlueprintVarType : uint8
 	Enum		UMETA(DisplayName = "Enum"),
 	Array		UMETA(DisplayName = "Array"),
 	Set			UMETA(DisplayName = "Set"),
-	Map			UMETA(DisplayName = "Map")
+	Map			UMETA(DisplayName = "Map"),
+	MulticastDelegate	UMETA(DisplayName = "Multicast Delegate")
 };
 
 /**
@@ -232,6 +234,10 @@ struct ASSETFACTORYAI_API FBlueprintNodeData
 	UPROPERTY(BlueprintReadWrite, Category = "Node")
 	FString Comment;
 
+	/** Reflected editor node properties (for explicit K2Node_* nodes) */
+	UPROPERTY(BlueprintReadWrite, Category = "Node")
+	TMap<FString, FString> NodeProperties;
+
 	/** Node position in graph */
 	UPROPERTY(BlueprintReadWrite, Category = "Node")
 	FNodePosition Position;
@@ -292,6 +298,10 @@ struct ASSETFACTORYAI_API FBlueprintVariableData
 	/** Tooltip */
 	UPROPERTY(BlueprintReadWrite, Category = "Variable")
 	FString Tooltip;
+
+	/** Event dispatcher signature inputs. Used when Type is MulticastDelegate. */
+	UPROPERTY(BlueprintReadWrite, Category = "Variable")
+	TArray<FBlueprintPinData> DelegateInputs;
 };
 
 /**

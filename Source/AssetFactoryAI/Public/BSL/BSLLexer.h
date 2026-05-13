@@ -29,6 +29,7 @@ enum class ETokenType : uint8
 	Var,
 	Event,
 	Function,
+	Dispatcher,
 	If,
 	Else,
 	While,

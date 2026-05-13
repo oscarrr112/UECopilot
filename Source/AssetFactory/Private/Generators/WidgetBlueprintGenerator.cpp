@@ -272,15 +272,15 @@ static UClass* ResolveBindingSourceClass(UWidgetBlueprint* Blueprint)
 		return nullptr;
 	}
 
-	if (Blueprint->ParentClass)
-	{
-		return Blueprint->ParentClass;
-	}
 	if (Blueprint->GeneratedClass)
 	{
 		return Blueprint->GeneratedClass;
 	}
-	return Blueprint->SkeletonGeneratedClass;
+	if (Blueprint->SkeletonGeneratedClass)
+	{
+		return Blueprint->SkeletonGeneratedClass;
+	}
+	return Blueprint->ParentClass;
 }
 
 static FProperty* GetBindableReturnProperty(UFunction* Function)

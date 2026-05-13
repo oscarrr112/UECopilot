@@ -103,6 +103,9 @@ public:
 	 */
 	static bool AddVariable(UBlueprint* Blueprint, const FBlueprintVariableData& VarData);
 
+	/** Create or update the hidden signature graph for an event dispatcher variable. */
+	static bool ConfigureDelegateSignature(UBlueprint* Blueprint, const FBlueprintVariableData& VarData);
+
 	/**
 	 * Connect nodes based on pin connection data
 	 * @param NodeMap - Map of node IDs to actual nodes
@@ -143,7 +146,8 @@ private:
 		UBlueprint* Blueprint,
 		const FBlueprintGraphData& GraphData,
 		TMap<FString, UK2Node*>& OutNodeMap,
-		TArray<FString>& OutWarnings);
+		TArray<FString>& OutWarnings,
+		bool bMerge = true);
 
 	/**
 	 * Get pin type from string

@@ -44,6 +44,7 @@ FString FToken::TokenTypeToString(ETokenType Type)
 	case ETokenType::Var: return TEXT("var");
 	case ETokenType::Event: return TEXT("event");
 	case ETokenType::Function: return TEXT("function");
+	case ETokenType::Dispatcher: return TEXT("dispatcher");
 	case ETokenType::If: return TEXT("if");
 	case ETokenType::Else: return TEXT("else");
 	case ETokenType::While: return TEXT("while");
@@ -452,6 +453,7 @@ ETokenType FLexer::CheckKeyword(const FString& Identifier)
 		{TEXT("var"), ETokenType::Var},
 		{TEXT("event"), ETokenType::Event},
 		{TEXT("function"), ETokenType::Function},
+		{TEXT("dispatcher"), ETokenType::Dispatcher},
 		{TEXT("if"), ETokenType::If},
 		{TEXT("else"), ETokenType::Else},
 		{TEXT("while"), ETokenType::While},

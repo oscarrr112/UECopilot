@@ -96,6 +96,9 @@ private:
 	/** Get the type of an expression */
 	EType GetExpressionType(const FExpression* Expr);
 
+	/** Resolve the UObject class produced by an expression, when known. */
+	UClass* ResolveExpressionClass(const FExpression& Expr);
+
 	/** Add error */
 	void Error(const FString& Message);
 
@@ -111,6 +114,7 @@ private:
 	const FFunction* CurrentFunction = nullptr;
 	TMap<FString, TPair<FString, FString>> VariableNodeMap;  // Variable name -> (node ID, pin name)
 	TMap<FString, EType> VariableTypeMap;    // Variable name -> Type
+	TMap<FString, UClass*> VariableClassMap; // Object variable name -> resolved class
 
 	// For function output parameters: maps output name -> (node id, pin name)
 	TMap<FString, TPair<FString, FString>> OutputValueMap;
@@ -120,11 +124,11 @@ private:
 
 	/** Try to resolve function parameter pin names via UE reflection. Returns false if function not found.
 	 *  @param TargetClass - Optional class to search when the function is a method call on a component */
-	bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr);
+	bool TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr, int32 ExpectedInputCount = INDEX_NONE);
 
 	/** Try to resolve function output parameter pin names via UE reflection. Returns false if function not found.
 	 *  @param TargetClass - Optional class to search when the function is a method call on a component */
-	bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr);
+	bool TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass = nullptr, int32 ExpectedInputCount = INDEX_NONE);
 
 	/** Resolve parent class from blueprint AST */
 	UClass* ResolvedParentClass = nullptr;
@@ -135,6 +139,7 @@ private:
 	/** Self-defined function input/output param names (populated during CompileBlueprint) */
 	TMap<FString, TArray<FString>> SelfFunctionInputNames;
 	TMap<FString, TArray<FString>> SelfFunctionOutputNames;
+	TMap<FString, TArray<FString>> DispatcherInputNames;
 
 	/** Compile the Object expression of a method call and connect it to the 'self' Target pin.
 	 *  Emits a Warning if the object cannot be compiled. */

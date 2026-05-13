@@ -83,6 +83,16 @@ struct FVariable
 };
 
 /**
+ * Event dispatcher declaration
+ */
+struct FDispatcher
+{
+	FString Name;
+	TArray<FVariable> Inputs;
+	int32 Line = 0;
+};
+
+/**
  * Expression types
  */
 enum class EExpressionType : uint8
@@ -298,6 +308,8 @@ struct FFunction
 
 	TArray<FVariable> Inputs;		// Input parameters
 	TArray<FVariable> Outputs;		// Output parameters (return values)
+	TMap<FString, FString> NodeProperties;	// Explicit K2Node_* event properties
+	FString EntryExecPin;			// Explicit K2Node_* event output pin
 	TArray<FVariable> LocalVariables;
 	TArray<TSharedPtr<FStatement>> Body;
 
@@ -313,6 +325,7 @@ struct FBlueprint
 	FString ParentClass;
 
 	TArray<FVariable> Variables;	// Member variables
+	TArray<FDispatcher> Dispatchers;	// Event dispatchers
 	TArray<FFunction> Functions;	// Functions and events
 
 	// Get all events
