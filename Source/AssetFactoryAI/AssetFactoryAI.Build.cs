@@ -29,7 +29,10 @@ public class AssetFactoryAI : ModuleRules
 				"KismetCompiler",
 				"GraphEditor",
 				"DeveloperSettings",
-				"EditorScriptingUtilities"
+				"EditorScriptingUtilities",
+				"InputCore",
+				"UMG",
+				"UMGEditor"
 			}
 		);
 	}

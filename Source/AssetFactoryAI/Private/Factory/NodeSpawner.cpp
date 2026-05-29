@@ -18,13 +18,24 @@
 #include "K2Node_MakeArray.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_FunctionEntry.h"
+#include "K2Node_Self.h"
+#include "K2Node_AddDelegate.h"
+#include "K2Node_CallDelegate.h"
+#include "K2Node_CreateDelegate.h"
+#include "InputCoreTypes.h"
+#include "BlueprintNodeSpawner.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Engine/Blueprint.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UObjectIterator.h"
+#include "WidgetBlueprint.h"
+#include "Blueprint/WidgetTree.h"
+#include "Components/Widget.h"
 #include "DynamicConfigUtils.h"
 
 DEFINE_LOG_CATEGORY(LogNodeSpawner);
@@ -120,6 +131,475 @@ namespace
 			return ParseCSV(Raw);
 		}();
 		return Libraries;
+	}
+
+	int32 CountVisibleInputParams(UFunction* Function)
+	{
+		if (!Function)
+		{
+			return 0;
+		}
+
+		TSet<FString> SkipParams;
+		if (Function->HasMetaData(TEXT("WorldContext")))
+		{
+			SkipParams.Add(Function->GetMetaData(TEXT("WorldContext")));
+		}
+		if (Function->HasMetaData(TEXT("HidePin")))
+		{
+			TArray<FString> HiddenPins;
+			Function->GetMetaData(TEXT("HidePin")).ParseIntoArray(HiddenPins, TEXT(","));
+			for (FString& Pin : HiddenPins)
+			{
+				SkipParams.Add(Pin.TrimStartAndEnd());
+			}
+		}
+
+		int32 Count = 0;
+		for (TFieldIterator<FProperty> It(Function); It && (It->PropertyFlags & CPF_Parm); ++It)
+		{
+			if (It->PropertyFlags & CPF_ReturnParm) continue;
+			if (It->PropertyFlags & CPF_OutParm) continue;
+			if (SkipParams.Contains(It->GetName())) continue;
+			Count++;
+		}
+		return Count;
+	}
+
+	int32 CountRequestedInputPins(const FBlueprintNodeData& NodeData)
+	{
+		int32 Count = 0;
+		for (const FBlueprintPinData& Pin : NodeData.Pins)
+		{
+			if (Pin.Direction != EBlueprintPinDirection::Input) continue;
+			if (Pin.Name == TEXT("execute")) continue;
+			if (Pin.Name == TEXT("self")) continue;
+			Count++;
+		}
+		return Count;
+	}
+
+	bool IsBlueprintCallableFunction(UFunction* Function)
+	{
+		return Function && Function->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintPure);
+	}
+
+	UWidget* FindWidgetTreeWidget(UBlueprint* Blueprint, const FString& WidgetName)
+	{
+		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
+		if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree || WidgetName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		return WidgetBlueprint->WidgetTree->FindWidget(FName(*WidgetName));
+	}
+
+	UClass* FindWidgetTreeWidgetClass(UBlueprint* Blueprint, const FString& WidgetName)
+	{
+		if (UWidget* Widget = FindWidgetTreeWidget(Blueprint, WidgetName))
+		{
+			return Widget->GetClass();
+		}
+		return nullptr;
+	}
+
+	FString NormalizeActionName(const FString& Value)
+	{
+		FString Result = Value.ToLower();
+		Result.ReplaceInline(TEXT(" "), TEXT(""));
+		Result.ReplaceInline(TEXT("_"), TEXT(""));
+		Result.ReplaceInline(TEXT("."), TEXT(""));
+		Result.ReplaceInline(TEXT("-"), TEXT(""));
+		return Result;
+	}
+
+	bool AddActionNameCandidate(TSet<FString>& Candidates, const FString& Value)
+	{
+		const FString Normalized = NormalizeActionName(Value);
+		if (Normalized.IsEmpty())
+		{
+			return false;
+		}
+
+		Candidates.Add(Normalized);
+		return true;
+	}
+
+	TSet<FString> BuildActionNameCandidates(const FString& FunctionRef, UFunction* Function)
+	{
+		TSet<FString> Candidates;
+		AddActionNameCandidate(Candidates, FunctionRef);
+
+		if (Function)
+		{
+			AddActionNameCandidate(Candidates, Function->GetName());
+			AddActionNameCandidate(Candidates, Function->GetDisplayNameText().ToString());
+			AddActionNameCandidate(Candidates, Function->GetMetaData(TEXT("DisplayName")));
+		}
+
+		return Candidates;
+	}
+
+	FString NormalizeK2NodeClassName(const FString& ClassName)
+	{
+		FString Result = ClassName;
+		Result.RemoveFromStart(TEXT("UK2Node_"), ESearchCase::IgnoreCase);
+		Result.RemoveFromStart(TEXT("K2Node_"), ESearchCase::IgnoreCase);
+		Result.RemoveFromStart(TEXT("UK2Node"), ESearchCase::IgnoreCase);
+		Result.RemoveFromStart(TEXT("K2Node"), ESearchCase::IgnoreCase);
+		return NormalizeActionName(Result);
+	}
+
+	UClass* FindK2NodeClassByPathOrName(const FString& Candidate)
+	{
+		if (Candidate.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (Candidate.StartsWith(TEXT("/")))
+		{
+			if (UClass* LoadedClass = StaticLoadClass(UK2Node::StaticClass(), nullptr, *Candidate))
+			{
+				return LoadedClass;
+			}
+			return FindObject<UClass>(nullptr, *Candidate);
+		}
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* NodeClass = *It;
+			if (!NodeClass || !NodeClass->IsChildOf(UK2Node::StaticClass()))
+			{
+				continue;
+			}
+
+			if (NodeClass->GetName().Equals(Candidate, ESearchCase::IgnoreCase)
+				|| NormalizeK2NodeClassName(NodeClass->GetName()) == NormalizeActionName(Candidate))
+			{
+				return NodeClass;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool SetObjectPropertyFromString(UObject* Object, const FString& PropertyName, const FString& Value)
+	{
+		if (!Object || PropertyName.IsEmpty())
+		{
+			return false;
+		}
+
+		FProperty* Property = Object->GetClass()->FindPropertyByName(FName(*PropertyName));
+		if (!Property)
+		{
+			return false;
+		}
+
+		void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		if (FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+		{
+			NameProperty->SetPropertyValue(ValuePtr, FName(*Value));
+			return true;
+		}
+		if (FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+		{
+			StringProperty->SetPropertyValue(ValuePtr, Value);
+			return true;
+		}
+		if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+		{
+			BoolProperty->SetPropertyValue(ValuePtr, Value.ToBool());
+			return true;
+		}
+		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (StructProperty->Struct == FKey::StaticStruct())
+			{
+				*static_cast<FKey*>(ValuePtr) = FKey(FName(*Value));
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	bool ObjectPropertyEqualsString(UObject* Object, const FString& PropertyName, const FString& Value)
+	{
+		if (!Object || PropertyName.IsEmpty())
+		{
+			return false;
+		}
+
+		FProperty* Property = Object->GetClass()->FindPropertyByName(FName(*PropertyName));
+		if (!Property)
+		{
+			return false;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		if (const FNameProperty* NameProperty = CastField<FNameProperty>(Property))
+		{
+			return NameProperty->GetPropertyValue(ValuePtr) == FName(*Value);
+		}
+		if (const FStrProperty* StringProperty = CastField<FStrProperty>(Property))
+		{
+			return StringProperty->GetPropertyValue(ValuePtr).Equals(Value, ESearchCase::IgnoreCase);
+		}
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+		{
+			if (StructProperty->Struct == FKey::StaticStruct())
+			{
+				return *static_cast<const FKey*>(ValuePtr) == FKey(FName(*Value));
+			}
+		}
+
+		return false;
+	}
+
+	FNodeSpawnResult TrySpawnConfiguredK2Node(
+		UEdGraph* Graph,
+		const FBlueprintNodeData& NodeData,
+		const TCHAR* CandidateConfigKey,
+		const TCHAR* DefaultCandidates,
+		const TMap<FString, FString>& PropertyValues)
+	{
+		FNodeSpawnResult Result;
+		if (!Graph)
+		{
+			return Result;
+		}
+
+		UClass* NodeClass = nullptr;
+		TArray<FString> CandidateClasses;
+		if (!NodeData.FunctionReference.IsEmpty())
+		{
+			CandidateClasses.Add(NodeData.FunctionReference);
+		}
+		CandidateClasses.Append(ParseCSV(DC::GetString(CandidateConfigKey, DefaultCandidates)));
+		for (const FString& Candidate : CandidateClasses)
+		{
+			NodeClass = FindK2NodeClassByPathOrName(Candidate);
+			if (NodeClass)
+			{
+				break;
+			}
+		}
+
+		if (!NodeClass)
+		{
+			Result.ErrorMessage = FString::Printf(TEXT("No configured K2 node class found for %s"), CandidateConfigKey);
+			return Result;
+		}
+
+		for (UEdGraphNode* ExistingGraphNode : Graph->Nodes)
+		{
+			UK2Node* ExistingK2Node = Cast<UK2Node>(ExistingGraphNode);
+			if (!ExistingK2Node || !ExistingK2Node->IsA(NodeClass))
+			{
+				continue;
+			}
+
+			bool bAllPropertiesMatch = true;
+			for (const TPair<FString, FString>& Pair : PropertyValues)
+			{
+				if (!ObjectPropertyEqualsString(ExistingK2Node, Pair.Key, Pair.Value))
+				{
+					bAllPropertiesMatch = false;
+					break;
+				}
+			}
+
+			if (bAllPropertiesMatch)
+			{
+				Result.bSuccess = true;
+				Result.Node = ExistingK2Node;
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Reusing configured K2 node '%s' for '%s'"),
+					*NodeClass->GetPathName(),
+					*NodeData.EventName);
+				return Result;
+			}
+		}
+
+		UBlueprintNodeSpawner* Spawner = UBlueprintNodeSpawner::Create(NodeClass);
+		UEdGraphNode* SpawnedNode = Spawner ? Spawner->Invoke(Graph, IBlueprintNodeBinder::FBindingSet(), FVector2D(NodeData.Position.X, NodeData.Position.Y)) : nullptr;
+		UK2Node* K2Node = Cast<UK2Node>(SpawnedNode);
+		if (!K2Node)
+		{
+			Result.ErrorMessage = FString::Printf(TEXT("Failed to spawn configured K2 node class '%s'"), *NodeClass->GetPathName());
+			return Result;
+		}
+
+		for (const TPair<FString, FString>& Pair : PropertyValues)
+		{
+			if (!SetObjectPropertyFromString(K2Node, Pair.Key, Pair.Value))
+			{
+				Result.ErrorMessage = FString::Printf(TEXT("Failed to set K2 node property '%s' on '%s'"),
+					*Pair.Key,
+					*K2Node->GetClass()->GetPathName());
+				return Result;
+			}
+		}
+
+		K2Node->ReconstructNode();
+		K2Node->NodePosX = static_cast<int32>(NodeData.Position.X);
+		K2Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
+
+		Result.bSuccess = true;
+		Result.Node = K2Node;
+		UE_LOG(LogAssetFactoryAI, Log, TEXT("Spawned configured K2 node '%s' for '%s'"),
+			*NodeClass->GetPathName(),
+			*NodeData.EventName);
+		return Result;
+	}
+
+	int32 ScoreEditorNodeClass(UClass* NodeClass, const TSet<FString>& Candidates)
+	{
+		if (!NodeClass
+			|| NodeClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists)
+			|| !NodeClass->IsChildOf(UK2Node::StaticClass())
+			|| NodeClass->IsChildOf(UK2Node_CallFunction::StaticClass()))
+		{
+			return 0;
+		}
+
+		const FString NodeName = NormalizeK2NodeClassName(NodeClass->GetName());
+		if (NodeName.IsEmpty())
+		{
+			return 0;
+		}
+
+		int32 BestScore = 0;
+		for (const FString& Candidate : Candidates)
+		{
+			if (Candidate.IsEmpty())
+			{
+				continue;
+			}
+
+			if (NodeName == Candidate)
+			{
+				BestScore = FMath::Max(BestScore, 100);
+			}
+			else if (NodeName.Contains(Candidate))
+			{
+				BestScore = FMath::Max(BestScore, 60);
+			}
+			else if (Candidate.Contains(NodeName))
+			{
+				BestScore = FMath::Max(BestScore, 40);
+			}
+		}
+
+		return BestScore;
+	}
+
+	FNodeSpawnResult TrySpawnEditorActionNode(
+		UEdGraph* Graph,
+		const FBlueprintNodeData& NodeData,
+		UBlueprint* Blueprint,
+		UFunction* Function)
+	{
+		FNodeSpawnResult Result;
+		if (!Graph || !Blueprint)
+		{
+			return Result;
+		}
+
+		const TSet<FString> ActionNameCandidates = BuildActionNameCandidates(NodeData.FunctionReference, Function);
+		if (ActionNameCandidates.Num() == 0)
+		{
+			return Result;
+		}
+
+		UClass* BestNodeClass = nullptr;
+		int32 BestScore = 0;
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* NodeClass = *It;
+			const int32 Score = ScoreEditorNodeClass(NodeClass, ActionNameCandidates);
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				BestNodeClass = NodeClass;
+			}
+		}
+
+		if (!BestNodeClass)
+		{
+			return Result;
+		}
+
+		UBlueprintNodeSpawner* Spawner = UBlueprintNodeSpawner::Create(BestNodeClass);
+		UEdGraphNode* SpawnedNode = Spawner ? Spawner->Invoke(Graph, IBlueprintNodeBinder::FBindingSet(), FVector2D(NodeData.Position.X, NodeData.Position.Y)) : nullptr;
+		UK2Node* K2Node = Cast<UK2Node>(SpawnedNode);
+		if (!K2Node)
+		{
+			return Result;
+		}
+
+		K2Node->NodePosX = static_cast<int32>(NodeData.Position.X);
+		K2Node->NodePosY = static_cast<int32>(NodeData.Position.Y);
+		Result.bSuccess = true;
+		Result.Node = K2Node;
+
+		UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' via reflected editor K2 node class '%s'"),
+			*NodeData.FunctionReference,
+			*BestNodeClass->GetPathName());
+		return Result;
+	}
+
+	FMulticastDelegateProperty* FindDispatcherProperty(UBlueprint* Blueprint, const FString& DispatcherName)
+	{
+		if (!Blueprint || DispatcherName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		const FName PropertyName(*DispatcherName);
+		for (UClass* Class : { Blueprint->SkeletonGeneratedClass.Get(), Blueprint->GeneratedClass.Get(), Blueprint->ParentClass.Get() })
+		{
+			if (FMulticastDelegateProperty* Property = Class ? FindFProperty<FMulticastDelegateProperty>(Class, PropertyName) : nullptr)
+			{
+				return Property;
+			}
+		}
+
+		return nullptr;
+	}
+
+	UFunction* FindBestBlueprintLibraryFunction(const FString& FunctionRef, const FBlueprintNodeData& NodeData)
+	{
+		const int32 RequestedInputCount = CountRequestedInputPins(NodeData);
+		UFunction* BestFunction = nullptr;
+		int32 BestScore = TNumericLimits<int32>::Min();
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* LibraryClass = *It;
+			if (!LibraryClass || !LibraryClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+			{
+				continue;
+			}
+
+			UFunction* Candidate = LibraryClass->FindFunctionByName(*FunctionRef);
+			if (!IsBlueprintCallableFunction(Candidate))
+			{
+				continue;
+			}
+
+			const int32 ParamDelta = FMath::Abs(CountVisibleInputParams(Candidate) - RequestedInputCount);
+			const int32 Score = ParamDelta == 0 ? 1000 : -ParamDelta * 100;
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				BestFunction = Candidate;
+			}
+		}
+
+		return BestFunction;
 	}
 
 	// GetActorEventNames 已移除 — 事件通过反射解析父类函数
@@ -322,6 +802,12 @@ namespace
 				EBlueprintNodeType::Array_Clear,
 			}, &UNodeSpawner::SpawnArrayNode);
 
+			RegisterManyHandlers(Handlers, {
+				EBlueprintNodeType::Delegate_Create,
+				EBlueprintNodeType::Delegate_Bind,
+				EBlueprintNodeType::Delegate_Execute,
+			}, &UNodeSpawner::SpawnDelegateNode);
+
 			Handlers.Add(EBlueprintNodeType::Return, &UNodeSpawner::SpawnReturnNode);
 		}
 
@@ -435,6 +921,16 @@ FNodeSpawnResult UNodeSpawner::SpawnEventNode(UEdGraph* Graph, const FBlueprintN
 		break;
 	}
 
+	case EBlueprintNodeType::Event_Input:
+	{
+		return TrySpawnConfiguredK2Node(
+			Graph,
+			NodeData,
+			TEXT("NodeSpawner.EventInput.K2NodeCandidates"),
+			TEXT("K2Node_InputKey"),
+			NodeData.NodeProperties);
+	}
+
 	default:
 		break;
 	}
@@ -459,12 +955,40 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 	UFunction* Function = nullptr;
 	FString FunctionRef = NodeData.FunctionReference;
 
+	if (FunctionRef.Equals(TEXT("Self"), ESearchCase::IgnoreCase))
+	{
+		UK2Node_Self* SelfNode = CreateNode<UK2Node_Self>(Graph);
+		SelfNode->AllocateDefaultPins();
+		SetNodePosition(SelfNode, NodeData.Position);
+
+		Result.bSuccess = true;
+		Result.Node = SelfNode;
+		return Result;
+	}
+
+	if (!NodeData.TargetClass.IsEmpty() && !FunctionRef.StartsWith(TEXT("/")))
+	{
+		if (UClass* ExplicitTargetClass = FindClassByPath(NodeData.TargetClass))
+		{
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Function = ExplicitTargetClass->FindFunctionByName(*Candidate);
+				if (Function)
+				{
+					UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on explicit target class '%s'"),
+						*Candidate, *ExplicitTargetClass->GetName());
+					break;
+				}
+			}
+		}
+	}
+
 	// Check if it's already a full path
 	if (FunctionRef.StartsWith(TEXT("/")))
 	{
 		Function = FindFunctionByPath(FunctionRef);
 	}
-	else
+	else if (!Function)
 	{
 		// Simple function name - try configured default libraries
 		for (const FString& Library : GetDefaultFunctionLibraries())
@@ -475,6 +999,35 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 			{
 				UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' to '%s'"), *FunctionRef, *FullPath);
 				break;
+			}
+		}
+	}
+
+	FString TargetObjectName;
+	for (const FBlueprintPinData& Pin : NodeData.Pins)
+	{
+		if (Pin.Name == TEXT("self") && Pin.Connections.Num() > 0)
+		{
+			TargetObjectName = Pin.Connections[0].SourcePinName;
+			break;
+		}
+	}
+
+	// BSL can provide the reflected class of a method target even when the
+	// target is an expression result rather than a named component/widget.
+	if (!Function && !NodeData.TargetClass.IsEmpty())
+	{
+		if (UClass* ExplicitTargetClass = FindClassByPath(NodeData.TargetClass))
+		{
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Function = ExplicitTargetClass->FindFunctionByName(*Candidate);
+				if (Function)
+				{
+					UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on explicit target class '%s'"),
+						*Candidate, *ExplicitTargetClass->GetName());
+					break;
+				}
 			}
 		}
 	}
@@ -499,18 +1052,6 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 	// Search component class hierarchy via SCS (e.g., USceneComponent::K2_SetRelativeRotation)
 	if (!Function && Blueprint && Blueprint->SimpleConstructionScript)
 	{
-		// Check if there's a 'self' pin that references a component variable
-		FString TargetComponentName;
-		for (const FBlueprintPinData& Pin : NodeData.Pins)
-		{
-			if (Pin.Name == TEXT("self") && Pin.Connections.Num() > 0)
-			{
-				// The source node of the self pin is typically a variable get node for the component
-				TargetComponentName = Pin.Connections[0].SourcePinName;
-				break;
-			}
-		}
-
 		// Search all SCS component nodes for the target or try all component classes
 		TArray<USCS_Node*> AllNodes = Blueprint->SimpleConstructionScript->GetAllNodes();
 		for (USCS_Node* SCSNode : AllNodes)
@@ -519,7 +1060,7 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 
 			// Match by component name, or if no specific target, try all components
 			FString CompName = SCSNode->GetVariableName().ToString();
-			if (!TargetComponentName.IsEmpty() && CompName != TargetComponentName) continue;
+			if (!TargetObjectName.IsEmpty() && CompName != TargetObjectName) continue;
 
 			UClass* CompClass = SCSNode->ComponentTemplate->GetClass();
 			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
@@ -533,6 +1074,73 @@ FNodeSpawnResult UNodeSpawner::SpawnFunctionCallNode(UEdGraph* Graph, const FBlu
 				}
 			}
 			if (Function) break;
+		}
+	}
+
+	// Search named widgets in WidgetBlueprint trees (e.g., UProgressBar::SetPercent,
+	// UTextBlock::SetText). These are exposed as variables by UMG, not SCS nodes.
+	if (!Function && Blueprint && !TargetObjectName.IsEmpty())
+	{
+		if (UClass* WidgetClass = FindWidgetTreeWidgetClass(Blueprint, TargetObjectName))
+		{
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Function = WidgetClass->FindFunctionByName(*Candidate);
+				if (Function)
+				{
+					UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on widget '%s' (class '%s')"),
+						*Candidate, *TargetObjectName, *WidgetClass->GetName());
+					break;
+				}
+			}
+		}
+	}
+
+	// Search object variables declared on the blueprint (e.g., UUserWidget::AddToViewport).
+	if (!Function && Blueprint && !TargetObjectName.IsEmpty())
+	{
+		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+		{
+			if (Variable.VarName.ToString() != TargetObjectName)
+			{
+				continue;
+			}
+
+			if (UClass* VariableClass = Cast<UClass>(Variable.VarType.PinSubCategoryObject.Get()))
+			{
+				for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+				{
+					Function = VariableClass->FindFunctionByName(*Candidate);
+					if (Function)
+					{
+						UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' on variable '%s' (class '%s')"),
+							*Candidate, *TargetObjectName, *VariableClass->GetName());
+						break;
+					}
+				}
+			}
+			break;
+		}
+	}
+
+	if (!Function)
+	{
+		Function = FindBestBlueprintLibraryFunction(FunctionRef, NodeData);
+		if (Function)
+		{
+			UE_LOG(LogAssetFactoryAI, Log, TEXT("Resolved function '%s' via reflected BlueprintFunctionLibrary scan (%s)"),
+				*FunctionRef, *Function->GetOwnerClass()->GetPathName());
+		}
+	}
+
+	if (Function
+		&& Function->GetOwnerClass()
+		&& Function->GetOwnerClass()->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+	{
+		FNodeSpawnResult ActionNodeResult = TrySpawnEditorActionNode(Graph, NodeData, Blueprint, Function);
+		if (ActionNodeResult.bSuccess)
+		{
+			return ActionNodeResult;
 		}
 	}
 
@@ -748,6 +1356,7 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 	}
 
 	FName VarName(*VariableName);
+	UClass* WidgetVariableClass = FindWidgetTreeWidgetClass(Blueprint, VariableName);
 
 	// Check if variable exists
 	FProperty* Property = FindFProperty<FProperty>(Blueprint->GeneratedClass, VarName);
@@ -764,6 +1373,11 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 			}
 		}
 
+		if (!bFound && WidgetVariableClass)
+		{
+			bFound = true;
+		}
+
 		if (!bFound)
 		{
 			Result.ErrorMessage = FString::Printf(TEXT("Variable not found: %s"), *NodeData.VariableName);
@@ -778,6 +1392,13 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 		UK2Node_VariableGet* GetNode = CreateNode<UK2Node_VariableGet>(Graph);
 		GetNode->VariableReference.SetSelfMember(VarName);
 		GetNode->AllocateDefaultPins();
+		if (WidgetVariableClass && !GetNode->FindPin(VarName))
+		{
+			FEdGraphPinType PinType;
+			PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
+			PinType.PinSubCategoryObject = WidgetVariableClass;
+			GetNode->CreatePin(EGPD_Output, PinType, VarName);
+		}
 		Node = GetNode;
 	}
 	else
@@ -785,6 +1406,13 @@ FNodeSpawnResult UNodeSpawner::SpawnVariableNode(UEdGraph* Graph, const FBluepri
 		UK2Node_VariableSet* SetNode = CreateNode<UK2Node_VariableSet>(Graph);
 		SetNode->VariableReference.SetSelfMember(VarName);
 		SetNode->AllocateDefaultPins();
+		if (WidgetVariableClass && !SetNode->FindPin(VarName))
+		{
+			FEdGraphPinType PinType;
+			PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
+			PinType.PinSubCategoryObject = WidgetVariableClass;
+			SetNode->CreatePin(EGPD_Input, PinType, VarName);
+		}
 		Node = SetNode;
 	}
 
@@ -1046,6 +1674,60 @@ FNodeSpawnResult UNodeSpawner::SpawnArrayNode(UEdGraph* Graph, const FBlueprintN
 	return Result;
 }
 
+FNodeSpawnResult UNodeSpawner::SpawnDelegateNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint)
+{
+	FNodeSpawnResult Result;
+
+	if (NodeData.NodeType == EBlueprintNodeType::Delegate_Create)
+	{
+		if (NodeData.FunctionReference.IsEmpty())
+		{
+			Result.ErrorMessage = TEXT("Delegate create requires a function reference");
+			return Result;
+		}
+
+		UK2Node_CreateDelegate* CreateNodeInst = CreateNode<UK2Node_CreateDelegate>(Graph);
+		CreateNodeInst->AllocateDefaultPins();
+		CreateNodeInst->SetFunction(FName(*NodeData.FunctionReference));
+		SetNodePosition(CreateNodeInst, NodeData.Position);
+
+		Result.bSuccess = true;
+		Result.Node = CreateNodeInst;
+		return Result;
+	}
+
+	FMulticastDelegateProperty* DelegateProperty = FindDispatcherProperty(Blueprint, NodeData.VariableName);
+	if (!DelegateProperty)
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Event dispatcher not found: %s"), *NodeData.VariableName);
+		return Result;
+	}
+
+	UK2Node_BaseMCDelegate* DelegateNode = nullptr;
+	if (NodeData.NodeType == EBlueprintNodeType::Delegate_Bind)
+	{
+		DelegateNode = CreateNode<UK2Node_AddDelegate>(Graph);
+	}
+	else if (NodeData.NodeType == EBlueprintNodeType::Delegate_Execute)
+	{
+		DelegateNode = CreateNode<UK2Node_CallDelegate>(Graph);
+	}
+
+	if (!DelegateNode)
+	{
+		Result.ErrorMessage = TEXT("Unsupported delegate node type");
+		return Result;
+	}
+
+	DelegateNode->SetFromProperty(DelegateProperty, true, DelegateProperty->GetOwnerClass());
+	DelegateNode->AllocateDefaultPins();
+	SetNodePosition(DelegateNode, NodeData.Position);
+
+	Result.bSuccess = true;
+	Result.Node = DelegateNode;
+	return Result;
+}
+
 UFunction* UNodeSpawner::FindFunctionByPath(const FString& FunctionPath)
 {
 	const TCHAR Separators[] = { TEXT('.'), TEXT(':') };
@@ -1077,6 +1759,25 @@ UClass* UNodeSpawner::FindClassByPath(const FString& ClassPath)
 	TArray<FString> Candidates;
 	Candidates.Add(ClassPath);
 
+	if (!ClassPath.StartsWith(TEXT("/")) && !ClassPath.Contains(TEXT(".")))
+	{
+		const TArray<FString> CommonScriptModules = {
+			TEXT("/Script/Engine."),
+			TEXT("/Script/UMG."),
+			TEXT("/Script/CoreUObject."),
+			TEXT("/Script/GameplayAbilities."),
+			TEXT("/Script/EnhancedInput.")
+		};
+		for (const FString& ModulePrefix : CommonScriptModules)
+		{
+			Candidates.Add(ModulePrefix + ClassPath);
+			if (ClassPath.StartsWith(TEXT("U")) || ClassPath.StartsWith(TEXT("A")))
+			{
+				Candidates.Add(ModulePrefix + ClassPath.Mid(1));
+			}
+		}
+	}
+
 	// Blueprint generated classes often need the _C suffix when not using /Script paths.
 	if (!ClassPath.StartsWith(TEXT("/Script/")) && !ClassPath.EndsWith(TEXT("_C")))
 	{
@@ -1100,6 +1801,25 @@ UClass* UNodeSpawner::FindClassByPath(const FString& ClassPath)
 		if (UClass* LoadedClass = LoadObject<UClass>(nullptr, *Candidate))
 		{
 			return LoadedClass;
+		}
+	}
+
+	if (!ClassPath.StartsWith(TEXT("/")))
+	{
+		const TArray<FString> NamesToMatch = {
+			ClassPath,
+			TEXT("A") + ClassPath,
+			TEXT("U") + ClassPath
+		};
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			for (const FString& Match : NamesToMatch)
+			{
+				if (It->GetName() == Match)
+				{
+					return *It;
+				}
+			}
 		}
 	}
 

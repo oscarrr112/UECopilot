@@ -258,6 +258,20 @@ namespace
 			AddEntry(TEXT("Array_Length"), EBlueprintNodeType::Array_Length);
 			AddEntry(TEXT("Array_Clear"), EBlueprintNodeType::Array_Clear);
 
+			AddEntry(TEXT("DelegateCreate"), EBlueprintNodeType::Delegate_Create);
+			AddEntry(TEXT("Delegate_Create"), EBlueprintNodeType::Delegate_Create);
+			AddEntry(TEXT("CreateDelegate"), EBlueprintNodeType::Delegate_Create);
+			AddEntry(TEXT("K2Node_CreateDelegate"), EBlueprintNodeType::Delegate_Create);
+			AddEntry(TEXT("DelegateBind"), EBlueprintNodeType::Delegate_Bind);
+			AddEntry(TEXT("Delegate_Bind"), EBlueprintNodeType::Delegate_Bind);
+			AddEntry(TEXT("BindDelegate"), EBlueprintNodeType::Delegate_Bind);
+			AddEntry(TEXT("K2Node_AddDelegate"), EBlueprintNodeType::Delegate_Bind);
+			AddEntry(TEXT("DelegateExecute"), EBlueprintNodeType::Delegate_Execute);
+			AddEntry(TEXT("Delegate_Execute"), EBlueprintNodeType::Delegate_Execute);
+			AddEntry(TEXT("CallDelegate"), EBlueprintNodeType::Delegate_Execute);
+			AddEntry(TEXT("Broadcast"), EBlueprintNodeType::Delegate_Execute);
+			AddEntry(TEXT("K2Node_CallDelegate"), EBlueprintNodeType::Delegate_Execute);
+
 			AddEntry(TEXT("Literal"), EBlueprintNodeType::Literal);
 			AddEntry(TEXT("Constant"), EBlueprintNodeType::Literal);
 			AddEntry(TEXT("K2Node_Literal"), EBlueprintNodeType::Literal);
@@ -460,6 +474,22 @@ FString UBlueprintJSONParser::SerializeBlueprintData(const FBlueprintData& Data)
 		{
 			VarObject->SetStringField(TEXT("default_value"), Var.DefaultValue);
 		}
+		if (Var.DelegateInputs.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> DelegateInputsArray;
+			for (const FBlueprintPinData& Input : Var.DelegateInputs)
+			{
+				TSharedRef<FJsonObject> InputObject = MakeShared<FJsonObject>();
+				InputObject->SetStringField(TEXT("name"), Input.Name);
+				InputObject->SetStringField(TEXT("type"), Input.Type);
+				if (!Input.SubType.IsEmpty())
+				{
+					InputObject->SetStringField(TEXT("sub_type"), Input.SubType);
+				}
+				DelegateInputsArray.Add(MakeShared<FJsonValueObject>(InputObject));
+			}
+			VarObject->SetArrayField(TEXT("delegate_inputs"), DelegateInputsArray);
+		}
 		VarObject->SetBoolField(TEXT("instance_editable"), Var.bInstanceEditable);
 		VarObject->SetBoolField(TEXT("expose_on_spawn"), Var.bExposeOnSpawn);
 		VarObject->SetBoolField(TEXT("private"), Var.bPrivate);
@@ -497,6 +527,19 @@ FString UBlueprintJSONParser::SerializeBlueprintData(const FBlueprintData& Data)
 				if (!Node.VariableName.IsEmpty())
 				{
 					NodeObject->SetStringField(TEXT("variable"), Node.VariableName);
+				}
+				if (!Node.TargetClass.IsEmpty())
+				{
+					NodeObject->SetStringField(TEXT("target_class"), Node.TargetClass);
+				}
+				if (Node.NodeProperties.Num() > 0)
+				{
+					TSharedRef<FJsonObject> PropertiesObject = MakeShared<FJsonObject>();
+					for (const TPair<FString, FString>& Pair : Node.NodeProperties)
+					{
+						PropertiesObject->SetStringField(Pair.Key, Pair.Value);
+					}
+					NodeObject->SetObjectField(TEXT("properties"), PropertiesObject);
 				}
 
 				TSharedRef<FJsonObject> PosObject = MakeShared<FJsonObject>();
@@ -674,6 +717,29 @@ bool UBlueprintJSONParser::ParseVariable(const TSharedPtr<FJsonObject>& JsonObje
 	JsonObject->TryGetBoolField(TEXT("instance_editable"), OutData.bInstanceEditable);
 	JsonObject->TryGetBoolField(TEXT("expose_on_spawn"), OutData.bExposeOnSpawn);
 	JsonObject->TryGetBoolField(TEXT("private"), OutData.bPrivate);
+
+	const TArray<TSharedPtr<FJsonValue>>* DelegateInputsArray;
+	if (JsonObject->TryGetArrayField(TEXT("delegate_inputs"), DelegateInputsArray) ||
+		JsonObject->TryGetArrayField(TEXT("inputs"), DelegateInputsArray))
+	{
+		for (const TSharedPtr<FJsonValue>& InputValue : *DelegateInputsArray)
+		{
+			const TSharedPtr<FJsonObject>* InputObject;
+			if (InputValue->TryGetObject(InputObject))
+			{
+				FBlueprintPinData InputData;
+				if (ParsePin(*InputObject, InputData, OutError))
+				{
+					InputData.Direction = EBlueprintPinDirection::Input;
+					OutData.DelegateInputs.Add(InputData);
+				}
+				else
+				{
+					return false;
+				}
+			}
+		}
+	}
 
 	return true;
 }
@@ -919,6 +985,18 @@ bool UBlueprintJSONParser::ParseNode(const TSharedPtr<FJsonObject>& JsonObject, 
 	JsonObject->TryGetStringField(TEXT("target_class"), OutData.TargetClass);
 	JsonObject->TryGetStringField(TEXT("value"), OutData.LiteralValue);
 	JsonObject->TryGetStringField(TEXT("comment"), OutData.Comment);
+	const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;
+	if (JsonObject->TryGetObjectField(TEXT("properties"), PropertiesObject) && PropertiesObject && PropertiesObject->IsValid())
+	{
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*PropertiesObject)->Values)
+		{
+			FString Value;
+			if (Pair.Value.IsValid() && Pair.Value->TryGetString(Value))
+			{
+				OutData.NodeProperties.Add(Pair.Key, Value);
+			}
+		}
+	}
 
 	// Be resilient to model-specific helper node names that are really function calls.
 	if (OutData.NodeType == EBlueprintNodeType::CallFunction && OutData.FunctionReference.IsEmpty())
@@ -1234,6 +1312,10 @@ EBlueprintVarType UBlueprintJSONParser::StringToVarType(const FString& TypeStrin
 		{TEXT("array"), EBlueprintVarType::Array},
 		{TEXT("set"), EBlueprintVarType::Set},
 		{TEXT("map"), EBlueprintVarType::Map},
+		{TEXT("delegate"), EBlueprintVarType::MulticastDelegate},
+		{TEXT("multicastdelegate"), EBlueprintVarType::MulticastDelegate},
+		{TEXT("mcdelegate"), EBlueprintVarType::MulticastDelegate},
+		{TEXT("eventdispatcher"), EBlueprintVarType::MulticastDelegate},
 	};
 
 	if (const EBlueprintVarType* Found = TypeMap.Find(TypeString.ToLower()))
@@ -1286,6 +1368,10 @@ FString UBlueprintJSONParser::NodeTypeToString(EBlueprintNodeType Type)
 		{EBlueprintNodeType::Array_Set, TEXT("ArraySet")},
 		{EBlueprintNodeType::Array_Length, TEXT("ArrayLength")},
 		{EBlueprintNodeType::Array_Clear, TEXT("ArrayClear")},
+		{EBlueprintNodeType::Delegate_Create, TEXT("DelegateCreate")},
+		{EBlueprintNodeType::Delegate_Bind, TEXT("DelegateBind")},
+		{EBlueprintNodeType::Delegate_Unbind, TEXT("DelegateUnbind")},
+		{EBlueprintNodeType::Delegate_Execute, TEXT("DelegateExecute")},
 		{EBlueprintNodeType::Literal, TEXT("Literal")},
 		{EBlueprintNodeType::Comment, TEXT("Comment")},
 		{EBlueprintNodeType::Reroute, TEXT("Reroute")},
@@ -1319,6 +1405,7 @@ FString UBlueprintJSONParser::VarTypeToString(EBlueprintVarType Type)
 		{EBlueprintVarType::Array, TEXT("array")},
 		{EBlueprintVarType::Set, TEXT("set")},
 		{EBlueprintVarType::Map, TEXT("map")},
+		{EBlueprintVarType::MulticastDelegate, TEXT("multicastdelegate")},
 	};
 
 	if (const FString* Found = VarTypeNameMap.Find(Type))

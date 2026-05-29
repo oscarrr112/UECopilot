@@ -4,6 +4,37 @@
 
 namespace BSL
 {
+namespace
+{
+	bool TryExpressionToOptionString(const TSharedPtr<FExpression>& Expr, FString& OutValue)
+	{
+		if (!Expr.IsValid())
+		{
+			return false;
+		}
+
+		switch (Expr->Type)
+		{
+		case EExpressionType::Literal_String:
+			OutValue = Expr->StringValue;
+			return true;
+		case EExpressionType::Literal_Bool:
+			OutValue = Expr->BoolValue ? TEXT("true") : TEXT("false");
+			return true;
+		case EExpressionType::Literal_Int:
+			OutValue = FString::FromInt(Expr->IntValue);
+			return true;
+		case EExpressionType::Literal_Float:
+			OutValue = FString::SanitizeFloat(Expr->FloatValue);
+			return true;
+		case EExpressionType::Variable:
+			OutValue = Expr->Name;
+			return true;
+		default:
+			return false;
+		}
+	}
+}
 
 FParser::FParser(const FString& Source)
 	: Lexer(Source)
@@ -64,6 +95,14 @@ bool FParser::ParseBlueprint(FBlueprint& OutBlueprint)
 				OutBlueprint.Variables.Add(Var);
 			}
 		}
+		else if (Check(ETokenType::Dispatcher))
+		{
+			FDispatcher Dispatcher;
+			if (ParseDispatcher(Dispatcher))
+			{
+				OutBlueprint.Dispatchers.Add(Dispatcher);
+			}
+		}
 		else if (Check(ETokenType::Event))
 		{
 			FFunction Event;
@@ -82,7 +121,7 @@ bool FParser::ParseBlueprint(FBlueprint& OutBlueprint)
 		}
 		else
 		{
-			Error(Peek(), TEXT("Expected 'var', 'event', or 'function'"));
+			Error(Peek(), TEXT("Expected 'var', 'dispatcher', 'event', or 'function'"));
 			Synchronize();
 		}
 	}
@@ -116,6 +155,22 @@ bool FParser::ParseVariable(FVariable& OutVar)
 	{
 		OutVar.DefaultValue = ParseExpression();
 	}
+
+	return true;
+}
+
+bool FParser::ParseDispatcher(FDispatcher& OutDispatcher)
+{
+	Consume(ETokenType::Dispatcher, TEXT("Expected 'dispatcher'"));
+	OutDispatcher.Line = Previous().Line;
+
+	FToken NameToken = Consume(ETokenType::Identifier, TEXT("Expected dispatcher name"));
+	if (NameToken.Type == ETokenType::Error) return false;
+	OutDispatcher.Name = NameToken.Value;
+
+	Consume(ETokenType::LeftParen, TEXT("Expected '('"));
+	ParseParameters(OutDispatcher.Inputs);
+	Consume(ETokenType::RightParen, TEXT("Expected ')'"));
 
 	return true;
 }
@@ -165,12 +220,63 @@ bool FParser::ParseEvent(FFunction& OutEvent)
 	// Optional parameters (e.g., event Tick(DeltaTime: float))
 	if (Match(ETokenType::LeftParen))
 	{
-		ParseParameters(OutEvent.Inputs);
+		ParseEventArguments(OutEvent);
 		Consume(ETokenType::RightParen, TEXT("Expected ')'"));
 	}
 
 	// Body
 	OutEvent.Body = ParseBlock();
+
+	return true;
+}
+
+bool FParser::ParseEventArguments(FFunction& OutEvent)
+{
+	if (Check(ETokenType::RightParen))
+	{
+		return true;
+	}
+
+	do
+	{
+		FToken NameToken = Consume(ETokenType::Identifier, TEXT("Expected event parameter or option name"));
+		if (NameToken.Type == ETokenType::Error)
+		{
+			return false;
+		}
+
+		if (Match(ETokenType::Colon))
+		{
+			FVariable Param;
+			Param.Name = NameToken.Value;
+			Param.Type = ParseType();
+			if (!Param.Type.IsValid())
+			{
+				Error(TEXT("Expected type"));
+				return false;
+			}
+			OutEvent.Inputs.Add(Param);
+			continue;
+		}
+
+		Consume(ETokenType::Equal, TEXT("Expected ':' for event parameters or '=' for K2Node options"));
+		TSharedPtr<FExpression> OptionExpr = ParseExpression();
+		FString OptionValue;
+		if (!TryExpressionToOptionString(OptionExpr, OptionValue))
+		{
+			Error(NameToken, TEXT("K2Node event options must be string, bool, number, or identifier literals"));
+			return false;
+		}
+
+		if (NameToken.Value.Equals(TEXT("Exec"), ESearchCase::IgnoreCase))
+		{
+			OutEvent.EntryExecPin = OptionValue;
+		}
+		else
+		{
+			OutEvent.NodeProperties.Add(NameToken.Value, OptionValue);
+		}
+	} while (Match(ETokenType::Comma));
 
 	return true;
 }

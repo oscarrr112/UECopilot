@@ -5,11 +5,192 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "Misc/App.h"
 #include "UObject/UObjectIterator.h"
 
 namespace BSL
 {
+
+namespace
+{
+	UClass* ResolveClassByName(const FString& ClassName)
+	{
+		if (ClassName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		if (ClassName.StartsWith(TEXT("/")))
+		{
+			if (UClass* Class = FindObject<UClass>(nullptr, *ClassName))
+			{
+				return Class;
+			}
+			if (UClass* Class = LoadObject<UClass>(nullptr, *ClassName))
+			{
+				return Class;
+			}
+		}
+
+		if (!ClassName.Contains(TEXT(".")))
+		{
+			const TArray<FString> CommonScriptPaths = {
+				FString::Printf(TEXT("/Script/Engine.%s"), *ClassName),
+				FString::Printf(TEXT("/Script/UMG.%s"), *ClassName),
+				FString::Printf(TEXT("/Script/CoreUObject.%s"), *ClassName),
+				FString::Printf(TEXT("/Script/GameplayAbilities.%s"), *ClassName),
+				FString::Printf(TEXT("/Script/EnhancedInput.%s"), *ClassName)
+			};
+			for (const FString& Path : CommonScriptPaths)
+			{
+				if (UClass* Class = LoadObject<UClass>(nullptr, *Path))
+				{
+					return Class;
+				}
+			}
+		}
+
+		const TArray<FString> NamesToMatch = {
+			ClassName,
+			TEXT("A") + ClassName,
+			TEXT("U") + ClassName
+		};
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			for (const FString& Match : NamesToMatch)
+			{
+				if (It->GetName() == Match)
+				{
+					return *It;
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	void AppendInputParamNames(UFunction* Func, TArray<FString>& OutNames)
+	{
+		if (!Func)
+		{
+			return;
+		}
+
+		TSet<FString> SkipParams;
+		if (Func->HasMetaData(TEXT("WorldContext")))
+		{
+			SkipParams.Add(Func->GetMetaData(TEXT("WorldContext")));
+		}
+		if (Func->HasMetaData(TEXT("HidePin")))
+		{
+			TArray<FString> HiddenPins;
+			Func->GetMetaData(TEXT("HidePin")).ParseIntoArray(HiddenPins, TEXT(","));
+			for (FString& Pin : HiddenPins)
+			{
+				SkipParams.Add(Pin.TrimStartAndEnd());
+			}
+		}
+
+		for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
+		{
+			if (It->PropertyFlags & CPF_ReturnParm) continue;
+			if (It->PropertyFlags & CPF_OutParm) continue;
+			if (SkipParams.Contains(It->GetName())) continue;
+			OutNames.Add(It->GetName());
+		}
+	}
+
+	int32 CountVisibleInputParams(UFunction* Func)
+	{
+		TArray<FString> Names;
+		AppendInputParamNames(Func, Names);
+		return Names.Num();
+	}
+
+	bool IsBlueprintCallableFunction(UFunction* Func)
+	{
+		return Func && Func->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintPure);
+	}
+
+	UFunction* FindBestBlueprintLibraryFunction(const FString& FunctionRef, int32 ExpectedInputCount)
+	{
+		UFunction* BestFunction = nullptr;
+		int32 BestScore = TNumericLimits<int32>::Min();
+
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* LibraryClass = *It;
+			if (!LibraryClass || !LibraryClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()))
+			{
+				continue;
+			}
+
+			UFunction* Candidate = LibraryClass->FindFunctionByName(*FunctionRef);
+			if (!IsBlueprintCallableFunction(Candidate))
+			{
+				continue;
+			}
+
+			int32 Score = 10;
+			if (ExpectedInputCount != INDEX_NONE)
+			{
+				const int32 ParamDelta = FMath::Abs(CountVisibleInputParams(Candidate) - ExpectedInputCount);
+				Score += ParamDelta == 0 ? 1000 : -ParamDelta * 100;
+			}
+
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				BestFunction = Candidate;
+			}
+		}
+
+		return BestFunction;
+	}
+
+	UFunction* FindCallableFunction(
+		const FString& FunctionRef,
+		UClass* ParentClass,
+		UClass* TargetClass,
+		int32 ExpectedInputCount)
+	{
+		UFunction* Func = FindObject<UFunction>(nullptr, *FunctionRef);
+
+		if (!Func && ParentClass)
+		{
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Func = ParentClass->FindFunctionByName(*Candidate);
+				if (Func) break;
+			}
+		}
+
+		if (!Func && TargetClass)
+		{
+			for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
+			{
+				Func = TargetClass->FindFunctionByName(*Candidate);
+				if (Func) break;
+			}
+		}
+
+		if (!Func)
+		{
+			Func = FindBestBlueprintLibraryFunction(FunctionRef, ExpectedInputCount);
+		}
+
+		return Func;
+	}
+
+	bool IsImpureBlueprintCallable(UFunction* Func)
+	{
+		return Func
+			&& Func->HasAnyFunctionFlags(FUNC_BlueprintCallable)
+			&& !Func->HasAnyFunctionFlags(FUNC_BlueprintPure);
+	}
+}
 
 FCompiler::FCompiler()
 {
@@ -105,15 +286,45 @@ bool FCompiler::CompileBlueprint(const FBlueprint& Source, FBlueprintData& OutDa
 
 	// Build variable type map first
 	VariableTypeMap.Empty();
+	VariableClassMap.Empty();
 	for (const FVariable& Var : Source.Variables)
 	{
 		VariableTypeMap.Add(Var.Name, Var.Type.Type);
+		if (Var.Type.Type == EType::Object && !Var.Type.SubType.IsEmpty())
+		{
+			if (UClass* VarClass = ResolveClassByName(Var.Type.SubType))
+			{
+				VariableClassMap.Add(Var.Name, VarClass);
+			}
+		}
 	}
 
 	// Compile variables
 	for (const FVariable& Var : Source.Variables)
 	{
 		OutData.Variables.Add(CompileVariable(Var));
+	}
+
+	DispatcherInputNames.Empty();
+	for (const FDispatcher& Dispatcher : Source.Dispatchers)
+	{
+		FBlueprintVariableData DispatcherData;
+		DispatcherData.Name = Dispatcher.Name;
+		DispatcherData.Type = EBlueprintVarType::MulticastDelegate;
+
+		TArray<FString> InputNames;
+		for (const FVariable& Input : Dispatcher.Inputs)
+		{
+			FBlueprintPinData PinData;
+			PinData.Name = Input.Name;
+			PinData.Type = Input.Type.ToString();
+			PinData.Direction = EBlueprintPinDirection::Input;
+			DispatcherData.DelegateInputs.Add(PinData);
+			InputNames.Add(Input.Name);
+		}
+
+		OutData.Variables.Add(DispatcherData);
+		DispatcherInputNames.Add(Dispatcher.Name, MoveTemp(InputNames));
 	}
 
 	// Pre-build self-defined function param names for self-call resolution
@@ -187,6 +398,13 @@ FBlueprintVariableData FCompiler::CompileVariable(const FVariable& Var)
 	Data.Name = Var.Name;
 	Data.Type = MapType(Var.Type.Type);
 	Data.TypeClass = Var.Type.SubType;
+	if (Var.Type.Type == EType::Object && !Var.Type.SubType.IsEmpty())
+	{
+		if (UClass* VarClass = ResolveClassByName(Var.Type.SubType))
+		{
+			Data.TypeClass = VarClass->GetPathName();
+		}
+	}
 
 	// For Array types, set the container element type from SubType (e.g., "string" -> String)
 	if (Var.Type.Type == EType::Array && !Var.Type.SubType.IsEmpty())
@@ -227,6 +445,7 @@ bool FCompiler::CompileEvent(const FFunction& Event, FBlueprintGraphData& OutGra
 	// Create event node
 	FBlueprintNodeData EventNode;
 	EventNode.NodeId = GenerateNodeId(TEXT("event"));
+	FString EntryExecPinName = Event.EntryExecPin.IsEmpty() ? TEXT("then") : Event.EntryExecPin;
 
 	// 简写名映射：BSL 简写 → UE 原生函数名
 	static const TMap<FString, FString> ShorthandMap = {
@@ -238,25 +457,36 @@ bool FCompiler::CompileEvent(const FFunction& Event, FBlueprintGraphData& OutGra
 		{TEXT("AnyDamage"),      TEXT("ReceiveAnyDamage")},
 	};
 
+	if (Event.Name.StartsWith(TEXT("K2Node_")) || Event.Name.StartsWith(TEXT("UK2Node_")))
+	{
+		EventNode.EventName = Event.Name;
+		EventNode.FunctionReference = Event.Name;
+		EventNode.NodeProperties = Event.NodeProperties;
+		EventNode.NodeType = EBlueprintNodeType::Event_Input;
+	}
 	// 解析事件名：应用简写映射，存储供 NodeSpawner 使用
-	if (const FString* MappedName = ShorthandMap.Find(Event.Name))
+	else if (const FString* MappedName = ShorthandMap.Find(Event.Name))
 	{
 		EventNode.EventName = *MappedName;
+		EventNode.NodeType = EBlueprintNodeType::Event_Auto;
 	}
 	else
 	{
 		EventNode.EventName = Event.Name;
+		EventNode.NodeType = EBlueprintNodeType::Event_Auto;
 	}
-
-	// 所有事件统一使用 Event_Auto — NodeSpawner 通过反射解析
-	EventNode.NodeType = EBlueprintNodeType::Event_Auto;
 
 	EventNode.Position = {0.0f, 0.0f};
 	OutGraph.Nodes.Add(EventNode);
 
+	for (const FVariable& Input : Event.Inputs)
+	{
+		VariableNodeMap.Add(Input.Name, {EventNode.NodeId, Input.Name});
+	}
+
 	// Compile body
 	FString LastNodeId = EventNode.NodeId;
-	FString LastPinName = TEXT("then");
+	FString LastPinName = EntryExecPinName;
 
 	CompileStatements(Event.Body, OutGraph.Nodes, LastNodeId, LastPinName);
 
@@ -422,9 +652,110 @@ bool FCompiler::CompileStatement(
 	{
 	case EStatementType::VariableDecl:
 	{
+		if (Stmt.DeclaredVariable.Type.Type == EType::Object && !Stmt.DeclaredVariable.Type.SubType.IsEmpty())
+		{
+			if (UClass* LocalClass = ResolveClassByName(Stmt.DeclaredVariable.Type.SubType))
+			{
+				VariableClassMap.Add(Stmt.DeclaredVariable.Name, LocalClass);
+			}
+		}
+
 		// Compile the initial value expression and register in VariableNodeMap
 		if (Stmt.DeclaredVariable.DefaultValue.IsValid())
 		{
+			if (Stmt.DeclaredVariable.DefaultValue->Type == EExpressionType::FunctionCall)
+			{
+				const TSharedPtr<FExpression>& InitCall = Stmt.DeclaredVariable.DefaultValue;
+				UClass* MethodTargetClass = InitCall->Object.IsValid()
+					? ResolveExpressionClass(*InitCall->Object)
+					: nullptr;
+				UFunction* InitFunction = FindCallableFunction(
+					InitCall->Name,
+					ResolvedParentClass,
+					MethodTargetClass,
+					InitCall->Arguments.Num());
+
+				const bool bUnknownObjectMethod = InitCall->Object.IsValid() && MethodTargetClass == nullptr;
+				if (bUnknownObjectMethod || !InitFunction || IsImpureBlueprintCallable(InitFunction))
+				{
+					FBlueprintNodeData CallNode;
+					CallNode.NodeId = GenerateNodeId(TEXT("call_local"));
+					CallNode.NodeType = EBlueprintNodeType::CallFunction;
+					CallNode.FunctionReference = InitCall->Name;
+					CallNode.TargetClass = MethodTargetClass ? MethodTargetClass->GetPathName() : FString();
+					CallNode.Position = {300.0f, 0.0f};
+
+					if (!InOutLastExecNodeId.IsEmpty())
+					{
+						FBlueprintPinData ExecPin;
+						ExecPin.Name = TEXT("execute");
+						ExecPin.Direction = EBlueprintPinDirection::Input;
+
+						FBlueprintPinConnection ExecConn;
+						ExecConn.SourceNodeId = InOutLastExecNodeId;
+						ExecConn.SourcePinName = InOutLastExecPinName;
+						ExecPin.Connections.Add(ExecConn);
+						CallNode.Pins.Add(ExecPin);
+					}
+
+					TryConnectTargetPin(CallNode, InitCall->Object, InitCall->Name, OutNodes);
+
+					TArray<FString> ParamNames;
+					const bool bHasReflectedNames = TryResolveParamNames(
+						InitCall->Name,
+						ParamNames,
+						MethodTargetClass,
+						InitCall->Arguments.Num());
+
+					int32 ArgIndex = 0;
+					for (const TSharedPtr<FExpression>& Arg : InitCall->Arguments)
+					{
+						if (!Arg) continue;
+
+						FBlueprintPinData ArgPin;
+						ArgPin.Name = (bHasReflectedNames && ParamNames.IsValidIndex(ArgIndex))
+							? ParamNames[ArgIndex]
+							: FString::Printf(TEXT("Arg%d"), ArgIndex);
+						ArgPin.Direction = EBlueprintPinDirection::Input;
+
+						FString ArgNodeId;
+						FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+						if (!ArgNodeId.IsEmpty())
+						{
+							FBlueprintPinConnection ArgConn;
+							ArgConn.SourceNodeId = ArgNodeId;
+							ArgConn.SourcePinName = ArgPinName;
+							ArgPin.Connections.Add(ArgConn);
+						}
+						else if (Arg->Type == EExpressionType::Literal_String)
+						{
+							ArgPin.DefaultValue = Arg->StringValue;
+						}
+						else if (Arg->Type == EExpressionType::Literal_Float)
+						{
+							ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+						}
+						else if (Arg->Type == EExpressionType::Literal_Int)
+						{
+							ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+						}
+						else if (Arg->Type == EExpressionType::Literal_Bool)
+						{
+							ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
+						}
+
+						CallNode.Pins.Add(ArgPin);
+						ArgIndex++;
+					}
+
+					OutNodes.Add(CallNode);
+					VariableNodeMap.Add(Stmt.DeclaredVariable.Name, {CallNode.NodeId, TEXT("ReturnValue")});
+					InOutLastExecNodeId = CallNode.NodeId;
+					InOutLastExecPinName = TEXT("then");
+					return true;
+				}
+			}
+
 			FString ValNodeId;
 			FString ValPinName = CompileExpression(*Stmt.DeclaredVariable.DefaultValue, OutNodes, ValNodeId);
 
@@ -500,16 +831,113 @@ bool FCompiler::CompileStatement(
 		SetNode.VariableName = Stmt.AssignTarget;
 		SetNode.Position = {400.0f, 0.0f};
 
+		FString AssignmentExecNodeId = InOutLastExecNodeId;
+		FString AssignmentExecPinName = InOutLastExecPinName;
+		FString PrecompiledValueNodeId;
+		FString PrecompiledValuePinName;
+
+		if (Stmt.AssignValue.IsValid() && Stmt.AssignValue->Type == EExpressionType::FunctionCall)
+		{
+			UClass* MethodTargetClass = Stmt.AssignValue->Object.IsValid()
+				? ResolveExpressionClass(*Stmt.AssignValue->Object)
+				: nullptr;
+
+			UFunction* AssignedFunction = FindCallableFunction(
+				Stmt.AssignValue->Name,
+				ResolvedParentClass,
+				MethodTargetClass,
+				Stmt.AssignValue->Arguments.Num());
+
+			if (!AssignedFunction || IsImpureBlueprintCallable(AssignedFunction))
+			{
+				FBlueprintNodeData CallNode;
+				CallNode.NodeId = GenerateNodeId(TEXT("call_assign"));
+				CallNode.NodeType = EBlueprintNodeType::CallFunction;
+				CallNode.FunctionReference = Stmt.AssignValue->Name;
+				CallNode.TargetClass = MethodTargetClass ? MethodTargetClass->GetPathName() : FString();
+				CallNode.Position = {300.0f, 0.0f};
+
+				if (!InOutLastExecNodeId.IsEmpty())
+				{
+					FBlueprintPinData ExecPin;
+					ExecPin.Name = TEXT("execute");
+					ExecPin.Direction = EBlueprintPinDirection::Input;
+
+					FBlueprintPinConnection ExecConn;
+					ExecConn.SourceNodeId = InOutLastExecNodeId;
+					ExecConn.SourcePinName = InOutLastExecPinName;
+					ExecPin.Connections.Add(ExecConn);
+					CallNode.Pins.Add(ExecPin);
+				}
+
+				TryConnectTargetPin(CallNode, Stmt.AssignValue->Object, Stmt.AssignValue->Name, OutNodes);
+
+				TArray<FString> ParamNames;
+				const bool bHasReflectedNames = TryResolveParamNames(
+					Stmt.AssignValue->Name,
+					ParamNames,
+					MethodTargetClass,
+					Stmt.AssignValue->Arguments.Num());
+
+				int32 ArgIndex = 0;
+				for (const TSharedPtr<FExpression>& Arg : Stmt.AssignValue->Arguments)
+				{
+					if (!Arg) continue;
+
+					FBlueprintPinData ArgPin;
+					ArgPin.Name = (bHasReflectedNames && ParamNames.IsValidIndex(ArgIndex))
+						? ParamNames[ArgIndex]
+						: FString::Printf(TEXT("Arg%d"), ArgIndex);
+					ArgPin.Direction = EBlueprintPinDirection::Input;
+
+					FString ArgNodeId;
+					FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+					if (!ArgNodeId.IsEmpty())
+					{
+						FBlueprintPinConnection ArgConn;
+						ArgConn.SourceNodeId = ArgNodeId;
+						ArgConn.SourcePinName = ArgPinName;
+						ArgPin.Connections.Add(ArgConn);
+					}
+					else if (Arg->Type == EExpressionType::Literal_String)
+					{
+						ArgPin.DefaultValue = Arg->StringValue;
+					}
+					else if (Arg->Type == EExpressionType::Literal_Int)
+					{
+						ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+					}
+					else if (Arg->Type == EExpressionType::Literal_Float)
+					{
+						ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+					}
+					else if (Arg->Type == EExpressionType::Literal_Bool)
+					{
+						ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
+					}
+
+					CallNode.Pins.Add(ArgPin);
+					ArgIndex++;
+				}
+
+				OutNodes.Add(CallNode);
+				AssignmentExecNodeId = CallNode.NodeId;
+				AssignmentExecPinName = TEXT("then");
+				PrecompiledValueNodeId = CallNode.NodeId;
+				PrecompiledValuePinName = TEXT("ReturnValue");
+			}
+		}
+
 		// Connect execute from previous node
-		if (!InOutLastExecNodeId.IsEmpty())
+		if (!AssignmentExecNodeId.IsEmpty())
 		{
 			FBlueprintPinData ExecPin;
 			ExecPin.Name = TEXT("execute");
 			ExecPin.Direction = EBlueprintPinDirection::Input;
 
 			FBlueprintPinConnection ExecConn;
-			ExecConn.SourceNodeId = InOutLastExecNodeId;
-			ExecConn.SourcePinName = InOutLastExecPinName;
+			ExecConn.SourceNodeId = AssignmentExecNodeId;
+			ExecConn.SourcePinName = AssignmentExecPinName;
 			ExecPin.Connections.Add(ExecConn);
 			SetNode.Pins.Add(ExecPin);
 		}
@@ -517,8 +945,12 @@ bool FCompiler::CompileStatement(
 		// Compile the value expression
 		if (Stmt.AssignValue.IsValid())
 		{
-			FString ValueNodeId;
-			FString ValuePinName = CompileExpression(*Stmt.AssignValue, OutNodes, ValueNodeId);
+			FString ValueNodeId = PrecompiledValueNodeId;
+			FString ValuePinName = PrecompiledValuePinName;
+			if (ValueNodeId.IsEmpty())
+			{
+				ValuePinName = CompileExpression(*Stmt.AssignValue, OutNodes, ValueNodeId);
+			}
 
 			FBlueprintPinData ValuePin;
 			// Variable Set node's input pin name is the variable name itself
@@ -559,6 +991,10 @@ bool FCompiler::CompileStatement(
 		}
 
 		OutNodes.Add(SetNode);
+		if (!PrecompiledValueNodeId.IsEmpty())
+		{
+			VariableNodeMap.Add(Stmt.AssignTarget, {PrecompiledValueNodeId, PrecompiledValuePinName});
+		}
 		InOutLastExecNodeId = SetNode.NodeId;
 		InOutLastExecPinName = TEXT("then");
 		return true;
@@ -597,7 +1033,7 @@ bool FCompiler::CompileStatement(
 
 		// Compile function arguments with reflected pin names
 		TArray<FString> ParamNames;
-		bool bHasNames = TryResolveParamNames(Stmt.AssignValue->Name, ParamNames);
+		bool bHasNames = TryResolveParamNames(Stmt.AssignValue->Name, ParamNames, nullptr, Stmt.AssignValue->Arguments.Num());
 		int32 ArgIndex = 0;
 		for (const TSharedPtr<FExpression>& Arg : Stmt.AssignValue->Arguments)
 		{
@@ -640,7 +1076,7 @@ bool FCompiler::CompileStatement(
 
 		// Resolve out param names via reflection, map assignment targets to output pins
 		TArray<FString> OutParamNames;
-		TryResolveOutParamNames(Stmt.AssignValue->Name, OutParamNames);
+		TryResolveOutParamNames(Stmt.AssignValue->Name, OutParamNames, nullptr, Stmt.AssignValue->Arguments.Num());
 
 		for (int32 i = 0; i < Stmt.MultiAssignTargets.Num(); i++)
 		{
@@ -780,6 +1216,161 @@ bool FCompiler::CompileStatement(
 		// Expression as statement - likely a function call
 		if (Stmt.Expression.IsValid() && Stmt.Expression->Type == EExpressionType::FunctionCall)
 		{
+			const bool bDispatcherMethod =
+				Stmt.Expression->Object.IsValid() &&
+				Stmt.Expression->Object->Type == EExpressionType::Variable &&
+				DispatcherInputNames.Contains(Stmt.Expression->Object->Name);
+
+			if (bDispatcherMethod && Stmt.Expression->Name.Equals(TEXT("Broadcast"), ESearchCase::IgnoreCase))
+			{
+				const FString DispatcherName = Stmt.Expression->Object->Name;
+
+				FBlueprintNodeData CallNode;
+				CallNode.NodeId = GenerateNodeId(TEXT("delegate_call"));
+				CallNode.NodeType = EBlueprintNodeType::Delegate_Execute;
+				CallNode.VariableName = DispatcherName;
+				CallNode.Position = {400.0f, 0.0f};
+
+				if (!InOutLastExecNodeId.IsEmpty())
+				{
+					FBlueprintPinData ExecPin;
+					ExecPin.Name = TEXT("execute");
+					ExecPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection ExecConn;
+					ExecConn.SourceNodeId = InOutLastExecNodeId;
+					ExecConn.SourcePinName = InOutLastExecPinName;
+					ExecPin.Connections.Add(ExecConn);
+					CallNode.Pins.Add(ExecPin);
+				}
+
+				const TArray<FString>* PinNames = DispatcherInputNames.Find(DispatcherName);
+				int32 ArgIndex = 0;
+				for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
+				{
+					if (!Arg) continue;
+
+					FBlueprintPinData ArgPin;
+					ArgPin.Name = (PinNames && PinNames->IsValidIndex(ArgIndex))
+						? (*PinNames)[ArgIndex]
+						: FString::Printf(TEXT("Arg%d"), ArgIndex);
+					ArgPin.Direction = EBlueprintPinDirection::Input;
+
+					FString ArgNodeId;
+					FString ArgPinName = CompileExpression(*Arg, OutNodes, ArgNodeId);
+					if (!ArgNodeId.IsEmpty())
+					{
+						FBlueprintPinConnection ArgConn;
+						ArgConn.SourceNodeId = ArgNodeId;
+						ArgConn.SourcePinName = ArgPinName;
+						ArgPin.Connections.Add(ArgConn);
+					}
+					else if (Arg->Type == EExpressionType::Literal_String)
+					{
+						ArgPin.DefaultValue = Arg->StringValue;
+					}
+					else if (Arg->Type == EExpressionType::Literal_Int)
+					{
+						ArgPin.DefaultValue = FString::FromInt(Arg->IntValue);
+					}
+					else if (Arg->Type == EExpressionType::Literal_Float)
+					{
+						ArgPin.DefaultValue = FString::SanitizeFloat(Arg->FloatValue);
+					}
+					else if (Arg->Type == EExpressionType::Literal_Bool)
+					{
+						ArgPin.DefaultValue = Arg->BoolValue ? TEXT("true") : TEXT("false");
+					}
+
+					CallNode.Pins.Add(ArgPin);
+					ArgIndex++;
+				}
+
+				OutNodes.Add(CallNode);
+				InOutLastExecNodeId = CallNode.NodeId;
+				InOutLastExecPinName = TEXT("then");
+				return true;
+			}
+
+			if (bDispatcherMethod && Stmt.Expression->Name.Equals(TEXT("Bind"), ESearchCase::IgnoreCase))
+			{
+				const FString DispatcherName = Stmt.Expression->Object->Name;
+				FString TargetNodeId;
+				FString TargetPinName;
+				FString FunctionName;
+
+				if (Stmt.Expression->Arguments.Num() >= 2)
+				{
+					TargetPinName = CompileExpression(*Stmt.Expression->Arguments[0], OutNodes, TargetNodeId);
+					if (Stmt.Expression->Arguments[1].IsValid() &&
+						Stmt.Expression->Arguments[1]->Type == EExpressionType::Literal_String)
+					{
+						FunctionName = Stmt.Expression->Arguments[1]->StringValue;
+					}
+				}
+				else if (Stmt.Expression->Arguments.Num() == 1 &&
+					Stmt.Expression->Arguments[0].IsValid() &&
+					Stmt.Expression->Arguments[0]->Type == EExpressionType::Literal_String)
+				{
+					FunctionName = Stmt.Expression->Arguments[0]->StringValue;
+				}
+
+				if (FunctionName.IsEmpty())
+				{
+					Warning(FString::Printf(TEXT("Dispatcher '%s'.Bind requires a function name string"), *DispatcherName));
+					return true;
+				}
+
+				FBlueprintNodeData CreateNode;
+				CreateNode.NodeId = GenerateNodeId(TEXT("delegate_create"));
+				CreateNode.NodeType = EBlueprintNodeType::Delegate_Create;
+				CreateNode.FunctionReference = FunctionName;
+				CreateNode.Position = {250.0f, 120.0f};
+				if (!TargetNodeId.IsEmpty())
+				{
+					FBlueprintPinData SelfPin;
+					SelfPin.Name = TEXT("self");
+					SelfPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection SelfConn;
+					SelfConn.SourceNodeId = TargetNodeId;
+					SelfConn.SourcePinName = TargetPinName;
+					SelfPin.Connections.Add(SelfConn);
+					CreateNode.Pins.Add(SelfPin);
+				}
+				OutNodes.Add(CreateNode);
+
+				FBlueprintNodeData BindNode;
+				BindNode.NodeId = GenerateNodeId(TEXT("delegate_bind"));
+				BindNode.NodeType = EBlueprintNodeType::Delegate_Bind;
+				BindNode.VariableName = DispatcherName;
+				BindNode.Position = {400.0f, 0.0f};
+
+				if (!InOutLastExecNodeId.IsEmpty())
+				{
+					FBlueprintPinData ExecPin;
+					ExecPin.Name = TEXT("execute");
+					ExecPin.Direction = EBlueprintPinDirection::Input;
+					FBlueprintPinConnection ExecConn;
+					ExecConn.SourceNodeId = InOutLastExecNodeId;
+					ExecConn.SourcePinName = InOutLastExecPinName;
+					ExecPin.Connections.Add(ExecConn);
+					BindNode.Pins.Add(ExecPin);
+				}
+
+				FBlueprintPinData DelegatePin;
+				DelegatePin.Name = TEXT("delegate");
+				DelegatePin.Direction = EBlueprintPinDirection::Input;
+				FBlueprintPinConnection DelegateConn;
+				DelegateConn.SourceNodeId = CreateNode.NodeId;
+				DelegateConn.SourcePinName = TEXT("delegate");
+				DelegatePin.Connections.Add(DelegateConn);
+				BindNode.Pins.Add(DelegatePin);
+
+				OutNodes.Add(BindNode);
+				InOutLastExecNodeId = BindNode.NodeId;
+				InOutLastExecPinName = TEXT("then");
+				return true;
+			}
+
 			// Map array method names to dedicated Array_* node types when called on an object
 			static const TMap<FString, EBlueprintNodeType> ArrayMethodNodeTypes = {
 				{TEXT("Add"),    EBlueprintNodeType::Array_Add},
@@ -822,17 +1413,13 @@ bool FCompiler::CompileStatement(
 			TryConnectTargetPin(CallNode, Stmt.Expression->Object, Stmt.Expression->Name, OutNodes);
 
 			// Resolve target component class for method calls (e.g., DoorMesh.SetRelativeRotation)
-			UClass* MethodTargetClass = nullptr;
-			if (Stmt.Expression->Object.IsValid() && Stmt.Expression->Object->Type == EExpressionType::Variable)
-			{
-				if (UClass** Found = ComponentClassMap.Find(Stmt.Expression->Object->Name))
-				{
-					MethodTargetClass = *Found;
-				}
-			}
+			UClass* MethodTargetClass = Stmt.Expression->Object.IsValid()
+				? ResolveExpressionClass(*Stmt.Expression->Object)
+				: nullptr;
+			CallNode.TargetClass = MethodTargetClass ? MethodTargetClass->GetPathName() : FString();
 
 			TArray<FString> ParamNames;
-			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames, MethodTargetClass);
+			bool bHasReflectedNames = TryResolveParamNames(Stmt.Expression->Name, ParamNames, MethodTargetClass, Stmt.Expression->Arguments.Num());
 
 			int32 ArgIndex = 0;
 			for (const TSharedPtr<FExpression>& Arg : Stmt.Expression->Arguments)
@@ -1433,17 +2020,13 @@ FString FCompiler::CompileExpression(
 		TryConnectTargetPin(CallNode, Expr.Object, Expr.Name, OutNodes);
 
 		// Resolve target component class for method calls
-		UClass* MethodTargetClass = nullptr;
-		if (Expr.Object.IsValid() && Expr.Object->Type == EExpressionType::Variable)
-		{
-			if (UClass** Found = ComponentClassMap.Find(Expr.Object->Name))
-			{
-				MethodTargetClass = *Found;
-			}
-		}
+		UClass* MethodTargetClass = Expr.Object.IsValid()
+			? ResolveExpressionClass(*Expr.Object)
+			: nullptr;
+		CallNode.TargetClass = MethodTargetClass ? MethodTargetClass->GetPathName() : FString();
 
 		TArray<FString> ParamNames;
-		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames, MethodTargetClass);
+		bool bHasReflectedNames = TryResolveParamNames(Expr.Name, ParamNames, MethodTargetClass, Expr.Arguments.Num());
 
 		int32 ArgIndex = 0;
 		for (const TSharedPtr<FExpression>& Arg : Expr.Arguments)
@@ -2095,6 +2678,63 @@ EType FCompiler::GetExpressionType(const FExpression* Expr)
 	}
 }
 
+UClass* FCompiler::ResolveExpressionClass(const FExpression& Expr)
+{
+	switch (Expr.Type)
+	{
+	case EExpressionType::Self:
+		return ResolvedParentClass;
+
+	case EExpressionType::Variable:
+		if (UClass** ComponentClass = ComponentClassMap.Find(Expr.Name))
+		{
+			return *ComponentClass;
+		}
+		if (UClass** VariableClass = VariableClassMap.Find(Expr.Name))
+		{
+			return *VariableClass;
+		}
+		return nullptr;
+
+	case EExpressionType::Cast:
+		return ResolveClassByName(Expr.CastType.SubType);
+
+	case EExpressionType::FunctionCall:
+	{
+		UClass* TargetClass = Expr.Object.IsValid()
+			? ResolveExpressionClass(*Expr.Object)
+			: nullptr;
+		UFunction* Function = FindCallableFunction(Expr.Name, ResolvedParentClass, TargetClass, Expr.Arguments.Num());
+		if (!Function)
+		{
+			return nullptr;
+		}
+
+		for (TFieldIterator<FProperty> It(Function); It && (It->PropertyFlags & CPF_Parm); ++It)
+		{
+			if (!(It->PropertyFlags & CPF_ReturnParm))
+			{
+				continue;
+			}
+
+			if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(*It))
+			{
+				return ObjectProperty->PropertyClass;
+			}
+			if (const FClassProperty* ClassProperty = CastField<FClassProperty>(*It))
+			{
+				return ClassProperty->MetaClass;
+			}
+		}
+
+		return nullptr;
+	}
+
+	default:
+		return nullptr;
+	}
+}
+
 FString FCompiler::DetermineOperandType(const FExpression* Left, const FExpression* Right)
 {
 	EType LeftType = GetExpressionType(Left);
@@ -2135,50 +2775,11 @@ bool FCompiler::IsFunctionOutputParameter(const FString& Name) const
 	return false;
 }
 
-bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass)
+bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass, int32 ExpectedInputCount)
 {
 	OutNames.Empty();
 
-	// 尝试直接路径查找（e.g. "/Script/Engine.KismetSystemLibrary:PrintString"）
-	UFunction* Func = FindObject<UFunction>(nullptr, *FunctionRef);
-
-	// 如果直接查找失败，遍历常见库类
-	if (!Func)
-	{
-		TArray<UClass*> CandidateClasses = {
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary")),
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetMathLibrary")),
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.GameplayStatics")),
-		};
-		for (UClass* Cls : CandidateClasses)
-		{
-			if (Cls)
-			{
-				Func = Cls->FindFunctionByName(*FunctionRef);
-				if (Func) break;
-			}
-		}
-	}
-
-	// Search blueprint's parent class hierarchy (e.g., AActor for SetActorLocation)
-	if (!Func && ResolvedParentClass)
-	{
-		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
-		{
-			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
-			if (Func) break;
-		}
-	}
-
-	// Search target component class hierarchy (e.g., USceneComponent for SetRelativeRotation)
-	if (!Func && TargetClass)
-	{
-		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
-		{
-			Func = TargetClass->FindFunctionByName(*Candidate);
-			if (Func) break;
-		}
-	}
+	UFunction* Func = FindCallableFunction(FunctionRef, ResolvedParentClass, TargetClass, ExpectedInputCount);
 
 	if (!Func)
 	{
@@ -2191,69 +2792,15 @@ bool FCompiler::TryResolveParamNames(const FString& FunctionRef, TArray<FString>
 		return false;
 	}
 
-	// Collect parameter names to skip:
-	// WorldContext and HidePin metadata are on the UFunction, not on individual FProperty.
-	TSet<FString> SkipParams;
-
-	if (Func->HasMetaData(TEXT("WorldContext")))
-	{
-		SkipParams.Add(Func->GetMetaData(TEXT("WorldContext")));
-	}
-	if (Func->HasMetaData(TEXT("HidePin")))
-	{
-		TArray<FString> HiddenPins;
-		Func->GetMetaData(TEXT("HidePin")).ParseIntoArray(HiddenPins, TEXT(","));
-		for (FString& Pin : HiddenPins)
-		{
-			SkipParams.Add(Pin.TrimStartAndEnd());
-		}
-	}
-
-	for (TFieldIterator<FProperty> It(Func); It && (It->PropertyFlags & CPF_Parm); ++It)
-	{
-		if (It->PropertyFlags & CPF_ReturnParm) continue;
-		if (It->PropertyFlags & CPF_OutParm) continue;
-		if (SkipParams.Contains(It->GetName())) continue;
-		OutNames.Add(It->GetName());
-	}
+	AppendInputParamNames(Func, OutNames);
 	return OutNames.Num() > 0;
 }
 
-bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass)
+bool FCompiler::TryResolveOutParamNames(const FString& FunctionRef, TArray<FString>& OutNames, UClass* TargetClass, int32 ExpectedInputCount)
 {
 	OutNames.Empty();
 
-	UFunction* Func = FindObject<UFunction>(nullptr, *FunctionRef);
-	if (!Func)
-	{
-		TArray<UClass*> CandidateClasses = {
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetSystemLibrary")),
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.KismetMathLibrary")),
-			FindObject<UClass>(nullptr, TEXT("/Script/Engine.GameplayStatics")),
-		};
-		for (UClass* Cls : CandidateClasses)
-		{
-			if (Cls) { Func = Cls->FindFunctionByName(*FunctionRef); if (Func) break; }
-		}
-	}
-	// Search parent class hierarchy
-	if (!Func && ResolvedParentClass)
-	{
-		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
-		{
-			Func = ResolvedParentClass->FindFunctionByName(*Candidate);
-			if (Func) break;
-		}
-	}
-	// Search target component class hierarchy
-	if (!Func && TargetClass)
-	{
-		for (const FString& Candidate : { FunctionRef, FString::Printf(TEXT("K2_%s"), *FunctionRef) })
-		{
-			Func = TargetClass->FindFunctionByName(*Candidate);
-			if (Func) break;
-		}
-	}
+	UFunction* Func = FindCallableFunction(FunctionRef, ResolvedParentClass, TargetClass, ExpectedInputCount);
 	if (!Func)
 	{
 		// Fallback: check self-defined functions from BSL AST

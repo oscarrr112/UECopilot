@@ -99,6 +99,11 @@ public:
 	static FNodeSpawnResult SpawnArrayNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
 
 	/**
+	 * Spawn a delegate operation node (create, bind, execute).
+	 */
+	static FNodeSpawnResult SpawnDelegateNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);
+
+	/**
 	 * Spawn a return node for functions
 	 */
 	static FNodeSpawnResult SpawnReturnNode(UEdGraph* Graph, const FBlueprintNodeData& NodeData, UBlueprint* Blueprint);

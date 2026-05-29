@@ -15,8 +15,9 @@ namespace BSL
  * Grammar (simplified):
  *
  * blueprint     = "blueprint" IDENTIFIER "extends" IDENTIFIER "{" members "}"
- * members       = (variable | function | event)*
+ * members       = (variable | dispatcher | function | event)*
  * variable      = "var" IDENTIFIER ":" type ("=" expression)?
+ * dispatcher    = "dispatcher" IDENTIFIER "(" params ")"
  * function      = "function" IDENTIFIER "(" params ")" ("->" "(" outputs ")")? block
  * event         = "event" IDENTIFIER ("(" params ")")? block
  * params        = (param ("," param)*)?
@@ -58,8 +59,10 @@ private:
 	// Blueprint structure
 	bool ParseBlueprint(FBlueprint& OutBlueprint);
 	bool ParseVariable(FVariable& OutVar);
+	bool ParseDispatcher(FDispatcher& OutDispatcher);
 	bool ParseFunction(FFunction& OutFunc);
 	bool ParseEvent(FFunction& OutEvent);
+	bool ParseEventArguments(FFunction& OutEvent);
 	bool ParseParameters(TArray<FVariable>& OutParams);
 	bool ParseOutputs(TArray<FVariable>& OutOutputs);
 	FTypeInfo ParseType();

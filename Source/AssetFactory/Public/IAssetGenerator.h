@@ -91,17 +91,38 @@ public:
 	}
 
 protected:
+	FString GetPackagePath(const FString& Path, const FString& Name) const
+	{
+		FString PackagePath = Path / Name;
+		if (!PackagePath.StartsWith(TEXT("/")))
+		{
+			PackagePath = TEXT("/") + PackagePath;
+		}
+		return PackagePath;
+	}
+
+	FString GetObjectPath(const FString& Path, const FString& Name) const
+	{
+		const FString PackagePath = GetPackagePath(Path, Name);
+		return PackagePath + TEXT(".") + Name;
+	}
+
 	/**
-	 * Helper: Check if asset already exists
+	 * Helper: Check if asset already exists.
+	 * Also treats loaded in-memory objects/packages as existing so CreateOrUpdate
+	 * does not fall through to CreateAsset and trigger modal overwrite prompts.
 	 */
 	bool DoesAssetExist(const FString& Path, const FString& Name) const
 	{
-		FString FullPath = Path / Name;
-		if (!FullPath.StartsWith(TEXT("/")))
+		const FString PackagePath = GetPackagePath(Path, Name);
+		const FString ObjectPath = GetObjectPath(Path, Name);
+
+		if (FindObject<UObject>(nullptr, *ObjectPath) || FindPackage(nullptr, *PackagePath))
 		{
-			FullPath = TEXT("/") + FullPath;
+			return true;
 		}
-		return FPackageName::DoesPackageExist(FullPath);
+
+		return FPackageName::DoesPackageExist(PackagePath);
 	}
 
 	/**
@@ -109,12 +130,13 @@ protected:
 	 */
 	UObject* LoadExistingAsset(const FString& Path, const FString& Name) const
 	{
-		FString FullPath = Path / Name;
-		if (!FullPath.StartsWith(TEXT("/")))
+		const FString ObjectPath = GetObjectPath(Path, Name);
+		if (UObject* ExistingObject = FindObject<UObject>(nullptr, *ObjectPath))
 		{
-			FullPath = TEXT("/") + FullPath;
+			return ExistingObject;
 		}
-		return LoadObject<UObject>(nullptr, *FullPath);
+
+		return LoadObject<UObject>(nullptr, *ObjectPath);
 	}
 
 	/**

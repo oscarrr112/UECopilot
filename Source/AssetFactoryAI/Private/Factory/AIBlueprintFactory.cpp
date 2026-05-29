@@ -7,8 +7,11 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/CompilerResultsLog.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_CreateDelegate.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "EdGraph/EdGraph.h"
@@ -17,6 +20,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "Components/ActorComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/GameModeBase.h"
 #include "HAL/PlatformFileManager.h"
@@ -86,6 +90,9 @@ namespace
 	UEdGraph* ResolveGraphFromNodeMap(const TMap<FString, UK2Node*>& NodeMap);
 	void PlaceNodesInRightwardFlow(const FBlueprintGraphData& GraphData, UEdGraph* Graph, const TMap<FString, UK2Node*>& NodeMap);
 	void RunPostLayoutPass(UEdGraph* Graph);
+	void RemoveStaleVariables(UBlueprint* Blueprint, const TArray<FBlueprintVariableData>& DesiredVariables);
+	void RemoveStaleFunctionGraphs(UBlueprint* Blueprint, const TArray<FBlueprintGraphData>& DesiredFunctions);
+	void RestoreCreateDelegateFunctions(const TMap<FString, UK2Node*>& NodeMap, const TArray<FBlueprintNodeData>& Nodes);
 
 	FString NormalizePinToken(const FString& Name)
 	{
@@ -102,7 +109,7 @@ namespace
 		{
 			const FString RawGroups = DC::GetString(
 				TEXT("PinAliasGroups"),
-				TEXT("execute,exec,then,in,input|then,true,out,output|else,false|condition,cond|returnvalue,return,result"));
+				TEXT("execute,exec,then,in,input|then,true,out,output|else,false|condition,cond|returnvalue,return,result|class,widgettype,widgetclass"));
 
 			TArray<TArray<FString>> ParsedGroups;
 			for (const FString& Group : ParseDelimitedList(RawGroups, '|'))
@@ -160,6 +167,183 @@ namespace
 		const FString Name = NormalizePinToken(PinName);
 		const TArray<TArray<FString>>& Groups = GetPinAliasGroups();
 		return Groups.Num() > 0 ? ValueInAliasGroup(Name, Groups[0]) : false;
+	}
+
+	FString JoinGenerationErrors(const TArray<FString>& Errors)
+	{
+		FString Result;
+		for (const FString& Error : Errors)
+		{
+			if (Error.IsEmpty())
+			{
+				continue;
+			}
+			if (!Result.IsEmpty())
+			{
+				Result += TEXT("; ");
+			}
+			Result += Error;
+		}
+		return Result;
+	}
+
+	void RemoveStaleVariables(UBlueprint* Blueprint, const TArray<FBlueprintVariableData>& DesiredVariables)
+	{
+		if (!Blueprint)
+		{
+			return;
+		}
+
+		TSet<FName> DesiredNames;
+		for (const FBlueprintVariableData& VarData : DesiredVariables)
+		{
+			if (!VarData.Name.IsEmpty())
+			{
+				DesiredNames.Add(FName(*VarData.Name));
+			}
+		}
+
+		TArray<FName> VariablesToRemove;
+		for (const FBPVariableDescription& VarDesc : Blueprint->NewVariables)
+		{
+			const UClass* VarClass = Cast<const UClass>(VarDesc.VarType.PinSubCategoryObject.Get());
+			if (VarClass && VarClass->IsChildOf(UActorComponent::StaticClass()))
+			{
+				continue;
+			}
+
+			if (!DesiredNames.Contains(VarDesc.VarName))
+			{
+				VariablesToRemove.Add(VarDesc.VarName);
+			}
+		}
+
+		for (const FName& VarName : VariablesToRemove)
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VarName);
+		}
+	}
+
+	void RemoveStaleFunctionGraphs(UBlueprint* Blueprint, const TArray<FBlueprintGraphData>& DesiredFunctions)
+	{
+		if (!Blueprint)
+		{
+			return;
+		}
+
+		TSet<FName> DesiredNames;
+		for (const FBlueprintGraphData& FunctionData : DesiredFunctions)
+		{
+			if (!FunctionData.Name.IsEmpty())
+			{
+				DesiredNames.Add(FName(*FunctionData.Name));
+			}
+		}
+
+		TArray<UEdGraph*> GraphsToRemove;
+		for (UEdGraph* Graph : Blueprint->FunctionGraphs)
+		{
+			if (!Graph)
+			{
+				continue;
+			}
+
+			const FName GraphName = Graph->GetFName();
+			if (GraphName == UEdGraphSchema_K2::FN_UserConstructionScript ||
+				GraphName == UEdGraphSchema_K2::FN_ExecuteUbergraphBase)
+			{
+				continue;
+			}
+
+			if (!DesiredNames.Contains(GraphName))
+			{
+				GraphsToRemove.Add(Graph);
+			}
+		}
+
+		for (UEdGraph* Graph : GraphsToRemove)
+		{
+			FBlueprintEditorUtils::RemoveGraph(Blueprint, Graph, EGraphRemoveFlags::MarkTransient);
+		}
+	}
+
+	void RestoreCreateDelegateFunctions(const TMap<FString, UK2Node*>& NodeMap, const TArray<FBlueprintNodeData>& Nodes)
+	{
+		for (const FBlueprintNodeData& Data : Nodes)
+		{
+			if (Data.NodeType != EBlueprintNodeType::Delegate_Create || Data.FunctionReference.IsEmpty())
+			{
+				continue;
+			}
+
+			UK2Node* const* NodePtr = NodeMap.Find(Data.NodeId);
+			UK2Node_CreateDelegate* CreateDelegateNode = NodePtr ? Cast<UK2Node_CreateDelegate>(*NodePtr) : nullptr;
+			if (!CreateDelegateNode)
+			{
+				continue;
+			}
+
+			CreateDelegateNode->SetFunction(FName(*Data.FunctionReference));
+			CreateDelegateNode->HandleAnyChangeWithoutNotifying();
+		}
+	}
+
+	bool CompileBlueprintChecked(UBlueprint* Blueprint, FString& OutError)
+	{
+		if (!Blueprint)
+		{
+			OutError = TEXT("Cannot compile a null Blueprint");
+			return false;
+		}
+
+		FCompilerResultsLog CompileResults;
+		CompileResults.SetSilentMode(true);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint, EBlueprintCompileOptions::None, &CompileResults);
+
+		if (CompileResults.NumErrors == 0 && Blueprint->Status != BS_Error)
+		{
+			return true;
+		}
+
+		FString ErrorMessage;
+		for (const TSharedRef<FTokenizedMessage>& Message : CompileResults.Messages)
+		{
+			if (Message->GetSeverity() == EMessageSeverity::Error)
+			{
+				if (!ErrorMessage.IsEmpty())
+				{
+					ErrorMessage += TEXT("; ");
+				}
+				ErrorMessage += Message->ToText().ToString();
+			}
+		}
+
+		if (ErrorMessage.IsEmpty())
+		{
+			ErrorMessage = FString::Printf(TEXT("Blueprint compile failed with status %d and %d compiler error(s)"),
+				static_cast<int32>(Blueprint->Status),
+				CompileResults.NumErrors);
+		}
+
+		OutError = ErrorMessage;
+		return false;
+	}
+
+	void NotifyPinDefaultChanged(UK2Node* Node, UEdGraphPin* Pin)
+	{
+		if (!Node || !Pin)
+		{
+			return;
+		}
+
+		Node->PinDefaultValueChanged(Pin);
+
+		// Generic K2 call nodes such as UWidgetBlueprintLibrary::Create use
+		// a class input pin to determine the ReturnValue pin type.
+		if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class && Cast<UK2Node_CallFunction>(Node))
+		{
+			Node->ReconstructNode();
+		}
 	}
 
 	struct FLayoutRect
@@ -424,6 +608,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 
 	// Create variables
 	CreateVariables(NewBlueprint, Data.Variables, Result.Warnings);
+	FKismetEditorUtilities::CompileBlueprint(NewBlueprint);
 
 	// Create function graphs FIRST so that EventGraph nodes can resolve
 	// self-function calls (CallFunction nodes referencing functions defined
@@ -437,6 +622,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
+			if (ConnErrors.Num() > 0)
+			{
+				Result.ErrorMessage = JoinGenerationErrors(ConnErrors);
+				return Result;
+			}
 
 			for (const auto& Pair : NodeMap)
 			{
@@ -454,6 +644,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
+			if (ConnErrors.Num() > 0)
+			{
+				Result.ErrorMessage = JoinGenerationErrors(ConnErrors);
+				return Result;
+			}
 
 			for (const auto& Pair : NodeMap)
 			{
@@ -482,7 +677,12 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreateBlueprint(
 
 	// Compile blueprint
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(NewBlueprint);
-	FKismetEditorUtilities::CompileBlueprint(NewBlueprint);
+	FString CompileError;
+	if (!CompileBlueprintChecked(NewBlueprint, CompileError))
+	{
+		Result.ErrorMessage = CompileError;
+		return Result;
+	}
 
 	// Save package
 	FString PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
@@ -562,6 +762,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 
 	// Create variables
 	CreateVariables(NewBlueprint, Data.Variables, Result.Warnings);
+	FKismetEditorUtilities::CompileBlueprint(NewBlueprint);
 
 	// Create function graphs FIRST so that EventGraph nodes can resolve
 	// self-function calls (SetSelfMember + AllocateDefaultPins needs the
@@ -574,6 +775,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
+			if (ConnErrors.Num() > 0)
+			{
+				Result.ErrorMessage = JoinGenerationErrors(ConnErrors);
+				return Result;
+			}
 
 			for (const auto& Pair : NodeMap)
 			{
@@ -591,6 +797,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 			TArray<FString> ConnErrors;
 			ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 			Result.Warnings.Append(ConnErrors);
+			if (ConnErrors.Num() > 0)
+			{
+				Result.ErrorMessage = JoinGenerationErrors(ConnErrors);
+				return Result;
+			}
 
 			for (const auto& Pair : NodeMap)
 			{
@@ -607,6 +818,13 @@ FBlueprintGenerationResult UAIBlueprintFactory::CreatePreviewBlueprint(const FBl
 	for (UEdGraph* Graph : NewBlueprint->FunctionGraphs)
 	{
 		ULayoutEngine::AutoLayoutGraph(Graph);
+	}
+
+	FString CompileError;
+	if (!CompileBlueprintChecked(NewBlueprint, CompileError))
+	{
+		Result.ErrorMessage = CompileError;
+		return Result;
 	}
 
 	Result.bSuccess = true;
@@ -628,11 +846,18 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 		return Result;
 	}
 
+	if (!bMerge)
+	{
+		RemoveStaleVariables(Blueprint, Data.Variables);
+		RemoveStaleFunctionGraphs(Blueprint, Data.Functions);
+	}
+
 	// Add new variables
 	for (const FBlueprintVariableData& VarData : Data.Variables)
 	{
 		AddVariable(Blueprint, VarData);
 	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 
 	// Create function graphs FIRST so that EventGraph self-function calls
 	// can resolve properly (SetSelfMember + AllocateDefaultPins needs the
@@ -643,6 +868,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 		FuncData.bIsFunction = true;
 		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, FuncData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
+		if (!GraphResult.bSuccess)
+		{
+			Result.ErrorMessage = GraphResult.ErrorMessage;
+			return Result;
+		}
 
 		for (const auto& Pair : GraphResult.CreatedNodes)
 		{
@@ -655,6 +885,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 	{
 		FBlueprintGenerationResult GraphResult = AddGraph(Blueprint, GraphData, bMerge);
 		Result.Warnings.Append(GraphResult.Warnings);
+		if (!GraphResult.bSuccess)
+		{
+			Result.ErrorMessage = GraphResult.ErrorMessage;
+			return Result;
+		}
 
 		for (const auto& Pair : GraphResult.CreatedNodes)
 		{
@@ -664,7 +899,12 @@ FBlueprintGenerationResult UAIBlueprintFactory::ModifyBlueprint(
 
 	// Compile
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FString CompileError;
+	if (!CompileBlueprintChecked(Blueprint, CompileError))
+	{
+		Result.ErrorMessage = CompileError;
+		return Result;
+	}
 
 	Result.bSuccess = true;
 	Result.Blueprint = Blueprint;
@@ -689,7 +929,7 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 
 	if (GraphData.bIsFunction)
 	{
-		CreateFunctionGraph(Blueprint, GraphData, NodeMap, Result.Warnings);
+		CreateFunctionGraph(Blueprint, GraphData, NodeMap, Result.Warnings, bMerge);
 	}
 	else
 	{
@@ -700,6 +940,11 @@ FBlueprintGenerationResult UAIBlueprintFactory::AddGraph(
 	TArray<FString> ConnErrors;
 	ConnectNodes(NodeMap, GraphData.Nodes, ConnErrors);
 	Result.Warnings.Append(ConnErrors);
+	if (ConnErrors.Num() > 0)
+	{
+		Result.ErrorMessage = JoinGenerationErrors(ConnErrors);
+		return Result;
+	}
 
 	if (GraphData.bIsFunction)
 	{
@@ -739,20 +984,27 @@ bool UAIBlueprintFactory::AddVariable(UBlueprint* Blueprint, const FBlueprintVar
 	}
 
 	FName VarName(*VarData.Name);
+	FEdGraphPinType PinType = VarTypeToPinType(VarData);
 
 	// Check if already exists
+	bool bVariableExists = false;
 	for (const FBPVariableDescription& Existing : Blueprint->NewVariables)
 	{
 		if (Existing.VarName == VarName)
 		{
-			return true; // Already exists
+			if (Existing.VarType != PinType)
+			{
+				FBlueprintEditorUtils::ChangeMemberVariableType(Blueprint, VarName, PinType);
+			}
+			bVariableExists = true;
+			break;
 		}
 	}
 
-	// Create new variable
-	FEdGraphPinType PinType = VarTypeToPinType(VarData);
-
-	FBlueprintEditorUtils::AddMemberVariable(Blueprint, VarName, PinType);
+	if (!bVariableExists)
+	{
+		FBlueprintEditorUtils::AddMemberVariable(Blueprint, VarName, PinType);
+	}
 
 	// Find and configure the variable
 	for (FBPVariableDescription& Var : Blueprint->NewVariables)
@@ -781,6 +1033,83 @@ bool UAIBlueprintFactory::AddVariable(UBlueprint* Blueprint, const FBlueprintVar
 		}
 	}
 
+	if (VarData.Type == EBlueprintVarType::MulticastDelegate)
+	{
+		ConfigureDelegateSignature(Blueprint, VarData);
+	}
+
+	return true;
+}
+
+bool UAIBlueprintFactory::ConfigureDelegateSignature(UBlueprint* Blueprint, const FBlueprintVariableData& VarData)
+{
+	if (!Blueprint || VarData.Name.IsEmpty())
+	{
+		return false;
+	}
+
+	const FName DelegateName(*VarData.Name);
+	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
+	UEdGraph* SignatureGraph = FBlueprintEditorUtils::GetDelegateSignatureGraphByName(Blueprint, DelegateName);
+
+	if (!SignatureGraph)
+	{
+		SignatureGraph = FBlueprintEditorUtils::CreateNewGraph(
+			Blueprint,
+			DelegateName,
+			UEdGraph::StaticClass(),
+			UEdGraphSchema_K2::StaticClass());
+		if (!SignatureGraph)
+		{
+			return false;
+		}
+
+		SignatureGraph->bEditable = false;
+		K2Schema->CreateDefaultNodesForGraph(*SignatureGraph);
+		K2Schema->CreateFunctionGraphTerminators(*SignatureGraph, static_cast<UClass*>(nullptr));
+		K2Schema->AddExtraFunctionFlags(SignatureGraph, FUNC_BlueprintCallable | FUNC_BlueprintEvent | FUNC_Public);
+		K2Schema->MarkFunctionEntryAsEditable(SignatureGraph, true);
+		Blueprint->DelegateSignatureGraphs.Add(SignatureGraph);
+	}
+
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* Node : SignatureGraph->Nodes)
+	{
+		if (UK2Node_FunctionEntry* Candidate = Cast<UK2Node_FunctionEntry>(Node))
+		{
+			EntryNode = Candidate;
+			break;
+		}
+	}
+
+	if (!EntryNode)
+	{
+		K2Schema->CreateDefaultNodesForGraph(*SignatureGraph);
+		for (UEdGraphNode* Node : SignatureGraph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* Candidate = Cast<UK2Node_FunctionEntry>(Node))
+			{
+				EntryNode = Candidate;
+				break;
+			}
+		}
+	}
+
+	if (EntryNode)
+	{
+		EntryNode->UserDefinedPins.Reset();
+		for (const FBlueprintPinData& Input : VarData.DelegateInputs)
+		{
+			TSharedPtr<FUserPinInfo> PinInfo = MakeShareable(new FUserPinInfo());
+			PinInfo->PinName = FName(*Input.Name);
+			PinInfo->PinType = ParseFunctionPinTypeFromText(Input.Type);
+			PinInfo->DesiredPinDirection = EGPD_Output;
+			EntryNode->UserDefinedPins.Add(PinInfo);
+		}
+		EntryNode->ReconstructNode();
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 	return true;
 }
 
@@ -801,20 +1130,48 @@ int32 UAIBlueprintFactory::ConnectNodes(
 
 		UK2Node* TargetNode = *TargetNodePtr;
 
+		// Apply all defaults before making any links. Some nodes reconstruct
+		// when a default class changes, and reconstruction invalidates pins.
 		for (const FBlueprintPinData& PinData : Data.Pins)
 		{
-			// Handle default values for pins without connections
-			if (!PinData.DefaultValue.IsEmpty() && PinData.Connections.Num() == 0)
+			if (PinData.DefaultValue.IsEmpty() || PinData.Connections.Num() > 0)
 			{
-				UEdGraphPin* Pin = FindPinByName(TargetNode, PinData.Name, EGPD_Input);
-				if (Pin)
-				{
-					Pin->DefaultValue = PinData.DefaultValue;
-					UE_LOG(LogAssetFactoryAI, Log, TEXT("Set default value for pin %s.%s = %s"),
-						*Data.NodeId, *PinData.Name, *PinData.DefaultValue);
-				}
+				continue;
 			}
 
+			UEdGraphPin* Pin = FindPinByName(TargetNode, PinData.Name, EGPD_Input);
+			if (Pin)
+			{
+				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Class)
+				{
+					if (UClass* ClassDefault = UNodeSpawner::FindClassByPath(PinData.DefaultValue))
+					{
+						GetDefault<UEdGraphSchema_K2>()->TrySetDefaultObject(*Pin, ClassDefault);
+						NotifyPinDefaultChanged(TargetNode, Pin);
+					}
+					else
+					{
+						Pin->DefaultValue = PinData.DefaultValue;
+						NotifyPinDefaultChanged(TargetNode, Pin);
+					}
+				}
+				else
+				{
+					Pin->DefaultValue = PinData.DefaultValue;
+					NotifyPinDefaultChanged(TargetNode, Pin);
+				}
+
+				UE_LOG(LogAssetFactoryAI, Log, TEXT("Set default value for pin %s.%s = %s"),
+					*Data.NodeId, *PinData.Name, *PinData.DefaultValue);
+			}
+			else
+			{
+				OutErrors.Add(FString::Printf(TEXT("Target pin not found for default value: %s.%s"), *Data.NodeId, *PinData.Name));
+			}
+		}
+
+		for (const FBlueprintPinData& PinData : Data.Pins)
+		{
 			for (const FBlueprintPinConnection& Conn : PinData.Connections)
 			{
 				UK2Node* const* SourceNodePtr = NodeMap.Find(Conn.SourceNodeId);
@@ -861,19 +1218,41 @@ int32 UAIBlueprintFactory::ConnectNodes(
 				}
 
 				// Make connection
+				const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 				if (SourcePin->Direction == EGPD_Output && TargetPin->Direction == EGPD_Input)
 				{
-					SourcePin->MakeLinkTo(TargetPin);
-					SuccessfulConnections++;
+					if (K2Schema->TryCreateConnection(SourcePin, TargetPin))
+					{
+						SuccessfulConnections++;
+					}
+					else
+					{
+						OutErrors.Add(FString::Printf(TEXT("Failed to connect pins: %s.%s -> %s.%s"),
+							*Conn.SourceNodeId, *Conn.SourcePinName, *Data.NodeId, *PinData.Name));
+					}
 				}
 				else if (SourcePin->Direction == EGPD_Input && TargetPin->Direction == EGPD_Output)
 				{
-					TargetPin->MakeLinkTo(SourcePin);
-					SuccessfulConnections++;
+					if (K2Schema->TryCreateConnection(TargetPin, SourcePin))
+					{
+						SuccessfulConnections++;
+					}
+					else
+					{
+						OutErrors.Add(FString::Printf(TEXT("Failed to connect pins: %s.%s -> %s.%s"),
+							*Data.NodeId, *PinData.Name, *Conn.SourceNodeId, *Conn.SourcePinName));
+					}
+				}
+				else
+				{
+					OutErrors.Add(FString::Printf(TEXT("Pin directions are incompatible: %s.%s -> %s.%s"),
+						*Conn.SourceNodeId, *Conn.SourcePinName, *Data.NodeId, *PinData.Name));
 				}
 			}
 		}
 	}
+
+	RestoreCreateDelegateFunctions(NodeMap, NodeData);
 
 	return SuccessfulConnections;
 }
@@ -1650,7 +2029,8 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 	UBlueprint* Blueprint,
 	const FBlueprintGraphData& GraphData,
 	TMap<FString, UK2Node*>& OutNodeMap,
-	TArray<FString>& OutWarnings)
+	TArray<FString>& OutWarnings,
+	bool bMerge)
 {
 	if (!Blueprint || GraphData.Name.IsEmpty())
 	{
@@ -1685,6 +2065,30 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		Schema->CreateDefaultNodesForGraph(*FunctionGraph);
 	}
 
+	if (!bMerge)
+	{
+		TArray<UEdGraphNode*> NodesToRemove;
+		for (UEdGraphNode* Node : FunctionGraph->Nodes)
+		{
+			if (Cast<UK2Node_FunctionEntry>(Node) || Cast<UK2Node_FunctionResult>(Node))
+			{
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					Pin->BreakAllPinLinks();
+				}
+			}
+			else
+			{
+				NodesToRemove.Add(Node);
+			}
+		}
+
+		for (UEdGraphNode* Node : NodesToRemove)
+		{
+			FunctionGraph->RemoveNode(Node);
+		}
+	}
+
 	// Find entry and result nodes
 	UK2Node_FunctionEntry* EntryNode = nullptr;
 	UK2Node_FunctionResult* ResultNode = nullptr;
@@ -1703,6 +2107,11 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 	// Add function input parameters to Entry node
 	if (EntryNode)
 	{
+		if (!bMerge)
+		{
+			EntryNode->UserDefinedPins.Reset();
+		}
+
 		for (const FBlueprintPinData& Input : GraphData.Inputs)
 		{
 			FEdGraphPinType PinType = ParseFunctionPinTypeFromText(Input.Type);
@@ -1737,6 +2146,11 @@ bool UAIBlueprintFactory::CreateFunctionGraph(
 		}
 
 		// Add output parameters to Result node
+		if (!bMerge)
+		{
+			ResultNode->UserDefinedPins.Reset();
+		}
+
 		for (const FBlueprintPinData& Output : GraphData.Outputs)
 		{
 			FEdGraphPinType PinType = ParseFunctionPinTypeFromText(Output.Type);
@@ -1811,6 +2225,11 @@ FEdGraphPinType UAIBlueprintFactory::GetPinType(EBlueprintVarType VarType, const
 
 	// Object/default fallback keeps previous behavior.
 	PinType.PinCategory = UEdGraphSchema_K2::PC_Object;
+	if (VarType == EBlueprintVarType::MulticastDelegate)
+	{
+		PinType.PinCategory = UEdGraphSchema_K2::PC_MCDelegate;
+		return PinType;
+	}
 	if (VarType == EBlueprintVarType::Object && !TypeClass.IsEmpty())
 	{
 		PinType.PinSubCategoryObject = UNodeSpawner::FindClassByPath(TypeClass);

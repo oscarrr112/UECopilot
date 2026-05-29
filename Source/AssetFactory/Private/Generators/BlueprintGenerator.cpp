@@ -699,6 +699,11 @@ TSharedPtr<FJsonObject> FBlueprintGenerator::Extract(UObject* Asset, bool bDiffO
 					if (Property)
 					{
 						const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(CDO);
+						if (!ParentCDO->IsA(Property->GetOwner<UClass>()))
+						{
+							DiffProps->SetField(Pair.Key, Pair.Value);
+							continue;
+						}
 						const void* ParentPtr = Property->ContainerPtrToValuePtr<void>(ParentCDO);
 						if (!Property->Identical(ValuePtr, ParentPtr))
 						{
