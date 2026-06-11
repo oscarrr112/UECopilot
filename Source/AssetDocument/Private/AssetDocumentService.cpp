@@ -148,6 +148,108 @@ void AddReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name
 	Entry->SetStringField(TEXT("message"), Message);
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
+
+FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Document, const FString& NormalizedFilePath, bool bPreflightProperties)
+{
+	if (!Document.IsValid())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Validate requires a JSON document or sidecar file path"));
+		Result.SidecarFilePath = NormalizedFilePath;
+		return Result;
+	}
+
+	FString Target;
+	auto MakeFailure = [&Target, &NormalizedFilePath](const FString& Message)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Message);
+		Result.Target = Target;
+		Result.SidecarFilePath = NormalizedFilePath;
+		return Result;
+	};
+
+	double SchemaVersion = 0.0;
+	if (!Document->TryGetNumberField(TEXT("SchemaVersion"), SchemaVersion) || SchemaVersion != 1.0)
+	{
+		return MakeFailure(TEXT("SchemaVersion must be 1"));
+	}
+
+	FString AssetType;
+	if (!Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	{
+		return MakeFailure(TEXT("AssetType must be GenericAsset"));
+	}
+
+	if (!Document->TryGetStringField(TEXT("Target"), Target) || Target.IsEmpty())
+	{
+		return MakeFailure(TEXT("Target is required"));
+	}
+	Target = NormalizeValidateTarget(Target);
+
+	FString Error;
+	if (!ValidateApplyTarget(Target, Error))
+	{
+		return MakeFailure(Error);
+	}
+
+	if (!FAssetDocumentSidecar::ValidateTargetMatchesSidecar(NormalizedFilePath, Document, Error))
+	{
+		return MakeFailure(Error);
+	}
+
+	FString ClassName;
+	if (!Document->TryGetStringField(TEXT("Class"), ClassName) || ClassName.IsEmpty())
+	{
+		return MakeFailure(TEXT("Class is required"));
+	}
+
+	FString ActionName;
+	if (!Document->TryGetStringField(TEXT("Action"), ActionName) || ActionName.IsEmpty())
+	{
+		return MakeFailure(TEXT("Action is required"));
+	}
+
+	EAssetDocumentLifecycleAction Action;
+	if (!FAssetDocumentLifecycle::TryParseAction(ActionName, Action, Error))
+	{
+		return MakeFailure(Error);
+	}
+
+	UClass* ResolvedClass = nullptr;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassName, ResolvedClass, Error))
+	{
+		return MakeFailure(Error);
+	}
+
+	TSharedPtr<FJsonObject> Properties;
+	if (Document->HasField(TEXT("Properties")))
+	{
+		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+		if (!Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) || !PropertiesPtr)
+		{
+			return MakeFailure(TEXT("Properties must be a JSON object"));
+		}
+		Properties = *PropertiesPtr;
+	}
+
+	if (bPreflightProperties)
+	{
+		FAssetDocumentPropertyApplyResult PreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(ResolvedClass, Properties);
+		if (!PreflightResult.bSuccess)
+		{
+			FAssetDocumentResult Result = MakeFailure(PreflightResult.Message);
+			Result.Diagnostics = PreflightResult.Diagnostics;
+			return Result;
+		}
+	}
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument is valid"));
+	Result.Target = Target;
+	Result.SidecarFilePath = NormalizedFilePath;
+	Result.Payload = MakeShared<FJsonObject>();
+	Result.Payload->SetStringField(TEXT("target"), Target);
+	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
+	return Result;
+}
 }
 
 FAssetDocumentResult FAssetDocumentResult::Success(const FString& InMessage)
@@ -460,6 +562,7 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 	Document->SetStringField(TEXT("AssetType"), TEXT("GenericAsset"));
 	Document->SetStringField(TEXT("Target"), Target);
 	Document->SetStringField(TEXT("Class"), Asset->GetClass()->GetPathName());
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 	Document->SetObjectField(TEXT("Properties"), Properties);
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument extracted"));
@@ -491,47 +594,7 @@ FAssetDocumentResult FAssetDocumentService::Validate(const FAssetDocumentValidat
 		}
 	}
 
-	double SchemaVersion = 0.0;
-	if (!Document->TryGetNumberField(TEXT("SchemaVersion"), SchemaVersion) || SchemaVersion != 1.0)
-	{
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("SchemaVersion must be 1"));
-		Result.SidecarFilePath = NormalizedFilePath;
-		return Result;
-	}
-
-	FString AssetType;
-	if (!Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
-	{
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
-		Result.SidecarFilePath = NormalizedFilePath;
-		return Result;
-	}
-
-	FString Error;
-	if (!FAssetDocumentSidecar::ValidateTargetMatchesSidecar(NormalizedFilePath, Document, Error))
-	{
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
-		Result.SidecarFilePath = NormalizedFilePath;
-		return Result;
-	}
-
-	FString Target;
-	Document->TryGetStringField(TEXT("Target"), Target);
-	Target = NormalizeValidateTarget(Target);
-
-	if (!NormalizedFilePath.IsEmpty())
-	{
-		Target = FAssetDocumentSidecar::ResolveObjectPathFromSidecar(NormalizedFilePath);
-	}
-
-	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument is valid"));
-	Result.Target = Target;
-	Result.SidecarFilePath = NormalizedFilePath;
-
-	Result.Payload = MakeShared<FJsonObject>();
-	Result.Payload->SetStringField(TEXT("target"), Target);
-	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
-	return Result;
+	return ValidateGenericAssetDocument(Document, NormalizedFilePath, true);
 }
 
 FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest& Request) const
@@ -555,10 +618,7 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 		}
 	}
 
-	FAssetDocumentValidateRequest ValidateRequest;
-	ValidateRequest.Document = Document;
-	ValidateRequest.FilePath = NormalizedFilePath;
-	const FAssetDocumentResult ValidateResult = Validate(ValidateRequest);
+	const FAssetDocumentResult ValidateResult = ValidateGenericAssetDocument(Document, NormalizedFilePath, false);
 	if (!ValidateResult.IsSuccess())
 	{
 		return ValidateResult;

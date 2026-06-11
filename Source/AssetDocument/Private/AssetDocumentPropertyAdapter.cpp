@@ -352,6 +352,13 @@ bool FAssetDocumentPropertyAdapter::ApplySingleProperty(UObject* Asset, const FS
 		return false;
 	}
 
+	const FString NonWritableReason = GetNonWritableReason(Property);
+	if (!NonWritableReason.IsEmpty())
+	{
+		AddDiagnostic(OutDiagnostics, PropertyName, TEXT("NonWritable"), FString::Printf(TEXT("Property '%s' is not writable: %s"), *PropertyName, *NonWritableReason));
+		return false;
+	}
+
 	bool bIsTyped = false;
 	FString TypeName;
 	FString TypeError;

@@ -193,7 +193,9 @@ FString MakeSidecarJson(const FString& Target)
 		TEXT("{\n")
 		TEXT("\t\"SchemaVersion\": 1,\n")
 		TEXT("\t\"AssetType\": \"GenericAsset\",\n")
-		TEXT("\t\"Target\": \"%s\"\n")
+		TEXT("\t\"Target\": \"%s\",\n")
+		TEXT("\t\"Class\": \"TestDataAsset\",\n")
+		TEXT("\t\"Action\": \"CreateOrUpdate\"\n")
 		TEXT("}\n"),
 		*Target);
 }
@@ -322,6 +324,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("Extract draft asset type"), Result.Payload->GetStringField(TEXT("AssetType")), FString(TEXT("GenericAsset")));
 			TestEqual(TEXT("Extract draft target"), Result.Payload->GetStringField(TEXT("Target")), Target);
 			TestEqual(TEXT("Extract draft class"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestDataAsset")));
+			TestEqual(TEXT("Extract draft action"), Result.Payload->GetStringField(TEXT("Action")), FString(TEXT("CreateOrUpdate")));
 
 			TSharedPtr<FJsonObject> Properties = GetPayloadObject(Result.Payload, TEXT("Properties"));
 			TestTrue(TEXT("Extract draft has Properties object"), Properties.IsValid());
@@ -338,7 +341,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 		const FDateTime TimestampBefore = IFileManager::Get().GetTimeStamp(*FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension()));
 
 		FAssetDocumentValidateRequest Request;
-		Request.Document = MakeGenericAssetDocument(Target);
+		Request.Document = MakeApplyDocument(Target, TEXT("/Script/AssetFactory.TestDataAsset"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
 
@@ -351,6 +354,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 	{
 		TSharedPtr<FJsonObject> DiffDocument = MakeGenericAssetDocument(Target);
 		DiffDocument->SetStringField(TEXT("Class"), TEXT("/Script/AssetFactory.TestDataAsset"));
+		DiffDocument->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
 		Properties->SetStringField(TEXT("TestString"), TEXT("after-diff"));
 		Properties->SetNumberField(TEXT("TestInt"), 12);
@@ -424,7 +428,7 @@ bool FAssetDocumentSidecarValidationTest::RunTest(const FString& Parameters)
 	{
 		FAssetDocumentValidateRequest Request;
 		Request.FilePath = SidecarPath;
-		Request.Document = MakeGenericAssetDocument(TEXT(""));
+		Request.Document = MakeApplyDocument(TEXT(""), TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
 
@@ -435,7 +439,7 @@ bool FAssetDocumentSidecarValidationTest::RunTest(const FString& Parameters)
 	{
 		FAssetDocumentValidateRequest Request;
 		Request.FilePath = SidecarPath;
-		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Other"));
+		Request.Document = MakeApplyDocument(TEXT("/Game/Data/DA_Other"), TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
 
@@ -446,7 +450,7 @@ bool FAssetDocumentSidecarValidationTest::RunTest(const FString& Parameters)
 	{
 		FAssetDocumentValidateRequest Request;
 		Request.FilePath = SidecarPath;
-		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Test"));
+		Request.Document = MakeApplyDocument(TEXT("/Game/Data/DA_Test"), TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
 
@@ -462,12 +466,45 @@ bool FAssetDocumentSidecarValidationTest::RunTest(const FString& Parameters)
 
 	{
 		FAssetDocumentValidateRequest Request;
-		Request.Document = MakeGenericAssetDocument(TEXT(""));
+		Request.Document = MakeApplyDocument(TEXT(""), TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
 
-		TestTrue(TEXT("Inline document without FilePath does not require Target path matching"), Result.IsSuccess());
-		TestTrue(TEXT("Inline document result includes payload"), Result.Payload.IsValid());
+		TestFalse(TEXT("Inline document without Target fails validation"), Result.IsSuccess());
+		TestTrue(TEXT("Inline document without Target reports Target validation error"), Result.Message.Contains(TEXT("Target")));
+	}
+
+	{
+		FAssetDocumentValidateRequest Request;
+		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Test"));
+		Request.Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+
+		const FAssetDocumentResult Result = Service.Validate(Request);
+
+		TestFalse(TEXT("Inline document without Class fails validation"), Result.IsSuccess());
+		TestTrue(TEXT("Inline document without Class reports Class validation error"), Result.Message.Contains(TEXT("Class")));
+	}
+
+	{
+		FAssetDocumentValidateRequest Request;
+		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Test"));
+		Request.Document->SetStringField(TEXT("Class"), TEXT("TestDataAsset"));
+
+		const FAssetDocumentResult Result = Service.Validate(Request);
+
+		TestFalse(TEXT("Inline document without Action fails validation"), Result.IsSuccess());
+		TestTrue(TEXT("Inline document without Action reports Action validation error"), Result.Message.Contains(TEXT("Action")));
+	}
+
+	{
+		FAssetDocumentValidateRequest Request;
+		Request.Document = MakeApplyDocument(TEXT("/Game/Data/DA_Test"), TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
+		Request.Document->SetStringField(TEXT("Properties"), TEXT("not an object"));
+
+		const FAssetDocumentResult Result = Service.Validate(Request);
+
+		TestFalse(TEXT("Inline document with non-object Properties fails validation"), Result.IsSuccess());
+		TestTrue(TEXT("Inline document with non-object Properties reports Properties validation error"), Result.Message.Contains(TEXT("Properties")));
 	}
 
 	{
@@ -530,6 +567,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 	const FString TypedSubtypeTarget = TEXT("/Game/AssetDocumentTests/DA_TypedSubtypeFails");
 	const FString FailedSubtypeRetryTarget = TEXT("/Game/AssetDocumentTests/DA_FailedSubtypeRetry");
 	const FString FailedUnknownPropertyRetryTarget = TEXT("/Game/AssetDocumentTests/DA_FailedUnknownPropertyRetry");
+	const FString FailedNonWritableRetryTarget = TEXT("/Game/AssetDocumentTests/DA_FailedNonWritableRetry");
 	const FString TypedMismatchTarget = TEXT("/Game/AssetDocumentTests/DA_TypedMismatchFails");
 	const TArray<FString> Targets = {
 		InvalidClassTarget,
@@ -539,6 +577,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 		TypedSubtypeTarget,
 		FailedSubtypeRetryTarget,
 		FailedUnknownPropertyRetryTarget,
+		FailedNonWritableRetryTarget,
 		TypedMismatchTarget
 	};
 
@@ -674,6 +713,29 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 
 		const FAssetDocumentResult RetryResult = Service.Apply(RetryRequest);
 		TestTrue(TEXT("Valid Create after unknown property succeeds"), RetryResult.IsSuccess());
+	}
+
+	{
+		FProperty* TestFloatProperty = FindFProperty<FProperty>(UTestDataAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UTestDataAsset, TestFloat));
+		FAssetDocumentApplyRequest BadRequest;
+		BadRequest.Document = MakeApplyDocument(FailedNonWritableRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(BadRequest.Document, TEXT("TestFloat"), MakeShared<FJsonValueNumber>(9.25));
+
+		FAssetDocumentResult BadResult;
+		{
+			FScopedAdditionalPropertyFlags EditConstScope(TestFloatProperty, CPF_EditConst);
+			BadResult = Service.Apply(BadRequest);
+		}
+		TestFalse(TEXT("Failed Create with non-writable property fails"), BadResult.IsSuccess());
+		TestTrue(TEXT("Failed Create with non-writable property returns diagnostics"), BadResult.Diagnostics.Num() > 0);
+		TestNull(TEXT("Failed Create with non-writable property leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedNonWritableRetryTarget)));
+
+		FAssetDocumentApplyRequest RetryRequest;
+		RetryRequest.Document = MakeApplyDocument(FailedNonWritableRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(RetryRequest.Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("retry ok")));
+
+		const FAssetDocumentResult RetryResult = Service.Apply(RetryRequest);
+		TestTrue(TEXT("Valid Create after non-writable property succeeds"), RetryResult.IsSuccess());
 	}
 
 	{

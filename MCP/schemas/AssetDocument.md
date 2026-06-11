@@ -24,14 +24,14 @@ AssetDocument is the generic asset sidecar format for reflected Unreal assets. I
 
 Required fields:
 
-- `Target`: Required in sidecar files. It is the canonical asset path the sidecar owns, such as `/Game/Data/DA_Test`.
-- `AssetType`: Use `GenericAsset`.
 - `SchemaVersion`: Use `1`.
+- `AssetType`: Use `GenericAsset`.
+- `Target`: Required in sidecar files. It is the canonical asset path the sidecar owns, such as `/Game/Data/DA_Test`.
+- `Class`: Required for validation, diff, and apply. It can be a native path or class name that the Unreal route resolves dynamically.
+- `Action`: Required for validation, diff, and apply. Use `Create`, `Update`, or `CreateOrUpdate`.
 
 Common apply fields:
 
-- `Class`: Required when creating an asset. It can be a native path or class name that the Unreal route resolves dynamically.
-- `Action`: `Create`, `Update`, or `CreateOrUpdate`.
 - `Properties`: Reflected asset properties to set.
 
 Inline convenience:
@@ -143,6 +143,8 @@ Validate or diff inline:
     "SchemaVersion": 1,
     "AssetType": "GenericAsset",
     "Target": "/Game/Data/DA_Test",
+    "Class": "TestDataAsset",
+    "Action": "CreateOrUpdate",
     "Properties": {}
   }
 }
