@@ -2,10 +2,15 @@
 
 #include "AssetDocumentService.h"
 
+#include "AssetDocumentClassResolver.h"
+#include "AssetDocumentLifecycle.h"
+#include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
 
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "UObject/SavePackage.h"
 
 namespace
 {
@@ -93,9 +98,116 @@ TSharedPtr<FJsonObject> FAssetDocumentResult::ToJson() const
 
 FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyRequest& Request)
 {
-	FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetDocument Apply is not implemented"));
-	Result.bSavedAsset = false;
+	if (!Request.Document.IsValid())
+	{
+		return FAssetDocumentResult::Failure(TEXT("Apply requires a JSON document"));
+	}
+
+	double SchemaVersion = 0.0;
+	if (!Request.Document->TryGetNumberField(TEXT("SchemaVersion"), SchemaVersion) || SchemaVersion != 1.0)
+	{
+		return FAssetDocumentResult::Failure(TEXT("SchemaVersion must be 1"));
+	}
+
+	FString AssetType;
+	if (!Request.Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	{
+		return FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
+	}
+
+	FString Target;
+	if (!Request.Document->TryGetStringField(TEXT("Target"), Target) || Target.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("Target is required"));
+	}
+	Target = NormalizeValidateTarget(Target);
+
+	FString ClassName;
+	if (!Request.Document->TryGetStringField(TEXT("Class"), ClassName) || ClassName.IsEmpty())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Class is required"));
+		Result.Target = Target;
+		return Result;
+	}
+
+	FString ActionName;
+	if (!Request.Document->TryGetStringField(TEXT("Action"), ActionName) || ActionName.IsEmpty())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Action is required"));
+		Result.Target = Target;
+		return Result;
+	}
+
+	EAssetDocumentLifecycleAction Action;
+	FString Error;
+	if (!FAssetDocumentLifecycle::TryParseAction(ActionName, Action, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = Target;
+		return Result;
+	}
+
+	UClass* ResolvedClass = nullptr;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassName, ResolvedClass, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = Target;
+		return Result;
+	}
+
+	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action);
+	if (!LifecycleResult.Asset)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> Properties;
+	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+	if (Request.Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
+	{
+		Properties = *PropertiesPtr;
+	}
+
+	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
+	if (!PropertyResult.bSuccess)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.Diagnostics = PropertyResult.Diagnostics;
+		return Result;
+	}
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
+	Result.Target = Target;
+	Result.AssetPath = LifecycleResult.ObjectPath;
+	Result.Diagnostics = PropertyResult.Diagnostics;
 	Result.bWroteSidecar = false;
+
+	if (Request.bSaveAsset)
+	{
+		LifecycleResult.Asset->MarkPackageDirty();
+		UPackage* Package = LifecycleResult.Asset->GetOutermost();
+		const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		const bool bSaved = UPackage::SavePackage(Package, LifecycleResult.Asset, *PackageFileName, SaveArgs);
+		if (!bSaved)
+		{
+			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.Diagnostics = PropertyResult.Diagnostics;
+			Result.bSavedAsset = false;
+			Result.bWroteSidecar = false;
+			return Result;
+		}
+		Result.bSavedAsset = true;
+	}
+
 	return Result;
 }
 
