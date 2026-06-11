@@ -113,7 +113,7 @@ sidecar 内可以省略 `Name`、`Path` 和 `Target`：
 
 ### 4.2 Inline 最小创建
 
-MCP `generate_assets` 仍可接受 inline JSON，便于测试和一次性生成：
+第一版不要求兼容现有 `generate_assets` 入口。AssetDocument 应提供新的 MCP/HTTP 命令，直接接收 inline AssetDocument，便于测试和一次性生成：
 
 ```json
 {
@@ -129,7 +129,7 @@ MCP `generate_assets` 仍可接受 inline JSON，便于测试和一次性生成�
 }
 ```
 
-生成成功后，如果请求包含 `WriteSidecar: true` 或未来的 apply-sidecar 命令使用 sidecar 文件作为输入，应把最终 AssetDocument 写到目标 `.assetdoc.json`。
+生成成功后，如果请求包含 `WriteSidecar: true` 或 apply-sidecar 命令使用 sidecar 文件作为输入，应把最终 AssetDocument 写到目标 `.assetdoc.json`。
 
 ### 4.3 typed properties
 
@@ -230,26 +230,43 @@ hook 必须只处理受管理资产：
 
 ## 5. 设计
 
-### 5.1 Generator 位置
+### 5.1 Module 与组件化编排
 
-新增 C++ generator：
-
-```text
-Source/AssetFactory/Public/Generators/GenericAssetGenerator.h
-Source/AssetFactory/Private/Generators/GenericAssetGenerator.cpp
-```
-
-注册方式沿用现有 `AssetGeneratorRegistry`：
+第一版新增独立 Editor module，而不是在现有 `AssetGeneratorRegistry` 中注册 `GenericAssetGenerator`：
 
 ```text
-GetAssetType() -> "GenericAsset"
+Source/AssetDocument/AssetDocument.Build.cs
+Source/AssetDocument/Public/AssetDocumentModule.h
+Source/AssetDocument/Private/AssetDocumentModule.cpp
 ```
 
-短期保留现有 `DataAssetGenerator`。`GenericAsset` 是新入口，不改变现有 `DataAsset` 行为。
+`AssetDocument` module 是新的资产文档编译与应用层。现有 `AssetFactory` HTTP/MCP 层可以新增命令来调用它，但 `AssetDocument` 不依赖 `AssetFactory` 的 generator registry，也不需要伪装成一个 generator。
+
+这个设计更接近组件装配器/COM 风格，而不是“每个 AssetType 一个 OOP generator 子类”：
+
+```text
+AssetDocumentCompiler
+  -> SidecarSource / InlineSource
+  -> DocumentValidator
+  -> AssetLifecycleAdapter
+  -> PropertyPatchAdapter
+  -> SavePackageAdapter
+  -> EditorSidecarSyncService
+```
+
+第一版只注册最小能力组件：
+
+- `JsonAssetDocumentSource`：读取 inline JSON 或 `.assetdoc.json`；
+- `GenericUObjectLifecycleAdapter`：处理可直接 `NewObject` 的 UObject/DataAsset 风格资产；
+- `ReflectionPropertyPatchAdapter`：通过 `FProperty` 设置 CDO/对象属性；
+- `PackageSaveAdapter`：保存 package；
+- `EditorSidecarSyncService`：处理 rename/move/duplicate/delete hook。
+
+后续支持 AnimMontage、Widget、MaterialGraph、Niagara、ABP 时，应优先新增或替换 capability component，而不是把逻辑塞回一个大型 `GenericAssetGenerator`。如果旧 `generate_assets` 未来需要桥接 AssetDocument，也应该只是调用 `AssetDocument` module 的 facade，不承载业务复杂度。
 
 ### 5.2 Sidecar 解析与写入
 
-新增小型 sidecar helper，建议放在 `Source/AssetFactory/Private/AssetDocuments/` 或等价目录：
+新增小型 sidecar helper，放在 `Source/AssetDocument/Private/Sidecar/` 或等价目录：
 
 ```text
 ResolveSidecarPath(ObjectPath) -> FilePath
@@ -464,18 +481,19 @@ for each structured block:
 
 ---
 
-## 7. MCP 暴露
+## 7. MCP / HTTP 暴露
 
 ### 7.1 schema
 
 新增：
 
 ```text
-MCP/schemas/GenericAsset.md
+MCP/schemas/AssetDocument.md
 ```
 
 schema 需要说明：
 
+- 第一版支持 `AssetType: "GenericAsset"` 的通用 UObject/DataAsset 风格文档；
 - 适合纯 UObject/DataAsset 风格资产；
 - 不适合图、树、导入和结构化资产；
 - sidecar 命名：`<AssetName>.assetdoc.json`；
@@ -488,16 +506,27 @@ schema 需要说明：
 - create/update/create-or-update 行为；
 - 常见错误。
 
-### 7.2 tool 枚举
+### 7.2 新工具
 
-将 `GenericAsset` 添加到：
+新增独立 MCP/HTTP 入口，而不是把 `GenericAsset` 加入 `generate_assets`：
 
-- `generate_assets` 描述；
-- `get_generator_schema` enum；
-- schema missing fallback available-types 文案；
-- `MCP/dist` 构建产物。
+```text
+apply_asset_document(document)
+apply_asset_document_file(file_path)
+get_asset_document_schema()
+```
 
-如果 MCP 侧已有静态 asset type 列表散落，implementation plan 应优先收敛为单一常量。
+`apply_asset_document` 接收 inline JSON。`apply_asset_document_file` 从 `.assetdoc.json` 路径读取文档，并从 sidecar 文件位置推导目标 `/Game/...` 路径。`get_asset_document_schema` 返回 AssetDocument schema，而不是复用 `get_generator_schema`。
+
+HTTP 层可以复用现有 AssetFactory server，但路由语义应保持独立，例如：
+
+```text
+POST /assetdocument/apply
+POST /assetdocument/apply-file
+GET  /assetdocument/schema
+```
+
+如果 MCP 侧已有静态 asset type 列表散落，本 spec 不要求把 AssetDocument 接入那些列表。implementation plan 可以顺手收敛公共 HTTP/MCP helper，但不要为了兼容旧 generator 枚举扩大第一版范围。
 
 ---
 
@@ -530,7 +559,7 @@ schema 需要说明：
 
 ### 8.3 MCP / Editor smoke
 
-使用 MCP `generate_assets`：
+使用 MCP `apply_asset_document` / `apply_asset_document_file`：
 
 1. 创建一个没有专门 generator 的测试 DataAsset 子类。
 2. 写入同目录 `.assetdoc.json`。
@@ -541,8 +570,8 @@ schema 需要说明：
 
 ### 8.4 文档验证
 
-- `get_generator_schema(GenericAsset)` 返回 schema。
-- schema 示例与 generator 行为一致。
+- `get_asset_document_schema()` 返回 schema。
+- schema 示例与 AssetDocument compiler 行为一致。
 - `git diff --check` 通过。
 
 ---
@@ -595,9 +624,9 @@ schema 需要说明：
 
 ## 10. 验收标准
 
-- `GenericAsset` generator 注册成功。
-- `generate_assets` 支持 `AssetType: "GenericAsset"`。
-- `get_generator_schema(GenericAsset)` 可用。
+- `AssetDocument` Editor module 在插件中注册并加载成功。
+- `AssetDocument` module 不依赖 `AssetGeneratorRegistry`，也不注册 `GenericAssetGenerator`。
+- MCP/HTTP 提供 `apply_asset_document` / `apply_asset_document_file` / `get_asset_document_schema` 等价能力。
 - 支持同目录 sidecar：`<AssetName>.assetdoc.json`。
 - 支持从 sidecar 路径推导目标资产路径。
 - 显式 `Target` 与 sidecar 路径不一致时失败。
