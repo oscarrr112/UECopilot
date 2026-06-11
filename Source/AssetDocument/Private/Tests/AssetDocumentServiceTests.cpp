@@ -148,6 +148,33 @@ struct FScopedAdditionalPropertyFlags
 	}
 };
 
+struct FScopedClearedPropertyFlags
+{
+	FProperty* Property = nullptr;
+	EPropertyFlags Flags = CPF_None;
+	uint64 OriginalMaskedFlags = 0;
+
+	FScopedClearedPropertyFlags(FProperty* InProperty, EPropertyFlags InFlags)
+		: Property(InProperty)
+		, Flags(InFlags)
+	{
+		if (Property)
+		{
+			OriginalMaskedFlags = Property->GetPropertyFlags() & Flags;
+			Property->ClearPropertyFlags(Flags);
+		}
+	}
+
+	~FScopedClearedPropertyFlags()
+	{
+		if (Property)
+		{
+			Property->ClearPropertyFlags(Flags);
+			Property->SetPropertyFlags(static_cast<EPropertyFlags>(OriginalMaskedFlags));
+		}
+	}
+};
+
 FString GetTestSidecarPath()
 {
 	FString FilePath = FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Data/DA_Test.assetdoc.json"));
@@ -256,10 +283,22 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 		{
 			FScopedAdditionalPropertyFlags EditConstScope(TestStringProperty, CPF_EditConst);
 			TestFalse(TEXT("Adapter treats EditConst property as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+			TestEqual(TEXT("Adapter reports EditConst reason"), FAssetDocumentPropertyAdapter::GetNonWritableReason(TestStringProperty), FString(TEXT("edit-const")));
 		}
 		{
 			FScopedAdditionalPropertyFlags TransientScope(TestStringProperty, CPF_Transient);
 			TestFalse(TEXT("Adapter treats transient property as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+			TestEqual(TEXT("Adapter reports transient reason"), FAssetDocumentPropertyAdapter::GetNonWritableReason(TestStringProperty), FString(TEXT("transient")));
+		}
+		{
+			FScopedAdditionalPropertyFlags DeprecatedScope(TestStringProperty, CPF_Deprecated);
+			TestFalse(TEXT("Adapter treats deprecated property as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+			TestEqual(TEXT("Adapter reports deprecated reason"), FAssetDocumentPropertyAdapter::GetNonWritableReason(TestStringProperty), FString(TEXT("deprecated")));
+		}
+		{
+			FScopedClearedPropertyFlags MissingEditScope(TestStringProperty, CPF_Edit);
+			TestFalse(TEXT("Adapter treats property without CPF_Edit as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+			TestEqual(TEXT("Adapter reports non-editable reason"), FAssetDocumentPropertyAdapter::GetNonWritableReason(TestStringProperty), FString(TEXT("non-editable")));
 		}
 		TestTrue(TEXT("Adapter restores test property writability after scoped flag changes"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
 	}
@@ -352,7 +391,13 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 			Result.Payload->TryGetArrayField(TEXT("failed"), Failed);
 			TestTrue(TEXT("Diff reports changed property"), Changed && FindObjectByStringField(*Changed, TEXT("name"), TEXT("TestString")).IsValid());
 			TestTrue(TEXT("Diff reports unchanged property"), Unchanged && FindObjectByStringField(*Unchanged, TEXT("name"), TEXT("TestInt")).IsValid());
-			TestTrue(TEXT("Diff skips EditConst property"), Skipped && FindObjectByStringField(*Skipped, TEXT("name"), TEXT("TestFloat")).IsValid());
+			TSharedPtr<FJsonObject> SkippedFloat = Skipped ? FindObjectByStringField(*Skipped, TEXT("name"), TEXT("TestFloat")) : nullptr;
+			TestTrue(TEXT("Diff skips EditConst property"), SkippedFloat.IsValid());
+			if (SkippedFloat.IsValid())
+			{
+				TestEqual(TEXT("Diff skipped EditConst uses NonWritable code"), SkippedFloat->GetStringField(TEXT("code")), FString(TEXT("NonWritable")));
+				TestTrue(TEXT("Diff skipped EditConst message includes reason"), SkippedFloat->GetStringField(TEXT("message")).Contains(TEXT("edit-const")));
+			}
 			TestTrue(TEXT("Diff reports type-invalid property as failed"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("bTestBool")).IsValid());
 			TestTrue(TEXT("Diff reports failed missing property"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("DefinitelyMissing")).IsValid());
 		}
