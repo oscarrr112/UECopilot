@@ -12,6 +12,8 @@
 #include "Misc/PackageName.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -73,6 +75,51 @@ void CleanupTestAsset(const FString& Target)
 	}
 }
 
+TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& FieldValue)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		if (!Value.IsValid() || Value->Type != EJson::Object)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Object = Value->AsObject();
+		if (Object.IsValid() && Object->GetStringField(FieldName) == FieldValue)
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
+bool HasArrayField(TSharedPtr<FJsonObject> Object, const FString& FieldName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	return Object.IsValid() && Object->TryGetArrayField(FieldName, Values) && Values;
+}
+
+TSharedPtr<FJsonObject> GetPayloadObject(TSharedPtr<FJsonObject> Payload, const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject>* Object = nullptr;
+	if (Payload.IsValid() && Payload->TryGetObjectField(FieldName, Object) && Object)
+	{
+		return *Object;
+	}
+	return nullptr;
+}
+
+bool WriteJsonObjectToFile(TSharedPtr<FJsonObject> Document, const FString& FilePath)
+{
+	FString JsonText;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+	if (!FJsonSerializer::Serialize(Document.ToSharedRef(), Writer))
+	{
+		return false;
+	}
+	return FFileHelper::SaveStringToFile(JsonText, *FilePath);
+}
+
 FString GetTestSidecarPath()
 {
 	FString FilePath = FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Data/DA_Test.assetdoc.json"));
@@ -95,6 +142,164 @@ FString MakeSidecarJson(const FString& Target)
 		TEXT("}\n"),
 		*Target);
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentReadTest,
+	"AssetFactory.AssetDocument.Read",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/DA_ReadSide");
+	const FString MissingTarget = TEXT("/Game/AssetDocumentTests/DA_ReadMissing");
+	const FString ObjectPath = GetObjectPath(Target);
+	const FString SidecarPath = FPackageName::LongPackageNameToFilename(Target, TEXT(".assetdoc.json"));
+	CleanupTestAsset(Target);
+	IFileManager::Get().Delete(*SidecarPath, false, true);
+
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest CreateRequest;
+	CreateRequest.Document = MakeApplyDocument(Target, TEXT("/Script/AssetFactory.TestDataAsset"), TEXT("Create"));
+	SetProperty(CreateRequest.Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("read-side")));
+	SetProperty(CreateRequest.Document, TEXT("TestInt"), MakeShared<FJsonValueNumber>(12));
+
+	const FAssetDocumentResult CreateResult = Service.Apply(CreateRequest);
+	TestTrue(TEXT("Creates fixture asset for read-side tests"), CreateResult.IsSuccess());
+
+	UPackage* Package = FindPackage(nullptr, *Target);
+	UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Read-side fixture asset loads"), Asset);
+	if (!Package && Asset)
+	{
+		Package = Asset->GetOutermost();
+	}
+	if (Package)
+	{
+		Package->ClearDirtyFlag();
+	}
+
+	{
+		FAssetDocumentInspectRequest Request;
+		Request.ClassOrAsset = Target;
+
+		const FAssetDocumentResult Result = Service.Inspect(Request);
+
+		TestTrue(TEXT("Inspect succeeds for a TestDataAsset asset path"), Result.IsSuccess());
+		TestTrue(TEXT("Inspect returns payload"), Result.Payload.IsValid());
+		const TArray<TSharedPtr<FJsonValue>>* Properties = nullptr;
+		TestTrue(TEXT("Inspect payload has properties array"), Result.Payload.IsValid() && Result.Payload->TryGetArrayField(TEXT("properties"), Properties));
+		TestTrue(TEXT("Inspect payload has skipped array"), HasArrayField(Result.Payload, TEXT("skipped")));
+		if (Properties)
+		{
+			TSharedPtr<FJsonObject> StringRow = FindObjectByStringField(*Properties, TEXT("name"), TEXT("TestString"));
+			TestTrue(TEXT("Inspect includes TestString row"), StringRow.IsValid());
+			if (StringRow.IsValid())
+			{
+				TestEqual(TEXT("Inspect row has name"), StringRow->GetStringField(TEXT("name")), FString(TEXT("TestString")));
+				TestFalse(TEXT("Inspect row has ue_type"), StringRow->GetStringField(TEXT("ue_type")).IsEmpty());
+				TestEqual(TEXT("Inspect row has type_token"), StringRow->GetStringField(TEXT("type_token")), FString(TEXT("String")));
+				TestTrue(TEXT("Inspect row has current_value"), StringRow->HasField(TEXT("current_value")));
+				TestTrue(TEXT("Inspect row has default_value"), StringRow->HasField(TEXT("default_value")));
+				TestTrue(TEXT("Inspect row is writable"), StringRow->GetBoolField(TEXT("writable")));
+				TestEqual(TEXT("Inspect current value comes from asset"), StringRow->GetStringField(TEXT("current_value")), FString(TEXT("read-side")));
+				TestEqual(TEXT("Inspect default value comes from CDO"), StringRow->GetStringField(TEXT("default_value")), FString());
+			}
+
+			TSharedPtr<FJsonObject> IntRow = FindObjectByStringField(*Properties, TEXT("name"), TEXT("TestInt"));
+			TestTrue(TEXT("Inspect includes TestInt row"), IntRow.IsValid());
+			if (IntRow.IsValid())
+			{
+				TestEqual(TEXT("Inspect maps integer token"), IntRow->GetStringField(TEXT("type_token")), FString(TEXT("Int")));
+			}
+		}
+		TestFalse(TEXT("Inspect does not dirty asset package"), Package && Package->IsDirty());
+	}
+
+	{
+		FAssetDocumentExtractRequest Request;
+		Request.AssetPath = Target;
+		Request.bDiffOnly = true;
+
+		const FAssetDocumentResult Result = Service.Extract(Request);
+
+		TestTrue(TEXT("Extract succeeds for TestDataAsset"), Result.IsSuccess());
+		TestTrue(TEXT("Extract returns draft payload"), Result.Payload.IsValid());
+		if (Result.Payload.IsValid())
+		{
+			TestEqual(TEXT("Extract draft schema version"), Result.Payload->GetNumberField(TEXT("SchemaVersion")), 1.0);
+			TestEqual(TEXT("Extract draft asset type"), Result.Payload->GetStringField(TEXT("AssetType")), FString(TEXT("GenericAsset")));
+			TestEqual(TEXT("Extract draft target"), Result.Payload->GetStringField(TEXT("Target")), Target);
+			TestEqual(TEXT("Extract draft class"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestDataAsset")));
+
+			TSharedPtr<FJsonObject> Properties = GetPayloadObject(Result.Payload, TEXT("Properties"));
+			TestTrue(TEXT("Extract draft has Properties object"), Properties.IsValid());
+			if (Properties.IsValid())
+			{
+				TestTrue(TEXT("Extract diff-only includes changed string"), Properties->HasField(TEXT("TestString")));
+				TestFalse(TEXT("Extract diff-only omits default float"), Properties->HasField(TEXT("TestFloat")));
+			}
+		}
+		TestFalse(TEXT("Extract does not dirty asset package"), Package && Package->IsDirty());
+	}
+
+	{
+		const FDateTime TimestampBefore = IFileManager::Get().GetTimeStamp(*FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension()));
+
+		FAssetDocumentValidateRequest Request;
+		Request.Document = MakeGenericAssetDocument(Target);
+
+		const FAssetDocumentResult Result = Service.Validate(Request);
+
+		const FDateTime TimestampAfter = IFileManager::Get().GetTimeStamp(*FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension()));
+		TestTrue(TEXT("Validate succeeds for inline document"), Result.IsSuccess());
+		TestFalse(TEXT("Validate does not dirty asset package"), Package && Package->IsDirty());
+		TestEqual(TEXT("Validate does not save asset package"), TimestampAfter, TimestampBefore);
+	}
+
+	{
+		TSharedPtr<FJsonObject> DiffDocument = MakeGenericAssetDocument(Target);
+		DiffDocument->SetStringField(TEXT("Class"), TEXT("/Script/AssetFactory.TestDataAsset"));
+		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+		Properties->SetStringField(TEXT("TestString"), TEXT("after-diff"));
+		Properties->SetNumberField(TEXT("TestInt"), 12);
+		Properties->SetStringField(TEXT("DefinitelyMissing"), TEXT("missing"));
+		DiffDocument->SetObjectField(TEXT("Properties"), Properties);
+		TestTrue(TEXT("Writes temporary diff sidecar"), WriteJsonObjectToFile(DiffDocument, SidecarPath));
+
+		FAssetDocumentDiffRequest Request;
+		Request.FilePath = SidecarPath;
+
+		const FAssetDocumentResult Result = Service.Diff(Request);
+
+		TestTrue(TEXT("Diff succeeds for TestDataAsset sidecar"), Result.IsSuccess());
+		TestTrue(TEXT("Diff returns payload"), Result.Payload.IsValid());
+		if (Result.Payload.IsValid())
+		{
+			TestTrue(TEXT("Diff payload has changed array"), HasArrayField(Result.Payload, TEXT("changed")));
+			TestTrue(TEXT("Diff payload has unchanged array"), HasArrayField(Result.Payload, TEXT("unchanged")));
+			TestTrue(TEXT("Diff payload has skipped array"), HasArrayField(Result.Payload, TEXT("skipped")));
+			TestTrue(TEXT("Diff payload has failed array"), HasArrayField(Result.Payload, TEXT("failed")));
+
+			const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+			Result.Payload->TryGetArrayField(TEXT("changed"), Changed);
+			Result.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged);
+			Result.Payload->TryGetArrayField(TEXT("failed"), Failed);
+			TestTrue(TEXT("Diff reports changed property"), Changed && FindObjectByStringField(*Changed, TEXT("name"), TEXT("TestString")).IsValid());
+			TestTrue(TEXT("Diff reports unchanged property"), Unchanged && FindObjectByStringField(*Unchanged, TEXT("name"), TEXT("TestInt")).IsValid());
+			TestTrue(TEXT("Diff reports failed missing property"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("DefinitelyMissing")).IsValid());
+		}
+		TestFalse(TEXT("Diff does not dirty asset package"), Package && Package->IsDirty());
+	}
+
+	IFileManager::Get().Delete(*SidecarPath, false, true);
+	CleanupTestAsset(Target);
+	CleanupTestAsset(MissingTarget);
+
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

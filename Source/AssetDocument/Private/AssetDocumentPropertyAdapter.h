@@ -6,6 +6,8 @@
 #include "AssetDocumentTypes.h"
 
 class FJsonObject;
+class FJsonValue;
+class FProperty;
 
 struct FAssetDocumentPropertyApplyResult
 {
@@ -19,6 +21,10 @@ class FAssetDocumentPropertyAdapter
 public:
 	static FAssetDocumentPropertyApplyResult ApplyProperties(UObject* Asset, TSharedPtr<FJsonObject> Properties);
 	static FAssetDocumentPropertyApplyResult PreflightProperties(UClass* Class, TSharedPtr<FJsonObject> Properties);
+	static FString GetTypeToken(FProperty* Property);
+	static bool IsWritableProperty(FProperty* Property);
+	static TSharedPtr<FJsonValue> ExtractPropertyValue(FProperty* Property, const void* ValuePtr);
+	static TSharedPtr<FJsonObject> InspectProperties(UClass* Class, UObject* CurrentObject = nullptr);
 
 private:
 	static bool ApplyPropertiesDirect(UObject* Asset, TSharedPtr<FJsonObject> Properties, TArray<FAssetDocumentDiagnostic>& OutDiagnostics);

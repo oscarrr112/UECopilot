@@ -7,6 +7,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "UObject/UnrealType.h"
+#include "UObject/TextProperty.h"
 
 namespace
 {
@@ -21,6 +22,177 @@ bool IsTypeName(const FString& TypeName, std::initializer_list<const TCHAR*> Acc
 	}
 	return false;
 }
+}
+
+FString FAssetDocumentPropertyAdapter::GetTypeToken(FProperty* Property)
+{
+	if (!Property)
+	{
+		return TEXT("Unknown");
+	}
+
+	if (CastField<FBoolProperty>(Property))
+	{
+		return TEXT("Bool");
+	}
+
+	if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
+	{
+		return EnumProperty->GetEnum() ? TEXT("Enum") : TEXT("Int");
+	}
+
+	if (FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
+	{
+		return ByteProperty->Enum ? TEXT("Enum") : TEXT("Int");
+	}
+
+	if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+	{
+		return NumericProperty->IsFloatingPoint() ? TEXT("Float") : TEXT("Int");
+	}
+
+	if (CastField<FStrProperty>(Property))
+	{
+		return TEXT("String");
+	}
+
+	if (CastField<FNameProperty>(Property))
+	{
+		return TEXT("Name");
+	}
+
+	if (CastField<FTextProperty>(Property))
+	{
+		return TEXT("Text");
+	}
+
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (StructProperty->Struct)
+		{
+			return StructProperty->Struct->GetStructCPPName();
+		}
+		return TEXT("Struct");
+	}
+
+	if (CastField<FSoftClassProperty>(Property) || CastField<FClassProperty>(Property))
+	{
+		return TEXT("Class");
+	}
+
+	if (CastField<FSoftObjectProperty>(Property) || CastField<FObjectPropertyBase>(Property))
+	{
+		return TEXT("Object");
+	}
+
+	if (CastField<FArrayProperty>(Property))
+	{
+		return TEXT("Array");
+	}
+
+	if (CastField<FMapProperty>(Property))
+	{
+		return TEXT("Map");
+	}
+
+	if (CastField<FSetProperty>(Property))
+	{
+		return TEXT("Set");
+	}
+
+	return TEXT("Unsupported");
+}
+
+bool FAssetDocumentPropertyAdapter::IsWritableProperty(FProperty* Property)
+{
+	return Property
+		&& Property->HasAnyPropertyFlags(CPF_Edit)
+		&& !Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated | CPF_EditConst);
+}
+
+TSharedPtr<FJsonValue> FAssetDocumentPropertyAdapter::ExtractPropertyValue(FProperty* Property, const void* ValuePtr)
+{
+	return FPropertySetterUtils::ExtractPropertyToJson(Property, ValuePtr);
+}
+
+TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(UClass* Class, UObject* CurrentObject)
+{
+	if (!Class)
+	{
+		return nullptr;
+	}
+
+	UObject* DefaultObject = Class->GetDefaultObject();
+	UObject* ValueObject = CurrentObject ? CurrentObject : DefaultObject;
+	if (!ValueObject || !DefaultObject)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetStringField(TEXT("class"), Class->GetPathName());
+	if (CurrentObject)
+	{
+		Payload->SetStringField(TEXT("asset_path"), CurrentObject->GetPathName());
+	}
+
+	TArray<TSharedPtr<FJsonValue>> PropertyRows;
+	TArray<TSharedPtr<FJsonValue>> SkippedRows;
+
+	for (TFieldIterator<FProperty> PropertyIt(Class); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		const FString PropertyName = Property->GetName();
+
+		auto AddSkipped = [&SkippedRows, &PropertyName](const FString& Reason)
+		{
+			TSharedPtr<FJsonObject> Skipped = MakeShared<FJsonObject>();
+			Skipped->SetStringField(TEXT("name"), PropertyName);
+			Skipped->SetStringField(TEXT("reason"), Reason);
+			SkippedRows.Add(MakeShared<FJsonValueObject>(Skipped));
+		};
+
+		if (Property->HasAnyPropertyFlags(CPF_Transient))
+		{
+			AddSkipped(TEXT("transient"));
+			continue;
+		}
+
+		if (Property->HasAnyPropertyFlags(CPF_Deprecated))
+		{
+			AddSkipped(TEXT("deprecated"));
+			continue;
+		}
+
+		if (!Property->HasAnyPropertyFlags(CPF_Edit))
+		{
+			AddSkipped(TEXT("non-editable"));
+			continue;
+		}
+
+		const void* CurrentValuePtr = Property->ContainerPtrToValuePtr<void>(ValueObject);
+		const void* DefaultValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultObject);
+		TSharedPtr<FJsonValue> CurrentValue = ExtractPropertyValue(Property, CurrentValuePtr);
+		TSharedPtr<FJsonValue> DefaultValue = ExtractPropertyValue(Property, DefaultValuePtr);
+		if (!CurrentValue.IsValid() || !DefaultValue.IsValid())
+		{
+			AddSkipped(TEXT("unsupported-serialization"));
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Row = MakeShared<FJsonObject>();
+		Row->SetStringField(TEXT("name"), PropertyName);
+		Row->SetStringField(TEXT("ue_type"), Property->GetCPPType());
+		Row->SetStringField(TEXT("type_token"), GetTypeToken(Property));
+		Row->SetField(TEXT("current_value"), CurrentValue);
+		Row->SetField(TEXT("default_value"), DefaultValue);
+		Row->SetBoolField(TEXT("writable"), IsWritableProperty(Property));
+		PropertyRows.Add(MakeShared<FJsonValueObject>(Row));
+	}
+
+	Payload->SetArrayField(TEXT("properties"), PropertyRows);
+	Payload->SetArrayField(TEXT("skipped"), SkippedRows);
+	return Payload;
 }
 
 FAssetDocumentPropertyApplyResult FAssetDocumentPropertyAdapter::ApplyProperties(UObject* Asset, TSharedPtr<FJsonObject> Properties)

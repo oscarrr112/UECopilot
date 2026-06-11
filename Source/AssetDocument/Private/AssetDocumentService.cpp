@@ -10,7 +10,10 @@
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
+#include "Utils/PropertySetterUtils.h"
 
 namespace
 {
@@ -77,6 +80,74 @@ bool ValidateApplyTarget(const FString& Target, FString& OutError)
 	}
 
 	return true;
+}
+
+FString ToObjectPath(const FString& PackageOrObjectPath)
+{
+	if (PackageOrObjectPath.Contains(TEXT(".")))
+	{
+		return PackageOrObjectPath;
+	}
+
+	const FString AssetName = FPackageName::GetLongPackageAssetName(PackageOrObjectPath);
+	if (AssetName.IsEmpty())
+	{
+		return PackageOrObjectPath;
+	}
+
+	return FString::Printf(TEXT("%s.%s"), *PackageOrObjectPath, *AssetName);
+}
+
+UObject* LoadAssetFromPackageOrObjectPath(const FString& PackageOrObjectPath)
+{
+	if (PackageOrObjectPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	UObject* Asset = LoadObject<UObject>(nullptr, *ToObjectPath(PackageOrObjectPath));
+	if (!Asset && PackageOrObjectPath.Contains(TEXT(".")))
+	{
+		Asset = LoadObject<UObject>(nullptr, *PackageOrObjectPath);
+	}
+	return Asset;
+}
+
+FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
+{
+	TSharedPtr<FJsonObject> Wrapper = MakeShared<FJsonObject>();
+	Wrapper->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
+
+	FString JsonText;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+	FJsonSerializer::Serialize(Wrapper.ToSharedRef(), Writer);
+	return JsonText;
+}
+
+void AddNamedValueEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name, TSharedPtr<FJsonValue> Value)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void AddChangedEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name, TSharedPtr<FJsonValue> Before, TSharedPtr<FJsonValue> After)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetField(TEXT("before"), Before.IsValid() ? Before : MakeShared<FJsonValueNull>());
+	Entry->SetField(TEXT("after"), After.IsValid() ? After : MakeShared<FJsonValueNull>());
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void AddReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name, const FString& Code, const FString& Message)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("code"), Code);
+	Entry->SetStringField(TEXT("message"), Message);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
 }
 
@@ -269,16 +340,93 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectRequest& Request) const
 {
-	FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetDocument Inspect is not implemented"));
-	Result.Target = Request.ClassOrAsset;
+	if (Request.ClassOrAsset.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("Inspect requires a class name or asset path"));
+	}
+
+	UObject* Asset = nullptr;
+	UClass* Class = nullptr;
+	FString Target = Request.ClassOrAsset;
+	FString Error;
+
+	if (Request.ClassOrAsset.StartsWith(TEXT("/Game/")))
+	{
+		Asset = LoadAssetFromPackageOrObjectPath(Request.ClassOrAsset);
+		if (!Asset)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Request.ClassOrAsset));
+			Result.Target = Request.ClassOrAsset;
+			Result.AssetPath = ToObjectPath(Request.ClassOrAsset);
+			return Result;
+		}
+		Class = Asset->GetClass();
+		Target = NormalizeValidateTarget(Request.ClassOrAsset);
+	}
+	else if (!FAssetDocumentClassResolver::ResolveClass(Request.ClassOrAsset, Class, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = Request.ClassOrAsset;
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(Class, Asset);
+	if (!Payload.IsValid())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Failed to inspect reflected properties"));
+		Result.Target = Target;
+		if (Asset)
+		{
+			Result.AssetPath = Asset->GetPathName();
+		}
+		return Result;
+	}
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument inspected"));
+	Result.Target = Target;
+	if (Asset)
+	{
+		Result.AssetPath = Asset->GetPathName();
+	}
+	Result.Payload = Payload;
 	return Result;
 }
 
 FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractRequest& Request) const
 {
-	FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetDocument Extract is not implemented"));
-	Result.Target = Request.AssetPath;
-	Result.AssetPath = Request.AssetPath;
+	if (Request.AssetPath.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("Extract requires an asset path"));
+	}
+
+	UObject* Asset = LoadAssetFromPackageOrObjectPath(Request.AssetPath);
+	const FString Target = NormalizeValidateTarget(Request.AssetPath);
+	if (!Asset)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Request.AssetPath));
+		Result.Target = Target;
+		Result.AssetPath = ToObjectPath(Request.AssetPath);
+		return Result;
+	}
+
+	const bool bSkipDefaults = Request.bDiffOnly && !Request.bIncludeAllWritable;
+	TSharedPtr<FJsonObject> Properties = FPropertySetterUtils::ExtractPropertiesToJson(Asset, true, bSkipDefaults);
+	if (!Properties.IsValid())
+	{
+		Properties = MakeShared<FJsonObject>();
+	}
+
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("AssetType"), TEXT("GenericAsset"));
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), Asset->GetClass()->GetPathName());
+	Document->SetObjectField(TEXT("Properties"), Properties);
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument extracted"));
+	Result.Target = Target;
+	Result.AssetPath = Asset->GetPathName();
+	Result.Payload = Document;
 	return Result;
 }
 
@@ -349,8 +497,147 @@ FAssetDocumentResult FAssetDocumentService::Validate(const FAssetDocumentValidat
 
 FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest& Request) const
 {
-	FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetDocument Diff is not implemented"));
-	Result.Target = Request.FilePath;
-	Result.SidecarFilePath = Request.FilePath;
+	const FString NormalizedFilePath = NormalizeValidateFilePath(Request.FilePath);
+	TSharedPtr<FJsonObject> Document = Request.Document;
+
+	if (!Document.IsValid() && NormalizedFilePath.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("Diff requires a JSON document or sidecar file path"));
+	}
+
+	if (!Document.IsValid())
+	{
+		FString Error;
+		if (!FAssetDocumentSidecar::LoadJsonFile(NormalizedFilePath, Document, Error))
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+			Result.SidecarFilePath = NormalizedFilePath;
+			return Result;
+		}
+	}
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.Document = Document;
+	ValidateRequest.FilePath = NormalizedFilePath;
+	const FAssetDocumentResult ValidateResult = Validate(ValidateRequest);
+	if (!ValidateResult.IsSuccess())
+	{
+		return ValidateResult;
+	}
+
+	FString Target;
+	Document->TryGetStringField(TEXT("Target"), Target);
+	Target = NormalizeValidateTarget(Target);
+	if (!NormalizedFilePath.IsEmpty())
+	{
+		Target = FAssetDocumentSidecar::ResolveObjectPathFromSidecar(NormalizedFilePath);
+	}
+
+	UObject* Asset = LoadAssetFromPackageOrObjectPath(Target);
+	if (!Asset)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Target));
+		Result.Target = Target;
+		Result.AssetPath = ToObjectPath(Target);
+		Result.SidecarFilePath = NormalizedFilePath;
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> Properties;
+	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+	if (Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
+	{
+		Properties = *PropertiesPtr;
+	}
+	if (!Properties.IsValid())
+	{
+		Properties = MakeShared<FJsonObject>();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Changed;
+	TArray<TSharedPtr<FJsonValue>> Unchanged;
+	TArray<TSharedPtr<FJsonValue>> Skipped;
+	TArray<TSharedPtr<FJsonValue>> Failed;
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
+	{
+		FProperty* Property = FindFProperty<FProperty>(Asset->GetClass(), *Pair.Key);
+		if (!Property)
+		{
+			AddReasonEntry(Failed, Pair.Key, TEXT("UnknownProperty"), FString::Printf(TEXT("Property '%s' does not exist"), *Pair.Key));
+			continue;
+		}
+
+		if (Property->HasAnyPropertyFlags(CPF_Transient))
+		{
+			AddReasonEntry(Skipped, Pair.Key, TEXT("Transient"), FString::Printf(TEXT("Property '%s' is transient"), *Pair.Key));
+			continue;
+		}
+
+		if (Property->HasAnyPropertyFlags(CPF_Deprecated))
+		{
+			AddReasonEntry(Skipped, Pair.Key, TEXT("Deprecated"), FString::Printf(TEXT("Property '%s' is deprecated"), *Pair.Key));
+			continue;
+		}
+
+		if (!Property->HasAnyPropertyFlags(CPF_Edit))
+		{
+			AddReasonEntry(Skipped, Pair.Key, TEXT("NonEditable"), FString::Printf(TEXT("Property '%s' is not editable"), *Pair.Key));
+			continue;
+		}
+
+		const void* CurrentValuePtr = Property->ContainerPtrToValuePtr<void>(Asset);
+		TSharedPtr<FJsonValue> BeforeValue = FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, CurrentValuePtr);
+		if (!BeforeValue.IsValid())
+		{
+			AddReasonEntry(Skipped, Pair.Key, TEXT("UnsupportedSerialization"), FString::Printf(TEXT("Property '%s' cannot be serialized"), *Pair.Key));
+			continue;
+		}
+
+		UObject* PreviewAsset = DuplicateObject<UObject>(Asset, GetTransientPackage());
+		if (!PreviewAsset)
+		{
+			AddReasonEntry(Failed, Pair.Key, TEXT("DuplicateFailed"), FString::Printf(TEXT("Failed to duplicate asset while diffing '%s'"), *Pair.Key));
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> SingleProperty = MakeShared<FJsonObject>();
+		SingleProperty->SetField(Pair.Key, Pair.Value);
+		FAssetDocumentPropertyApplyResult ApplyResult = FAssetDocumentPropertyAdapter::ApplyProperties(PreviewAsset, SingleProperty);
+		if (!ApplyResult.bSuccess)
+		{
+			AddReasonEntry(Failed, Pair.Key, TEXT("TypeValidationFailed"), ApplyResult.Message);
+			continue;
+		}
+
+		const void* AfterValuePtr = Property->ContainerPtrToValuePtr<void>(PreviewAsset);
+		TSharedPtr<FJsonValue> AfterValue = FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, AfterValuePtr);
+		if (!AfterValue.IsValid())
+		{
+			AddReasonEntry(Failed, Pair.Key, TEXT("AfterSerializationFailed"), FString::Printf(TEXT("Property '%s' could not be serialized after applying document value"), *Pair.Key));
+			continue;
+		}
+
+		if (JsonValueToComparableString(BeforeValue) == JsonValueToComparableString(AfterValue))
+		{
+			AddNamedValueEntry(Unchanged, Pair.Key, BeforeValue);
+		}
+		else
+		{
+			AddChangedEntry(Changed, Pair.Key, BeforeValue, AfterValue);
+		}
+	}
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetArrayField(TEXT("changed"), Changed);
+	Payload->SetArrayField(TEXT("unchanged"), Unchanged);
+	Payload->SetArrayField(TEXT("skipped"), Skipped);
+	Payload->SetArrayField(TEXT("failed"), Failed);
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument diffed"));
+	Result.Target = Target;
+	Result.AssetPath = Asset->GetPathName();
+	Result.SidecarFilePath = NormalizedFilePath;
+	Result.Payload = Payload;
 	return Result;
 }
