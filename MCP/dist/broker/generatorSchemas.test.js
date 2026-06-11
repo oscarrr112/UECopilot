@@ -88,6 +88,45 @@ test("generate_assets and get_generator_schema advertise StateTree, BehaviorTree
         }
     });
 });
+test("AssetDocument tools are listed and schema documentation is readable", async () => {
+    await withClient(async (client) => {
+        const listed = await client.listTools();
+        const toolNames = listed.tools.map((tool) => tool.name);
+        for (const toolName of [
+            "apply_asset_document",
+            "apply_asset_document_file",
+            "get_asset_document_schema",
+            "inspect_asset_document_target",
+            "extract_asset_document",
+            "validate_asset_document",
+            "diff_asset_document",
+        ]) {
+            assert.ok(toolNames.includes(toolName), `${toolName} should be visible`);
+        }
+        const result = await client.callTool({
+            name: "get_asset_document_schema",
+            arguments: {},
+        });
+        assert.notEqual(result.isError, true);
+        const text = textContent(result);
+        for (const pattern of [
+            /Target/,
+            /Name/,
+            /Path/,
+            /Properties/,
+            /typed/i,
+            /untyped/i,
+            /no subtype/i,
+            /inspect_asset_document_target/,
+            /extract_asset_document/,
+            /validate_asset_document/,
+            /diff_asset_document/,
+            /file watcher/i,
+        ]) {
+            assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
+        }
+    });
+});
 test("missing schema fallback lists StateTree, BehaviorTree, BlackboardData, and AnimSequence", async () => {
     await withClient(async (client) => {
         const result = await client.callTool({

@@ -239,6 +239,119 @@ const tools = [
         },
     },
     {
+        name: "get_asset_document_schema",
+        description: "Read AssetDocument schema documentation, including sidecar Target rules, Properties forms, and inspect/extract/validate/diff workflows.",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
+    {
+        name: "inspect_asset_document_target",
+        description: "Inspect writable reflected properties for an AssetDocument target class or existing asset by calling /assetfactory/assetdocument/inspect.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                class_or_asset: {
+                    type: "string",
+                    description: "Class name/path or asset path to inspect (e.g., TestDataAsset, /Script/AssetFactory.TestDataAsset, or /Game/Data/DA_Test)",
+                },
+            },
+            required: ["class_or_asset"],
+        },
+    },
+    {
+        name: "validate_asset_document",
+        description: "Validate an AssetDocument JSON document or sidecar file by calling /assetfactory/assetdocument/validate.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                document: {
+                    type: "object",
+                    description: "Inline AssetDocument JSON. When provided, this object is sent directly as the HTTP request body.",
+                    additionalProperties: true,
+                },
+                file_path: {
+                    type: "string",
+                    description: "Absolute sidecar file path to validate. Use this instead of document when validating a file.",
+                },
+            },
+        },
+    },
+    {
+        name: "diff_asset_document",
+        description: "Diff an AssetDocument JSON document or sidecar file against the current asset by calling /assetfactory/assetdocument/diff.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                document: {
+                    type: "object",
+                    description: "Inline AssetDocument JSON. When provided, this object is sent directly as the HTTP request body.",
+                    additionalProperties: true,
+                },
+                file_path: {
+                    type: "string",
+                    description: "Absolute sidecar file path to diff. Use this instead of document when diffing a file.",
+                },
+            },
+        },
+    },
+    {
+        name: "extract_asset_document",
+        description: "Extract an existing asset as an AssetDocument JSON draft by calling /assetfactory/assetdocument/extract.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                asset_path: {
+                    type: "string",
+                    description: "Asset path to extract (e.g., /Game/Data/DA_Test)",
+                },
+                diff_only: {
+                    type: "boolean",
+                    description: "If true, include only properties that differ from defaults (default true).",
+                },
+                include_all_writable: {
+                    type: "boolean",
+                    description: "If true, include all writable reflected properties.",
+                },
+            },
+            required: ["asset_path"],
+        },
+    },
+    {
+        name: "apply_asset_document",
+        description: "Apply an inline AssetDocument JSON document by calling /assetfactory/assetdocument/apply. This tool does not route through generate_assets.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                document: {
+                    type: "object",
+                    description: "Inline AssetDocument JSON to apply. The document object is sent directly as the HTTP request body.",
+                    additionalProperties: true,
+                },
+            },
+            required: ["document"],
+        },
+    },
+    {
+        name: "apply_asset_document_file",
+        description: "Apply an AssetDocument sidecar file by calling /assetfactory/assetdocument/apply-file.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                file_path: {
+                    type: "string",
+                    description: "Absolute sidecar file path to apply.",
+                },
+                save_asset: {
+                    type: "boolean",
+                    description: "Save the asset after applying (default true).",
+                },
+            },
+            required: ["file_path"],
+        },
+    },
+    {
         name: "extract_assets",
         description: "Extract Unreal Engine asset configurations as JSON. Use this to understand existing asset structure before modifying.",
         inputSchema: {
@@ -672,9 +785,49 @@ const viewportScreenshotHandler = async () => {
         ],
     };
 };
+function requireStringArg(args, key) {
+    const value = args[key];
+    if (typeof value !== "string" || value.length === 0) {
+        throw new Error(`'${key}' is required.`);
+    }
+    return value;
+}
+function requireObjectArg(args, key) {
+    const value = args[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`'${key}' is required.`);
+    }
+    return value;
+}
+function assetDocumentBodyArg(args) {
+    if (args.document !== undefined) {
+        return requireObjectArg(args, "document");
+    }
+    if (typeof args.file_path === "string" && args.file_path.length > 0) {
+        return { file_path: args.file_path };
+    }
+    throw new Error("'document' or 'file_path' is required.");
+}
 const toolHandlers = {
     generate_assets: async (args) => callUEApi("/generate", "POST", { Assets: args.assets }),
     get_generator_schema: async (args) => loadSchema(args.asset_type),
+    get_asset_document_schema: async () => loadSchema("AssetDocument"),
+    inspect_asset_document_target: async (args) => {
+        const classOrAsset = requireStringArg(args, "class_or_asset");
+        return callUEApi(`/assetdocument/inspect?class_or_asset=${encodeURIComponent(classOrAsset)}`, "GET");
+    },
+    validate_asset_document: async (args) => callUEApi("/assetdocument/validate", "POST", assetDocumentBodyArg(args)),
+    diff_asset_document: async (args) => callUEApi("/assetdocument/diff", "POST", assetDocumentBodyArg(args)),
+    extract_asset_document: async (args) => callUEApi("/assetdocument/extract", "POST", {
+        asset_path: requireStringArg(args, "asset_path"),
+        diff_only: args.diff_only ?? true,
+        include_all_writable: args.include_all_writable ?? false,
+    }),
+    apply_asset_document: async (args) => callUEApi("/assetdocument/apply", "POST", requireObjectArg(args, "document")),
+    apply_asset_document_file: async (args) => callUEApi("/assetdocument/apply-file", "POST", {
+        file_path: requireStringArg(args, "file_path"),
+        save_asset: args.save_asset ?? true,
+    }),
     extract_assets: async (args) => callUEApi("/extract", "POST", {
         Assets: args.assets,
         DiffOnly: args.diffOnly ?? true,
