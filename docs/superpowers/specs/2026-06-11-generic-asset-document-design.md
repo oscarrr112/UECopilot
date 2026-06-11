@@ -42,7 +42,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - 支持 `Properties` 反射 patch，复用现有 `FPropertySetterUtils`。
 - 支持 typed property format 和现有 untyped format。
 - 验证一个当前没有专门 generator 的资产类也能通过 `GenericAsset` 生成。
-- MCP 暴露 schema，让 agent 可以发现和使用这个通用入口。
+- MCP 暴露 schema、inspection 和 extraction 能力，让 agent 可以发现某个 class/asset 能写哪些参数，并生成 AssetDocument 草稿。
 
 ---
 
@@ -58,7 +58,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - 不从 JSON 手写大型二进制 payload。
 - 不增加按具体资产类名分支的大型 `if/else` 或 `switch/case`。
 - 不尝试自动修改 UE CDO 并保持外部 sidecar 与 `.uasset` 持续热同步。
-- 不把 `extract_assets` 作为第一版核心链路；已有 `.uasset` 迁移到 AssetDocument 可以作为后续 best-effort adoption 能力。
+- 不把现有 `extract_assets` 作为第一版核心链路；但 AssetDocument 自己需要提供 read-side inspection / extraction 能力，用于发现可写参数、生成草稿和调试。
 
 `FactoryClass` / `Factory` 字段可以在 schema 中作为后续扩展说明，但第一版实现可以不支持或只做显式拒绝，避免半成品语义。
 
@@ -248,6 +248,8 @@ Source/AssetDocument/Private/AssetDocumentModule.cpp
 AssetDocumentCompiler
   -> SidecarSource / InlineSource
   -> DocumentValidator
+  -> IntrospectionAdapter
+  -> ExtractionAdapter
   -> AssetLifecycleAdapter
   -> PropertyPatchAdapter
   -> SavePackageAdapter
@@ -258,6 +260,8 @@ AssetDocumentCompiler
 
 - `AssetDocumentCompiler`：编排文档验证、目标解析、创建/加载、属性 patch、保存和 sidecar 写回；
 - `AssetDocumentSidecarService`：处理 sidecar 路径推导、读写、target 校验，以及 editor hook 所需的文件同步操作；
+- `AssetDocumentIntrospectionService`：根据 class 或现有 asset 反射可编辑属性、属性类型、默认值、可写性和拒绝原因；
+- `ReflectionAssetDocumentExtractor`：从现有 asset 提取一个 best-effort AssetDocument 草稿，第一版只覆盖 reflected properties；
 - `DefaultObjectLifecycleAdapter`：处理可直接 `NewObject` 的 UObject/DataAsset 风格资产创建与加载；
 - `ReflectionPropertyPatchAdapter`：通过 `FProperty` 设置 CDO/对象属性；
 - `SavePackageAdapter`：保存 package；
@@ -408,17 +412,47 @@ implementation plan 需要先确认 UE 5.7 中最稳定的 delegate/API。hook �
 - 对 duplicate/move/rename 更新 `Target` 字段，如果存在；
 - 不自动修改 `Properties`。
 
-### 5.9 Extract / adoption 策略
+### 5.9 Inspection / extraction 策略
 
-第一版不把 `extract_assets` 作为核心验收。AssetDocument 是 source-of-truth，不要求从 `.uasset` 完美反向生成 sidecar。
+第一版不复用旧 `extract_assets` 作为核心链路。AssetDocument 仍是 source-of-truth，不要求从 `.uasset` 完美反向生成 sidecar；但 AssetDocument module 必须提供自己的 read-side inspection / best-effort extraction，帮助 agent 发现可写参数、生成草稿和调试。
 
-后续可以新增 best-effort adoption：
+inspection 用来回答“这个 class/asset 有哪些参数可以写”。返回结果应至少包含：
+
+- 目标 class / asset path；
+- 可编辑属性列表；
+- 每个属性的 UE 反射类型；
+- AssetDocument 中推荐使用的基础 `type` token；
+- 当前值；
+- CDO/default value；
+- 是否 editable / blueprint visible / transient / deprecated；
+- object/class/enum/struct/container 的反射约束；
+- 属性不可写时的拒绝原因。
+
+extraction 用来生成一个 AssetDocument 草稿：
 
 ```text
 Existing .uasset -> Draft .assetdoc.json
 ```
 
-用途是迁移旧资产、debug 和 smoke test，不是主链路。
+```json
+{
+  "SchemaVersion": 1,
+  "AssetType": "GenericAsset",
+  "Target": "/Game/Data/DA_GenericEnemy",
+  "Class": "/Script/AssetFactory.TestDataAsset",
+  "Properties": {
+    "Health": 100
+  }
+}
+```
+
+第一版 extraction 范围：
+
+- 只提取 reflected properties；
+- 默认只输出与 CDO/default value 不同的值；
+- 可选输出所有可写属性；
+- 不尝试提取 graph、tracks、sections、samples、entries、rows、channels 等结构化内容；
+- 对不能序列化成 AssetDocument 基础值的属性，返回 skipped entry 和原因，而不是硬编码特殊类型。
 
 ---
 
@@ -504,6 +538,7 @@ schema 需要说明：
 - `Class` 解析规则；
 - `Properties` untyped 和 typed 格式；
 - typed `type` 禁止 subtype，目标类型由 UPROPERTY 反射推断；
+- inspection/extraction 的返回格式；
 - create/update/create-or-update 行为；
 - 常见错误。
 
@@ -519,12 +554,27 @@ get_asset_document_schema()
 
 `apply_asset_document` 接收 inline JSON。`apply_asset_document_file` 从 `.assetdoc.json` 路径读取文档，并从 sidecar 文件位置推导目标 `/Game/...` 路径。`get_asset_document_schema` 返回 AssetDocument schema，而不是复用 `get_generator_schema`。
 
+同时新增 read-side MCP/HTTP 能力：
+
+```text
+inspect_asset_document_target(class_or_asset)
+extract_asset_document(asset_path, diff_only = true)
+validate_asset_document(document_or_file)
+diff_asset_document(document_or_file)
+```
+
+`inspect_asset_document_target` 用于查看某个 class 或现有 asset 可写哪些 AssetDocument 参数。`extract_asset_document` 生成 best-effort AssetDocument 草稿。`validate_asset_document` 只做解析、class/target、属性和类型检查，不保存资产。`diff_asset_document` 对比文档和当前资产，返回将要修改、保持不变、跳过和失败的字段。
+
 HTTP 层可以复用现有 AssetFactory server，但路由语义应保持独立，例如：
 
 ```text
 POST /assetdocument/apply
 POST /assetdocument/apply-file
 GET  /assetdocument/schema
+GET  /assetdocument/inspect
+POST /assetdocument/extract
+POST /assetdocument/validate
+POST /assetdocument/diff
 ```
 
 如果 MCP 侧已有静态 asset type 列表散落，本 spec 不要求把 AssetDocument 接入那些列表。implementation plan 可以顺手收敛公共 HTTP/MCP helper，但不要为了兼容旧 generator 枚举扩大第一版范围。
@@ -543,6 +593,9 @@ GET  /assetdocument/schema
 - 更新单个属性不覆盖未出现字段；
 - typed property 成功；
 - 类型不匹配失败且不保存半成品；
+- inspection 能列出测试 DataAsset 子类的可编辑属性、类型 token、当前值和 default value；
+- extraction 能从测试资产生成 diff-only AssetDocument 草稿；
+- validate/diff 不保存资产，并返回清晰结果；
 - 从同一个 sidecar 重复 apply 后结果稳定；
 - 显式 `Target` 与 sidecar 路径不一致时失败。
 
@@ -564,14 +617,19 @@ GET  /assetdocument/schema
 
 1. 创建一个没有专门 generator 的测试 DataAsset 子类。
 2. 写入同目录 `.assetdoc.json`。
-3. 更新 sidecar 中单个属性并重新 apply。
-4. 通过 UE 读取资产验证未指定属性保持不变。
-5. 重命名/移动/复制/删除受管理资产，验证 sidecar 跟随行为。
-6. negative case 验证错误清晰。
+3. 用 `inspect_asset_document_target` 查看可写参数。
+4. 用 `extract_asset_document` 生成 diff-only AssetDocument 草稿。
+5. 用 `validate_asset_document` 验证草稿不保存资产。
+6. 用 `diff_asset_document` 查看将要修改的字段。
+7. 更新 sidecar 中单个属性并重新 apply。
+8. 通过 UE 读取资产验证未指定属性保持不变。
+9. 重命名/移动/复制/删除受管理资产，验证 sidecar 跟随行为。
+10. negative case 验证错误清晰。
 
 ### 8.4 文档验证
 
 - `get_asset_document_schema()` 返回 schema。
+- inspection/extraction schema 示例与 MCP 返回格式一致。
 - schema 示例与 AssetDocument compiler 行为一致。
 - `git diff --check` 通过。
 
@@ -628,6 +686,9 @@ GET  /assetdocument/schema
 - `AssetDocument` Editor module 在插件中注册并加载成功。
 - `AssetDocument` module 不依赖 `AssetGeneratorRegistry`，也不注册 `GenericAssetGenerator`。
 - MCP/HTTP 提供 `apply_asset_document` / `apply_asset_document_file` / `get_asset_document_schema` 等价能力。
+- MCP/HTTP 提供 `inspect_asset_document_target`，能返回 class/asset 的可写属性、类型 token、当前值、默认值和拒绝原因。
+- MCP/HTTP 提供 `extract_asset_document`，能从已有资产生成 reflected-property-only 的 AssetDocument 草稿。
+- MCP/HTTP 提供 `validate_asset_document` 和 `diff_asset_document`，且不会保存或修改资产。
 - 支持同目录 sidecar：`<AssetName>.assetdoc.json`。
 - 支持从 sidecar 路径推导目标资产路径。
 - 显式 `Target` 与 sidecar 路径不一致时失败。
