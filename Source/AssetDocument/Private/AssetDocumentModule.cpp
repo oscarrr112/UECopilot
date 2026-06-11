@@ -1,11 +1,13 @@
 // Copyright ProjectRPG. All Rights Reserved.
 
 #include "AssetDocumentModule.h"
+#include "AssetDocumentEditorSync.h"
 #include "AssetDocumentHttpRoutes.h"
 #include "AssetDocumentService.h"
 
 DEFINE_LOG_CATEGORY(LogAssetDocument);
 
+FAssetDocumentModule::FAssetDocumentModule() = default;
 FAssetDocumentModule::~FAssetDocumentModule() = default;
 
 void FAssetDocumentModule::StartupModule()
@@ -14,10 +16,13 @@ void FAssetDocumentModule::StartupModule()
 	Service = MakeShared<FAssetDocumentService>();
 	HttpRoutes = MakeUnique<FAssetDocumentHttpRoutes>(Service.ToSharedRef());
 	HttpRoutes->Register();
+	EditorSync = MakeUnique<FAssetDocumentEditorSync>();
+	EditorSync->Register();
 }
 
 void FAssetDocumentModule::ShutdownModule()
 {
+	EditorSync.Reset();
 	HttpRoutes.Reset();
 	Service.Reset();
 	UE_LOG(LogAssetDocument, Log, TEXT("AssetDocument module shut down"));

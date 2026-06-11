@@ -9,10 +9,12 @@ DECLARE_LOG_CATEGORY_EXTERN(LogAssetDocument, Log, All);
 
 class FAssetDocumentService;
 class FAssetDocumentHttpRoutes;
+class FAssetDocumentEditorSync;
 
 class ASSETDOCUMENT_API FAssetDocumentModule : public IModuleInterface
 {
 public:
+	FAssetDocumentModule();
 	virtual ~FAssetDocumentModule() override;
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
@@ -25,4 +27,5 @@ public:
 private:
 	TSharedPtr<FAssetDocumentService> Service;
 	TUniquePtr<FAssetDocumentHttpRoutes> HttpRoutes;
+	TUniquePtr<FAssetDocumentEditorSync> EditorSync;
 };
