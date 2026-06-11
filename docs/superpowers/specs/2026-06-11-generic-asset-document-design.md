@@ -34,7 +34,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - `AssetDocument` 是 source-of-truth，`.uasset` 是 materialized output。
 - 通过 `Class` 动态解析 UObject 类。
 - 支持创建、更新、创建或更新。
-- 支持从 sidecar `.assetdoc.json` apply/generate 到目标 `.uasset`。
+- 支持从 sidecar `.assetdoc.json` apply 到目标 `.uasset`。
 - 支持生成成功后写入或更新 sidecar。
 - 支持从 sidecar 文件路径推导目标资产路径。
 - 支持资产移动、重命名、复制、删除时同步 sidecar 的 editor hook。
@@ -113,7 +113,7 @@ sidecar 内可以省略 `Name`、`Path` 和 `Target`：
 
 ### 4.2 Inline 最小创建
 
-第一版兼容现有 `generate_assets` 入口。`GenericAssetGenerator` 可以接收 inline AssetDocument 风格 JSON，便于测试和一次性生成：
+第一版不接入现有 `generate_assets` 入口。AssetDocument 提供自己的 apply 入口，直接接收 inline AssetDocument JSON，便于测试和一次性生成：
 
 ```json
 {
@@ -222,7 +222,7 @@ hook 必须只处理受管理资产：
 
 - 资产旁边存在同名 `.assetdoc.json`；
 - 或资产 metadata 标记为 AssetDocument-managed；
-- 或操作来自 AssetDocument apply/generate。
+- 或操作来自 AssetDocument apply。
 
 如果 hook 无法安全同步 sidecar，应记录明确 warning，并尽量不阻止 UE 自身资产操作。implementation plan 需要确定错误上报位置。
 
@@ -230,34 +230,21 @@ hook 必须只处理受管理资产：
 
 ## 5. 设计
 
-### 5.1 兼容入口与组件化编排
+### 5.1 Compiler / Adapter 架构
 
-为兼容现有 AssetFactory registry，第一版仍注册一个薄的 `GenericAssetGenerator`：
+第一版新增独立的 AssetDocument 编译与应用层，而不是在现有 `AssetGeneratorRegistry` 中注册 `GenericAssetGenerator`：
 
 ```text
-Source/AssetFactory/Public/Generators/GenericAssetGenerator.h
-Source/AssetFactory/Private/Generators/GenericAssetGenerator.cpp
+Source/AssetDocument/AssetDocument.Build.cs
+Source/AssetDocument/Public/AssetDocumentModule.h
+Source/AssetDocument/Private/AssetDocumentModule.cpp
 ```
 
-注册方式沿用现有 `AssetGeneratorRegistry`：
+这个 module 可以被现有 HTTP server / MCP server 调用，但它不应该伪装成一个 generator，也不应该把业务复杂度放进 `AssetFactory` 的 generator 继承体系。
+
+架构应更接近组件装配器/COM：稳定入口是 `AssetDocumentCompiler`，具体能力由可注册的 adapter / capability 提供，而不是“每个 AssetType 一个 OOP generator 子类”：
 
 ```text
-GetAssetType() -> "GenericAsset"
-```
-
-但 `GenericAssetGenerator` 不应成为新的大 generator。它只是入口桥接器 / facade，只负责：
-
-- 接收现有 `generate_assets` 调用；
-- 加载 inline JSON 或 sidecar；
-- 调用 `AssetDocumentCompiler`；
-- 将 compiler 结果转换成现有 `FGenerationResult`。
-
-这个设计更接近组件装配器/COM 风格，而不是“每个 AssetType 一个 OOP generator 子类”：
-
-```text
-GenericAssetGenerator
-  -> AssetDocumentCompiler
-
 AssetDocumentCompiler
   -> SidecarSource / InlineSource
   -> DocumentValidator
@@ -267,7 +254,7 @@ AssetDocumentCompiler
   -> EditorSidecarSyncService
 ```
 
-真正的业务逻辑拆到以下能力组件：
+第一版注册以下最小能力组件：
 
 - `AssetDocumentCompiler`：编排文档验证、目标解析、创建/加载、属性 patch、保存和 sidecar 写回；
 - `AssetDocumentSidecarService`：处理 sidecar 路径推导、读写、target 校验，以及 editor hook 所需的文件同步操作；
@@ -276,11 +263,11 @@ AssetDocumentCompiler
 - `SavePackageAdapter`：保存 package；
 - `EditorSidecarSyncService`：处理 rename/move/duplicate/delete hook。
 
-这样名字上还保留 `Generator`，但架构上已经从“每类资产一个 OOP generator”转成“文档编译器 + 能力组件装配”。后续支持 AnimMontage、Widget、MaterialGraph、Niagara、ABP 时，应优先新增或替换 capability component，而不是把逻辑塞回一个大型 `GenericAssetGenerator`。
+这样第一版就从“每类资产一个 OOP generator”转成“文档编译器 + 能力组件装配”。后续支持 AnimMontage、Widget、MaterialGraph、Niagara、ABP 时，应优先新增或替换 capability component，而不是新增一个越来越重的 generator 子类。
 
 ### 5.2 Sidecar 解析与写入
 
-新增 sidecar service，建议放在 `Source/AssetFactory/Private/AssetDocuments/` 或等价目录：
+新增 sidecar service，放在 `Source/AssetDocument/Private/Sidecar/` 或等价目录：
 
 ```text
 ResolveSidecarPath(ObjectPath) -> FilePath
@@ -395,11 +382,11 @@ Package->SetDirtyFlag(true)
 UPackage::SavePackage(...)
 ```
 
-保存失败必须返回 `FGenerationResult::MakeFailed`。
+保存失败必须返回 AssetDocument apply failed result，并携带可读错误。
 
 sidecar 写入策略：
 
-- apply/generate 成功后再写 sidecar，避免记录失败状态；
+- apply 成功后再写 sidecar，避免记录失败状态；
 - 如果输入来自 sidecar 文件，成功后可以规范化写回同一文件；
 - 如果输入来自 inline JSON 且 `WriteSidecar` 为 true，则写入目标 sidecar；
 - 如果 `.uasset` 保存成功但 sidecar 写入失败，结果应视为 failed 或 partial failed。implementation plan 需要固定是否回滚 `.uasset`，第一版推荐返回 failed 并记录人工修复路径。
@@ -495,14 +482,14 @@ for each structured block:
 
 ---
 
-## 7. MCP 暴露
+## 7. MCP / HTTP 暴露
 
 ### 7.1 schema
 
 新增：
 
 ```text
-MCP/schemas/GenericAsset.md
+MCP/schemas/AssetDocument.md
 ```
 
 schema 需要说明：
@@ -520,16 +507,27 @@ schema 需要说明：
 - create/update/create-or-update 行为；
 - 常见错误。
 
-### 7.2 tool 枚举
+### 7.2 AssetDocument 工具
 
-将 `GenericAsset` 添加到：
+新增独立 MCP/HTTP 入口，而不是把 `GenericAsset` 加入 `generate_assets`：
 
-- `generate_assets` 描述；
-- `get_generator_schema` enum；
-- schema missing fallback available-types 文案；
-- `MCP/dist` 构建产物。
+```text
+apply_asset_document(document)
+apply_asset_document_file(file_path)
+get_asset_document_schema()
+```
 
-如果 MCP 侧已有静态 asset type 列表散落，implementation plan 应优先收敛为单一常量。
+`apply_asset_document` 接收 inline JSON。`apply_asset_document_file` 从 `.assetdoc.json` 路径读取文档，并从 sidecar 文件位置推导目标 `/Game/...` 路径。`get_asset_document_schema` 返回 AssetDocument schema，而不是复用 `get_generator_schema`。
+
+HTTP 层可以复用现有 AssetFactory server，但路由语义应保持独立，例如：
+
+```text
+POST /assetdocument/apply
+POST /assetdocument/apply-file
+GET  /assetdocument/schema
+```
+
+如果 MCP 侧已有静态 asset type 列表散落，本 spec 不要求把 AssetDocument 接入那些列表。implementation plan 可以顺手收敛公共 HTTP/MCP helper，但不要为了兼容旧 generator 枚举扩大第一版范围。
 
 ---
 
@@ -562,7 +560,7 @@ schema 需要说明：
 
 ### 8.3 MCP / Editor smoke
 
-使用 MCP `generate_assets`：
+使用 MCP `apply_asset_document` / `apply_asset_document_file`：
 
 1. 创建一个没有专门 generator 的测试 DataAsset 子类。
 2. 写入同目录 `.assetdoc.json`。
@@ -573,8 +571,8 @@ schema 需要说明：
 
 ### 8.4 文档验证
 
-- `get_generator_schema(GenericAsset)` 返回 schema。
-- schema 示例与 generator facade / AssetDocument compiler 行为一致。
+- `get_asset_document_schema()` 返回 schema。
+- schema 示例与 AssetDocument compiler 行为一致。
 - `git diff --check` 通过。
 
 ---
@@ -627,14 +625,13 @@ schema 需要说明：
 
 ## 10. 验收标准
 
-- `GenericAsset` generator 注册成功。
-- `GenericAssetGenerator` 只作为 facade 调用 `AssetDocumentCompiler`，不承载创建、属性 patch、sidecar hook 等业务复杂度。
-- `generate_assets` 支持 `AssetType: "GenericAsset"`。
-- `get_generator_schema(GenericAsset)` 可用。
+- `AssetDocument` Editor module 在插件中注册并加载成功。
+- `AssetDocument` module 不依赖 `AssetGeneratorRegistry`，也不注册 `GenericAssetGenerator`。
+- MCP/HTTP 提供 `apply_asset_document` / `apply_asset_document_file` / `get_asset_document_schema` 等价能力。
 - 支持同目录 sidecar：`<AssetName>.assetdoc.json`。
 - 支持从 sidecar 路径推导目标资产路径。
 - 显式 `Target` 与 sidecar 路径不一致时失败。
-- apply/generate 成功后能写入或更新 sidecar。
+- apply 成功后能写入或更新 sidecar。
 - 受管理资产 rename/move 时 sidecar 跟随并更新可选 `Target`。
 - 受管理资产 duplicate 时 sidecar 被复制并更新可选 `Target`。
 - 受管理资产 delete 时 sidecar 被删除或移入实现计划指定的位置，不留下误指向现有资产的 sidecar。
