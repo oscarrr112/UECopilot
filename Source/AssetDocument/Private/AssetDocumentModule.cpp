@@ -11,8 +11,8 @@ FAssetDocumentModule::~FAssetDocumentModule() = default;
 void FAssetDocumentModule::StartupModule()
 {
 	UE_LOG(LogAssetDocument, Log, TEXT("AssetDocument module starting up"));
-	Service = MakeUnique<FAssetDocumentService>();
-	HttpRoutes = MakeUnique<FAssetDocumentHttpRoutes>(*Service);
+	Service = MakeShared<FAssetDocumentService>();
+	HttpRoutes = MakeUnique<FAssetDocumentHttpRoutes>(Service.ToSharedRef());
 	HttpRoutes->Register();
 }
 

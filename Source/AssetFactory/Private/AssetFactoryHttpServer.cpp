@@ -63,11 +63,43 @@ namespace
 		bool bJsonContentType = false;
 	};
 
+	bool TryNormalizeExternalRouteMethodText(const FString& InMethodText, FString& OutMethodText)
+	{
+		const FString MethodText = InMethodText.TrimStartAndEnd().ToUpper();
+		if (MethodText.IsEmpty() || MethodText == TEXT("GET"))
+		{
+			OutMethodText = TEXT("GET");
+			return true;
+		}
+		if (MethodText == TEXT("POST"))
+		{
+			OutMethodText = TEXT("POST");
+			return true;
+		}
+		if (MethodText == TEXT("PUT"))
+		{
+			OutMethodText = TEXT("PUT");
+			return true;
+		}
+		if (MethodText == TEXT("PATCH"))
+		{
+			OutMethodText = TEXT("PATCH");
+			return true;
+		}
+		if (MethodText == TEXT("DELETE"))
+		{
+			OutMethodText = TEXT("DELETE");
+			return true;
+		}
+		return false;
+	}
+
 	FString GetExternalRouteMethodText(const FAssetFactoryExternalRoute& Route)
 	{
-		if (!Route.MethodText.IsEmpty())
+		FString MethodText;
+		if (TryNormalizeExternalRouteMethodText(Route.MethodText, MethodText))
 		{
-			return Route.MethodText.TrimStartAndEnd();
+			return MethodText;
 		}
 
 		return TEXT("GET");
@@ -75,7 +107,7 @@ namespace
 
 	EHttpServerRequestVerbs GetExternalRouteVerb(const FAssetFactoryExternalRoute& Route)
 	{
-		const FString MethodText = GetExternalRouteMethodText(Route).ToUpper();
+		const FString MethodText = GetExternalRouteMethodText(Route);
 		if (MethodText == TEXT("POST"))
 		{
 			return EHttpServerRequestVerbs::VERB_POST;
@@ -172,8 +204,18 @@ FDelegateHandle FAssetFactoryHttpServer::RegisterExternalRoute(const FAssetFacto
 		return FDelegateHandle();
 	}
 
+	FString NormalizedMethodText;
+	if (!TryNormalizeExternalRouteMethodText(Route.MethodText, NormalizedMethodText))
+	{
+		UE_LOG(LogAssetFactory, Warning, TEXT("Ignoring external route registration for path '%s' with invalid method '%s'"), *Route.Path, *Route.MethodText);
+		return FDelegateHandle();
+	}
+
+	FAssetFactoryExternalRoute NormalizedRoute = Route;
+	NormalizedRoute.MethodText = NormalizedMethodText;
+
 	FDelegateHandle Handle(FDelegateHandle::GenerateNewHandle);
-	GetExternalRoutes().Add(Handle, Route);
+	GetExternalRoutes().Add(Handle, NormalizedRoute);
 	for (FAssetFactoryHttpServer* Server : GetActiveServers())
 	{
 		if (Server && Server->HttpRouter.IsValid())

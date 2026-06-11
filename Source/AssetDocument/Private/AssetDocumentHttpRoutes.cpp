@@ -148,9 +148,180 @@ TSharedPtr<FJsonObject> BuildSchemaResponse()
 	Json->SetArrayField(TEXT("routes"), Routes);
 	return Json;
 }
+
+TSharedPtr<FJsonObject> MakeServiceUnavailableJson(int32& OutStatusCode)
+{
+	OutStatusCode = 503;
+	return MakeErrorJson(TEXT("AssetDocument service is unavailable"));
 }
 
-FAssetDocumentHttpRoutes::FAssetDocumentHttpRoutes(FAssetDocumentService& InService)
+template<typename HandlerType>
+FAssetFactoryExternalRouteHandler CreateServiceRouteHandler(TWeakPtr<FAssetDocumentService> WeakService, HandlerType Handler)
+{
+	return FAssetFactoryExternalRouteHandler::CreateLambda([WeakService, Handler](const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+	{
+		TSharedPtr<FAssetDocumentService> PinnedService = WeakService.Pin();
+		if (!PinnedService.IsValid())
+		{
+			return MakeServiceUnavailableJson(OutStatusCode);
+		}
+
+		return Handler(PinnedService.ToSharedRef(), RequestBody, QueryParams, OutStatusCode);
+	});
+}
+
+TSharedPtr<FJsonObject> HandleApply(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentApplyRequest ApplyRequest;
+	ApplyRequest.Document = Json;
+	const FAssetDocumentResult Result = RunOnGameThread([Service, ApplyRequest]()
+	{
+		return Service->Apply(ApplyRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleApplyFile(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, ApplyFileRequest.FilePath) || ApplyFileRequest.FilePath.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("ApplyFile requires file_path or FilePath"));
+	}
+	TryGetBoolFieldAny(Json, {TEXT("save_asset"), TEXT("SaveAsset")}, ApplyFileRequest.bSaveAsset);
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, ApplyFileRequest]()
+	{
+		return Service->ApplyFile(ApplyFileRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleSchema(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	OutStatusCode = 200;
+	return BuildSchemaResponse();
+}
+
+TSharedPtr<FJsonObject> HandleInspect(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	FAssetDocumentInspectRequest InspectRequest;
+	if (!TryGetQueryParamAny(QueryParams, {TEXT("class_or_asset"), TEXT("ClassOrAsset"), TEXT("target"), TEXT("Target")}, InspectRequest.ClassOrAsset) || InspectRequest.ClassOrAsset.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("Inspect requires class_or_asset, ClassOrAsset, target, or Target"));
+	}
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, InspectRequest]()
+	{
+		return Service->Inspect(InspectRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleExtract(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	if (!TryGetStringFieldAny(Json, {TEXT("asset_path"), TEXT("AssetPath")}, ExtractRequest.AssetPath) || ExtractRequest.AssetPath.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("Extract requires asset_path or AssetPath"));
+	}
+	TryGetBoolFieldAny(Json, {TEXT("diff_only"), TEXT("DiffOnly")}, ExtractRequest.bDiffOnly);
+	TryGetBoolFieldAny(Json, {TEXT("include_all_writable"), TEXT("IncludeAllWritable")}, ExtractRequest.bIncludeAllWritable);
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, ExtractRequest]()
+	{
+		return Service->Extract(ExtractRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleValidate(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, ValidateRequest.FilePath))
+	{
+		ValidateRequest.Document = Json;
+	}
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, ValidateRequest]()
+	{
+		return Service->Validate(ValidateRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleDiff(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, DiffRequest.FilePath))
+	{
+		DiffRequest.Document = Json;
+	}
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, DiffRequest]()
+	{
+		return Service->Diff(DiffRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+}
+
+FAssetDocumentHttpRoutes::FAssetDocumentHttpRoutes(const TSharedRef<FAssetDocumentService>& InService)
 	: Service(InService)
 {
 }
@@ -183,13 +354,13 @@ void FAssetDocumentHttpRoutes::Register()
 		}
 	};
 
-	RegisterRoute(TEXT("/assetfactory/assetdocument/apply"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleApply), TEXT("POST"), TEXT("Apply an AssetDocument JSON document"), true, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/apply-file"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleApplyFile), TEXT("POST"), TEXT("Apply an AssetDocument sidecar file"), true, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/schema"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleSchema), TEXT("GET"), TEXT("Describe AssetDocument HTTP routes"), false, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/inspect"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleInspect), TEXT("GET"), TEXT("Inspect writable reflected properties for a class or asset"), false, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/extract"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleExtract), TEXT("POST"), TEXT("Extract an asset as an AssetDocument JSON document"), true, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/validate"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleValidate), TEXT("POST"), TEXT("Validate an AssetDocument JSON document or sidecar file"), true, RouteHandles);
-	RegisterRoute(TEXT("/assetfactory/assetdocument/diff"), FAssetFactoryExternalRouteHandler::CreateRaw(this, &FAssetDocumentHttpRoutes::HandleDiff), TEXT("POST"), TEXT("Diff an AssetDocument JSON document or sidecar file against the current asset"), true, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/apply"), CreateServiceRouteHandler(Service, HandleApply), TEXT("POST"), TEXT("Apply an AssetDocument JSON document"), true, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/apply-file"), CreateServiceRouteHandler(Service, HandleApplyFile), TEXT("POST"), TEXT("Apply an AssetDocument sidecar file"), true, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/schema"), CreateServiceRouteHandler(Service, HandleSchema), TEXT("GET"), TEXT("Describe AssetDocument HTTP routes"), false, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/inspect"), CreateServiceRouteHandler(Service, HandleInspect), TEXT("GET"), TEXT("Inspect writable reflected properties for a class or asset"), false, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/extract"), CreateServiceRouteHandler(Service, HandleExtract), TEXT("POST"), TEXT("Extract an asset as an AssetDocument JSON document"), true, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/validate"), CreateServiceRouteHandler(Service, HandleValidate), TEXT("POST"), TEXT("Validate an AssetDocument JSON document or sidecar file"), true, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/diff"), CreateServiceRouteHandler(Service, HandleDiff), TEXT("POST"), TEXT("Diff an AssetDocument JSON document or sidecar file against the current asset"), true, RouteHandles);
 }
 
 void FAssetDocumentHttpRoutes::Unregister()
@@ -199,154 +370,4 @@ void FAssetDocumentHttpRoutes::Unregister()
 		FAssetFactoryHttpServer::UnregisterExternalRoute(Handle);
 	}
 	RouteHandles.Reset();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleApply(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	TSharedPtr<FJsonObject> Json;
-	FString Error;
-	if (!TryParseJsonBody(RequestBody, Json, Error))
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(Error);
-	}
-
-	FAssetDocumentApplyRequest ApplyRequest;
-	ApplyRequest.Document = Json;
-	const FAssetDocumentResult Result = RunOnGameThread([this, ApplyRequest]()
-	{
-		return Service.Apply(ApplyRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleApplyFile(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	TSharedPtr<FJsonObject> Json;
-	FString Error;
-	if (!TryParseJsonBody(RequestBody, Json, Error))
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(Error);
-	}
-
-	FAssetDocumentApplyFileRequest ApplyFileRequest;
-	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, ApplyFileRequest.FilePath) || ApplyFileRequest.FilePath.IsEmpty())
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(TEXT("ApplyFile requires file_path or FilePath"));
-	}
-	TryGetBoolFieldAny(Json, {TEXT("save_asset"), TEXT("SaveAsset")}, ApplyFileRequest.bSaveAsset);
-
-	const FAssetDocumentResult Result = RunOnGameThread([this, ApplyFileRequest]()
-	{
-		return Service.ApplyFile(ApplyFileRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleSchema(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	OutStatusCode = 200;
-	return BuildSchemaResponse();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleInspect(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	FAssetDocumentInspectRequest InspectRequest;
-	if (!TryGetQueryParamAny(QueryParams, {TEXT("class_or_asset"), TEXT("ClassOrAsset"), TEXT("target"), TEXT("Target")}, InspectRequest.ClassOrAsset) || InspectRequest.ClassOrAsset.IsEmpty())
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(TEXT("Inspect requires class_or_asset, ClassOrAsset, target, or Target"));
-	}
-
-	const FAssetDocumentResult Result = RunOnGameThread([this, InspectRequest]()
-	{
-		return Service.Inspect(InspectRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleExtract(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	TSharedPtr<FJsonObject> Json;
-	FString Error;
-	if (!TryParseJsonBody(RequestBody, Json, Error))
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(Error);
-	}
-
-	FAssetDocumentExtractRequest ExtractRequest;
-	if (!TryGetStringFieldAny(Json, {TEXT("asset_path"), TEXT("AssetPath")}, ExtractRequest.AssetPath) || ExtractRequest.AssetPath.IsEmpty())
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(TEXT("Extract requires asset_path or AssetPath"));
-	}
-	TryGetBoolFieldAny(Json, {TEXT("diff_only"), TEXT("DiffOnly")}, ExtractRequest.bDiffOnly);
-	TryGetBoolFieldAny(Json, {TEXT("include_all_writable"), TEXT("IncludeAllWritable")}, ExtractRequest.bIncludeAllWritable);
-
-	const FAssetDocumentResult Result = RunOnGameThread([this, ExtractRequest]()
-	{
-		return Service.Extract(ExtractRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleValidate(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	TSharedPtr<FJsonObject> Json;
-	FString Error;
-	if (!TryParseJsonBody(RequestBody, Json, Error))
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(Error);
-	}
-
-	FAssetDocumentValidateRequest ValidateRequest;
-	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, ValidateRequest.FilePath))
-	{
-		ValidateRequest.Document = Json;
-	}
-
-	const FAssetDocumentResult Result = RunOnGameThread([this, ValidateRequest]()
-	{
-		return Service.Validate(ValidateRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
-}
-
-TSharedPtr<FJsonObject> FAssetDocumentHttpRoutes::HandleDiff(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
-{
-	TSharedPtr<FJsonObject> Json;
-	FString Error;
-	if (!TryParseJsonBody(RequestBody, Json, Error))
-	{
-		OutStatusCode = 400;
-		return MakeErrorJson(Error);
-	}
-
-	FAssetDocumentDiffRequest DiffRequest;
-	if (!TryGetStringFieldAny(Json, {TEXT("file_path"), TEXT("FilePath")}, DiffRequest.FilePath))
-	{
-		DiffRequest.Document = Json;
-	}
-
-	const FAssetDocumentResult Result = RunOnGameThread([this, DiffRequest]()
-	{
-		return Service.Diff(DiffRequest);
-	});
-
-	OutStatusCode = GetStatusCode(Result);
-	return Result.ToJson();
 }

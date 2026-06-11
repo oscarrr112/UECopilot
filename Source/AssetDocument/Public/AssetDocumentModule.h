@@ -23,6 +23,6 @@ public:
 	FAssetDocumentService& GetService();
 
 private:
-	TUniquePtr<FAssetDocumentService> Service;
+	TSharedPtr<FAssetDocumentService> Service;
 	TUniquePtr<FAssetDocumentHttpRoutes> HttpRoutes;
 };
