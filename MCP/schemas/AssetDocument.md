@@ -97,7 +97,7 @@ Apply sidecar file:
 
 ```json
 {
-  "file_path": "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json",
+  "file_path": "E:/GameDev/Project/Content/Data/DA_Test.assetdoc.json",
   "save_asset": true
 }
 ```
@@ -152,7 +152,7 @@ Validate or diff sidecar:
 
 ```json
 {
-  "file_path": "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json"
+  "file_path": "E:/GameDev/Project/Content/Data/DA_Test.assetdoc.json"
 }
 ```
 

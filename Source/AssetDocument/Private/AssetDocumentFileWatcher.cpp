@@ -194,6 +194,32 @@ bool FAssetDocumentFileWatcher::IsAssetDocumentSidecarPath(const FString& FilePa
 	return NormalizedPath.StartsWith(ContentRoot, ESearchCase::IgnoreCase);
 }
 
+void FAssetDocumentFileWatcher::CollectAssetDocumentSidecarsUnderDirectory(const FString& Directory, TArray<FString>& OutFilePaths)
+{
+	OutFilePaths.Reset();
+
+	FString NormalizedDirectory = NormalizeFilePath(Directory);
+	FPaths::NormalizeDirectoryName(NormalizedDirectory);
+	if (NormalizedDirectory.IsEmpty() || !IFileManager::Get().DirectoryExists(*NormalizedDirectory))
+	{
+		return;
+	}
+
+	TArray<FString> FoundFiles;
+	IFileManager::Get().FindFilesRecursive(FoundFiles, *NormalizedDirectory, TEXT("*.assetdoc.json"), true, false);
+
+	for (FString& FoundFile : FoundFiles)
+	{
+		FoundFile = NormalizeFilePath(FoundFile);
+		if (IsAssetDocumentSidecarPath(FoundFile))
+		{
+			OutFilePaths.Add(FoundFile);
+		}
+	}
+
+	OutFilePaths.Sort();
+}
+
 bool FAssetDocumentFileWatcher::TryReadFileState(const FString& FilePath, FAssetDocumentWatchedFileState& OutState)
 {
 	const FString NormalizedPath = NormalizeFilePath(FilePath);
@@ -238,7 +264,18 @@ void FAssetDocumentFileWatcher::HandleDirectoryChanged(const TArray<FFileChangeD
 {
 	for (const FFileChangeData& FileChange : FileChanges)
 	{
-		if (FileChange.Action != FFileChangeData::FCA_Added && FileChange.Action != FFileChangeData::FCA_Modified && FileChange.Action != FFileChangeData::FCA_RescanRequired)
+		if (FileChange.Action == FFileChangeData::FCA_RescanRequired)
+		{
+			TArray<FString> SidecarPaths;
+			CollectAssetDocumentSidecarsUnderDirectory(WatchDirectory, SidecarPaths);
+			for (const FString& SidecarPath : SidecarPaths)
+			{
+				QueueFileChange(SidecarPath);
+			}
+			continue;
+		}
+
+		if (FileChange.Action != FFileChangeData::FCA_Added && FileChange.Action != FFileChangeData::FCA_Modified)
 		{
 			continue;
 		}

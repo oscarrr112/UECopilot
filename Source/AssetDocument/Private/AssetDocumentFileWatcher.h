@@ -34,6 +34,7 @@ public:
 	void Unregister();
 
 	static bool IsAssetDocumentSidecarPath(const FString& FilePath);
+	static void CollectAssetDocumentSidecarsUnderDirectory(const FString& Directory, TArray<FString>& OutFilePaths);
 	static bool TryReadFileState(const FString& FilePath, FAssetDocumentWatchedFileState& OutState);
 	static bool IsStableFileState(const FString& FilePath, const FAssetDocumentWatchedFileState& PreviousState);
 	static bool ShouldSkipAutoApplyForDirtyPackage(const FString& Target, FString& OutWarning);

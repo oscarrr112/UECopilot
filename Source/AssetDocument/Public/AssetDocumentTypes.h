@@ -30,6 +30,7 @@ struct ASSETDOCUMENT_API FAssetDocumentApplyFileRequest
 {
 	FString FilePath;
 	bool bSaveAsset = true;
+	// Reserved for future sidecar normalization after apply; current implementation only reads sidecars.
 	bool bAllowSidecarRewrite = true;
 	bool bTriggeredByWatcher = false;
 };
