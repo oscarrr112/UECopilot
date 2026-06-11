@@ -2,6 +2,7 @@
 
 #include "AssetDocumentModule.h"
 #include "AssetDocumentEditorSync.h"
+#include "AssetDocumentFileWatcher.h"
 #include "AssetDocumentHttpRoutes.h"
 #include "AssetDocumentService.h"
 
@@ -18,10 +19,13 @@ void FAssetDocumentModule::StartupModule()
 	HttpRoutes->Register();
 	EditorSync = MakeUnique<FAssetDocumentEditorSync>();
 	EditorSync->Register();
+	FileWatcher = MakeUnique<FAssetDocumentFileWatcher>(Service.ToSharedRef());
+	FileWatcher->Register();
 }
 
 void FAssetDocumentModule::ShutdownModule()
 {
+	FileWatcher.Reset();
 	EditorSync.Reset();
 	HttpRoutes.Reset();
 	Service.Reset();

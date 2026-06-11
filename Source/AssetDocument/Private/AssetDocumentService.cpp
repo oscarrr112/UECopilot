@@ -331,9 +331,49 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 
 FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyFileRequest& Request)
 {
-	FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("AssetDocument ApplyFile is not implemented"));
-	Result.Target = Request.FilePath;
-	Result.SidecarFilePath = Request.FilePath;
+	const FString NormalizedFilePath = NormalizeValidateFilePath(Request.FilePath);
+	if (NormalizedFilePath.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("ApplyFile requires a sidecar file path"));
+	}
+
+	TSharedPtr<FJsonObject> Document;
+	FString Error;
+	if (!FAssetDocumentSidecar::LoadJsonFile(NormalizedFilePath, Document, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.SidecarFilePath = NormalizedFilePath;
+		return Result;
+	}
+
+	if (!FAssetDocumentSidecar::ValidateTargetMatchesSidecar(NormalizedFilePath, Document, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.SidecarFilePath = NormalizedFilePath;
+
+		FString Target;
+		if (Document.IsValid() && Document->TryGetStringField(TEXT("Target"), Target))
+		{
+			Result.Target = NormalizeValidateTarget(Target);
+		}
+		return Result;
+	}
+
+	FAssetDocumentApplyRequest ApplyRequest;
+	ApplyRequest.Document = Document;
+	ApplyRequest.bSaveAsset = Request.bSaveAsset;
+	ApplyRequest.bWriteSidecar = false;
+
+	FAssetDocumentResult Result = Apply(ApplyRequest);
+	Result.SidecarFilePath = NormalizedFilePath;
+
+	if (!Result.Payload.IsValid())
+	{
+		Result.Payload = MakeShared<FJsonObject>();
+	}
+	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
+	Result.Payload->SetBoolField(TEXT("triggered_by_watcher"), Request.bTriggeredByWatcher);
+
 	return Result;
 }
 

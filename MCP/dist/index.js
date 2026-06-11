@@ -377,13 +377,13 @@ const tools = [
     },
     {
         name: "apply_asset_document_file",
-        description: "Apply an AssetDocument sidecar file by calling /assetfactory/assetdocument/apply-file. This depends on Unreal-side ApplyFile/sidecar auto-apply support being available; prefer validate_asset_document or diff_asset_document until the backend reports support.",
+        description: "Apply an AssetDocument sidecar file by calling /assetfactory/assetdocument/apply-file. Use validate_asset_document or diff_asset_document first when you need a preflight check.",
         inputSchema: {
             type: "object",
             properties: {
                 file_path: {
                     type: "string",
-                    description: "Absolute sidecar file path to apply. Requires Unreal-side apply-file support; use validate/diff first when support is uncertain.",
+                    description: "Absolute sidecar file path to apply. The sidecar Target must match the path-derived /Game asset target.",
                 },
                 save_asset: {
                     type: "boolean",

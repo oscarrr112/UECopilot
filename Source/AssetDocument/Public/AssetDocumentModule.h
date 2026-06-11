@@ -10,6 +10,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogAssetDocument, Log, All);
 class FAssetDocumentService;
 class FAssetDocumentHttpRoutes;
 class FAssetDocumentEditorSync;
+class FAssetDocumentFileWatcher;
 
 class ASSETDOCUMENT_API FAssetDocumentModule : public IModuleInterface
 {
@@ -28,4 +29,5 @@ private:
 	TSharedPtr<FAssetDocumentService> Service;
 	TUniquePtr<FAssetDocumentHttpRoutes> HttpRoutes;
 	TUniquePtr<FAssetDocumentEditorSync> EditorSync;
+	TUniquePtr<FAssetDocumentFileWatcher> FileWatcher;
 };

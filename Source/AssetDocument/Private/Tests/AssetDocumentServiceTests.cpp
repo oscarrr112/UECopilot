@@ -712,4 +712,89 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentApplyFileTest,
+	"AssetFactory.AssetDocument.ApplyFile",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentApplyFileTest::RunTest(const FString& Parameters)
+{
+	const FString TestFolder = MakeUniqueTestFolderName();
+	const FString ApplyTarget = FString::Printf(TEXT("/Game/%s/DA_ApplyFile"), *TestFolder);
+	const FString MismatchTarget = FString::Printf(TEXT("/Game/%s/DA_Mismatch"), *TestFolder);
+	const FString TestDirectory = FPaths::Combine(FPaths::ProjectContentDir(), TestFolder);
+	const FString ApplyFilePath = FPaths::Combine(TestDirectory, TEXT("DA_ApplyFile.assetdoc.json"));
+	const FString InvalidJsonPath = FPaths::Combine(TestDirectory, TEXT("DA_InvalidJson.assetdoc.json"));
+	const FString MismatchFilePath = FPaths::Combine(TestDirectory, TEXT("DA_Expected.assetdoc.json"));
+
+	IFileManager& FileManager = IFileManager::Get();
+	TestTrue(TEXT("Creates ApplyFile test directory"), FileManager.MakeDirectory(*TestDirectory, true));
+	CleanupTestAsset(ApplyTarget);
+	CleanupTestAsset(MismatchTarget);
+
+	FAssetDocumentService Service;
+
+	{
+		TSharedPtr<FJsonObject> Document = MakeApplyDocument(ApplyTarget, TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
+		SetProperty(Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("from apply-file")));
+		SetProperty(Document, TEXT("TestInt"), MakeShared<FJsonValueNumber>(27));
+		TestTrue(TEXT("Writes ApplyFile sidecar"), WriteJsonObjectToFile(Document, ApplyFilePath));
+
+		FAssetDocumentApplyFileRequest Request;
+		Request.FilePath = ApplyFilePath;
+		Request.bSaveAsset = true;
+
+		const FAssetDocumentResult Result = Service.ApplyFile(Request);
+
+		TestTrue(TEXT("ApplyFile succeeds for matching sidecar"), Result.IsSuccess());
+		TestEqual(TEXT("ApplyFile reports target"), Result.Target, ApplyTarget);
+		TestEqual(TEXT("ApplyFile reports sidecar path"), Result.SidecarFilePath, ApplyFilePath);
+		TestTrue(TEXT("ApplyFile saves asset when requested"), Result.bSavedAsset);
+		TestTrue(TEXT("ApplyFile returns payload"), Result.Payload.IsValid());
+
+		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *GetObjectPath(ApplyTarget));
+		TestNotNull(TEXT("ApplyFile-created asset loads"), Asset);
+		if (Asset)
+		{
+			TestEqual(TEXT("ApplyFile applies string property"), Asset->TestString, FString(TEXT("from apply-file")));
+			TestEqual(TEXT("ApplyFile applies int property"), Asset->TestInt, 27);
+		}
+	}
+
+	{
+		TestTrue(TEXT("Writes invalid JSON sidecar"), FFileHelper::SaveStringToFile(TEXT("{ definitely invalid json"), *InvalidJsonPath));
+
+		FAssetDocumentApplyFileRequest Request;
+		Request.FilePath = InvalidJsonPath;
+
+		const FAssetDocumentResult Result = Service.ApplyFile(Request);
+
+		TestFalse(TEXT("ApplyFile fails invalid JSON"), Result.IsSuccess());
+		TestEqual(TEXT("Invalid JSON result reports sidecar path"), Result.SidecarFilePath, InvalidJsonPath);
+		TestTrue(TEXT("Invalid JSON reports parse/read failure"), Result.Message.Contains(TEXT("JSON"), ESearchCase::IgnoreCase) || Result.Message.Contains(TEXT("parse"), ESearchCase::IgnoreCase));
+	}
+
+	{
+		TSharedPtr<FJsonObject> Document = MakeApplyDocument(MismatchTarget, TEXT("TestDataAsset"), TEXT("CreateOrUpdate"));
+		SetProperty(Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("should not apply")));
+		TestTrue(TEXT("Writes mismatched sidecar"), WriteJsonObjectToFile(Document, MismatchFilePath));
+
+		FAssetDocumentApplyFileRequest Request;
+		Request.FilePath = MismatchFilePath;
+
+		const FAssetDocumentResult Result = Service.ApplyFile(Request);
+
+		TestFalse(TEXT("ApplyFile fails when Target does not match sidecar path"), Result.IsSuccess());
+		TestEqual(TEXT("Target mismatch reports sidecar path"), Result.SidecarFilePath, MismatchFilePath);
+		TestTrue(TEXT("Target mismatch reports expected path"), Result.Message.Contains(TEXT("/Game/")) && Result.Message.Contains(TEXT("expected"), ESearchCase::IgnoreCase));
+		TestNull(TEXT("Target mismatch does not create target asset"), FindObject<UObject>(nullptr, *GetObjectPath(MismatchTarget)));
+	}
+
+	CleanupTestAsset(ApplyTarget);
+	CleanupTestAsset(MismatchTarget);
+	TestTrue(TEXT("Cleans up ApplyFile test directory"), FileManager.DeleteDirectory(*TestDirectory, false, true));
+
+	return true;
+}
+
 #endif

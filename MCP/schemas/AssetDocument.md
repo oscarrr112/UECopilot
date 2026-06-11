@@ -72,7 +72,7 @@ Rule: no subtype in `type`. For arrays, maps, sets, structs, objects, soft refer
 - `validate_asset_document`: Calls `POST /assetfactory/assetdocument/validate` for exactly one inline document or sidecar file path.
 - `diff_asset_document`: Calls `POST /assetfactory/assetdocument/diff` to compare exactly one inline document or sidecar file against the current asset state.
 - `apply_asset_document`: Calls `POST /assetfactory/assetdocument/apply` with an inline AssetDocument JSON object.
-- `apply_asset_document_file`: Calls `POST /assetfactory/assetdocument/apply-file` with a sidecar file path. This tool is present for the Task 6 MCP surface, but it depends on Unreal-side ApplyFile implementation and sidecar auto-apply support becoming available; callers should prefer `validate_asset_document` or `diff_asset_document` until the backend reports support.
+- `apply_asset_document_file`: Calls `POST /assetfactory/assetdocument/apply-file` with a sidecar file path. The sidecar `Target` must match the path-derived `/Game` asset target; use `validate_asset_document` or `diff_asset_document` first when you need a preflight check.
 
 ## Tool Arguments
 
