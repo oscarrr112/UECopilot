@@ -3,7 +3,7 @@
 **日期**：2026-06-11  
 **状态**：草稿（待用户审阅）  
 **分支**：`feature/asset-document-generic-asset`  
-**范围**：第一版通用 UObject/DataAsset 资产描述与属性 patch，不包含图资产、树资产、导入资产或结构化资产实现。
+**范围**：第一版同目录 sidecar AssetDocument、通用 UObject/DataAsset 资产描述、属性 patch、以及资产移动/重命名/复制/删除 hook。不包含图资产、树资产、导入资产或结构化资产实现。
 
 ---
 
@@ -15,6 +15,8 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 
 - 对于核心内容只是 reflected properties 的资产，不需要为每个资产类型写一个完整 generator；
 - 通过动态 class loading 和现有 `PropertySetterUtils`，可以生成当前没有专门 generator 的数据资产；
+- 每个受管理 `.uasset` 可以拥有一个同目录 `.assetdoc.json` sidecar，并由该 sidecar 作为 source-of-truth；
+- UE Editor 中的资产移动、重命名、复制、删除应同步处理 sidecar，让 AssetDocument 真正“跟着 uasset 跑”；
 - 后续的结构化资产、Blueprint、Widget、Material、Niagara、AnimationBlueprint 可以逐步作为薄 adapter 接入，而不是继续增长为巨大的独立 generator。
 
 配套研究文档见：
@@ -28,13 +30,17 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 第一版只实现 `GenericAsset`：
 
 - 新增 `AssetType: "GenericAsset"`。
+- 新增同目录 sidecar 约定：`<AssetName>.uasset` 对应 `<AssetName>.assetdoc.json`。
+- `AssetDocument` 是 source-of-truth，`.uasset` 是 materialized output。
 - 通过 `Class` 动态解析 UObject 类。
 - 支持创建、更新、创建或更新。
+- 支持从 sidecar `.assetdoc.json` apply/generate 到目标 `.uasset`。
+- 支持生成成功后写入或更新 sidecar。
+- 支持从 sidecar 文件路径推导目标资产路径。
+- 支持资产移动、重命名、复制、删除时同步 sidecar 的 editor hook。
 - 支持普通 UObject/DataAsset asset 的 package 创建与保存。
 - 支持 `Properties` 反射 patch，复用现有 `FPropertySetterUtils`。
 - 支持 typed property format 和现有 untyped format。
-- 支持提取为 generator-readable JSON。
-- 支持 `diffOnly` 提取，只输出相对 CDO 或父默认值变化的属性。
 - 验证一个当前没有专门 generator 的资产类也能通过 `GenericAsset` 生成。
 - MCP 暴露 schema，让 agent 可以发现和使用这个通用入口。
 
@@ -52,6 +58,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - 不从 JSON 手写大型二进制 payload。
 - 不增加按具体资产类名分支的大型 `if/else` 或 `switch/case`。
 - 不尝试自动修改 UE CDO 并保持外部 sidecar 与 `.uasset` 持续热同步。
+- 不把 `extract_assets` 作为第一版核心链路；已有 `.uasset` 迁移到 AssetDocument 可以作为后续 best-effort adoption 能力。
 
 `FactoryClass` / `Factory` 字段可以在 schema 中作为后续扩展说明，但第一版实现可以不支持或只做显式拒绝，避免半成品语义。
 
@@ -59,7 +66,54 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 
 ## 4. 用户契约
 
-### 4.1 最小创建
+### 4.1 Sidecar 文件约定
+
+每个受 AssetDocument 管理的 `.uasset` 使用同目录 sidecar：
+
+```text
+Content/Data/DA_GenericEnemy.uasset
+Content/Data/DA_GenericEnemy.assetdoc.json
+```
+
+sidecar 路径推导目标资产路径：
+
+```text
+Content/Data/DA_GenericEnemy.assetdoc.json
+-> /Game/Data/DA_GenericEnemy
+```
+
+sidecar 内可以省略 `Name`、`Path` 和 `Target`：
+
+```json
+{
+  "SchemaVersion": 1,
+  "AssetType": "GenericAsset",
+  "Action": "CreateOrUpdate",
+  "Class": "/Script/AssetFactory.TestDataAsset",
+  "Properties": {
+    "Health": 100,
+    "MoveSpeed": 450.0
+  }
+}
+```
+
+如果 sidecar 显式声明 `Target`，必须与 sidecar 文件路径推导出的目标资产一致：
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/Data/DA_GenericEnemy",
+  "AssetType": "GenericAsset",
+  "Class": "/Script/AssetFactory.TestDataAsset",
+  "Properties": {}
+}
+```
+
+不一致时应返回 validation error，而不是隐式选择其中一个。
+
+### 4.2 Inline 最小创建
+
+MCP `generate_assets` 仍可接受 inline JSON，便于测试和一次性生成：
 
 ```json
 {
@@ -75,7 +129,9 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 }
 ```
 
-### 4.2 typed properties
+生成成功后，如果请求包含 `WriteSidecar: true` 或未来的 apply-sidecar 命令使用 sidecar 文件作为输入，应把最终 AssetDocument 写到目标 `.assetdoc.json`。
+
+### 4.3 typed properties
 
 Typed property 的 `type` 只允许基础类型 token，不允许携带 subtype。也就是说，输入中不允许出现 `Object:StaticMesh`、`Class:Pawn`、`Struct:Foo`、`Enum:Bar` 这类写法。
 
@@ -135,7 +191,7 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 这些值是否合法，必须由目标属性的反射类型决定，而不是由 `type` 字符串里的 subtype 决定。
 
-### 4.3 更新已有资产
+### 4.4 更新已有资产
 
 ```json
 {
@@ -151,21 +207,24 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 更新时 `Class` 可选。如果提供 `Class`，生成器应验证它与已有资产 class 兼容；如果不提供，则使用已有资产 class。
 
-### 4.4 提取
+### 4.5 Sidecar hook 行为
 
-`extract_assets` 对 GenericAsset 支持：
+第一版应注册 editor hook，使 sidecar 与 `.uasset` 一起移动：
 
-```json
-{
-  "Class": "TestDataAsset",
-  "Properties": {
-    "Health": 100,
-    "MoveSpeed": 450.0
-  }
-}
-```
+| 资产操作 | sidecar 行为 |
+| --- | --- |
+| Rename | 将 `<OldName>.assetdoc.json` 重命名为 `<NewName>.assetdoc.json`，并更新可选 `Target` |
+| Move | 将 sidecar 移到新目录，文件名不变，并更新可选 `Target` |
+| Duplicate | 复制 sidecar 到新资产旁边，并更新可选 `Target` |
+| Delete | 默认将 sidecar 移到同目录 `_DeletedAssetDocs` 或删除，具体实现计划固定；第一版至少不能留下误指向现有资产的 sidecar |
 
-如果 `diffOnly = true`，只输出相对 class CDO 不同的 editable properties。
+hook 必须只处理受管理资产：
+
+- 资产旁边存在同名 `.assetdoc.json`；
+- 或资产 metadata 标记为 AssetDocument-managed；
+- 或操作来自 AssetDocument apply/generate。
+
+如果 hook 无法安全同步 sidecar，应记录明确 warning，并尽量不阻止 UE 自身资产操作。implementation plan 需要确定错误上报位置。
 
 ---
 
@@ -188,7 +247,30 @@ GetAssetType() -> "GenericAsset"
 
 短期保留现有 `DataAssetGenerator`。`GenericAsset` 是新入口，不改变现有 `DataAsset` 行为。
 
-### 5.2 创建策略
+### 5.2 Sidecar 解析与写入
+
+新增小型 sidecar helper，建议放在 `Source/AssetFactory/Private/AssetDocuments/` 或等价目录：
+
+```text
+ResolveSidecarPath(ObjectPath) -> FilePath
+ResolveObjectPathFromSidecar(FilePath) -> ObjectPath
+LoadAssetDocument(FilePath) -> JsonObject
+WriteAssetDocument(FilePath, JsonObject)
+ValidateTargetMatchesSidecar(FilePath, Document)
+```
+
+路径规则：
+
+```text
+/Game/Data/DA_GenericEnemy
+-> <Project>/Content/Data/DA_GenericEnemy.assetdoc.json
+```
+
+sidecar 必须使用 UTF-8 JSON。写入时保持稳定字段顺序，方便 git diff。
+
+第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释，后续如果需要人工注释，可以单独讨论 JSONC/YAML frontend，但 UE 侧 canonical sidecar 先保持 JSON。
+
+### 5.3 创建策略
 
 第一版只支持直接创建 UObject asset：
 
@@ -213,7 +295,7 @@ SavePackage
 
 如果发现某些 UObject class 不能安全用 `NewObject` 作为资产创建，第一版应返回明确错误，而不是扩大硬编码例外列表。
 
-### 5.3 Class 解析
+### 5.4 Class 解析
 
 解析顺序应优先复用项目已有动态查找工具：
 
@@ -231,7 +313,7 @@ FindObject / LoadClass fallback
 
 不允许为具体类维护静态白名单。
 
-### 5.4 属性 patch
+### 5.5 属性 patch
 
 `Properties` 处理复用 `FPropertySetterUtils`：
 
@@ -252,7 +334,7 @@ Only if duplicate succeeds, apply to real asset
 
 这样可以减少半写入风险。若某些属性 setter 依赖真实 package/asset context，implementation plan 中需要记录并决定是否按属性类型跳过 duplicate preflight。
 
-### 5.5 更新策略
+### 5.6 更新策略
 
 `Create`：
 
@@ -271,7 +353,7 @@ Only if duplicate succeeds, apply to real asset
 - 资产存在则按 update。
 - 不存在则按 create。
 
-### 5.6 保存策略
+### 5.7 保存与 sidecar 写入策略
 
 沿用现有 generator 风格：
 
@@ -284,23 +366,41 @@ UPackage::SavePackage(...)
 
 保存失败必须返回 `FGenerationResult::MakeFailed`。
 
-### 5.7 提取策略
+sidecar 写入策略：
 
-`CanExtract`：
+- apply/generate 成功后再写 sidecar，避免记录失败状态；
+- 如果输入来自 sidecar 文件，成功后可以规范化写回同一文件；
+- 如果输入来自 inline JSON 且 `WriteSidecar` 为 true，则写入目标 sidecar；
+- 如果 `.uasset` 保存成功但 sidecar 写入失败，结果应视为 failed 或 partial failed。implementation plan 需要固定是否回滚 `.uasset`，第一版推荐返回 failed 并记录人工修复路径。
 
-- 第一版可提取 UObject asset；
-- 排除已有专门 generator 明确处理的高风险类型，例如 `UBlueprint`、`UWidgetBlueprint`、`UMaterial`、`UWorld`；
-- 不要用大规模类名列表维护排除项，优先按基类/资产形态排除。
+### 5.8 Editor sidecar hooks
 
-`Extract`：
+第一版需要实现 sidecar 跟随 hook。候选 UE 事件：
 
-- 输出 `Class`；
-- 输出 `Properties`；
-- `diffOnly` 使用 `FPropertySetterUtils::ExtractPropertiesToJson(Asset, true, true)`；
-- 可按需要过滤 `UObject` 基类噪声字段；
-- 不提取 graph、tree、import 或 structured block。
+- asset rename/move：监听 asset registry 或 editor asset subsystem 的 rename/renamed 事件；
+- asset duplicate：监听 asset added/imported 后结合 duplication context，或在可用 editor delegate 中处理 duplicate；
+- asset delete：监听 asset pre-delete/deleted 事件。
 
-如果某个资产已经有更专门 generator，应优先让专门 generator 提取，避免 `GenericAsset` 抢占。
+implementation plan 需要先确认 UE 5.7 中最稳定的 delegate/API。hook 实现原则：
+
+- 只处理同目录同名 sidecar；
+- 不扫描全项目做昂贵匹配；
+- 避免递归触发；
+- 不因为 sidecar 文件操作失败而破坏 UE 资产操作；
+- 对 duplicate/move/rename 更新 `Target` 字段，如果存在；
+- 不自动修改 `Properties`。
+
+### 5.9 Extract / adoption 策略
+
+第一版不把 `extract_assets` 作为核心验收。AssetDocument 是 source-of-truth，不要求从 `.uasset` 完美反向生成 sidecar。
+
+后续可以新增 best-effort adoption：
+
+```text
+Existing .uasset -> Draft .assetdoc.json
+```
+
+用途是迁移旧资产、debug 和 smoke test，不是主链路。
 
 ---
 
@@ -378,11 +478,14 @@ schema 需要说明：
 
 - 适合纯 UObject/DataAsset 风格资产；
 - 不适合图、树、导入和结构化资产；
+- sidecar 命名：`<AssetName>.assetdoc.json`；
+- sidecar 路径如何推导目标 `/Game/...` 资产；
+- AssetDocument 是 source-of-truth，`.uasset` 是 materialized output；
+- editor hook 会同步 rename/move/duplicate/delete；
 - `Class` 解析规则；
 - `Properties` untyped 和 typed 格式；
 - typed `type` 禁止 subtype，目标类型由 UPROPERTY 反射推断；
 - create/update/create-or-update 行为；
-- extract/diffOnly 行为；
 - 常见错误。
 
 ### 7.2 tool 枚举
@@ -410,7 +513,8 @@ schema 需要说明：
 - 更新单个属性不覆盖未出现字段；
 - typed property 成功；
 - 类型不匹配失败且不保存半成品；
-- extract diff-only 只包含修改字段。
+- 从同一个 sidecar 重复 apply 后结果稳定；
+- 显式 `Target` 与 sidecar 路径不一致时失败。
 
 如果现有 test framework 对 editor asset 创建成本较高，可以先加 smoke script，但 implementation plan 必须说明原因。
 
@@ -429,10 +533,11 @@ schema 需要说明：
 使用 MCP `generate_assets`：
 
 1. 创建一个没有专门 generator 的测试 DataAsset 子类。
-2. 提取资产，验证 `Class` 和 `Properties`。
-3. 更新单个属性。
-4. 再次提取，验证未指定属性保持不变。
-5. negative case 验证错误清晰。
+2. 写入同目录 `.assetdoc.json`。
+3. 更新 sidecar 中单个属性并重新 apply。
+4. 通过 UE 读取资产验证未指定属性保持不变。
+5. 重命名/移动/复制/删除受管理资产，验证 sidecar 跟随行为。
+6. negative case 验证错误清晰。
 
 ### 8.4 文档验证
 
@@ -465,15 +570,16 @@ schema 需要说明：
 - 失败时不保存真实资产；
 - 真实 apply 失败时返回 failed，并避免保存。
 
-### 9.3 GenericAsset 抢占专门 generator 的 extract
+### 9.3 Sidecar 与 uasset 可能失去同步
 
-风险：`extract_assets` 对 `Blueprint`、`Material` 等资产误用 GenericAsset，输出低质量 JSON。
+风险：用户通过 UE Editor 移动、重命名、复制、删除资产时，sidecar 没有跟随，导致文档指向错误资产。
 
 缓解：
 
-- `CanExtract` 排除高风险形态；
-- 保持 registry 提取优先级，让专门 generator 先匹配；
-- `GenericAsset` 作为 fallback，优先级较低。
+- 第一版就实现 editor hook；
+- hook 只处理同名 sidecar 或 managed metadata；
+- hook 操作失败时给出 warning；
+- schema 明确 AssetDocument-managed 资产应通过 sidecar/apply 工作流维护。
 
 ### 9.4 过早扩展成大平台
 
@@ -492,6 +598,13 @@ schema 需要说明：
 - `GenericAsset` generator 注册成功。
 - `generate_assets` 支持 `AssetType: "GenericAsset"`。
 - `get_generator_schema(GenericAsset)` 可用。
+- 支持同目录 sidecar：`<AssetName>.assetdoc.json`。
+- 支持从 sidecar 路径推导目标资产路径。
+- 显式 `Target` 与 sidecar 路径不一致时失败。
+- apply/generate 成功后能写入或更新 sidecar。
+- 受管理资产 rename/move 时 sidecar 跟随并更新可选 `Target`。
+- 受管理资产 duplicate 时 sidecar 被复制并更新可选 `Target`。
+- 受管理资产 delete 时 sidecar 被删除或移入实现计划指定的位置，不留下误指向现有资产的 sidecar。
 - 能创建至少一个当前无专门 generator 的 UObject/DataAsset 风格测试资产。
 - 能更新已有 GenericAsset 的单个属性。
 - 能用 typed property 设置基础类型、文本、向量、对象引用、class 引用或 enum 中的至少三类。
@@ -499,8 +612,6 @@ schema 需要说明：
 - Object/Class/Enum 等 typed values 根据目标属性反射类型验证，不依赖用户提供 subtype。
 - 无效 class、abstract class、属性不存在、类型不匹配都返回可读错误。
 - 失败的 property patch 不保存半写入资产。
-- `extract_assets` 对 GenericAsset 返回 `Class` 和 `Properties`。
-- `diffOnly` 提取只输出非默认 editable properties。
 - 不引入按具体资产类名扩展行为的大型 switch/case。
 - UBT Development 编译通过。
 - 至少一个真实 Editor/MCP smoke 验证通过，或明确记录环境限制。
@@ -524,8 +635,10 @@ schema 需要说明：
 ## 12. 自审记录
 
 - 本 spec 第一版范围明确，不包含图资产和结构化资产实现。
+- 已明确 AssetDocument sidecar 是 source-of-truth，`.uasset` 是 materialized output。
+- 已把 sidecar rename/move/duplicate/delete hook 纳入第一版范围。
 - 已保留后续 thin adapter 路线，但没有把它放入第一版验收。
 - 已明确动态 class loading 和反射 patch 是核心方向。
 - 已明确避免大型 if/else、switch/case 和静态类型列表。
-- 已明确 GenericAsset 不应抢占 Blueprint/Material/Widget 等专门 generator 的提取。
+- 已明确 extract/adoption 不是第一版核心链路。
 - 已包含 MCP、UBT、Editor smoke 和 negative validation 验收。
