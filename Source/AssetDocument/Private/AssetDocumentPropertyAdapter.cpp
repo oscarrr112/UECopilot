@@ -110,9 +110,78 @@ bool FAssetDocumentPropertyAdapter::IsWritableProperty(FProperty* Property)
 		&& !Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated | CPF_EditConst);
 }
 
+FString FAssetDocumentPropertyAdapter::GetNonWritableReason(FProperty* Property)
+{
+	if (!Property)
+	{
+		return TEXT("missing-property");
+	}
+
+	if (Property->HasAnyPropertyFlags(CPF_Transient))
+	{
+		return TEXT("transient");
+	}
+
+	if (Property->HasAnyPropertyFlags(CPF_Deprecated))
+	{
+		return TEXT("deprecated");
+	}
+
+	if (Property->HasAnyPropertyFlags(CPF_EditConst))
+	{
+		return TEXT("edit-const");
+	}
+
+	if (!Property->HasAnyPropertyFlags(CPF_Edit))
+	{
+		return TEXT("non-editable");
+	}
+
+	return FString();
+}
+
 TSharedPtr<FJsonValue> FAssetDocumentPropertyAdapter::ExtractPropertyValue(FProperty* Property, const void* ValuePtr)
 {
 	return FPropertySetterUtils::ExtractPropertyToJson(Property, ValuePtr);
+}
+
+TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(UObject* Object, bool bSkipDefaults)
+{
+	if (!Object)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
+	UClass* ObjectClass = Object->GetClass();
+	UObject* DefaultObject = bSkipDefaults ? ObjectClass->GetDefaultObject() : nullptr;
+
+	for (TFieldIterator<FProperty> PropertyIt(ObjectClass); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		if (!IsWritableProperty(Property))
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		if (bSkipDefaults && DefaultObject)
+		{
+			const void* DefaultValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultObject);
+			if (Property->Identical(ValuePtr, DefaultValuePtr))
+			{
+				continue;
+			}
+		}
+
+		TSharedPtr<FJsonValue> JsonValue = ExtractPropertyValue(Property, ValuePtr);
+		if (JsonValue.IsValid())
+		{
+			PropertiesJson->SetField(Property->GetName(), JsonValue);
+		}
+	}
+
+	return PropertiesJson;
 }
 
 TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(UClass* Class, UObject* CurrentObject)
@@ -152,21 +221,10 @@ TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(UClass*
 			SkippedRows.Add(MakeShared<FJsonValueObject>(Skipped));
 		};
 
-		if (Property->HasAnyPropertyFlags(CPF_Transient))
+		const FString NonWritableReason = GetNonWritableReason(Property);
+		if (!NonWritableReason.IsEmpty() && NonWritableReason != TEXT("edit-const"))
 		{
-			AddSkipped(TEXT("transient"));
-			continue;
-		}
-
-		if (Property->HasAnyPropertyFlags(CPF_Deprecated))
-		{
-			AddSkipped(TEXT("deprecated"));
-			continue;
-		}
-
-		if (!Property->HasAnyPropertyFlags(CPF_Edit))
-		{
-			AddSkipped(TEXT("non-editable"));
+			AddSkipped(NonWritableReason);
 			continue;
 		}
 

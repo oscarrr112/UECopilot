@@ -2,6 +2,7 @@
 
 #include "AssetDocumentService.h"
 
+#include "AssetDocumentPropertyAdapter.h"
 #include "TestDataAsset.h"
 
 #include "Dom/JsonValue.h"
@@ -120,6 +121,33 @@ bool WriteJsonObjectToFile(TSharedPtr<FJsonObject> Document, const FString& File
 	return FFileHelper::SaveStringToFile(JsonText, *FilePath);
 }
 
+struct FScopedAdditionalPropertyFlags
+{
+	FProperty* Property = nullptr;
+	EPropertyFlags Flags = CPF_None;
+	uint64 OriginalMaskedFlags = 0;
+
+	FScopedAdditionalPropertyFlags(FProperty* InProperty, EPropertyFlags InFlags)
+		: Property(InProperty)
+		, Flags(InFlags)
+	{
+		if (Property)
+		{
+			OriginalMaskedFlags = Property->GetPropertyFlags() & Flags;
+			Property->SetPropertyFlags(Flags);
+		}
+	}
+
+	~FScopedAdditionalPropertyFlags()
+	{
+		if (Property)
+		{
+			Property->ClearPropertyFlags(Flags);
+			Property->SetPropertyFlags(static_cast<EPropertyFlags>(OriginalMaskedFlags));
+		}
+	}
+};
+
 FString GetTestSidecarPath()
 {
 	FString FilePath = FPaths::Combine(FPaths::ProjectContentDir(), TEXT("Data/DA_Test.assetdoc.json"));
@@ -171,9 +199,15 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 	UPackage* Package = FindPackage(nullptr, *Target);
 	UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *ObjectPath);
 	TestNotNull(TEXT("Read-side fixture asset loads"), Asset);
+	FProperty* TestStringProperty = FindFProperty<FProperty>(UTestDataAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UTestDataAsset, TestString));
+	FProperty* TestFloatProperty = FindFProperty<FProperty>(UTestDataAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UTestDataAsset, TestFloat));
 	if (!Package && Asset)
 	{
 		Package = Asset->GetOutermost();
+	}
+	if (Asset)
+	{
+		Asset->TestFloat = 7.25f;
 	}
 	if (Package)
 	{
@@ -218,11 +252,28 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 	}
 
 	{
+		TestTrue(TEXT("Adapter treats normal editable property as writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+		{
+			FScopedAdditionalPropertyFlags EditConstScope(TestStringProperty, CPF_EditConst);
+			TestFalse(TEXT("Adapter treats EditConst property as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+		}
+		{
+			FScopedAdditionalPropertyFlags TransientScope(TestStringProperty, CPF_Transient);
+			TestFalse(TEXT("Adapter treats transient property as non-writable"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+		}
+		TestTrue(TEXT("Adapter restores test property writability after scoped flag changes"), FAssetDocumentPropertyAdapter::IsWritableProperty(TestStringProperty));
+	}
+
+	{
 		FAssetDocumentExtractRequest Request;
 		Request.AssetPath = Target;
 		Request.bDiffOnly = true;
 
-		const FAssetDocumentResult Result = Service.Extract(Request);
+		FAssetDocumentResult Result;
+		{
+			FScopedAdditionalPropertyFlags EditConstScope(TestFloatProperty, CPF_EditConst);
+			Result = Service.Extract(Request);
+		}
 
 		TestTrue(TEXT("Extract succeeds for TestDataAsset"), Result.IsSuccess());
 		TestTrue(TEXT("Extract returns draft payload"), Result.Payload.IsValid());
@@ -238,7 +289,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 			if (Properties.IsValid())
 			{
 				TestTrue(TEXT("Extract diff-only includes changed string"), Properties->HasField(TEXT("TestString")));
-				TestFalse(TEXT("Extract diff-only omits default float"), Properties->HasField(TEXT("TestFloat")));
+				TestFalse(TEXT("Extract omits EditConst property even when non-default"), Properties->HasField(TEXT("TestFloat")));
 			}
 		}
 		TestFalse(TEXT("Extract does not dirty asset package"), Package && Package->IsDirty());
@@ -264,6 +315,11 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
 		Properties->SetStringField(TEXT("TestString"), TEXT("after-diff"));
 		Properties->SetNumberField(TEXT("TestInt"), 12);
+		Properties->SetNumberField(TEXT("TestFloat"), 11.5);
+		TSharedPtr<FJsonObject> InvalidTypedBool = MakeShared<FJsonObject>();
+		InvalidTypedBool->SetStringField(TEXT("type"), TEXT("String"));
+		InvalidTypedBool->SetStringField(TEXT("value"), TEXT("not-bool"));
+		Properties->SetObjectField(TEXT("bTestBool"), InvalidTypedBool);
 		Properties->SetStringField(TEXT("DefinitelyMissing"), TEXT("missing"));
 		DiffDocument->SetObjectField(TEXT("Properties"), Properties);
 		TestTrue(TEXT("Writes temporary diff sidecar"), WriteJsonObjectToFile(DiffDocument, SidecarPath));
@@ -271,7 +327,11 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 		FAssetDocumentDiffRequest Request;
 		Request.FilePath = SidecarPath;
 
-		const FAssetDocumentResult Result = Service.Diff(Request);
+		FAssetDocumentResult Result;
+		{
+			FScopedAdditionalPropertyFlags EditConstScope(TestFloatProperty, CPF_EditConst);
+			Result = Service.Diff(Request);
+		}
 
 		TestTrue(TEXT("Diff succeeds for TestDataAsset sidecar"), Result.IsSuccess());
 		TestTrue(TEXT("Diff returns payload"), Result.Payload.IsValid());
@@ -284,12 +344,16 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 
 			const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
 			const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* Skipped = nullptr;
 			const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
 			Result.Payload->TryGetArrayField(TEXT("changed"), Changed);
 			Result.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged);
+			Result.Payload->TryGetArrayField(TEXT("skipped"), Skipped);
 			Result.Payload->TryGetArrayField(TEXT("failed"), Failed);
 			TestTrue(TEXT("Diff reports changed property"), Changed && FindObjectByStringField(*Changed, TEXT("name"), TEXT("TestString")).IsValid());
 			TestTrue(TEXT("Diff reports unchanged property"), Unchanged && FindObjectByStringField(*Unchanged, TEXT("name"), TEXT("TestInt")).IsValid());
+			TestTrue(TEXT("Diff skips EditConst property"), Skipped && FindObjectByStringField(*Skipped, TEXT("name"), TEXT("TestFloat")).IsValid());
+			TestTrue(TEXT("Diff reports type-invalid property as failed"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("bTestBool")).IsValid());
 			TestTrue(TEXT("Diff reports failed missing property"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("DefinitelyMissing")).IsValid());
 		}
 		TestFalse(TEXT("Diff does not dirty asset package"), Package && Package->IsDirty());

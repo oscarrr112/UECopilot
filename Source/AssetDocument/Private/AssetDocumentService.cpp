@@ -13,7 +13,6 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
-#include "Utils/PropertySetterUtils.h"
 
 namespace
 {
@@ -410,7 +409,7 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 	}
 
 	const bool bSkipDefaults = Request.bDiffOnly && !Request.bIncludeAllWritable;
-	TSharedPtr<FJsonObject> Properties = FPropertySetterUtils::ExtractPropertiesToJson(Asset, true, bSkipDefaults);
+	TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Asset, bSkipDefaults);
 	if (!Properties.IsValid())
 	{
 		Properties = MakeShared<FJsonObject>();
@@ -568,21 +567,10 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 			continue;
 		}
 
-		if (Property->HasAnyPropertyFlags(CPF_Transient))
+		const FString NonWritableReason = FAssetDocumentPropertyAdapter::GetNonWritableReason(Property);
+		if (!NonWritableReason.IsEmpty())
 		{
-			AddReasonEntry(Skipped, Pair.Key, TEXT("Transient"), FString::Printf(TEXT("Property '%s' is transient"), *Pair.Key));
-			continue;
-		}
-
-		if (Property->HasAnyPropertyFlags(CPF_Deprecated))
-		{
-			AddReasonEntry(Skipped, Pair.Key, TEXT("Deprecated"), FString::Printf(TEXT("Property '%s' is deprecated"), *Pair.Key));
-			continue;
-		}
-
-		if (!Property->HasAnyPropertyFlags(CPF_Edit))
-		{
-			AddReasonEntry(Skipped, Pair.Key, TEXT("NonEditable"), FString::Printf(TEXT("Property '%s' is not editable"), *Pair.Key));
+			AddReasonEntry(Skipped, Pair.Key, TEXT("NonWritable"), FString::Printf(TEXT("Property '%s' is not writable: %s"), *Pair.Key, *NonWritableReason));
 			continue;
 		}
 

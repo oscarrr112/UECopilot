@@ -23,7 +23,9 @@ public:
 	static FAssetDocumentPropertyApplyResult PreflightProperties(UClass* Class, TSharedPtr<FJsonObject> Properties);
 	static FString GetTypeToken(FProperty* Property);
 	static bool IsWritableProperty(FProperty* Property);
+	static FString GetNonWritableReason(FProperty* Property);
 	static TSharedPtr<FJsonValue> ExtractPropertyValue(FProperty* Property, const void* ValuePtr);
+	static TSharedPtr<FJsonObject> ExtractWritablePropertiesToJson(UObject* Object, bool bSkipDefaults);
 	static TSharedPtr<FJsonObject> InspectProperties(UClass* Class, UObject* CurrentObject = nullptr);
 
 private:
