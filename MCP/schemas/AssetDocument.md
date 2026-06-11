@@ -36,8 +36,9 @@ Common apply fields:
 
 Inline convenience:
 
-- `Name` and `Path` may be used as convenience fields for inline documents. When present, they identify the target asset name and package path without requiring the caller to split them manually before sending the document.
-- Sidecar files should still include `Target`; `Name` and `Path` are convenience, not a replacement for the required sidecar `Target`.
+- `Name` and `Path` may be used as convenience fields for inline documents only when the Unreal route/service receiving the document accepts them.
+- MCP forwards the raw document to Unreal and does not synthesize `Target` from `Name` and `Path`.
+- Sidecar files and portable examples should include explicit `Target`; `Name` and `Path` are convenience, not a replacement for the required sidecar `Target`.
 
 ## Properties
 
@@ -68,10 +69,10 @@ Rule: no subtype in `type`. For arrays, maps, sets, structs, objects, soft refer
 - `get_asset_document_schema`: Reads this schema document from `MCP/schemas/AssetDocument.md`.
 - `inspect_asset_document_target`: Calls `GET /assetfactory/assetdocument/inspect?class_or_asset=...` to inspect writable reflected properties for a class or asset.
 - `extract_asset_document`: Calls `POST /assetfactory/assetdocument/extract` and returns an AssetDocument draft for an existing asset.
-- `validate_asset_document`: Calls `POST /assetfactory/assetdocument/validate` for either an inline document or a sidecar file path.
-- `diff_asset_document`: Calls `POST /assetfactory/assetdocument/diff` to compare an inline document or sidecar file against the current asset state.
+- `validate_asset_document`: Calls `POST /assetfactory/assetdocument/validate` for exactly one inline document or sidecar file path.
+- `diff_asset_document`: Calls `POST /assetfactory/assetdocument/diff` to compare exactly one inline document or sidecar file against the current asset state.
 - `apply_asset_document`: Calls `POST /assetfactory/assetdocument/apply` with an inline AssetDocument JSON object.
-- `apply_asset_document_file`: Calls `POST /assetfactory/assetdocument/apply-file` with a sidecar file path.
+- `apply_asset_document_file`: Calls `POST /assetfactory/assetdocument/apply-file` with a sidecar file path. This tool is present for the Task 6 MCP surface, but it depends on Unreal-side ApplyFile implementation and sidecar auto-apply support becoming available; callers should prefer `validate_asset_document` or `diff_asset_document` until the backend reports support.
 
 ## Tool Arguments
 
@@ -98,6 +99,21 @@ Apply sidecar file:
 {
   "file_path": "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json",
   "save_asset": true
+}
+```
+
+The sidecar file itself should include `Target`:
+
+```json
+{
+  "SchemaVersion": 1,
+  "AssetType": "GenericAsset",
+  "Target": "/Game/Data/DA_Test",
+  "Class": "TestDataAsset",
+  "Action": "CreateOrUpdate",
+  "Properties": {
+    "TestString": "hello"
+  }
 }
 ```
 

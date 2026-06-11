@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -13,12 +14,15 @@ const CHILD_ENV = Object.fromEntries(
 	Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
 );
 
-async function withClient(run: (client: Client) => Promise<void>): Promise<void> {
+async function withClient(
+	run: (client: Client) => Promise<void>,
+	envOverrides: Record<string, string> = {},
+): Promise<void> {
 	const transport = new StdioClientTransport({
 		command: process.execPath,
 		args: [SERVER_ENTRY],
 		cwd: PROJECT_DIR,
-		env: CHILD_ENV,
+		env: { ...CHILD_ENV, ...envOverrides },
 		stderr: "pipe",
 	});
 	const client = new Client({ name: "Codex", version: "desktop" }, { capabilities: {} });
@@ -30,6 +34,42 @@ async function withClient(run: (client: Client) => Promise<void>): Promise<void>
 		await client.close().catch(() => undefined);
 		await transport.close().catch(() => undefined);
 	}
+}
+
+async function withJsonServer(
+	handler: (request: IncomingMessage, response: ServerResponse) => void,
+	run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+	const server = createServer(handler);
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => resolve());
+	});
+
+	try {
+		const address = server.address();
+		assert.ok(address && typeof address === "object");
+		await run(`http://127.0.0.1:${address.port}`);
+	} finally {
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => (error ? reject(error) : resolve()));
+		});
+	}
+}
+
+async function closedBaseUrl(): Promise<string> {
+	const server = createServer();
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => resolve());
+	});
+	const address = server.address();
+	assert.ok(address && typeof address === "object");
+	const baseUrl = `http://127.0.0.1:${address.port}`;
+	await new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()));
+	});
+	return baseUrl;
 }
 
 function textContent(result: unknown): string {
@@ -145,6 +185,98 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
 			assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
 		}
 	});
+});
+
+test("AssetDocument validate and diff require exactly one document source", async () => {
+	await withClient(async (client) => {
+		const listed = await client.listTools();
+		for (const toolName of ["validate_asset_document", "diff_asset_document"]) {
+			const tool = listed.tools.find((candidate) => candidate.name === toolName);
+			assert.ok(tool, `${toolName} should be visible`);
+			assert.match(JSON.stringify(tool.inputSchema), /oneOf/, `${toolName} should advertise oneOf source constraints`);
+
+			const bothSources = await client.callTool({
+				name: toolName,
+				arguments: {
+					document: {
+						SchemaVersion: 1,
+						AssetType: "GenericAsset",
+						Target: "/Game/Data/DA_Test",
+						Properties: {},
+					},
+					file_path: "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json",
+				},
+			});
+			assert.equal(bothSources.isError, true, `${toolName} should reject both document and file_path`);
+
+			const noSource = await client.callTool({
+				name: toolName,
+				arguments: {},
+			});
+			assert.equal(noSource.isError, true, `${toolName} should reject missing document and file_path`);
+		}
+	});
+});
+
+test("AssetDocument tools report UE HTTP failures as MCP errors", async () => {
+	await withJsonServer((request, response) => {
+		assert.equal(request.url, "/assetfactory/assetdocument/validate");
+		response.writeHead(200, { "Content-Type": "application/json" });
+		response.end(JSON.stringify({ success: false, error: "validation failed in UE" }));
+	}, async (baseUrl) => {
+		await withClient(async (client) => {
+			const result = await client.callTool({
+				name: "validate_asset_document",
+				arguments: {
+					document: {
+						SchemaVersion: 1,
+						AssetType: "GenericAsset",
+						Target: "/Game/Data/DA_Test",
+						Properties: {},
+					},
+				},
+			});
+
+			assert.equal(result.isError, true);
+			assert.match(textContent(result), /validation failed in UE/);
+		}, { UE_API_BASE: baseUrl });
+	});
+});
+
+test("AssetDocument tools report non-2xx UE responses as MCP errors", async () => {
+	await withJsonServer((request, response) => {
+		assert.equal(request.url, "/assetfactory/assetdocument/diff");
+		response.writeHead(500, { "Content-Type": "application/json" });
+		response.end(JSON.stringify({ error: "backend exploded" }));
+	}, async (baseUrl) => {
+		await withClient(async (client) => {
+			const result = await client.callTool({
+				name: "diff_asset_document",
+				arguments: {
+					file_path: "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json",
+				},
+			});
+
+			assert.equal(result.isError, true);
+			assert.match(textContent(result), /HTTP 500/);
+			assert.match(textContent(result), /backend exploded/);
+		}, { UE_API_BASE: baseUrl });
+	});
+});
+
+test("AssetDocument tools report unavailable UE server as MCP errors", async () => {
+	const offlineUrl = await closedBaseUrl();
+	await withClient(async (client) => {
+		const result = await client.callTool({
+			name: "diff_asset_document",
+			arguments: {
+				file_path: "E:/GameDev/Project/Saved/AssetFactory/Sidecars/DA_Test.assetdocument.json",
+			},
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(textContent(result), /Failed to connect to UE AssetDocument API/);
+	}, { UE_API_BASE: offlineUrl });
 });
 
 test("missing schema fallback lists StateTree, BehaviorTree, BlackboardData, and AnimSequence", async () => {

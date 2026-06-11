@@ -82,6 +82,53 @@ async function callUEApi(endpoint: string, method: string, body?: unknown): Prom
   }
 }
 
+async function callAssetDocumentApi(endpoint: string, method: string, body?: unknown): Promise<unknown> {
+  const url = `${UE_API_BASE}${API_PREFIX}${endpoint}`;
+  const options: RequestInit = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  };
+
+  if (body !== undefined) {
+    options.body = JSON.stringify(body);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    throw new Error(`Failed to connect to UE AssetDocument API at ${url}: ${error}`);
+  }
+
+  const text = await response.text();
+  let data: unknown;
+  try {
+    data = text.length > 0 ? JSON.parse(text) : {};
+  } catch (error) {
+    throw new Error(`UE AssetDocument API at ${url} returned invalid JSON: ${error}`);
+  }
+
+  if (!response.ok) {
+    const detail =
+      data && typeof data === "object" && "error" in data
+        ? String((data as { error?: unknown }).error)
+        : response.statusText;
+    throw new Error(`UE AssetDocument API ${method} ${endpoint} failed with HTTP ${response.status}: ${detail}`);
+  }
+
+  if (data && typeof data === "object" && (data as { success?: unknown }).success === false) {
+    const detail =
+      "error" in data
+        ? String((data as { error?: unknown }).error)
+        : "AssetDocument request reported success=false";
+    throw new Error(`UE AssetDocument API ${method} ${endpoint} failed: ${detail}`);
+  }
+
+  return data;
+}
+
 // Helper to load schema file
 async function loadSchema(assetType: string): Promise<string> {
   try {
@@ -308,7 +355,7 @@ const tools: Tool[] = [
   {
     name: "validate_asset_document",
     description:
-      "Validate an AssetDocument JSON document or sidecar file by calling /assetfactory/assetdocument/validate.",
+      "Validate exactly one AssetDocument JSON document or sidecar file by calling /assetfactory/assetdocument/validate.",
     inputSchema: {
       type: "object",
       properties: {
@@ -324,12 +371,13 @@ const tools: Tool[] = [
             "Absolute sidecar file path to validate. Use this instead of document when validating a file.",
         },
       },
+      oneOf: [{ required: ["document"] }, { required: ["file_path"] }],
     },
   },
   {
     name: "diff_asset_document",
     description:
-      "Diff an AssetDocument JSON document or sidecar file against the current asset by calling /assetfactory/assetdocument/diff.",
+      "Diff exactly one AssetDocument JSON document or sidecar file against the current asset by calling /assetfactory/assetdocument/diff.",
     inputSchema: {
       type: "object",
       properties: {
@@ -345,6 +393,7 @@ const tools: Tool[] = [
             "Absolute sidecar file path to diff. Use this instead of document when diffing a file.",
         },
       },
+      oneOf: [{ required: ["document"] }, { required: ["file_path"] }],
     },
   },
   {
@@ -390,13 +439,14 @@ const tools: Tool[] = [
   {
     name: "apply_asset_document_file",
     description:
-      "Apply an AssetDocument sidecar file by calling /assetfactory/assetdocument/apply-file.",
+      "Apply an AssetDocument sidecar file by calling /assetfactory/assetdocument/apply-file. This depends on Unreal-side ApplyFile/sidecar auto-apply support being available; prefer validate_asset_document or diff_asset_document until the backend reports support.",
     inputSchema: {
       type: "object",
       properties: {
         file_path: {
           type: "string",
-          description: "Absolute sidecar file path to apply.",
+          description:
+            "Absolute sidecar file path to apply. Requires Unreal-side apply-file support; use validate/diff first when support is uncertain.",
         },
         save_asset: {
           type: "boolean",
@@ -904,15 +954,18 @@ function requireObjectArg(args: Record<string, unknown>, key: string): Record<st
 }
 
 function assetDocumentBodyArg(args: Record<string, unknown>): Record<string, unknown> {
-  if (args.document !== undefined) {
+  const hasDocument = args.document !== undefined;
+  const hasFilePath = typeof args.file_path === "string" && args.file_path.length > 0;
+
+  if (hasDocument === hasFilePath) {
+    throw new Error("Exactly one of 'document' or 'file_path' is required.");
+  }
+
+  if (hasDocument) {
     return requireObjectArg(args, "document");
   }
 
-  if (typeof args.file_path === "string" && args.file_path.length > 0) {
-    return { file_path: args.file_path };
-  }
-
-  throw new Error("'document' or 'file_path' is required.");
+  return { file_path: args.file_path };
 }
 
 const toolHandlers: Record<string, ToolHandler> = {
@@ -921,20 +974,22 @@ const toolHandlers: Record<string, ToolHandler> = {
   get_asset_document_schema: async () => loadSchema("AssetDocument"),
   inspect_asset_document_target: async (args) => {
     const classOrAsset = requireStringArg(args, "class_or_asset");
-    return callUEApi(`/assetdocument/inspect?class_or_asset=${encodeURIComponent(classOrAsset)}`, "GET");
+    return callAssetDocumentApi(`/assetdocument/inspect?class_or_asset=${encodeURIComponent(classOrAsset)}`, "GET");
   },
-  validate_asset_document: async (args) => callUEApi("/assetdocument/validate", "POST", assetDocumentBodyArg(args)),
-  diff_asset_document: async (args) => callUEApi("/assetdocument/diff", "POST", assetDocumentBodyArg(args)),
+  validate_asset_document: async (args) =>
+    callAssetDocumentApi("/assetdocument/validate", "POST", assetDocumentBodyArg(args)),
+  diff_asset_document: async (args) =>
+    callAssetDocumentApi("/assetdocument/diff", "POST", assetDocumentBodyArg(args)),
   extract_asset_document: async (args) =>
-    callUEApi("/assetdocument/extract", "POST", {
+    callAssetDocumentApi("/assetdocument/extract", "POST", {
       asset_path: requireStringArg(args, "asset_path"),
       diff_only: (args as { diff_only?: boolean }).diff_only ?? true,
       include_all_writable: (args as { include_all_writable?: boolean }).include_all_writable ?? false,
     }),
   apply_asset_document: async (args) =>
-    callUEApi("/assetdocument/apply", "POST", requireObjectArg(args, "document")),
+    callAssetDocumentApi("/assetdocument/apply", "POST", requireObjectArg(args, "document")),
   apply_asset_document_file: async (args) =>
-    callUEApi("/assetdocument/apply-file", "POST", {
+    callAssetDocumentApi("/assetdocument/apply-file", "POST", {
       file_path: requireStringArg(args, "file_path"),
       save_asset: (args as { save_asset?: boolean }).save_asset ?? true,
     }),
