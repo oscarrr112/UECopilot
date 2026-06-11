@@ -8,10 +8,12 @@
 DECLARE_LOG_CATEGORY_EXTERN(LogAssetDocument, Log, All);
 
 class FAssetDocumentService;
+class FAssetDocumentHttpRoutes;
 
 class ASSETDOCUMENT_API FAssetDocumentModule : public IModuleInterface
 {
 public:
+	virtual ~FAssetDocumentModule() override;
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 
@@ -22,4 +24,5 @@ public:
 
 private:
 	TUniquePtr<FAssetDocumentService> Service;
+	TUniquePtr<FAssetDocumentHttpRoutes> HttpRoutes;
 };

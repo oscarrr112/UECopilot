@@ -62,6 +62,85 @@ namespace
 		const TCHAR* Description = TEXT("");
 		bool bJsonContentType = false;
 	};
+
+	FString GetExternalRouteMethodText(const FAssetFactoryExternalRoute& Route)
+	{
+		if (!Route.MethodText.IsEmpty())
+		{
+			return Route.MethodText.TrimStartAndEnd();
+		}
+
+		return TEXT("GET");
+	}
+
+	EHttpServerRequestVerbs GetExternalRouteVerb(const FAssetFactoryExternalRoute& Route)
+	{
+		const FString MethodText = GetExternalRouteMethodText(Route).ToUpper();
+		if (MethodText == TEXT("POST"))
+		{
+			return EHttpServerRequestVerbs::VERB_POST;
+		}
+		if (MethodText == TEXT("PUT"))
+		{
+			return EHttpServerRequestVerbs::VERB_PUT;
+		}
+		if (MethodText == TEXT("PATCH"))
+		{
+			return EHttpServerRequestVerbs::VERB_PATCH;
+		}
+		if (MethodText == TEXT("DELETE"))
+		{
+			return EHttpServerRequestVerbs::VERB_DELETE;
+		}
+		return EHttpServerRequestVerbs::VERB_GET;
+	}
+
+	FString GetRequestBodyString(const FHttpServerRequest& Request)
+	{
+		if (Request.Body.IsEmpty())
+		{
+			return FString();
+		}
+
+		FUTF8ToTCHAR Converter(reinterpret_cast<const ANSICHAR*>(Request.Body.GetData()), Request.Body.Num());
+		return FString(Converter.Length(), Converter.Get());
+	}
+
+	void SendExternalJsonResponse(const FHttpResultCallback& OnComplete, int32 StatusCode, TSharedPtr<FJsonObject> JsonResponse)
+	{
+		FString ResponseBody;
+		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResponseBody);
+		FJsonSerializer::Serialize(JsonResponse.ToSharedRef(), Writer);
+
+		TUniquePtr<FHttpServerResponse> Response = FHttpServerResponse::Create(ResponseBody, TEXT("application/json"));
+		Response->Code = static_cast<EHttpServerResponseCodes>(StatusCode);
+		OnComplete(MoveTemp(Response));
+	}
+
+	bool HandleExternalRoute(const FAssetFactoryExternalRoute& Route, const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+	{
+		if (!Route.Handler.IsBound())
+		{
+			TSharedPtr<FJsonObject> ErrorJson = MakeShared<FJsonObject>();
+			ErrorJson->SetBoolField(TEXT("success"), false);
+			ErrorJson->SetStringField(TEXT("error"), TEXT("External route handler is not bound"));
+			SendExternalJsonResponse(OnComplete, 500, ErrorJson);
+			return true;
+		}
+
+		int32 StatusCode = 200;
+		TSharedPtr<FJsonObject> ResponseJson = Route.Handler.Execute(GetRequestBodyString(Request), Request.QueryParams, StatusCode);
+		if (!ResponseJson.IsValid())
+		{
+			ResponseJson = MakeShared<FJsonObject>();
+			ResponseJson->SetBoolField(TEXT("success"), false);
+			ResponseJson->SetStringField(TEXT("error"), TEXT("External route handler returned no response"));
+			StatusCode = 500;
+		}
+
+		SendExternalJsonResponse(OnComplete, StatusCode, ResponseJson);
+		return true;
+	}
 }
 
 FAssetFactoryHttpServer::FAssetFactoryHttpServer()
@@ -71,6 +150,59 @@ FAssetFactoryHttpServer::FAssetFactoryHttpServer()
 FAssetFactoryHttpServer::~FAssetFactoryHttpServer()
 {
 	Stop();
+}
+
+TMap<FDelegateHandle, FAssetFactoryExternalRoute>& FAssetFactoryHttpServer::GetExternalRoutes()
+{
+	static TMap<FDelegateHandle, FAssetFactoryExternalRoute> ExternalRoutes;
+	return ExternalRoutes;
+}
+
+TSet<FAssetFactoryHttpServer*>& FAssetFactoryHttpServer::GetActiveServers()
+{
+	static TSet<FAssetFactoryHttpServer*> ActiveServers;
+	return ActiveServers;
+}
+
+FDelegateHandle FAssetFactoryHttpServer::RegisterExternalRoute(const FAssetFactoryExternalRoute& Route)
+{
+	if (Route.Path.IsEmpty() || !Route.Handler.IsBound())
+	{
+		UE_LOG(LogAssetFactory, Warning, TEXT("Ignoring invalid external route registration for path '%s'"), *Route.Path);
+		return FDelegateHandle();
+	}
+
+	FDelegateHandle Handle(FDelegateHandle::GenerateNewHandle);
+	GetExternalRoutes().Add(Handle, Route);
+	for (FAssetFactoryHttpServer* Server : GetActiveServers())
+	{
+		if (Server && Server->HttpRouter.IsValid())
+		{
+			Server->UnbindExternalRoutes();
+			Server->BindExternalRoutes();
+			Server->WriteServiceDiscoveryFile();
+		}
+	}
+	return Handle;
+}
+
+void FAssetFactoryHttpServer::UnregisterExternalRoute(FDelegateHandle Handle)
+{
+	if (!Handle.IsValid())
+	{
+		return;
+	}
+
+	GetExternalRoutes().Remove(Handle);
+	for (FAssetFactoryHttpServer* Server : GetActiveServers())
+	{
+		if (Server && Server->HttpRouter.IsValid())
+		{
+			Server->UnbindExternalRoutes();
+			Server->BindExternalRoutes();
+			Server->WriteServiceDiscoveryFile();
+		}
+	}
 }
 
 bool FAssetFactoryHttpServer::Start(uint32 Port)
@@ -202,12 +334,14 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 	{
 		RouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Spec.Path), Spec.Verb, Spec.Handler));
 	}
+	BindExternalRoutes();
 
 	// Start listeners
 	HttpServerModule.StartAllListeners();
 
 	bIsRunning = true;
 	CurrentPort = Port;
+	GetActiveServers().Add(this);
 
 	// Write service discovery file for AI agents
 	WriteServiceDiscoveryFile();
@@ -216,6 +350,10 @@ bool FAssetFactoryHttpServer::Start(uint32 Port)
 	for (const FRouteBindingSpec& Spec : RouteSpecs)
 	{
 		UE_LOG(LogAssetFactory, Display, TEXT("  %s http://localhost:%d%s"), Spec.LogMethod, Port, Spec.Path);
+	}
+	for (const TPair<FDelegateHandle, FAssetFactoryExternalRoute>& Pair : GetExternalRoutes())
+	{
+		UE_LOG(LogAssetFactory, Display, TEXT("  %s http://localhost:%d%s"), *GetExternalRouteMethodText(Pair.Value), Port, *Pair.Value.Path);
 	}
 	UE_LOG(LogAssetFactory, Display, TEXT("  Service discovery: %s"), *GetServiceDiscoveryFilePath());
 
@@ -235,6 +373,7 @@ void FAssetFactoryHttpServer::Stop()
 	// Unbind routes
 	if (HttpRouter.IsValid())
 	{
+		UnbindExternalRoutes();
 		for (const FHttpRouteHandle& Handle : RouteHandles)
 		{
 			HttpRouter->UnbindRoute(Handle);
@@ -244,9 +383,46 @@ void FAssetFactoryHttpServer::Stop()
 
 	bIsRunning = false;
 	CurrentPort = 0;
+	GetActiveServers().Remove(this);
 	HttpRouter.Reset();
 
 	UE_LOG(LogAssetFactory, Display, TEXT("AssetFactory HTTP Server stopped"));
+}
+
+void FAssetFactoryHttpServer::BindExternalRoutes()
+{
+	if (!HttpRouter.IsValid())
+	{
+		return;
+	}
+
+	ExternalRouteHandles.Reset();
+	for (const TPair<FDelegateHandle, FAssetFactoryExternalRoute>& Pair : GetExternalRoutes())
+	{
+		const FAssetFactoryExternalRoute& Route = Pair.Value;
+		if (Route.Path.IsEmpty() || !Route.Handler.IsBound())
+		{
+			UE_LOG(LogAssetFactory, Warning, TEXT("Skipping invalid external route for path '%s'"), *Route.Path);
+			continue;
+		}
+
+		ExternalRouteHandles.Add(HttpRouter->BindRoute(FHttpPath(Route.Path), GetExternalRouteVerb(Route), FHttpRequestHandler::CreateLambda([Route](const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
+		{
+			return HandleExternalRoute(Route, Request, OnComplete);
+		})));
+	}
+}
+
+void FAssetFactoryHttpServer::UnbindExternalRoutes()
+{
+	if (HttpRouter.IsValid())
+	{
+		for (const FHttpRouteHandle& Handle : ExternalRouteHandles)
+		{
+			HttpRouter->UnbindRoute(Handle);
+		}
+	}
+	ExternalRouteHandles.Reset();
 }
 
 bool FAssetFactoryHttpServer::HandleGenerate(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)
@@ -1043,6 +1219,25 @@ void FAssetFactoryHttpServer::WriteServiceDiscoveryFile()
 		Endpoint->SetStringField(TEXT("path"), TEXT("/assetfactory/datatable/rows"));
 		Endpoint->SetStringField(TEXT("description"), TEXT("Add, update, or delete specific rows in an existing DataTable"));
 		Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
+	}
+
+	for (const TPair<FDelegateHandle, FAssetFactoryExternalRoute>& Pair : GetExternalRoutes())
+	{
+		const FAssetFactoryExternalRoute& Route = Pair.Value;
+		if (Route.Path.IsEmpty())
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
+		Endpoint->SetStringField(TEXT("method"), GetExternalRouteMethodText(Route).TrimStartAndEnd());
+		Endpoint->SetStringField(TEXT("path"), Route.Path);
+		Endpoint->SetStringField(TEXT("description"), Route.Description);
+		if (Route.bRequiresBody)
+		{
+			Endpoint->SetStringField(TEXT("contentType"), TEXT("application/json"));
+		}
 		EndpointsArray.Add(MakeShared<FJsonValueObject>(Endpoint));
 	}
 

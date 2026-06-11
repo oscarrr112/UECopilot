@@ -3,11 +3,28 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "HttpServerModule.h"
-#include "IHttpRouter.h"
-#include "HttpRouteHandle.h"
 
+class FJsonObject;
+class IHttpRouter;
 class UAssetFactorySubsystem;
+struct FHttpRouteHandleInternal;
+struct FHttpServerRequest;
+struct FHttpServerResponse;
+
+enum class EHttpServerRequestVerbs : uint16;
+using FHttpRouteHandle = TSharedPtr<const FHttpRouteHandleInternal>;
+using FHttpResultCallback = TFunction<void(TUniquePtr<FHttpServerResponse>&& Response)>;
+using FHttpRequestHandler = TDelegate<bool(const FHttpServerRequest& Request, const FHttpResultCallback& OnComplete)>;
+using FAssetFactoryExternalRouteHandler = TDelegate<TSharedPtr<FJsonObject>(const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)>;
+
+struct ASSETFACTORY_API FAssetFactoryExternalRoute
+{
+	FString Path;
+	FAssetFactoryExternalRouteHandler Handler;
+	FString MethodText;
+	FString Description;
+	bool bRequiresBody = false;
+};
 
 /**
  * HTTP Server for AssetFactory
@@ -60,7 +77,16 @@ public:
 	/** Get the path to the service discovery file */
 	static FString GetServiceDiscoveryFilePath();
 
+	/** Register an external route to bind on the next HTTP server start */
+	static FDelegateHandle RegisterExternalRoute(const FAssetFactoryExternalRoute& Route);
+
+	/** Unregister a previously registered external route */
+	static void UnregisterExternalRoute(FDelegateHandle Handle);
+
 private:
+	static TMap<FDelegateHandle, FAssetFactoryExternalRoute>& GetExternalRoutes();
+	static TSet<FAssetFactoryHttpServer*>& GetActiveServers();
+
 	/** Write service discovery file for AI agents */
 	void WriteServiceDiscoveryFile();
 
@@ -115,9 +141,15 @@ private:
 	/** Convert FGenerationReport to JSON */
 	TSharedPtr<FJsonObject> ReportToJson(const struct FGenerationReport& Report);
 
+	void BindExternalRoutes();
+	void UnbindExternalRoutes();
+
 private:
 	/** Route handles for cleanup */
 	TArray<FHttpRouteHandle> RouteHandles;
+
+	/** External route handles for cleanup */
+	TArray<FHttpRouteHandle> ExternalRouteHandles;
 
 	/** Server state */
 	bool bIsRunning = false;
