@@ -82,11 +82,12 @@ Content/Data/DA_GenericEnemy.assetdoc.json
 -> /Game/Data/DA_GenericEnemy
 ```
 
-sidecar 内可以省略 `Name`、`Path` 和 `Target`：
+sidecar 内必须显式声明 `Target`。`Name` 和 `Path` 可以省略，因为它们可以从 `Target` 或 sidecar 路径推导；但 `Target` 是人读和工具校验的 canonical 资产目标：
 
 ```json
 {
   "SchemaVersion": 1,
+  "Target": "/Game/Data/DA_GenericEnemy",
   "AssetType": "GenericAsset",
   "Action": "CreateOrUpdate",
   "Class": "/Script/AssetFactory.TestDataAsset",
@@ -97,19 +98,7 @@ sidecar 内可以省略 `Name`、`Path` 和 `Target`：
 }
 ```
 
-如果 sidecar 显式声明 `Target`，必须与 sidecar 文件路径推导出的目标资产一致：
-
-```json
-{
-  "SchemaVersion": 1,
-  "Target": "/Game/Data/DA_GenericEnemy",
-  "AssetType": "GenericAsset",
-  "Class": "/Script/AssetFactory.TestDataAsset",
-  "Properties": {}
-}
-```
-
-不一致时应返回 validation error，而不是隐式选择其中一个。
+`Target` 必须与 sidecar 文件路径推导出的目标资产一致。不一致时应返回 validation error，而不是隐式选择其中一个。inline apply 可以继续使用 `Name` / `Path` 作为便捷输入；一旦写成 sidecar，必须规范化为显式 `Target`。
 
 ### 4.2 Inline 最小创建
 
@@ -213,9 +202,9 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 | 资产操作 | sidecar 行为 |
 | --- | --- |
-| Rename | 将 `<OldName>.assetdoc.json` 重命名为 `<NewName>.assetdoc.json`，并更新可选 `Target` |
-| Move | 将 sidecar 移到新目录，文件名不变，并更新可选 `Target` |
-| Duplicate | 复制 sidecar 到新资产旁边，并更新可选 `Target` |
+| Rename | 将 `<OldName>.assetdoc.json` 重命名为 `<NewName>.assetdoc.json`，并更新 `Target` |
+| Move | 将 sidecar 移到新目录，文件名不变，并更新 `Target` |
+| Duplicate | 复制 sidecar 到新资产旁边，并更新 `Target` |
 | Delete | 默认将 sidecar 移到同目录 `_DeletedAssetDocs` 或删除，具体实现计划固定；第一版至少不能留下误指向现有资产的 sidecar |
 
 hook 必须只处理受管理资产：
@@ -450,7 +439,7 @@ implementation plan 需要先确认 UE 5.7 中最稳定的 delegate/API。hook �
 - 不扫描全项目做昂贵匹配；
 - 避免递归触发；
 - 不因为 sidecar 文件操作失败而破坏 UE 资产操作；
-- 对 duplicate/move/rename 更新 `Target` 字段，如果存在；
+- 对 duplicate/move/rename 更新必填 `Target` 字段；
 - 不自动修改 `Properties`。
 
 ### 5.10 Inspection / extraction 策略
@@ -640,7 +629,8 @@ POST /assetdocument/diff
 - extraction 能从测试资产生成 diff-only AssetDocument 草稿；
 - validate/diff 不保存资产，并返回清晰结果；
 - 从同一个 sidecar 重复 apply 后结果稳定；
-- 显式 `Target` 与 sidecar 路径不一致时失败。
+- sidecar 缺少 `Target` 时失败。
+- `Target` 与 sidecar 路径不一致时失败。
 
 如果现有 test framework 对 editor asset 创建成本较高，可以先加 smoke script，但 implementation plan 必须说明原因。
 
@@ -736,10 +726,11 @@ POST /assetdocument/diff
 - MCP/HTTP 提供 `validate_asset_document` 和 `diff_asset_document`，且不会保存或修改资产。
 - 支持同目录 sidecar：`<AssetName>.assetdoc.json`。
 - 支持从 sidecar 路径推导目标资产路径。
-- 显式 `Target` 与 sidecar 路径不一致时失败。
+- sidecar 缺少 `Target` 时失败。
+- `Target` 与 sidecar 路径不一致时失败。
 - apply 成功后能写入或更新 sidecar。
-- 受管理资产 rename/move 时 sidecar 跟随并更新可选 `Target`。
-- 受管理资产 duplicate 时 sidecar 被复制并更新可选 `Target`。
+- 受管理资产 rename/move 时 sidecar 跟随并更新 `Target`。
+- 受管理资产 duplicate 时 sidecar 被复制并更新 `Target`。
 - 受管理资产 delete 时 sidecar 被删除或移入实现计划指定的位置，不留下误指向现有资产的 sidecar。
 - 能创建至少一个当前无专门 generator 的 UObject/DataAsset 风格测试资产。
 - 能更新已有 GenericAsset 的单个属性。
