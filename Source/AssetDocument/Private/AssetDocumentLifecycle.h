@@ -24,6 +24,7 @@ class FAssetDocumentLifecycle
 public:
 	static bool TryParseAction(const FString& ActionName, EAssetDocumentLifecycleAction& OutAction, FString& OutError);
 	static FAssetDocumentLifecycleResult CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action);
+	static void CleanupCreatedAsset(const FAssetDocumentLifecycleResult& LifecycleResult);
 
 private:
 	static FString MakeObjectPath(const FString& Target);

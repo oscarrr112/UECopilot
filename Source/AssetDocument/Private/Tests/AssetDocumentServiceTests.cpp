@@ -214,7 +214,19 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 	const FString CreateTarget = TEXT("/Game/AssetDocumentTests/DA_CreateSucceeds");
 	const FString UpdateTarget = TEXT("/Game/AssetDocumentTests/DA_UpdatePreserves");
 	const FString TypedSubtypeTarget = TEXT("/Game/AssetDocumentTests/DA_TypedSubtypeFails");
-	const TArray<FString> Targets = { InvalidClassTarget, AbstractClassTarget, CreateTarget, UpdateTarget, TypedSubtypeTarget };
+	const FString FailedSubtypeRetryTarget = TEXT("/Game/AssetDocumentTests/DA_FailedSubtypeRetry");
+	const FString FailedUnknownPropertyRetryTarget = TEXT("/Game/AssetDocumentTests/DA_FailedUnknownPropertyRetry");
+	const FString TypedMismatchTarget = TEXT("/Game/AssetDocumentTests/DA_TypedMismatchFails");
+	const TArray<FString> Targets = {
+		InvalidClassTarget,
+		AbstractClassTarget,
+		CreateTarget,
+		UpdateTarget,
+		TypedSubtypeTarget,
+		FailedSubtypeRetryTarget,
+		FailedUnknownPropertyRetryTarget,
+		TypedMismatchTarget
+	};
 
 	for (const FString& Target : Targets)
 	{
@@ -310,6 +322,72 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 
 		TestFalse(TEXT("Typed type with subtype fails"), Result.IsSuccess());
 		TestTrue(TEXT("Typed subtype reports unsupported typed subtype"), Result.Message.Contains(TEXT("type"), ESearchCase::IgnoreCase) || Result.Message.Contains(TEXT("subtype"), ESearchCase::IgnoreCase));
+	}
+
+	{
+		FAssetDocumentApplyRequest BadRequest;
+		BadRequest.Document = MakeApplyDocument(FailedSubtypeRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+
+		TSharedPtr<FJsonObject> TypedValue = MakeShared<FJsonObject>();
+		TypedValue->SetStringField(TEXT("type"), TEXT("Object:StaticMesh"));
+		TypedValue->SetStringField(TEXT("value"), TEXT("/Game/MissingMesh"));
+		SetProperty(BadRequest.Document, TEXT("TestString"), MakeShared<FJsonValueObject>(TypedValue));
+
+		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+		TestFalse(TEXT("Failed Create with bad typed subtype fails"), BadResult.IsSuccess());
+		TestNull(TEXT("Failed Create with bad typed subtype leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedSubtypeRetryTarget)));
+
+		FAssetDocumentApplyRequest RetryRequest;
+		RetryRequest.Document = MakeApplyDocument(FailedSubtypeRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(RetryRequest.Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("retry ok")));
+
+		const FAssetDocumentResult RetryResult = Service.Apply(RetryRequest);
+		TestTrue(TEXT("Valid Create after bad typed subtype succeeds"), RetryResult.IsSuccess());
+	}
+
+	{
+		FAssetDocumentApplyRequest BadRequest;
+		BadRequest.Document = MakeApplyDocument(FailedUnknownPropertyRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(BadRequest.Document, TEXT("DefinitelyUnknownProperty"), MakeShared<FJsonValueString>(TEXT("bad")));
+
+		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+		TestFalse(TEXT("Failed Create with unknown property fails"), BadResult.IsSuccess());
+		TestNull(TEXT("Failed Create with unknown property leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedUnknownPropertyRetryTarget)));
+
+		FAssetDocumentApplyRequest RetryRequest;
+		RetryRequest.Document = MakeApplyDocument(FailedUnknownPropertyRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(RetryRequest.Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("retry ok")));
+
+		const FAssetDocumentResult RetryResult = Service.Apply(RetryRequest);
+		TestTrue(TEXT("Valid Create after unknown property succeeds"), RetryResult.IsSuccess());
+	}
+
+	{
+		FAssetDocumentApplyRequest Request;
+		Request.Document = MakeApplyDocument(TEXT("AssetDocumentTests/DA_InvalidTarget"), TEXT("TestDataAsset"), TEXT("Create"));
+		SetProperty(Request.Document, TEXT("TestString"), MakeShared<FJsonValueString>(TEXT("bad target")));
+
+		const FAssetDocumentResult Result = Service.Apply(Request);
+
+		TestFalse(TEXT("Invalid target path fails"), Result.IsSuccess());
+		TestTrue(TEXT("Invalid target path reports target/package validation"), Result.Message.Contains(TEXT("Target")) || Result.Message.Contains(TEXT("package"), ESearchCase::IgnoreCase));
+		TestNull(TEXT("Invalid target path does not create a package"), FindPackage(nullptr, TEXT("AssetDocumentTests/DA_InvalidTarget")));
+	}
+
+	{
+		FAssetDocumentApplyRequest Request;
+		Request.Document = MakeApplyDocument(TypedMismatchTarget, TEXT("TestDataAsset"), TEXT("Create"));
+
+		TSharedPtr<FJsonObject> TypedValue = MakeShared<FJsonObject>();
+		TypedValue->SetStringField(TEXT("type"), TEXT("String"));
+		TypedValue->SetNumberField(TEXT("value"), 5);
+		SetProperty(Request.Document, TEXT("TestInt"), MakeShared<FJsonValueObject>(TypedValue));
+
+		const FAssetDocumentResult Result = Service.Apply(Request);
+
+		TestFalse(TEXT("Typed type mismatch without subtype fails"), Result.IsSuccess());
+		TestTrue(TEXT("Typed type mismatch reports diagnostic"), Result.Message.Contains(TEXT("type"), ESearchCase::IgnoreCase) || Result.Message.Contains(TEXT("TestInt")));
+		TestTrue(TEXT("Typed type mismatch returns diagnostics"), Result.Diagnostics.Num() > 0);
 	}
 
 	for (const FString& Target : Targets)

@@ -8,6 +8,21 @@
 #include "Dom/JsonValue.h"
 #include "UObject/UnrealType.h"
 
+namespace
+{
+bool IsTypeName(const FString& TypeName, std::initializer_list<const TCHAR*> AcceptedNames)
+{
+	for (const TCHAR* AcceptedName : AcceptedNames)
+	{
+		if (TypeName.Equals(AcceptedName, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+}
+
 FAssetDocumentPropertyApplyResult FAssetDocumentPropertyAdapter::ApplyProperties(UObject* Asset, TSharedPtr<FJsonObject> Properties)
 {
 	FAssetDocumentPropertyApplyResult Result;
@@ -45,6 +60,40 @@ FAssetDocumentPropertyApplyResult FAssetDocumentPropertyAdapter::ApplyProperties
 
 	Result.bSuccess = true;
 	Result.Message = TEXT("Properties applied");
+	return Result;
+}
+
+FAssetDocumentPropertyApplyResult FAssetDocumentPropertyAdapter::PreflightProperties(UClass* Class, TSharedPtr<FJsonObject> Properties)
+{
+	FAssetDocumentPropertyApplyResult Result;
+	if (!Class)
+	{
+		Result.Message = TEXT("Class is required for property preflight");
+		return Result;
+	}
+
+	if (!Properties.IsValid() || Properties->Values.Num() == 0)
+	{
+		Result.bSuccess = true;
+		Result.Message = TEXT("No properties to preflight");
+		return Result;
+	}
+
+	UObject* PreflightAsset = NewObject<UObject>(GetTransientPackage(), Class);
+	if (!PreflightAsset)
+	{
+		Result.Message = FString::Printf(TEXT("Failed to create transient preflight object for '%s'"), *Class->GetName());
+		return Result;
+	}
+
+	if (!ApplyPropertiesDirect(PreflightAsset, Properties, Result.Diagnostics))
+	{
+		Result.Message = Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Message : TEXT("Property preflight failed");
+		return Result;
+	}
+
+	Result.bSuccess = true;
+	Result.Message = TEXT("Properties preflighted");
 	return Result;
 }
 
@@ -86,6 +135,13 @@ bool FAssetDocumentPropertyAdapter::ApplySingleProperty(UObject* Asset, const FS
 	if (bIsTyped && TypeName.Contains(TEXT(":")))
 	{
 		AddDiagnostic(OutDiagnostics, PropertyName, TEXT("UnsupportedTypedSubtype"), FString::Printf(TEXT("Typed property type '%s' with subtype is not supported by sidecar v1"), *TypeName));
+		return false;
+	}
+
+	FString TypedValidationError;
+	if (bIsTyped && !ValidateTypedValueForProperty(Property, TypeName, ValueToApply, TypedValidationError))
+	{
+		AddDiagnostic(OutDiagnostics, PropertyName, TEXT("TypedTypeMismatch"), TypedValidationError);
 		return false;
 	}
 
@@ -140,6 +196,78 @@ bool FAssetDocumentPropertyAdapter::TryGetTypedValue(TSharedPtr<FJsonValue> Json
 	}
 
 	return true;
+}
+
+bool FAssetDocumentPropertyAdapter::ValidateTypedValueForProperty(FProperty* Property, const FString& TypeName, TSharedPtr<FJsonValue> Value, FString& OutError)
+{
+	if (!Property)
+	{
+		OutError = TEXT("Typed property validation requires a target property");
+		return false;
+	}
+
+	if (!Value.IsValid())
+	{
+		OutError = FString::Printf(TEXT("Typed property '%s' has an invalid value"), *Property->GetName());
+		return false;
+	}
+
+	if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property))
+	{
+		if (!IsTypeName(TypeName, { TEXT("Bool"), TEXT("Boolean") }) || Value->Type != EJson::Boolean)
+		{
+			OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not compatible with bool property '%s'"), *Property->GetName(), *TypeName, *BoolProperty->GetName());
+			return false;
+		}
+		return true;
+	}
+
+	if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property))
+	{
+		const bool bTypedAsInteger = IsTypeName(TypeName, { TEXT("Int"), TEXT("Integer"), TEXT("Int32") });
+		const bool bTypedAsFloat = IsTypeName(TypeName, { TEXT("Float"), TEXT("Double"), TEXT("Number") });
+		const bool bPropertyIsFloat = NumericProperty->IsFloatingPoint();
+		const bool bTypeCompatible = bPropertyIsFloat ? bTypedAsFloat : bTypedAsInteger;
+		if (!bTypeCompatible || Value->Type != EJson::Number)
+		{
+			OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not compatible with numeric property '%s'"), *Property->GetName(), *TypeName, *NumericProperty->GetName());
+			return false;
+		}
+		return true;
+	}
+
+	if (CastField<FStrProperty>(Property))
+	{
+		if (!IsTypeName(TypeName, { TEXT("String") }) || Value->Type != EJson::String)
+		{
+			OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not compatible with string property '%s'"), *Property->GetName(), *TypeName, *Property->GetName());
+			return false;
+		}
+		return true;
+	}
+
+	if (CastField<FNameProperty>(Property))
+	{
+		if (!IsTypeName(TypeName, { TEXT("Name"), TEXT("String") }) || Value->Type != EJson::String)
+		{
+			OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not compatible with name property '%s'"), *Property->GetName(), *TypeName, *Property->GetName());
+			return false;
+		}
+		return true;
+	}
+
+	if (CastField<FTextProperty>(Property))
+	{
+		if (!IsTypeName(TypeName, { TEXT("Text"), TEXT("String") }) || Value->Type != EJson::String)
+		{
+			OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not compatible with text property '%s'"), *Property->GetName(), *TypeName, *Property->GetName());
+			return false;
+		}
+		return true;
+	}
+
+	OutError = FString::Printf(TEXT("Typed property '%s' type '%s' is not supported for sidecar v1 validation"), *Property->GetName(), *TypeName);
+	return false;
 }
 
 void FAssetDocumentPropertyAdapter::AddDiagnostic(TArray<FAssetDocumentDiagnostic>& Diagnostics, const FString& PropertyName, const FString& Code, const FString& Message)

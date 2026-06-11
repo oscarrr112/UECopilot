@@ -48,6 +48,36 @@ FString NormalizeValidateTarget(const FString& Target)
 
 	return NormalizedTarget;
 }
+
+bool ValidateApplyTarget(const FString& Target, FString& OutError)
+{
+	if (Target.IsEmpty())
+	{
+		OutError = TEXT("Target is required");
+		return false;
+	}
+
+	if (!Target.StartsWith(TEXT("/Game/")))
+	{
+		OutError = FString::Printf(TEXT("Target '%s' must be a long package name under /Game"), *Target);
+		return false;
+	}
+
+	FText PackageNameReason;
+	if (!FPackageName::IsValidLongPackageName(Target, false, &PackageNameReason))
+	{
+		OutError = FString::Printf(TEXT("Target '%s' is not a valid long package name: %s"), *Target, *PackageNameReason.ToString());
+		return false;
+	}
+
+	if (FPackageName::GetLongPackageAssetName(Target).IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("Target '%s' must include a non-empty asset name"), *Target);
+		return false;
+	}
+
+	return true;
+}
 }
 
 FAssetDocumentResult FAssetDocumentResult::Success(const FString& InMessage)
@@ -122,6 +152,14 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	}
 	Target = NormalizeValidateTarget(Target);
 
+	FString Error;
+	if (!ValidateApplyTarget(Target, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = Target;
+		return Result;
+	}
+
 	FString ClassName;
 	if (!Request.Document->TryGetStringField(TEXT("Class"), ClassName) || ClassName.IsEmpty())
 	{
@@ -139,7 +177,6 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	}
 
 	EAssetDocumentLifecycleAction Action;
-	FString Error;
 	if (!FAssetDocumentLifecycle::TryParseAction(ActionName, Action, Error))
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
@@ -155,6 +192,22 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
+	TSharedPtr<FJsonObject> Properties;
+	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+	if (Request.Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
+	{
+		Properties = *PropertiesPtr;
+	}
+
+	FAssetDocumentPropertyApplyResult PreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(ResolvedClass, Properties);
+	if (!PreflightResult.bSuccess)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PreflightResult.Message);
+		Result.Target = Target;
+		Result.Diagnostics = PreflightResult.Diagnostics;
+		return Result;
+	}
+
 	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action);
 	if (!LifecycleResult.Asset)
 	{
@@ -164,16 +217,10 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
-	TSharedPtr<FJsonObject> Properties;
-	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
-	if (Request.Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
-	{
-		Properties = *PropertiesPtr;
-	}
-
 	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
 	if (!PropertyResult.bSuccess)
 	{
+		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
@@ -197,6 +244,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		const bool bSaved = UPackage::SavePackage(Package, LifecycleResult.Asset, *PackageFileName, SaveArgs);
 		if (!bSaved)
 		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
 			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;

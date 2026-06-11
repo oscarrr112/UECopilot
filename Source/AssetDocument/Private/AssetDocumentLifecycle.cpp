@@ -5,6 +5,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
+#include "UObject/GarbageCollection.h"
 
 bool FAssetDocumentLifecycle::TryParseAction(const FString& ActionName, EAssetDocumentLifecycleAction& OutAction, FString& OutError)
 {
@@ -92,6 +93,30 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	Result.Asset = NewAsset;
 	Result.bCreated = true;
 	return Result;
+}
+
+void FAssetDocumentLifecycle::CleanupCreatedAsset(const FAssetDocumentLifecycleResult& LifecycleResult)
+{
+	if (!LifecycleResult.bCreated || !LifecycleResult.Asset)
+	{
+		return;
+	}
+
+	UObject* Asset = LifecycleResult.Asset;
+	UPackage* Package = Asset->GetOutermost();
+
+	FAssetRegistryModule::AssetDeleted(Asset);
+	Asset->ClearFlags(RF_Public | RF_Standalone);
+	Asset->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+	Asset->MarkAsGarbage();
+
+	if (Package)
+	{
+		Package->ClearDirtyFlag();
+		Package->MarkAsGarbage();
+	}
+
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 }
 
 FString FAssetDocumentLifecycle::MakeObjectPath(const FString& Target)
