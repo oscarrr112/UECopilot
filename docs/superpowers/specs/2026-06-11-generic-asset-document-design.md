@@ -269,7 +269,48 @@ AssetDocumentCompiler
 
 这样第一版就从“每类资产一个 OOP generator”转成“文档编译器 + 能力组件装配”。后续支持 AnimMontage、Widget、MaterialGraph、Niagara、ABP 时，应优先新增或替换 capability component，而不是新增一个越来越重的 generator 子类。
 
-### 5.2 Sidecar 解析与写入
+### 5.2 C++ API 边界
+
+AssetDocument 的核心能力必须落在 C++ `AssetDocument` module 中。MCP/HTTP 只负责请求解析、调用 C++ 服务、序列化结果；不能在 TypeScript/MCP 层重新实现 class 解析、反射属性枚举、属性类型判断或 diff 逻辑。
+
+第一版 C++ 侧应提供稳定服务 facade，供 HTTP server、commandlet、automation test 和未来 editor UI 复用：
+
+```cpp
+struct FAssetDocumentApplyRequest;
+struct FAssetDocumentApplyResult;
+struct FAssetDocumentInspectRequest;
+struct FAssetDocumentInspectResult;
+struct FAssetDocumentExtractRequest;
+struct FAssetDocumentExtractResult;
+struct FAssetDocumentValidateRequest;
+struct FAssetDocumentValidateResult;
+struct FAssetDocumentDiffRequest;
+struct FAssetDocumentDiffResult;
+
+class FAssetDocumentService
+{
+public:
+    FAssetDocumentApplyResult Apply(const FAssetDocumentApplyRequest& Request);
+    FAssetDocumentInspectResult Inspect(const FAssetDocumentInspectRequest& Request) const;
+    FAssetDocumentExtractResult Extract(const FAssetDocumentExtractRequest& Request) const;
+    FAssetDocumentValidateResult Validate(const FAssetDocumentValidateRequest& Request) const;
+    FAssetDocumentDiffResult Diff(const FAssetDocumentDiffRequest& Request) const;
+};
+```
+
+这些 result 类型应能表达：
+
+- 成功/失败/partial failed；
+- 可读错误和 warning；
+- per-property diagnostics；
+- skipped fields 及原因；
+- touched package / asset path；
+- 是否写入 sidecar；
+- apply/diff 中字段的 before/after value。
+
+`Validate`、`Inspect`、`Extract`、`Diff` 必须是只读操作，不能保存 package，也不能修改 sidecar。`Apply` 是唯一允许写 `.uasset` / `.assetdoc.json` 的入口。
+
+### 5.3 Sidecar 解析与写入
 
 新增 sidecar service，放在 `Source/AssetDocument/Private/Sidecar/` 或等价目录：
 
@@ -292,7 +333,7 @@ sidecar 必须使用 UTF-8 JSON。写入时保持稳定字段顺序，方便 git
 
 第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释，后续如果需要人工注释，可以单独讨论 JSONC/YAML frontend，但 UE 侧 canonical sidecar 先保持 JSON。
 
-### 5.3 创建策略
+### 5.4 创建策略
 
 第一版只支持直接创建 UObject asset：
 
@@ -317,7 +358,7 @@ SavePackage
 
 如果发现某些 UObject class 不能安全用 `NewObject` 作为资产创建，第一版应返回明确错误，而不是扩大硬编码例外列表。
 
-### 5.4 Class 解析
+### 5.5 Class 解析
 
 解析顺序应优先复用项目已有动态查找工具：
 
@@ -335,7 +376,7 @@ FindObject / LoadClass fallback
 
 不允许为具体类维护静态白名单。
 
-### 5.5 属性 patch
+### 5.6 属性 patch
 
 `Properties` 处理复用 `FPropertySetterUtils`：
 
@@ -356,7 +397,7 @@ Only if duplicate succeeds, apply to real asset
 
 这样可以减少半写入风险。若某些属性 setter 依赖真实 package/asset context，implementation plan 中需要记录并决定是否按属性类型跳过 duplicate preflight。
 
-### 5.6 更新策略
+### 5.7 更新策略
 
 `Create`：
 
@@ -375,7 +416,7 @@ Only if duplicate succeeds, apply to real asset
 - 资产存在则按 update。
 - 不存在则按 create。
 
-### 5.7 保存与 sidecar 写入策略
+### 5.8 保存与 sidecar 写入策略
 
 保存层可以复用现有 generator 已验证过的保存流程：
 
@@ -395,7 +436,7 @@ sidecar 写入策略：
 - 如果输入来自 inline JSON 且 `WriteSidecar` 为 true，则写入目标 sidecar；
 - 如果 `.uasset` 保存成功但 sidecar 写入失败，结果应视为 failed 或 partial failed。implementation plan 需要固定是否回滚 `.uasset`，第一版推荐返回 failed 并记录人工修复路径。
 
-### 5.8 Editor sidecar hooks
+### 5.9 Editor sidecar hooks
 
 第一版需要实现 sidecar 跟随 hook。候选 UE 事件：
 
@@ -412,7 +453,7 @@ implementation plan 需要先确认 UE 5.7 中最稳定的 delegate/API。hook �
 - 对 duplicate/move/rename 更新 `Target` 字段，如果存在；
 - 不自动修改 `Properties`。
 
-### 5.9 Inspection / extraction 策略
+### 5.10 Inspection / extraction 策略
 
 第一版不复用旧 `extract_assets` 作为核心链路。AssetDocument 仍是 source-of-truth，不要求从 `.uasset` 完美反向生成 sidecar；但 AssetDocument module 必须提供自己的 read-side inspection / best-effort extraction，帮助 agent 发现可写参数、生成草稿和调试。
 
@@ -565,6 +606,8 @@ diff_asset_document(document_or_file)
 
 `inspect_asset_document_target` 用于查看某个 class 或现有 asset 可写哪些 AssetDocument 参数。`extract_asset_document` 生成 best-effort AssetDocument 草稿。`validate_asset_document` 只做解析、class/target、属性和类型检查，不保存资产。`diff_asset_document` 对比文档和当前资产，返回将要修改、保持不变、跳过和失败的字段。
 
+所有 MCP/HTTP 工具都必须调用 C++ `FAssetDocumentService` 或等价 module API。MCP 层不得复制 C++ 反射规则，也不得维护自己的类型判断表。
+
 HTTP 层可以复用现有 AssetFactory server，但路由语义应保持独立，例如：
 
 ```text
@@ -685,6 +728,8 @@ POST /assetdocument/diff
 
 - `AssetDocument` Editor module 在插件中注册并加载成功。
 - `AssetDocument` module 不依赖 `AssetGeneratorRegistry`，也不注册 `GenericAssetGenerator`。
+- C++ 提供 `FAssetDocumentService` 或等价 facade，覆盖 Apply / Inspect / Extract / Validate / Diff。
+- MCP/HTTP 工具通过 C++ AssetDocument service 实现，不在 TypeScript/MCP 层重复反射和类型判断逻辑。
 - MCP/HTTP 提供 `apply_asset_document` / `apply_asset_document_file` / `get_asset_document_schema` 等价能力。
 - MCP/HTTP 提供 `inspect_asset_document_target`，能返回 class/asset 的可写属性、类型 token、当前值、默认值和拒绝原因。
 - MCP/HTTP 提供 `extract_asset_document`，能从已有资产生成 reflected-property-only 的 AssetDocument 草稿。
