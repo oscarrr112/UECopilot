@@ -44,7 +44,7 @@ bool FAssetDocumentJson::WriteJsonFile(const FString& FilePath, const TSharedPtr
 		return false;
 	}
 
-	if (!FFileHelper::SaveStringToFile(Contents, *FilePath))
+	if (!FFileHelper::SaveStringToFile(Contents, *FilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		OutError = FString::Printf(TEXT("Failed to write JSON file '%s'"), *FilePath);
 		return false;
