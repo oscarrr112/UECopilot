@@ -51,6 +51,11 @@
 			"LoadingPhase": "Default"
 		},
 		{
+			"Name": "AssetDocument",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "AssetFactoryAI",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
