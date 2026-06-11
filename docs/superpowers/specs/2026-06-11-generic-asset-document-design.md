@@ -77,6 +77,18 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 
 ### 4.2 typed properties
 
+Typed property 的 `type` 只允许基础类型 token，不允许携带 subtype。也就是说，输入中不允许出现 `Object:StaticMesh`、`Class:Pawn`、`Struct:Foo`、`Enum:Bar` 这类写法。
+
+需要目标类型时，生成器必须从目标 `FProperty` 反射推断：
+
+- `FObjectPropertyBase` 提供期望 object class；
+- `FClassProperty` / `FSoftClassProperty` 提供期望 base class；
+- `FStructProperty` 提供 struct 类型；
+- `FEnumProperty` / enum-backed `FByteProperty` 提供 enum 类型；
+- `FArrayProperty` / `FMapProperty` / `FSetProperty` 提供容器元素类型。
+
+这样 JSON 只表达“值”，不重复声明 UE 已经知道的 subtype，避免输入 schema 和实际 UPROPERTY 类型产生冲突。
+
 ```json
 {
   "AssetType": "GenericAsset",
@@ -99,6 +111,29 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
   }
 }
 ```
+
+Object、Class、Enum 等值也使用无 subtype 的 `type`：
+
+```json
+{
+  "Properties": {
+    "Icon": {
+      "type": "Object",
+      "value": "/Game/UI/T_Icon.T_Icon"
+    },
+    "EnemyClass": {
+      "type": "Class",
+      "value": "/Game/Blueprints/BP_Enemy.BP_Enemy_C"
+    },
+    "CollisionChannel": {
+      "type": "Enum",
+      "value": "ECC_Pawn"
+    }
+  }
+}
+```
+
+这些值是否合法，必须由目标属性的反射类型决定，而不是由 `type` 字符串里的 subtype 决定。
 
 ### 4.3 更新已有资产
 
@@ -203,6 +238,9 @@ FindObject / LoadClass fallback
 - 如果属性值是 `{ "type": "...", "value": ... }`，使用 typed property path。
 - 否则使用现有 untyped JSON path。
 - 支持 nested struct、array、map、set、object reference、class reference、soft reference，取决于 `PropertySetterUtils` 当前能力。
+- 第一版 typed `type` 不允许 subtype；`type` 中出现 `:` 应作为 validation error。
+- Object、Class、Struct、Enum、Array、Map、Set 的具体目标类型必须从目标 `FProperty` 推断。
+- 若现有 `PropertySetterUtils` typed API 要求 subtype，`GenericAsset` implementation plan 应增加一个 target-property-aware adapter，而不是把 subtype 暴露给用户。
 
 第一版应先做 preflight：
 
@@ -342,6 +380,7 @@ schema 需要说明：
 - 不适合图、树、导入和结构化资产；
 - `Class` 解析规则；
 - `Properties` untyped 和 typed 格式；
+- typed `type` 禁止 subtype，目标类型由 UPROPERTY 反射推断；
 - create/update/create-or-update 行为；
 - extract/diffOnly 行为；
 - 常见错误。
@@ -455,7 +494,9 @@ schema 需要说明：
 - `get_generator_schema(GenericAsset)` 可用。
 - 能创建至少一个当前无专门 generator 的 UObject/DataAsset 风格测试资产。
 - 能更新已有 GenericAsset 的单个属性。
-- 能用 typed property 设置基础类型、文本、向量或对象引用中的至少三类。
+- 能用 typed property 设置基础类型、文本、向量、对象引用、class 引用或 enum 中的至少三类。
+- typed `type` 中出现 subtype 时返回可读 validation error，例如拒绝 `Object:StaticMesh`。
+- Object/Class/Enum 等 typed values 根据目标属性反射类型验证，不依赖用户提供 subtype。
 - 无效 class、abstract class、属性不存在、类型不匹配都返回可读错误。
 - 失败的 property patch 不保存半写入资产。
 - `extract_assets` 对 GenericAsset 返回 `Class` 和 `Properties`。
@@ -488,4 +529,3 @@ schema 需要说明：
 - 已明确避免大型 if/else、switch/case 和静态类型列表。
 - 已明确 GenericAsset 不应抢占 Blueprint/Material/Widget 等专门 generator 的提取。
 - 已包含 MCP、UBT、Editor smoke 和 negative validation 验收。
-
