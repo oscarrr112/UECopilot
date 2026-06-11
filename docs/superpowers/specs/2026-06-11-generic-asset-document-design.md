@@ -3,7 +3,7 @@
 **日期**：2026-06-11  
 **状态**：草稿（待用户审阅）  
 **分支**：`feature/asset-document-generic-asset`  
-**范围**：第一版同目录 sidecar AssetDocument、通用 UObject/DataAsset 资产描述、属性 patch、以及资产移动/重命名/复制/删除 hook。不包含图资产、树资产、导入资产或结构化资产实现。
+**范围**：第一版同目录 sidecar AssetDocument、通用 UObject/DataAsset 资产描述、属性 patch、资产移动/重命名/复制/删除 hook，以及 `.assetdoc.json` 保存后的 Editor 自动 apply。不包含图资产、树资产、导入资产或结构化资产实现。
 
 ---
 
@@ -38,6 +38,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - 支持生成成功后写入或更新 sidecar。
 - 支持从 sidecar 文件路径推导目标资产路径。
 - 支持资产移动、重命名、复制、删除时同步 sidecar 的 editor hook。
+- 支持在 UE Editor 中监听 `.assetdoc.json` 保存，并自动 apply 到目标 `.uasset` 后保存资产。
 - 支持普通 UObject/DataAsset asset 的 package 创建与保存。
 - 支持 `Properties` 反射 patch，复用现有 `FPropertySetterUtils`。
 - 支持 typed property format 和现有 untyped format。
@@ -57,7 +58,7 @@ AssetFactory 当前主要按 `AssetType` 扩展独立 generator。这个模式�
 - 不替换现有 generator。
 - 不从 JSON 手写大型二进制 payload。
 - 不增加按具体资产类名分支的大型 `if/else` 或 `switch/case`。
-- 不尝试自动修改 UE CDO 并保持外部 sidecar 与 `.uasset` 持续热同步。
+- 不做字符级或每次输入级热同步；只在 `.assetdoc.json` 文件写入完成并稳定后触发一次 apply。
 - 不把现有 `extract_assets` 作为第一版核心链路；但 AssetDocument 自己需要提供 read-side inspection / extraction 能力，用于发现可写参数、生成草稿和调试。
 
 `FactoryClass` / `Factory` 字段可以在 schema 中作为后续扩展说明，但第一版实现可以不支持或只做显式拒绝，避免半成品语义。
@@ -242,6 +243,7 @@ AssetDocumentCompiler
   -> AssetLifecycleAdapter
   -> PropertyPatchAdapter
   -> SavePackageAdapter
+  -> FileWatcherService
   -> EditorSidecarSyncService
 ```
 
@@ -254,6 +256,7 @@ AssetDocumentCompiler
 - `DefaultObjectLifecycleAdapter`：处理可直接 `NewObject` 的 UObject/DataAsset 风格资产创建与加载；
 - `ReflectionPropertyPatchAdapter`：通过 `FProperty` 设置 CDO/对象属性；
 - `SavePackageAdapter`：保存 package；
+- `AssetDocumentFileWatcherService`：Editor-only 监听 `.assetdoc.json` 保存并调用 C++ apply；
 - `EditorSidecarSyncService`：处理 rename/move/duplicate/delete hook。
 
 这样第一版就从“每类资产一个 OOP generator”转成“文档编译器 + 能力组件装配”。后续支持 AnimMontage、Widget、MaterialGraph、Niagara、ABP 时，应优先新增或替换 capability component，而不是新增一个越来越重的 generator 子类。
@@ -267,6 +270,7 @@ AssetDocument 的核心能力必须落在 C++ `AssetDocument` module 中。MCP/H
 ```cpp
 struct FAssetDocumentApplyRequest;
 struct FAssetDocumentApplyResult;
+struct FAssetDocumentApplyFileRequest;
 struct FAssetDocumentInspectRequest;
 struct FAssetDocumentInspectResult;
 struct FAssetDocumentExtractRequest;
@@ -280,6 +284,7 @@ class FAssetDocumentService
 {
 public:
     FAssetDocumentApplyResult Apply(const FAssetDocumentApplyRequest& Request);
+    FAssetDocumentApplyResult ApplyFile(const FAssetDocumentApplyFileRequest& Request);
     FAssetDocumentInspectResult Inspect(const FAssetDocumentInspectRequest& Request) const;
     FAssetDocumentExtractResult Extract(const FAssetDocumentExtractRequest& Request) const;
     FAssetDocumentValidateResult Validate(const FAssetDocumentValidateRequest& Request) const;
@@ -297,7 +302,7 @@ public:
 - 是否写入 sidecar；
 - apply/diff 中字段的 before/after value。
 
-`Validate`、`Inspect`、`Extract`、`Diff` 必须是只读操作，不能保存 package，也不能修改 sidecar。`Apply` 是唯一允许写 `.uasset` / `.assetdoc.json` 的入口。
+`Validate`、`Inspect`、`Extract`、`Diff` 必须是只读操作，不能保存 package，也不能修改 sidecar。`Apply` / `ApplyFile` 是唯一允许写 `.uasset` / `.assetdoc.json` 的入口。
 
 ### 5.3 Sidecar 解析与写入
 
@@ -442,7 +447,42 @@ implementation plan 需要先确认 UE 5.7 中最稳定的 delegate/API。hook �
 - 对 duplicate/move/rename 更新必填 `Target` 字段；
 - 不自动修改 `Properties`。
 
-### 5.10 Inspection / extraction 策略
+### 5.10 AssetDocument file watcher
+
+第一版应在 UE Editor 中提供 `.assetdoc.json` 保存后自动 apply 的能力。实现应放在 C++ `AssetDocument` module 中，MCP/HTTP 不参与监听。
+
+推荐实现方式：
+
+```text
+FDirectoryWatcherModule / IDirectoryWatcher
+  -> filter *.assetdoc.json
+  -> debounce per file
+  -> wait until file timestamp/size is stable
+  -> AsyncTask(GameThread)
+  -> FAssetDocumentService::ApplyFile(...)
+```
+
+监听范围：
+
+- 只在 Editor 中启用，不在 cook、commandlet、runtime game 中启用；
+- 默认监听项目 `Content/` 下的 `.assetdoc.json`；
+- 后续可以支持插件 Content roots 或配置额外 roots；
+- 只响应 added / modified / renamed 后稳定的 `.assetdoc.json`。
+
+安全规则：
+
+- apply 前必须 validate `Target`，且 `Target` 必须与 sidecar 路径一致；
+- 如果目标 asset/package 在 Editor 中有未保存的用户修改，第一版应返回 warning 并跳过自动 apply，避免覆盖手工编辑；
+- 如果 Editor 正在 PIE、compile、save all 或 asset registry 批量扫描，implementation plan 需要决定排队或跳过，第一版推荐排队到安全时机；
+- 自动 apply 成功后保存目标 `.uasset`；
+- 自动 apply 失败时不保存 `.uasset`，并在 Output Log / HTTP service diagnostics 中记录可读错误；
+- watcher 触发的 apply 如果规范化写回 sidecar，必须抑制同一路径的下一次 watcher 回调，避免递归 apply；
+- 需要 debounce，同一个文件短时间多次写入只触发最后一次 apply；
+- 需要文件稳定检测，避免外部编辑器尚未写完时读取半截 JSON。
+
+这不是持续热同步：用户需要保存 `.assetdoc.json` 文件后才触发 apply。MCP `apply_asset_document_file` 仍保留，作为显式调用和测试入口。
+
+### 5.11 Inspection / extraction 策略
 
 第一版不复用旧 `extract_assets` 作为核心链路。AssetDocument 仍是 source-of-truth，不要求从 `.uasset` 完美反向生成 sidecar；但 AssetDocument module 必须提供自己的 read-side inspection / best-effort extraction，帮助 agent 发现可写参数、生成草稿和调试。
 
@@ -629,6 +669,9 @@ POST /assetdocument/diff
 - extraction 能从测试资产生成 diff-only AssetDocument 草稿；
 - validate/diff 不保存资产，并返回清晰结果；
 - 从同一个 sidecar 重复 apply 后结果稳定；
+- file watcher debounce 后只触发一次 apply；
+- watcher 读取半写 JSON 时不保存 `.uasset`，并在后续稳定写入后可恢复 apply；
+- watcher 触发的 sidecar 规范化写回不会递归 apply；
 - sidecar 缺少 `Target` 时失败。
 - `Target` 与 sidecar 路径不一致时失败。
 
@@ -655,9 +698,11 @@ POST /assetdocument/diff
 5. 用 `validate_asset_document` 验证草稿不保存资产。
 6. 用 `diff_asset_document` 查看将要修改的字段。
 7. 更新 sidecar 中单个属性并重新 apply。
-8. 通过 UE 读取资产验证未指定属性保持不变。
-9. 重命名/移动/复制/删除受管理资产，验证 sidecar 跟随行为。
-10. negative case 验证错误清晰。
+8. 直接修改并保存 `.assetdoc.json`，验证 watcher 自动 apply 并保存 `.uasset`。
+9. 在目标 asset/package 有未保存用户修改时保存 `.assetdoc.json`，验证 watcher 跳过或排队，不覆盖用户修改。
+10. 通过 UE 读取资产验证未指定属性保持不变。
+11. 重命名/移动/复制/删除受管理资产，验证 sidecar 跟随行为。
+12. negative case 验证错误清晰。
 
 ### 8.4 文档验证
 
@@ -702,7 +747,20 @@ POST /assetdocument/diff
 - hook 操作失败时给出 warning；
 - schema 明确 AssetDocument-managed 资产应通过 sidecar/apply 工作流维护。
 
-### 9.4 过早扩展成大平台
+### 9.4 自动 apply 可能误触发或覆盖用户修改
+
+风险：外部编辑器保存 `.assetdoc.json` 时可能产生多次文件事件、半写文件、临时文件 rename，或者目标 `.uasset` 在 UE 中已有未保存手工修改。
+
+缓解：
+
+- watcher 使用 debounce 和文件稳定检测；
+- 只处理 `.assetdoc.json` 后缀；
+- validate 失败不保存 `.uasset`；
+- 目标 package 有未保存用户修改时跳过或排队，第一版默认不覆盖；
+- watcher 自己写回 sidecar 时记录 suppress token，避免递归 apply；
+- 所有自动 apply 结果写入 Output Log / diagnostics，便于定位。
+
+### 9.5 过早扩展成大平台
 
 风险：第一版把 factory、structured blocks、graph、import 都塞进去，导致实现失焦。
 
@@ -729,6 +787,11 @@ POST /assetdocument/diff
 - sidecar 缺少 `Target` 时失败。
 - `Target` 与 sidecar 路径不一致时失败。
 - apply 成功后能写入或更新 sidecar。
+- Editor 中保存 `.assetdoc.json` 后，file watcher 能 debounce 并自动调用 `ApplyFile`。
+- watcher 自动 apply 成功后保存目标 `.uasset`。
+- watcher 遇到无效 JSON、validation error 或半写文件时不保存 `.uasset`。
+- watcher 不覆盖目标 package 中未保存的用户修改。
+- watcher 自己写回 sidecar 时不会递归触发无限 apply。
 - 受管理资产 rename/move 时 sidecar 跟随并更新 `Target`。
 - 受管理资产 duplicate 时 sidecar 被复制并更新 `Target`。
 - 受管理资产 delete 时 sidecar 被删除或移入实现计划指定的位置，不留下误指向现有资产的 sidecar。
