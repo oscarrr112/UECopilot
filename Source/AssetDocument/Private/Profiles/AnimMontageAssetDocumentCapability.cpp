@@ -8,8 +8,6 @@
 #include "Animation/AnimMontage.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
-#include "Serialization/JsonSerializer.h"
-#include "Serialization/JsonWriter.h"
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -29,12 +27,121 @@ bool IsKnownBodyKey(const FString& BodyKey)
 
 FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
 {
-	TSharedPtr<FJsonObject> Wrapper = MakeShared<FJsonObject>();
-	Wrapper->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
+	auto AppendQuotedJsonString = [](const FString& String, FString& Out)
+	{
+		Out += TEXT("\"");
+		for (int32 Index = 0; Index < String.Len(); ++Index)
+		{
+			const TCHAR Character = String[Index];
+			switch (Character)
+			{
+			case TEXT('"'):
+				Out += TEXT("\\\"");
+				break;
+			case TEXT('\\'):
+				Out += TEXT("\\\\");
+				break;
+			case TEXT('\b'):
+				Out += TEXT("\\b");
+				break;
+			case TEXT('\f'):
+				Out += TEXT("\\f");
+				break;
+			case TEXT('\n'):
+				Out += TEXT("\\n");
+				break;
+			case TEXT('\r'):
+				Out += TEXT("\\r");
+				break;
+			case TEXT('\t'):
+				Out += TEXT("\\t");
+				break;
+			default:
+				if (Character < 0x20)
+				{
+					Out += FString::Printf(TEXT("\\u%04x"), static_cast<int32>(Character));
+				}
+				else
+				{
+					Out.AppendChar(Character);
+				}
+				break;
+			}
+		}
+		Out += TEXT("\"");
+	};
+
+	TFunction<void(TSharedPtr<FJsonValue>, FString&)> AppendCanonicalJsonValue;
+	AppendCanonicalJsonValue = [&AppendCanonicalJsonValue, &AppendQuotedJsonString](TSharedPtr<FJsonValue> JsonValue, FString& Out)
+	{
+		if (!JsonValue.IsValid() || JsonValue->Type == EJson::Null || JsonValue->Type == EJson::None)
+		{
+			Out += TEXT("null");
+			return;
+		}
+
+		switch (JsonValue->Type)
+		{
+		case EJson::String:
+			AppendQuotedJsonString(JsonValue->AsString(), Out);
+			break;
+		case EJson::Number:
+			Out += FString::Printf(TEXT("%.17g"), JsonValue->AsNumber());
+			break;
+		case EJson::Boolean:
+			Out += JsonValue->AsBool() ? TEXT("true") : TEXT("false");
+			break;
+		case EJson::Array:
+			{
+				Out += TEXT("[");
+				const TArray<TSharedPtr<FJsonValue>>& Array = JsonValue->AsArray();
+				for (int32 Index = 0; Index < Array.Num(); ++Index)
+				{
+					if (Index > 0)
+					{
+						Out += TEXT(",");
+					}
+					AppendCanonicalJsonValue(Array[Index], Out);
+				}
+				Out += TEXT("]");
+				break;
+			}
+		case EJson::Object:
+			{
+				const TSharedPtr<FJsonObject> Object = JsonValue->AsObject();
+				if (!Object.IsValid())
+				{
+					Out += TEXT("null");
+					break;
+				}
+
+				TArray<FString> Keys;
+				Object->Values.GetKeys(Keys);
+				Keys.Sort();
+
+				Out += TEXT("{");
+				for (int32 Index = 0; Index < Keys.Num(); ++Index)
+				{
+					if (Index > 0)
+					{
+						Out += TEXT(",");
+					}
+					AppendQuotedJsonString(Keys[Index], Out);
+					Out += TEXT(":");
+					const TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(Keys[Index]);
+					AppendCanonicalJsonValue(FieldValue ? *FieldValue : MakeShared<FJsonValueNull>(), Out);
+				}
+				Out += TEXT("}");
+				break;
+			}
+		default:
+			Out += TEXT("null");
+			break;
+		}
+	};
 
 	FString JsonText;
-	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
-	FJsonSerializer::Serialize(Wrapper.ToSharedRef(), Writer);
+	AppendCanonicalJsonValue(Value.IsValid() ? Value : MakeShared<FJsonValueNull>(), JsonText);
 	return JsonText;
 }
 
@@ -1058,6 +1165,29 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 		return ValidateResult;
 	}
 
+	UAnimMontage* CurrentMontage = Cast<UAnimMontage>(Context.Asset);
+	if (!CurrentMontage)
+	{
+		return BodyFailure(TEXT("AnimMontage body diff requires UAnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	UAnimMontage* PreviewMontage = DuplicateObject<UAnimMontage>(CurrentMontage, GetTransientPackage());
+	if (!PreviewMontage)
+	{
+		return BodyFailure(TEXT("Failed to duplicate AnimMontage for Body diff"), TEXT("/Body"), TEXT("DuplicateFailed"));
+	}
+
+	FAssetDocumentCapabilityContext PreviewContext = Context;
+	PreviewContext.Asset = PreviewMontage;
+	PreviewContext.AssetClass = UAnimMontage::StaticClass();
+	PreviewContext.bIsDryRun = true;
+
+	FAssetDocumentCapabilityResult ApplyResult = const_cast<FAnimMontageAssetDocumentCapability*>(this)->Apply(PreviewContext, DesiredJson);
+	if (!ApplyResult.bSuccess)
+	{
+		return ApplyResult;
+	}
+
 	TSharedRef<FJsonObject> CurrentBody = MakeShared<FJsonObject>();
 	const FAssetDocumentCapabilityResult ExtractResult = Extract(Context, CurrentBody);
 	if (!ExtractResult.bSuccess)
@@ -1065,6 +1195,14 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 		return ExtractResult;
 	}
 	CurrentBody->RemoveField(TEXT("_Skipped"));
+
+	TSharedRef<FJsonObject> PreviewBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult PreviewExtractResult = Extract(PreviewContext, PreviewBody);
+	if (!PreviewExtractResult.bSuccess)
+	{
+		return PreviewExtractResult;
+	}
+	PreviewBody->RemoveField(TEXT("_Skipped"));
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBody->Values)
 	{
@@ -1075,7 +1213,8 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 
 		const TSharedPtr<FJsonValue>* CurrentValue = CurrentBody->Values.Find(Pair.Key);
 		const TSharedPtr<FJsonValue> Current = CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>();
-		const TSharedPtr<FJsonValue> Desired = Pair.Value.IsValid() ? Pair.Value : MakeShared<FJsonValueNull>();
+		const TSharedPtr<FJsonValue>* DesiredValue = PreviewBody->Values.Find(Pair.Key);
+		const TSharedPtr<FJsonValue> Desired = DesiredValue ? *DesiredValue : MakeShared<FJsonValueNull>();
 		const FString Status = JsonValueToComparableString(Current) == JsonValueToComparableString(Desired)
 			? TEXT("unchanged")
 			: TEXT("changed");

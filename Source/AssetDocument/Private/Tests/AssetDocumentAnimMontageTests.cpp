@@ -49,6 +49,14 @@ TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
 	return Fragment;
 }
 
+TSharedPtr<FJsonObject> MakeReorderedAssetRef(const FString& Path)
+{
+	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Path"), Path);
+	Fragment->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	return Fragment;
+}
+
 TSharedPtr<FJsonObject> MakeDefinitionRef(const FString& Id)
 {
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
@@ -172,6 +180,57 @@ TSharedPtr<FJsonObject> MakeStructuredMontageDocument(const FString& Target, con
 	TSharedPtr<FJsonObject> Blend = MakeShared<FJsonObject>();
 	Blend->SetNumberField(TEXT("BlendInTime"), 0.1);
 	Blend->SetNumberField(TEXT("BlendOutTime"), 0.2);
+	Body->SetObjectField(TEXT("Blend"), Blend);
+
+	return Document;
+}
+
+TSharedPtr<FJsonObject> MakeReorderedStructuredMontageDocument(const FString& Target, const FString& AnimReferencePath)
+{
+	TSharedPtr<FJsonObject> Document = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	Body->SetObjectField(TEXT("Skeleton"), MakeReorderedAssetRef(TestSkeletonPath));
+	Body->SetObjectField(TEXT("PreviewMesh"), MakeReorderedAssetRef(TestPreviewMeshPath));
+
+	TSharedPtr<FJsonObject> Segment = MakeShared<FJsonObject>();
+	Segment->SetNumberField(TEXT("LoopingCount"), 1.0);
+	Segment->SetNumberField(TEXT("AnimPlayRate"), 1.0);
+	Segment->SetNumberField(TEXT("AnimEndTime"), 0.25);
+	Segment->SetNumberField(TEXT("AnimStartTime"), 0.0);
+	Segment->SetNumberField(TEXT("StartPos"), 0.0);
+	Segment->SetObjectField(TEXT("AnimReference"), MakeReorderedAssetRef(AnimReferencePath));
+
+	TArray<TSharedPtr<FJsonValue>> AnimSegments;
+	AnimSegments.Add(MakeShared<FJsonValueObject>(Segment));
+
+	TSharedPtr<FJsonObject> AnimTrack = MakeShared<FJsonObject>();
+	AnimTrack->SetArrayField(TEXT("AnimSegments"), AnimSegments);
+
+	TSharedPtr<FJsonObject> SlotAnimTrack = MakeShared<FJsonObject>();
+	SlotAnimTrack->SetObjectField(TEXT("AnimTrack"), AnimTrack);
+	SlotAnimTrack->SetStringField(TEXT("SlotName"), TEXT("DefaultSlot"));
+
+	TArray<TSharedPtr<FJsonValue>> SlotAnimTracks;
+	SlotAnimTracks.Add(MakeShared<FJsonValueObject>(SlotAnimTrack));
+	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotAnimTracks);
+
+	TSharedPtr<FJsonObject> StartSection = MakeShared<FJsonObject>();
+	StartSection->SetStringField(TEXT("NextSectionName"), TEXT("End"));
+	StartSection->SetNumberField(TEXT("LinkableTime"), 0.0);
+	StartSection->SetStringField(TEXT("SectionName"), TEXT("Start"));
+
+	TSharedPtr<FJsonObject> EndSection = MakeShared<FJsonObject>();
+	EndSection->SetNumberField(TEXT("LinkableTime"), 0.25);
+	EndSection->SetStringField(TEXT("SectionName"), TEXT("End"));
+
+	TArray<TSharedPtr<FJsonValue>> CompositeSections;
+	CompositeSections.Add(MakeShared<FJsonValueObject>(StartSection));
+	CompositeSections.Add(MakeShared<FJsonValueObject>(EndSection));
+	Body->SetArrayField(TEXT("CompositeSections"), CompositeSections);
+
+	TSharedPtr<FJsonObject> Blend = MakeShared<FJsonObject>();
+	Blend->SetNumberField(TEXT("BlendOutTime"), 0.2);
+	Blend->SetNumberField(TEXT("BlendInTime"), 0.1);
 	Body->SetObjectField(TEXT("Blend"), Blend);
 
 	return Document;
@@ -1160,6 +1219,105 @@ bool FAssetDocumentAnimMontageApplyDefinitionRefBodyTest::RunTest(const FString&
 	{
 		TestEqual(TEXT("DefinitionRef segment uses generated animation"), Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].GetAnimReference().Get(), AnimSequence);
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageDiffTreatsDefinitionRefAsUnchangedTest,
+	"AssetFactory.AssetDocument.AnimMontage.DiffTreatsDefinitionRefAsUnchanged",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageDiffTreatsDefinitionRefAsUnchangedTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_DiffDefinitionRef"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DesiredDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> Definitions = DesiredDocument->GetObjectField(TEXT("Definitions"));
+	Definitions->SetObjectField(TEXT("SkeletonAsset"), MakeAssetRef(TestSkeletonPath));
+	Definitions->SetObjectField(TEXT("PreviewMeshAsset"), MakeAssetRef(TestPreviewMeshPath));
+	Definitions->SetObjectField(TEXT("AnimAsset"), MakeAssetRef(AnimSequence->GetPathName()));
+
+	TSharedPtr<FJsonObject> Body = DesiredDocument->GetObjectField(TEXT("Body"));
+	Body->SetObjectField(TEXT("Skeleton"), MakeDefinitionRef(TEXT("SkeletonAsset")));
+	Body->SetObjectField(TEXT("PreviewMesh"), MakeDefinitionRef(TEXT("PreviewMeshAsset")));
+	GetFirstSegment(DesiredDocument)->SetObjectField(TEXT("AnimReference"), MakeDefinitionRef(TEXT("AnimAsset")));
+
+	const FAssetDocumentResult DiffResult = DiffDocument(DesiredDocument);
+	TestTrue(TEXT("Diff succeeds for DefinitionRef-equivalent AnimMontage Body"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Diff returns a payload"), DiffResult.Payload.IsValid());
+	if (!DiffResult.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("Diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TestFalse(TEXT("Diff does not report changed SlotAnimTracks for equivalent DefinitionRef"), Changed && JsonArrayContainsPathStatus(*Changed, TEXT("/Body/SlotAnimTracks"), TEXT("changed")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+	TestTrue(TEXT("Diff payload includes unchanged array"), DiffResult.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged));
+	TestTrue(TEXT("Diff reports unchanged SlotAnimTracks for equivalent DefinitionRef"), Unchanged && JsonArrayContainsPathStatus(*Unchanged, TEXT("/Body/SlotAnimTracks"), TEXT("unchanged")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageDiffIgnoresObjectFieldOrderTest,
+	"AssetFactory.AssetDocument.AnimMontage.DiffIgnoresObjectFieldOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageDiffIgnoresObjectFieldOrderTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_DiffFieldOrder"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	const FAssetDocumentResult DiffResult = DiffDocument(MakeReorderedStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Diff succeeds for reordered AnimMontage Body"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Diff returns a payload"), DiffResult.Payload.IsValid());
+	if (!DiffResult.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("Diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TestFalse(TEXT("Diff does not report changed SlotAnimTracks for reordered fields"), Changed && JsonArrayContainsPathStatus(*Changed, TEXT("/Body/SlotAnimTracks"), TEXT("changed")));
+	TestFalse(TEXT("Diff does not report changed CompositeSections for reordered fields"), Changed && JsonArrayContainsPathStatus(*Changed, TEXT("/Body/CompositeSections"), TEXT("changed")));
+	TestFalse(TEXT("Diff does not report changed Blend for reordered fields"), Changed && JsonArrayContainsPathStatus(*Changed, TEXT("/Body/Blend"), TEXT("changed")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+	TestTrue(TEXT("Diff payload includes unchanged array"), DiffResult.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged));
+	TestTrue(TEXT("Diff reports unchanged SlotAnimTracks for reordered fields"), Unchanged && JsonArrayContainsPathStatus(*Unchanged, TEXT("/Body/SlotAnimTracks"), TEXT("unchanged")));
+	TestTrue(TEXT("Diff reports unchanged CompositeSections for reordered fields"), Unchanged && JsonArrayContainsPathStatus(*Unchanged, TEXT("/Body/CompositeSections"), TEXT("unchanged")));
+	TestTrue(TEXT("Diff reports unchanged Blend for reordered fields"), Unchanged && JsonArrayContainsPathStatus(*Unchanged, TEXT("/Body/Blend"), TEXT("unchanged")));
 
 	return true;
 }
