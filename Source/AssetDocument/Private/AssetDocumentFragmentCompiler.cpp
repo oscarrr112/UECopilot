@@ -69,7 +69,12 @@ FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Extract(const FAsse
 	AdapterContext.JsonPath = Context.JsonPath;
 	AdapterContext.Role = Context.Role;
 
-	const FName Kind(*Context.Role);
+	if (Context.Kind.IsNone())
+	{
+		return MissingKindFailure(AdapterContext);
+	}
+
+	const FName Kind = Context.Kind;
 	const IAssetDocumentFragmentAdapter* Adapter = FindAdapter(Kind, AdapterContext);
 	if (!Adapter)
 	{

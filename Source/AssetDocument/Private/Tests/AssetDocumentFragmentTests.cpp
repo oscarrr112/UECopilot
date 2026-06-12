@@ -39,6 +39,7 @@ public:
 	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const override
 	{
 		OutFragmentJson->SetStringField(TEXT("Kind"), GetKind().ToString());
+		OutFragmentJson->SetStringField(TEXT("Role"), Context.Role);
 		return FAssetDocumentFragmentResult::Success();
 	}
 };
@@ -76,13 +77,15 @@ bool FAssetDocumentFragmentCompilerDispatchTest::RunTest(const FString& Paramete
 	}
 
 	FAssetDocumentFragmentExtractContext ExtractContext;
+	ExtractContext.Kind = TEXT("TestKind");
 	ExtractContext.JsonPath = TEXT("/Body/Test");
-	ExtractContext.Role = TEXT("TestKind");
+	ExtractContext.Role = TEXT("SemanticRole");
 
 	TSharedRef<FJsonObject> ExtractedFragment = MakeShared<FJsonObject>();
 	const FAssetDocumentFragmentResult ExtractResult = Compiler.Extract(ExtractContext, ExtractedFragment);
 	TestTrue(TEXT("Known fragment role extracts"), ExtractResult.bSuccess);
 	TestEqual(TEXT("Extract writes fragment Kind"), ExtractedFragment->GetStringField(TEXT("Kind")), FString(TEXT("TestKind")));
+	TestEqual(TEXT("Extract preserves semantic role separately from kind"), ExtractedFragment->GetStringField(TEXT("Role")), FString(TEXT("SemanticRole")));
 
 	return true;
 }

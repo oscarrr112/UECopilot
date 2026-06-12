@@ -26,6 +26,7 @@ struct ASSETDOCUMENT_API FAssetDocumentFragmentExtractContext
 	UObject* ValueObject = nullptr;
 	UScriptStruct* StructType = nullptr;
 	const void* StructValue = nullptr;
+	FName Kind;
 	FString JsonPath;
 	FString Role;
 };
