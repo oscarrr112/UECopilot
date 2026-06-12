@@ -115,6 +115,29 @@ UObject* LoadAssetFromPackageOrObjectPath(const FString& PackageOrObjectPath)
 	return Asset;
 }
 
+TSharedPtr<FJsonObject> MakeDiffDocument(TSharedPtr<FJsonObject> Document)
+{
+	if (!Document.IsValid())
+	{
+		return Document;
+	}
+
+	const TSharedPtr<FJsonObject>* BodyObject = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), BodyObject) || !BodyObject || !BodyObject->IsValid() || !(*BodyObject)->HasField(TEXT("_Skipped")))
+	{
+		return Document;
+	}
+
+	TSharedPtr<FJsonObject> DiffDocument = MakeShared<FJsonObject>();
+	DiffDocument->Values = Document->Values;
+
+	TSharedPtr<FJsonObject> DiffBody = MakeShared<FJsonObject>();
+	DiffBody->Values = (*BodyObject)->Values;
+	DiffBody->RemoveField(TEXT("_Skipped"));
+	DiffDocument->SetObjectField(TEXT("Body"), DiffBody);
+	return DiffDocument;
+}
+
 struct FAssetDocumentResolvedTarget
 {
 	UObject* Asset = nullptr;
@@ -1190,6 +1213,8 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 			return Result;
 		}
 	}
+
+	Document = MakeDiffDocument(Document);
 
 	const FAssetDocumentResult ValidateResult = ValidateGenericAssetDocument(Document, NormalizedFilePath, false);
 	if (!ValidateResult.IsSuccess())

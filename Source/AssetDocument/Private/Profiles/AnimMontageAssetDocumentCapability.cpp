@@ -160,6 +160,19 @@ void AddBodyDiffEntry(
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
 
+TSharedRef<FJsonObject> MakeBodyObjectForDiff(const TSharedRef<FJsonObject>& BodyObject)
+{
+	if (!BodyObject->HasField(TEXT("_Skipped")))
+	{
+		return BodyObject;
+	}
+
+	TSharedRef<FJsonObject> DiffBody = MakeShared<FJsonObject>();
+	DiffBody->Values = BodyObject->Values;
+	DiffBody->RemoveField(TEXT("_Skipped"));
+	return DiffBody;
+}
+
 FString GetLegacyBodyKeyGuidance(const FString& BodyKey)
 {
 	if (BodyKey == TEXT("Slots"))
@@ -1159,7 +1172,13 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
 	}
 
-	const FAssetDocumentCapabilityResult ValidateResult = ValidateBodyObject(Context, DesiredBody.ToSharedRef());
+	const bool bHasSkippedMetadata = DesiredBody->HasField(TEXT("_Skipped"));
+	const TSharedRef<FJsonObject> DesiredBodyForDiff = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
+	const TSharedRef<FJsonValue> DesiredJsonForDiff = bHasSkippedMetadata
+		? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(DesiredBodyForDiff))
+		: DesiredJson;
+
+	const FAssetDocumentCapabilityResult ValidateResult = ValidateBodyObject(Context, DesiredBodyForDiff);
 	if (!ValidateResult.bSuccess)
 	{
 		return ValidateResult;
@@ -1182,7 +1201,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 	PreviewContext.AssetClass = UAnimMontage::StaticClass();
 	PreviewContext.bIsDryRun = true;
 
-	FAssetDocumentCapabilityResult ApplyResult = const_cast<FAnimMontageAssetDocumentCapability*>(this)->Apply(PreviewContext, DesiredJson);
+	FAssetDocumentCapabilityResult ApplyResult = const_cast<FAnimMontageAssetDocumentCapability*>(this)->Apply(PreviewContext, DesiredJsonForDiff);
 	if (!ApplyResult.bSuccess)
 	{
 		return ApplyResult;
@@ -1204,7 +1223,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 	}
 	PreviewBody->RemoveField(TEXT("_Skipped"));
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBody->Values)
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBodyForDiff->Values)
 	{
 		if (Pair.Key == TEXT("_Skipped"))
 		{

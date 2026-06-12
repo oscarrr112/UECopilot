@@ -300,6 +300,25 @@ bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, c
 	return false;
 }
 
+bool JsonArrayContainsPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString Path;
+		if (Object->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool HasExpectedBodySections(const TArray<TSharedPtr<FJsonValue>>& BodySections)
 {
 	return JsonArrayContainsString(BodySections, TEXT("Skeleton"))
@@ -1371,6 +1390,66 @@ bool FAssetDocumentAnimMontageDiffReportsChangedBodySectionsTest::RunTest(const 
 	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
 	TestTrue(TEXT("Diff payload includes failed array"), DiffResult.Payload->TryGetArrayField(TEXT("failed"), Failed));
 	TestTrue(TEXT("Diff has no failed Body entries"), Failed && Failed->Num() == 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageDiffIgnoresSkippedMetadataTest,
+	"AssetFactory.AssetDocument.AnimMontage.DiffIgnoresSkippedMetadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageDiffIgnoresSkippedMetadataTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_DiffSkipped"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DesiredDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetNumberField(TEXT("UnmanagedNotifies"), 1.0);
+	DesiredDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("_Skipped"), Skipped);
+
+	const FAssetDocumentResult DiffResult = DiffDocument(DesiredDocument);
+	TestTrue(TEXT("Diff succeeds with extract-only _Skipped Body metadata"), DiffResult.IsSuccess());
+	if (!DiffResult.IsSuccess())
+	{
+		AddError(DiffResult.Message);
+		return false;
+	}
+	TestTrue(TEXT("Diff returns a payload"), DiffResult.Payload.IsValid());
+	if (!DiffResult.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("Diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TestFalse(TEXT("Diff does not report changed _Skipped metadata"), Changed && JsonArrayContainsPath(*Changed, TEXT("/Body/_Skipped")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+	TestTrue(TEXT("Diff payload includes unchanged array"), DiffResult.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged));
+	TestFalse(TEXT("Diff does not report unchanged _Skipped metadata"), Unchanged && JsonArrayContainsPath(*Unchanged, TEXT("/Body/_Skipped")));
+
+	const TArray<TSharedPtr<FJsonValue>>* SkippedEntries = nullptr;
+	TestTrue(TEXT("Diff payload includes skipped array"), DiffResult.Payload->TryGetArrayField(TEXT("skipped"), SkippedEntries));
+	TestFalse(TEXT("Diff does not report skipped _Skipped metadata"), SkippedEntries && JsonArrayContainsPath(*SkippedEntries, TEXT("/Body/_Skipped")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+	TestTrue(TEXT("Diff payload includes failed array"), DiffResult.Payload->TryGetArrayField(TEXT("failed"), Failed));
+	TestFalse(TEXT("Diff does not report failed _Skipped metadata"), Failed && JsonArrayContainsPath(*Failed, TEXT("/Body/_Skipped")));
 
 	return true;
 }
