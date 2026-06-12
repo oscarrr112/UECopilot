@@ -553,8 +553,16 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return FAssetDocumentResult::Failure(TEXT("SchemaVersion must be 1"));
 	}
 
+	const bool bHasStructuredShape = Request.Document->HasField(TEXT("Body")) || Request.Document->HasField(TEXT("Definitions"));
 	FString AssetType;
-	if (!Request.Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	if (Request.Document->TryGetStringField(TEXT("AssetType"), AssetType))
+	{
+		if (AssetType != TEXT("GenericAsset"))
+		{
+			return FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
+		}
+	}
+	else if (!bHasStructuredShape)
 	{
 		return FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
 	}
@@ -642,10 +650,109 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
+	TArray<FAssetDocumentDiagnostic> Diagnostics = PropertyResult.Diagnostics;
+	if (Request.Document->HasField(TEXT("Body")))
+	{
+		TSharedPtr<FJsonValue> BodyValue = Request.Document->TryGetField(TEXT("Body"));
+		if (!BodyValue.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body is required when present"));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.Diagnostics = Diagnostics;
+			return Result;
+		}
+
+		const TSharedPtr<FJsonObject> BodyObject = BodyValue->AsObject();
+		if (!BodyObject.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body must be a JSON object"));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("InvalidBodyType");
+			Diagnostic.Message = Result.Message;
+			Diagnostics.Add(MoveTemp(Diagnostic));
+			Result.Diagnostics = Diagnostics;
+			return Result;
+		}
+
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+		if (!ProfileResolution.ExactProfile.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingProfile");
+			Diagnostic.Message = Result.Message;
+			Diagnostics.Add(MoveTemp(Diagnostic));
+			Result.Diagnostics = Diagnostics;
+			return Result;
+		}
+
+		TArray<const IAssetDocumentCapability*> BodyAdapters;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
+		{
+			const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(FName(*Pair.Key));
+			if (!BodyAdapter)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Profile for class '%s' does not provide Body adapter for '%s'"), *ResolvedClass->GetPathName(), *Pair.Key));
+				Result.Target = Target;
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				FAssetDocumentDiagnostic Diagnostic;
+				Diagnostic.Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
+				Diagnostic.Code = TEXT("MissingBodyAdapter");
+				Diagnostic.Message = Result.Message;
+				Diagnostics.Add(MoveTemp(Diagnostic));
+				Result.Diagnostics = Diagnostics;
+				return Result;
+			}
+
+			BodyAdapters.AddUnique(BodyAdapter);
+		}
+
+		if (BodyAdapters.Num() == 0)
+		{
+			if (const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+			{
+				BodyAdapters.Add(BodyAdapter);
+			}
+		}
+
+		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
+		{
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = LifecycleResult.Asset;
+			CapabilityContext.AssetClass = ResolvedClass;
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = FString();
+			CapabilityContext.bIsDryRun = false;
+
+			FAssetDocumentCapabilityResult CapabilityResult = const_cast<IAssetDocumentCapability*>(BodyAdapter)->Apply(CapabilityContext, BodyValue.ToSharedRef());
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, FString());
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				Result.Diagnostics.Insert(Diagnostics, 0);
+				return Result;
+			}
+
+			Diagnostics.Append(CapabilityResult.Diagnostics);
+		}
+	}
+
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
 	Result.Target = Target;
 	Result.AssetPath = LifecycleResult.ObjectPath;
-	Result.Diagnostics = PropertyResult.Diagnostics;
+	Result.Diagnostics = Diagnostics;
 	Result.bWroteSidecar = false;
 
 	if (Request.bSaveAsset)
@@ -662,7 +769,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
-			Result.Diagnostics = PropertyResult.Diagnostics;
+			Result.Diagnostics = Diagnostics;
 			Result.bSavedAsset = false;
 			Result.bWroteSidecar = false;
 			return Result;
@@ -877,6 +984,31 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 	Document->SetStringField(TEXT("Class"), Asset->GetClass()->GetPathName());
 	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 	Document->SetObjectField(TEXT("Properties"), Properties);
+
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
+	if (ProfileResolution.ExactProfile.IsValid())
+	{
+		if (const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+		{
+			TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = Asset;
+			CapabilityContext.AssetClass = Asset->GetClass();
+			CapabilityContext.TargetAssetPath = Target;
+
+			const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Extract(CapabilityContext, Body);
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentResult Result = FAssetDocumentResult::Failure(CapabilityResult.Message);
+				Result.Target = Target;
+				Result.AssetPath = Asset->GetPathName();
+				Result.Diagnostics = CapabilityResult.Diagnostics;
+				return Result;
+			}
+
+			Document->SetObjectField(TEXT("Body"), Body);
+		}
+	}
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument extracted"));
 	Result.Target = Target;
