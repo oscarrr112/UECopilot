@@ -351,18 +351,38 @@ void FAssetFactoryModule::StartupModule()
 - 设置 composite sections；
 - 设置 section next link；
 - 设置基础 blend time；
+- 创建 montage timeline 内嵌的 `UAnimNotify` / `UAnimNotifyState` 对象，并通过反射设置它们的属性；
 - extract/diff 上述内容。
 
-第一版暂不支持或仅 inspect：
+第一版暂不支持或仅 inspect 的字段必须记录到 deferred fields 目录：
+
+```text
+docs/superpowers/specs/asset-document-deferred-fields/
+```
+
+规则：
+
+- 每个 capability 维护一份 deferred fields 文件；
+- spec 里如果写“暂不支持”“仅 inspect”“skipped”，必须同步把字段、原因、清理条件写进 deferred fields 文件；
+- 后续实现或 review 不允许只靠正文记忆追踪未完成项。
+
+AnimMontage 第一版 deferred fields：
 
 - branching point；
-- notify state 完整对象创建；
 - marker sync；
 - root motion advanced settings；
 - metadata object authoring；
 - montage editor UI layout。
 
-可以把 notifies 作为 P1：
+Notify / NotifyState 不是独立 deferred 项。第一版可以支持“完整对象创建”，但边界是：
+
+- 支持在 `AnimMontage` capability 内创建 montage timeline 上的 notify event；
+- 支持 `NotifyClass` / `NotifyStateClass` 使用完整反射路径；
+- 支持 `Properties` 使用通用 property patch 设置 notify 对象字段；
+- 不在本阶段抽象独立的 `AnimNotify` / `AnimNotifyState` capability；
+- 不在本阶段理解每种 AN/ANS 的领域语义。
+
+示例：
 
 ```json
 {
@@ -370,13 +390,23 @@ void FAssetFactoryModule::StartupModule()
     {
       "Name": "Hit",
       "Time": 0.35,
-      "NotifyClass": "/Script/Engine.AnimNotify"
+      "NotifyClass": "/Script/Engine.AnimNotify",
+      "Properties": {}
+    }
+  ],
+  "NotifyStates": [
+    {
+      "Name": "AttackWindow",
+      "Time": 0.25,
+      "Duration": 0.35,
+      "NotifyStateClass": "/Script/Engine.AnimNotifyState",
+      "Properties": {}
     }
   ]
 }
 ```
 
-但不应阻塞 P0。P0 的价值是先证明结构化 adapter 能创建可打开的 montage。
+这需要新增一个很薄的 instanced object builder，但不需要新增一套 AN capability。它应复用现有动态 class load 和 property setter，而不是硬编码具体 notify 类型。
 
 ### 5.2 UE 结构映射
 
@@ -395,12 +425,16 @@ UE 5.7 相关结构：
 - `UAnimMontage::CompositeSections`
 - `FCompositeSection::SectionName`
 - `FCompositeSection::NextSectionName`
+- `FAnimNotifyEvent`
+- `UAnimNotify`
+- `UAnimNotifyState`
 
 实现时优先使用 UE API：
 
 - `SetAnimReference` 设置 segment 动画引用；
 - linkable element 的公开方法设置 time；
 - montage 提供的 section/link helper 如果存在，应优先使用；
+- notify / notify state 对象创建应使用完整 class path 动态加载，并限制基类为 `UAnimNotify` 或 `UAnimNotifyState`；
 - raw array mutation 只允许在 adapter 内部小范围使用，并且必须配套 post edit/rebuild/validation。
 
 ### 5.3 引用校验
@@ -416,12 +450,17 @@ adapter 必须校验：
 - `AnimPlayRate` 非 0；
 - `LoopingCount` 大于 0；
 - `NextSection` 如果提供，必须指向已有 section。
+- `NotifyClass` 必须是 `UAnimNotify` 的可实例化 class；
+- `NotifyStateClass` 必须是 `UAnimNotifyState` 的可实例化 class；
+- notify / notify state 的 `Properties` 必须能被通用 property setter 写入；
+- notify state `Duration` 必须大于 0。
 
 错误需要带 JSON path，例如：
 
 ```text
 /Capabilities/AnimMontage/Slots[0]/Segments[1]/Animation
 /Capabilities/AnimMontage/Sections[2]/NextSection
+/Capabilities/AnimMontage/NotifyStates[0]/NotifyStateClass
 ```
 
 ### 5.4 Apply 策略
@@ -430,6 +469,8 @@ P0 采用 replace-owned-block 策略：
 
 - `Slots` 如果出现，则替换全部 slot tracks；
 - `Sections` 如果出现，则替换全部 composite sections；
+- `Notifies` 如果出现，则替换 AnimMontage capability 管理的全部 notify events；
+- `NotifyStates` 如果出现，则替换 AnimMontage capability 管理的全部 notify state events；
 - `Blend` 如果出现，则只更新声明字段；
 - 未声明的 capability 子块保持不变。
 
@@ -453,6 +494,7 @@ P0 采用 replace-owned-block 策略：
 表示显式清空 slots/sections。
 
 如果 `Slots` 字段不存在，则不修改现有 slots。
+如果 `Notifies` / `NotifyStates` 字段不存在，则不修改现有 notify timeline。
 
 ### 5.5 Extract 策略
 
@@ -479,18 +521,20 @@ extract 默认输出与当前 asset 结构一致的 capability block：
           ]
         }
       ],
-      "Sections": []
+      "Sections": [],
+      "Notifies": [],
+      "NotifyStates": []
     }
   }
 }
 ```
 
-extract 不需要输出 unsupported/unknown internal data，但要在 result 中记录 skipped entries，例如：
+extract 不需要输出 unsupported/unknown internal data，但要在 result 中记录 skipped entries，并同步维护 deferred fields 文件。例如：
 
 ```json
 {
-  "Path": "/Capabilities/AnimMontage/Notifies",
-  "Reason": "Notify extraction is not supported in this version"
+  "Path": "/Capabilities/AnimMontage/BranchingPoints",
+  "Reason": "Branching point authoring is deferred; tracked in asset-document-deferred-fields/2026-06-12-animmontage.md"
 }
 ```
 
@@ -586,6 +630,7 @@ DefaultObjectLifecycleAdapter
 
 - `AnimMontageLifecycleCapability` 或 `FactoryCreatePolicy`；
 - `AnimMontageAssetDocumentCapability`；
+- `AssetDocumentInstancedObjectBuilder`，用于 timeline notify / notify state 等内嵌 UObject 创建；
 - small helper for loading animation references。
 
 不允许新增一个承载完整业务的：
@@ -615,6 +660,9 @@ Source/AssetFactory/Private/AssetDocument/
 Source/AssetFactory/Private/AssetDocument/Capabilities/
   AnimMontageAssetDocumentCapability.h
   AnimMontageAssetDocumentCapability.cpp
+
+docs/superpowers/specs/asset-document-deferred-fields/
+  2026-06-12-animmontage.md
 ```
 
 如果 `Private/AssetDocument/Capabilities` 目录较重，可以先放 private；待 capability 生态稳定后再公开接口。
@@ -705,7 +753,8 @@ MCP 测试需要覆盖：
 7. `validate_asset_document` 对坏引用、坏 section link、class mismatch 给出明确错误。
 8. `extract_asset_document` 能输出 `Capabilities.AnimMontage`。
 9. `diff_asset_document` 能比较 capability block。
-10. UBT、automation、MCP tests、live smoke 均通过。
+10. notify / notify state 可以用完整 class path 创建内嵌对象，并通过反射设置属性。
+11. UBT、automation、MCP tests、live smoke 均通过。
 
 ---
 
@@ -740,14 +789,16 @@ MCP 测试需要覆盖：
 
 风险：
 
-- notify object、notify state、branching point 语义复杂；
-- 第一版如果强做，容易拖慢 capability 架构验证。
+- notify event、notify state、branching point 语义复杂；
+- 完整 AN/ANS 领域能力会牵涉每种 notify class 的专用语义；
+- 内嵌 UObject 创建如果没有统一 builder，容易在 Montage adapter 内产生硬编码。
 
 决策：
 
-- P0 不要求 notify authoring；
-- P1 再加 simple notifies；
-- extract 可以先 skipped notifies 并明确原因。
+- P0 支持 timeline 内嵌 `UAnimNotify` / `UAnimNotifyState` 对象创建；
+- P0 不实现独立 `AnimNotify` / `AnimNotifyState` capability；
+- P0 不理解 AN/ANS 领域语义，只做 class path、实例化、反射属性 patch、timeline 挂接；
+- branching point 仍 deferred，并记录到 deferred fields 文件。
 
 ### 11.4 Partial patch
 
@@ -798,4 +849,3 @@ implementation plan 建议拆成：
    - error paths、no mutation on validate、UBT/automation/MCP/live smoke。
 
 每个 task 仍然按项目规则记录 `TASK_BASE=HEAD`，完成后 checkpoint commit。
-
