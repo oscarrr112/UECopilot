@@ -9,7 +9,7 @@
 用途：
 
 ```text
-记录 AnimMontage capability 第一版暂不支持、仅 inspect 或 extract skipped 的字段。
+记录 UAnimMontage AssetDocument Body 第一版暂不支持、仅 inspect 或 extract skipped 的字段。
 后续 task/review 应优先从这里清理，不依赖正文里的临时备注。
 ```
 
@@ -23,7 +23,7 @@
 - 字段仅 inspect，不 apply；
 - 字段 extract 时 skipped；
 - 字段 diff 时 unsupported；
-- 字段需要后续专门 capability 才能表达。
+- 字段需要后续专门 body adapter 或 capability 才能表达。
 
 每个条目需要包含：
 
@@ -42,7 +42,7 @@
 AssetDocument path：
 
 ```text
-/Capabilities/AnimMontage/BranchingPoints
+/Body/BranchingPoints
 ```
 
 UE 结构：
@@ -74,8 +74,8 @@ deferred 原因：
 AssetDocument path：
 
 ```text
-/Capabilities/AnimMontage/Markers
-/Capabilities/AnimMontage/SyncMarkers
+/Body/Markers
+/Body/SyncMarkers
 ```
 
 UE 结构：
@@ -105,7 +105,7 @@ deferred 原因：
 AssetDocument path：
 
 ```text
-/Capabilities/AnimMontage/RootMotion
+/Body/RootMotion
 ```
 
 UE 结构：
@@ -121,7 +121,7 @@ UE 结构：
 
 deferred 原因：
 
-- 部分字段是普通 reflected properties，不需要急着进入 structured capability；
+- 部分字段是普通 reflected properties，不需要急着进入 structured body；
 - root motion 的行为验证需要 runtime playback 或 animation eval 测试。
 
 清理条件：
@@ -134,8 +134,8 @@ deferred 原因：
 AssetDocument path：
 
 ```text
-/Capabilities/AnimMontage/Sections[*]/MetaData
-/Capabilities/AnimMontage/MetaData
+/Body/Sections[*]/MetaData
+/Body/MetaData
 ```
 
 UE 结构：
@@ -166,7 +166,7 @@ deferred 原因：
 AssetDocument path：
 
 ```text
-/Capabilities/AnimMontage/Editor
+/Body/Editor
 ```
 
 UE 结构：
@@ -195,8 +195,8 @@ deferred 原因：
 
 以下内容不在本 deferred 文件中追踪，因为第一版已经纳入范围：
 
-- `/Capabilities/AnimMontage/Notifies`
-- `/Capabilities/AnimMontage/NotifyStates`
+- `/Body/Notifies`
+- `/Body/NotifyStates`
 
 边界：
 

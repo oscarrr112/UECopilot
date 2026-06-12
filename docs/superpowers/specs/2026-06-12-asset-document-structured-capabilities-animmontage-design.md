@@ -1,4 +1,4 @@
-# AssetDocument Structured Capabilities + AnimMontage Pilot 设计
+# AssetDocument Body/Profile + AnimMontage Pilot 设计
 
 日期：2026-06-12
 
@@ -29,7 +29,8 @@ tracks、sections、segments、samples、entries、rows、channels 这类结构�
 核心判断：
 
 - 反射属性仍然走 `Properties`；
-- 结构化语义走可注册的 capability adapter；
+- 文档公开层的结构化语义走 `Body`；
+- compiler 内部用可注册的 profile/capability adapter 处理 `Body`；
 - AssetDocument compiler 是编排器；
 - 每个 adapter 是薄能力组件，不拥有 sidecar、HTTP、MCP、资产生命周期等通用复杂度。
 
@@ -43,13 +44,13 @@ tracks、sections、segments、samples、entries、rows、channels 这类结构�
 
 本阶段实现 AssetDocument 的结构化能力层：
 
-1. 在 AssetDocument 中新增 `Capabilities` block。
+1. 在 AssetDocument 文档层新增 `Body` block，并把 capability map 降为 compiler 内部实现细节。
 2. C++ 侧新增 capability registry 和 capability adapter 接口。
-3. `AssetDocumentCompiler` 根据 document 内容调度 capability adapter。
-4. 使用 `AnimMontage` 作为第一个 structured capability。
-5. 支持通过 `.assetdoc.json` 创建或更新一个可打开、可保存、可再次 extract/diff 的 `UAnimMontage`。
+3. `AssetDocumentCompiler` 根据 `Class + Body keys` 动态调度 profile/capability adapters。
+4. 使用 `UAnimMontage` profile 作为第一个 structured body 试点。
+5. 支持通过 `.assetdoc.json` sidecar 创建或更新一个可打开、可保存、可 diff 的 `UAnimMontage`；extract 是辅助能力，不是主 workflow。
 6. 保持 sidecar watcher 的工作方式不变：保存 `.assetdoc.json` 后自动 apply 到目标 asset。
-7. MCP 能 inspect asset/class 支持哪些 capability，并能返回 capability schema hints。
+7. MCP 能按 asset/class 返回 AssetDocument profile，并能生成 sidecar template。
 
 ### 2.2 架构目标
 
@@ -62,6 +63,8 @@ AssetDocument
   -> AssetDocumentCompiler
     -> DefaultObjectLifecycleAdapter
     -> PropertyPatchAdapter
+    -> AssetDocumentProfileRegistry
+      -> AnimMontageProfile
     -> AssetDocumentCapabilityRegistry
       -> AnimMontageCapability
       -> future: BlendSpaceCapability
@@ -72,7 +75,7 @@ AssetDocument
 
 这更接近 COM / capability composition：
 
-- capability 通过注册表发现；
+- profile/capability 通过注册表发现；
 - compiler 不知道具体 `AnimMontage` 字段；
 - adapter 可以声明支持的 asset class、schema、apply/extract/diff/validate 行为；
 - 新资产能力优先新增 adapter，而不是扩展一个越来越大的 generator 基类。
@@ -94,9 +97,21 @@ AssetDocument
 
 ## 3. AssetDocument 格式扩展
 
+Godot 的 `.tscn/.tres` 不是让用户写一个 “capability map”。它在文件头或 entry heading 中声明当前资源/节点类型，然后在该类型下面写属性；外部和内部资源通过 `ExtResource("id")` / `SubResource("id")` 显式引用。官方文档也说明，等于默认值的属性不会被保存。参考：[Godot TSCN file format](https://docs.godotengine.org/en/4.4/contributing/development/file_formats/tscn.html)。
+
+AssetDocument 采用类似原则：
+
+```text
+Class 决定 Body schema
+Body 写当前 Class 的结构化内容
+Definitions 写可复用 fragment
+Properties 写 CDO/default diff 属性
+capability map 只存在于 compiler 内部
+```
+
 ### 3.1 顶层字段
 
-在第一阶段格式基础上新增 `Definitions` 和 `Capabilities`：
+在第一阶段格式基础上新增 `Definitions` 和 `Body`：
 
 ```json
 {
@@ -121,8 +136,7 @@ AssetDocument
   "Properties": {
     "RateScale": 1.0
   },
-  "Capabilities": {
-    "AnimMontage": {
+  "Body": {
       "Skeleton": {
         "Kind": "AssetRef",
         "Path": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
@@ -155,22 +169,22 @@ AssetDocument
           }
         }
       ]
-    }
   }
 }
 ```
 
-`Capabilities` 是一个 object：
+`Body` 是当前 `Class` 的结构化内容 object：
 
-- key 是 capability name，例如 `AnimMontage`；
-- value 是该 capability 自己的 schema；
-- compiler 只负责查找 adapter 和传递 JSON，不解释里面的业务字段。
+- 文档作者不需要写 capability name；
+- `Class` 决定可用的 body sections；
+- compiler 通过 AssetDocument profile 把 body keys 动态分发给内部 capability/adapter；
+- 未被 profile 声明的 body key 是 validation error。
 
 `Definitions` 是文档内部 fragment 表：
 
 - key 是文档内局部 ID；
 - value 必须是显式 `Kind` 的 fragment；
-- capability 内可以通过 `DefinitionRef` 引用；
+- Body 内可以通过 `DefinitionRef` 引用；
 - `Definitions` 不拥有 UE package 生命周期，只是 AssetDocument 内部复用和 identity 语义；
 - compiler 必须检测循环引用，例如 `A -> B -> A`。
 
@@ -299,14 +313,13 @@ AssetDocument
 - validate 必须检测循环引用；
 - 同一个 `EmbeddedObject` definition 被多个 placement 引用时，默认语义是“同一份 definition 生成多个 placement-local object instance”，除非后续 schema 显式加入 shared instance 语义。
 
-### 3.5 Capability block 示例
+### 3.5 Body block 示例
 
-第一版 AnimMontage block 建议格式：
+第一版 `UAnimMontage` body 建议格式：
 
 ```json
 {
-  "Capabilities": {
-    "AnimMontage": {
+  "Body": {
       "Skeleton": {
         "Kind": "AssetRef",
         "Path": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
@@ -374,7 +387,6 @@ AssetDocument
           }
         }
       ]
-    }
   }
 }
 ```
@@ -397,7 +409,7 @@ AssetDocument
 
 ---
 
-## 4. Compiler / Capability 架构
+## 4. Compiler / Profile / Capability 架构
 
 ### 4.1 编排流程
 
@@ -411,8 +423,8 @@ AssetDocument
 5. Create or load UObject
 6. Validate class exact match
 7. Apply reflected Properties through PropertyPatchAdapter
-8. For each Capabilities entry in deterministic order:
-     adapter = CapabilityRegistry.Find(Name)
+8. For each Body entry in deterministic order:
+     adapter = Profile.ResolveBodyAdapter(BodyKey)
      adapter.Validate(Context, JsonValue)
      adapter.Apply(Context, JsonValue)
       if adapter encounters a fragment:
@@ -424,13 +436,52 @@ AssetDocument
 关键点：
 
 - compiler 不写 `if (Name == "AnimMontage")`；
-- unknown capability 是 validation error；
-- capability 不支持当前 asset class 是 validation error；
+- unknown body key 是 validation error；
+- body key 不属于当前 Class profile 是 validation error；
 - `Validate` 不能修改 asset；
 - `Apply` 只能修改自己声明负责的结构化区域；
-- capability 不直接创建 fragment 对象，只向 `AssetDocumentFragmentCompiler` 提交显式 `Kind` fragment 和上下文。
+- body adapter 不直接创建 fragment 对象，只向 `AssetDocumentFragmentCompiler` 提交显式 `Kind` fragment 和上下文。
 
-### 4.2 Capability 接口
+### 4.2 Profile 接口
+
+Profile 是文档公开层和内部 adapter 的分界。
+
+```cpp
+class IAssetDocumentProfile
+{
+public:
+	virtual ~IAssetDocumentProfile() = default;
+
+	virtual UClass* GetExactClass() const = 0;
+	virtual TSharedRef<FJsonObject> GetDocumentShape() const = 0;
+	virtual TSharedRef<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const = 0;
+	virtual TArray<FName> GetBodyKeys() const = 0;
+
+	virtual const IAssetDocumentCapability* ResolveBodyAdapter(FName BodyKey) const = 0;
+};
+```
+
+规则：
+
+- Agent/MCP 只看到 profile、template、`Body` schema；
+- profile 内部可以把多个 body key 映射到同一个 capability；
+- `Body` key 到 capability/adapter 的映射由 profile 动态解析；
+- profile 不直接写 asset，只负责 schema、template、routing。
+
+`AnimMontageProfile` 示例：
+
+```text
+Class=/Script/Engine.AnimMontage
+Body.Skeleton     -> AnimMontageCapability
+Body.PreviewMesh  -> AnimMontageCapability
+Body.Slots        -> AnimMontageCapability
+Body.Sections     -> AnimMontageCapability
+Body.Notifies     -> AnimMontageCapability / AnimMontageNotifyTimelinePlacementAdapter
+Body.NotifyStates -> AnimMontageCapability / AnimMontageNotifyTimelinePlacementAdapter
+Body.Blend        -> AnimMontageCapability
+```
+
+### 4.3 Capability 接口
 
 建议 C++ 接口：
 
@@ -470,11 +521,11 @@ public:
 
 - `Validate`：语法、引用、asset class、范围检查；
 - `Apply`：真实写入；
-- `Extract`：从 asset 反向生成 capability block；
+- `Extract`：从 asset 反向生成辅助 `Body` block；
 - `Diff`：比较 desired JSON 与当前 asset 结构；
 - `GetSchemaHint`：提供 MCP/inspect 可读 schema。
 
-### 4.3 Context
+### 4.4 Context
 
 `FAssetDocumentCapabilityContext` 至少包含：
 
@@ -498,9 +549,26 @@ struct FAssetDocumentCapabilityContext
 - apply mode；
 - editor refresh hooks。
 
-### 4.4 Registry
+### 4.5 Registry
 
-注册表职责：
+Profile registry 职责：
+
+- 通过 exact `UClass` 查找 profile；
+- 为 MCP schema/template/inspect 提供公开文档形状；
+- 不直接 apply asset。
+
+建议：
+
+```cpp
+class FAssetDocumentProfileRegistry
+{
+public:
+	void Register(TSharedRef<IAssetDocumentProfile> Profile);
+	const IAssetDocumentProfile* FindForClass(UClass* AssetClass) const;
+};
+```
+
+Capability registry 职责：
 
 - 通过 `FName` 查找 capability；
 - 返回所有已注册 capability；
@@ -525,15 +593,16 @@ public:
 ```cpp
 void FAssetFactoryModule::StartupModule()
 {
+	AssetDocumentProfileRegistry.Register(MakeShared<FAnimMontageAssetDocumentProfile>());
 	AssetDocumentCapabilityRegistry.Register(MakeShared<FAnimMontageAssetDocumentCapability>());
 }
 ```
 
 后续如果拆模块，可以让各模块自行注册能力。
 
-### 4.5 Fragment compiler
+### 4.6 Fragment compiler
 
-Capability adapter 处理结构化领域时，不应静态持有一串子 adapter。例如不允许写成：
+Body adapter / internal capability 处理结构化领域时，不应静态持有一串子 adapter。例如不允许写成：
 
 ```text
 AnimMontageCapability owns NotifyTimelineAdapter owns AnimNotifyObjectAdapter
@@ -652,7 +721,7 @@ MaterialCapability -> NiagaraCapability
 允许的形态：
 
 ```text
-ContainerCapability -> PlacementAdapter -> FragmentCompiler -> FragmentAdapterRegistry
+BodyAdapter/ContainerCapability -> PlacementAdapter -> FragmentCompiler -> FragmentAdapterRegistry
 ```
 
 ---
@@ -798,9 +867,9 @@ adapter 必须校验：
 错误需要带 JSON path，例如：
 
 ```text
-/Capabilities/AnimMontage/Slots[0]/Segments[1]/Animation
-/Capabilities/AnimMontage/Sections[2]/NextSection
-/Capabilities/AnimMontage/NotifyStates[0]/Object/Class
+/Body/Slots[0]/Segments[1]/Animation
+/Body/Sections[2]/NextSection
+/Body/NotifyStates[0]/Object/Class
 ```
 
 ### 5.4 Apply 策略
@@ -809,10 +878,10 @@ P0 采用 replace-owned-block 策略：
 
 - `Slots` 如果出现，则替换全部 slot tracks；
 - `Sections` 如果出现，则替换全部 composite sections；
-- `Notifies` 如果出现，则替换 AnimMontage capability 管理的全部 notify events；
-- `NotifyStates` 如果出现，则替换 AnimMontage capability 管理的全部 notify state events；
+- `Notifies` 如果出现，则替换 AnimMontage body adapter 管理的全部 notify events；
+- `NotifyStates` 如果出现，则替换 AnimMontage body adapter 管理的全部 notify state events；
 - `Blend` 如果出现，则只更新声明字段；
-- 未声明的 capability 子块保持不变。
+- 未声明的 Body 子块保持不变。
 
 理由：
 
@@ -824,7 +893,7 @@ P0 采用 replace-owned-block 策略：
 
 ```json
 {
-  "AnimMontage": {
+  "Body": {
     "Slots": [],
     "Sections": []
   }
@@ -836,14 +905,13 @@ P0 采用 replace-owned-block 策略：
 如果 `Slots` 字段不存在，则不修改现有 slots。
 如果 `Notifies` / `NotifyStates` 字段不存在，则不修改现有 notify timeline。
 
-### 5.5 Extract 策略
+### 5.5 Extract 策略（辅助能力）
 
-extract 默认输出与当前 asset 结构一致的 capability block：
+extract 默认输出与当前 asset 结构一致的 `Body` block，但它是辅助入口，不是 Agent 主 workflow：
 
 ```json
 {
-  "Capabilities": {
-    "AnimMontage": {
+  "Body": {
       "Skeleton": {
         "Kind": "AssetRef",
         "Path": "...",
@@ -876,7 +944,6 @@ extract 默认输出与当前 asset 结构一致的 capability block：
       "Sections": [],
       "Notifies": [],
       "NotifyStates": []
-    }
   }
 }
 ```
@@ -885,7 +952,7 @@ extract 不需要输出 unsupported/unknown internal data，但要在 result 中
 
 ```json
 {
-  "Path": "/Capabilities/AnimMontage/BranchingPoints",
+  "Path": "/Body/BranchingPoints",
   "Reason": "Branching point authoring is deferred; tracked in asset-document-deferred-fields/2026-06-12-animmontage.md"
 }
 ```
@@ -904,7 +971,7 @@ diff 输出与第一阶段 property diff 风格一致：
 数组元素 path 使用 index：
 
 ```text
-/Capabilities/AnimMontage/Slots[0]/Segments[0]/AnimEndTime
+/Body/Slots[0]/Segments[0]/AnimEndTime
 ```
 
 对于 replace-owned-block，diff 可以先按完整结构比较，不需要实现智能 move detection。
@@ -918,6 +985,8 @@ diff 输出与第一阶段 property diff 风格一致：
 继续复用 AssetDocument 入口：
 
 - `get_asset_document_schema`
+- `inspect_asset_document_profile`
+- `create_asset_document_template`
 - `inspect_asset_document_target`
 - `validate_asset_document`
 - `apply_asset_document`
@@ -925,40 +994,108 @@ diff 输出与第一阶段 property diff 风格一致：
 - `extract_asset_document`
 - `diff_asset_document`
 
-需要扩展：
+主 workflow 是：
+
+```text
+inspect profile -> create sidecar template -> edit .assetdoc.json -> save -> watcher auto apply
+```
+
+`extract_asset_document` 是辅助能力：
+
+- 从已有 `uasset` 回填初始 sidecar；
+- debug；
+- diff；
+- 迁移旧资产；
+- 检查当前 `uasset` 与 sidecar 的差异。
+
+Agent 不应该依赖 extract 才知道怎么写文档；它应该先拿 profile/template。
 
 ### 6.1 schema
 
 `get_asset_document_schema` 返回：
 
 - common AssetDocument schema；
-- registered capabilities；
-- 每个 capability 的 schema hint；
-- capability 支持的 class path。
+- common fragment schema；
+- `Definitions` / `Body` / `Properties` 规则；
+- registered profile summary；
+- 每个 profile 支持的 class path。
 
-### 6.2 inspect
+### 6.2 profile
 
-`inspect_asset_document_target` 对 `UAnimMontage` 返回：
+`inspect_asset_document_profile` 对 `UAnimMontage` 返回：
 
 ```json
 {
-  "Target": "/Game/Anim/AM_Attack",
   "Class": "/Script/Engine.AnimMontage",
-  "SupportedCapabilities": [
+  "DocumentShape": {
+    "Definitions": "map<string, Fragment>",
+    "Properties": "reflected CDO-diff properties",
+    "Body": {
+      "Skeleton": "AssetRef<USkeleton>",
+      "PreviewMesh": "AssetRef<USkeletalMesh>",
+      "Slots": "array",
+      "Sections": "array",
+      "Notifies": "array",
+      "NotifyStates": "array",
+      "Blend": "object"
+    }
+  },
+  "BodySections": [
+    "Skeleton",
+    "PreviewMesh",
+    "Slots",
+    "Sections",
+    "Notifies",
+    "NotifyStates",
+    "Blend"
+  ],
+  "FragmentKinds": [
+    "AssetRef",
+    "ClassRef",
+    "StructValue",
+    "EmbeddedObject",
+    "DefinitionRef"
+  ],
+  "InternalAdapters": [
     {
-      "Name": "AnimMontage",
-      "ApplyOrder": 100,
-      "SchemaHint": {}
+      "Name": "AnimMontageCapability",
+      "BodySections": ["Skeleton", "PreviewMesh", "Slots", "Sections", "Notifies", "NotifyStates", "Blend"]
     }
   ]
 }
 ```
 
-对于尚未创建的目标，可以根据 document `Class` inspect 支持能力。
+对于尚未创建的目标，可以根据 document `Class` inspect profile。
 
-### 6.3 validate/apply/diff/extract
+### 6.3 template
 
-HTTP/MCP 层不理解 `AnimMontage` 字段，只透传给 compiler。
+`create_asset_document_template` 输入 `Class`、`Target` 和可选 intent，输出 canonical sidecar 起稿：
+
+```json
+{
+  "SchemaVersion": 1,
+  "Action": "CreateOrUpdate",
+  "Target": "/Game/Anim/AM_Attack",
+  "Class": "/Script/Engine.AnimMontage",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "Skeleton": null,
+    "PreviewMesh": null,
+    "Slots": [],
+    "Sections": [],
+    "Notifies": [],
+    "NotifyStates": [],
+    "Blend": {}
+  }
+}
+```
+
+Template 输出的是可编辑 sidecar，不自动 apply。
+
+### 6.4 validate/apply/diff/extract
+
+HTTP/MCP 层不理解 `UAnimMontage` body 字段，只透传给 compiler/profile。
 
 这条规则很重要：否则复杂度会从 C++ generator 转移到 MCP wrapper，等于换了地方继续硬编码。
 
@@ -980,6 +1117,7 @@ DefaultObjectLifecycleAdapter
 
 允许新增：
 
+- `AssetDocumentProfileRegistry` 和 `AnimMontageProfile`；
 - `AnimMontageLifecycleCapability` 或 `FactoryCreatePolicy`；
 - `AnimMontageAssetDocumentCapability`；
 - `AssetDocumentFragmentCompiler` 和 `AssetDocumentFragmentAdapterRegistry`；
@@ -1002,6 +1140,8 @@ AnimMontageGenerator : IAssetGenerator
 
 ```text
 Source/AssetFactory/Public/AssetDocument/
+  AssetDocumentProfile.h
+  AssetDocumentProfileRegistry.h
   AssetDocumentCapability.h
   AssetDocumentCapabilityRegistry.h
   AssetDocumentFragmentCompiler.h
@@ -1009,11 +1149,17 @@ Source/AssetFactory/Public/AssetDocument/
   AssetDocumentFragmentAdapterRegistry.h
 
 Source/AssetFactory/Private/AssetDocument/
+  AssetDocumentProfileRegistry.cpp
   AssetDocumentCapabilityRegistry.cpp
   AssetDocumentCompiler.cpp
   AssetDocumentFragmentCompiler.cpp
   AssetDocumentFragmentAdapterRegistry.cpp
   AssetDocumentSchemaService.cpp
+  AssetDocumentTemplateService.cpp
+
+Source/AssetFactory/Private/AssetDocument/Profiles/
+  AnimMontageAssetDocumentProfile.h
+  AnimMontageAssetDocumentProfile.cpp
 
 Source/AssetFactory/Private/AssetDocument/Fragments/
   AssetRefFragmentAdapter.cpp
@@ -1049,7 +1195,7 @@ implementation plan 需要通过 UBT 验证具体依赖，不在 spec 中提前�
 
 ### 9.1 C++ Automation
 
-新增 `AssetFactory.AssetDocument.Capabilities` 测试组：
+新增 `AssetFactory.AssetDocument.Profile` / `AssetFactory.AssetDocument.Fragments` / `AssetFactory.AssetDocument.Body` 测试组：
 
 1. fragment registry 能注册并发现 `AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef` adapters；
 2. `DefinitionRef` 能展开到 `Definitions` 中的 fragment；
@@ -1058,16 +1204,18 @@ implementation plan 需要通过 UBT 验证具体依赖，不在 spec 中提前�
 5. `ClassRef` 能校验 expected base class；
 6. `StructValue` 能通过反射写入 struct properties；
 7. `EmbeddedObject` 能使用指定 outer 创建 UObject 并应用 properties；
-8. capability registry 能注册并发现 `AnimMontage` capability；
-9. unknown capability validate 失败；
-10. capability 与 class 不匹配时 validate 失败；
-11. validate 不修改资产；
-12. apply 可以创建 montage；
-13. apply 可以更新 slots/sections；
-14. diff 能识别 changed/unchanged；
-15. extract 能输出 `Capabilities.AnimMontage`；
-16. sidecar watcher 保存后能自动 apply montage document；
-17. invalid animation/skeleton/section link/fragment ref 返回带 JSON path 的错误。
+8. profile registry 能通过 `/Script/Engine.AnimMontage` 返回 `AnimMontageProfile`；
+9. `create_asset_document_template` 能生成 canonical `Body` sidecar；
+10. capability registry 能注册并发现内部 `AnimMontage` capability；
+11. unknown body key validate 失败；
+12. body key 与 class profile 不匹配时 validate 失败；
+13. validate 不修改资产；
+14. apply 可以创建 montage；
+15. apply 可以更新 slots/sections；
+16. diff 能识别 changed/unchanged；
+17. extract 能输出 `Body`；
+18. sidecar watcher 保存后能自动 apply montage document；
+19. invalid animation/skeleton/section link/fragment ref 返回带 JSON path 的错误。
 
 ### 9.2 测试资产
 
@@ -1087,9 +1235,10 @@ implementation plan 需要通过 UBT 验证具体依赖，不在 spec 中提前�
 
 MCP 测试需要覆盖：
 
-- schema 包含 `AnimMontage` capability；
-- validate bad capability error；
-- inspect 返回 supported capability；
+- schema/profile 包含 `UAnimMontage` body sections；
+- template 生成 canonical sidecar；
+- validate bad body key error；
+- inspect 返回 class profile；
 - apply/extract/diff request/response contract 不破坏现有 AssetDocument 工具。
 
 ### 9.4 验证命令
@@ -1110,7 +1259,7 @@ MCP 测试需要覆盖：
 - live editor HTTP smoke：
   - write `.assetdoc.json`;
   - watcher auto apply；
-  - reopen/extract/diff confirms result。
+  - readback/diff confirms result。
 
 ---
 
@@ -1120,17 +1269,18 @@ MCP 测试需要覆盖：
 
 1. 不新增重型 `AnimMontageGenerator`。
 2. `AssetDocumentCompiler` 不包含 `AnimMontage` 字段级 if/else。
-3. capability registry 可以返回 `AnimMontage` schema hint。
-4. `.assetdoc.json` 可以创建一个 `UAnimMontage`。
-5. `.assetdoc.json` 可以更新 montage slots、segments、sections。
-6. 保存 sidecar 文件后，watcher 可以自动 apply 到目标 `uasset`。
-7. `validate_asset_document` 对坏引用、坏 section link、class mismatch 给出明确错误。
-8. `extract_asset_document` 能输出 `Capabilities.AnimMontage`。
-9. `diff_asset_document` 能比较 capability block。
-10. notify / notify state 可以用完整 class path 创建内嵌对象，并通过反射设置属性。
-11. `Definitions` + `DefinitionRef` 可以被 capability 内字段复用。
-12. `AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef` 都通过 `AssetDocumentFragmentCompiler` 动态分发，不靠 capability 手写解析。
-13. UBT、automation、MCP tests、live smoke 均通过。
+3. profile registry 可以返回 `UAnimMontage` 的 `Body` schema。
+4. `create_asset_document_template` 可以生成 canonical sidecar。
+5. `.assetdoc.json` 可以创建一个 `UAnimMontage`。
+6. `.assetdoc.json` 可以更新 montage slots、segments、sections。
+7. 保存 sidecar 文件后，watcher 可以自动 apply 到目标 `uasset`。
+8. `validate_asset_document` 对坏引用、坏 section link、class mismatch 给出明确错误。
+9. `extract_asset_document` 能输出 `Body`，但它是辅助能力，不是主 workflow。
+10. `diff_asset_document` 能比较 `Body` block。
+11. notify / notify state 可以用完整 class path 创建内嵌对象，并通过反射设置属性。
+12. `Definitions` + `DefinitionRef` 可以被 Body 内字段复用。
+13. `AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef` 都通过 `AssetDocumentFragmentCompiler` 动态分发，不靠 capability 手写解析。
+14. UBT、automation、MCP tests、live smoke 均通过。
 
 ---
 
@@ -1221,8 +1371,8 @@ implementation plan 建议拆成：
    - 确认 UE 5.7 创建路径，完成 create/load/save。
 4. **AnimMontage apply**
    - skeleton、preview mesh、slots、segments、sections、blend、notify timeline placement adapter、fragment-driven notify object creation。
-5. **Extract/diff/inspect**
-   - capability schema hints、fragment schema hints、extract block、diff entries。
+5. **Profile/template/diff/inspect/extract**
+   - class profile、sidecar template、fragment schema hints、diff entries、辅助 extract。
 6. **Sidecar watcher + MCP smoke**
    - 保存 `.assetdoc.json` 自动更新 montage。
 7. **Review and hardening**
