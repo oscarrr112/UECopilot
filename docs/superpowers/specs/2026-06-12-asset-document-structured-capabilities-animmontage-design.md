@@ -147,17 +147,19 @@ capability map 只存在于 compiler 内部
         "Path": "/Game/Characters/SK_Mannequin.SK_Mannequin",
         "Class": "/Script/Engine.SkeletalMesh"
       },
-      "Slots": [
+      "SlotAnimTracks": [
         {
-          "Name": "DefaultSlot",
-          "Segments": [
-            {
-              "Animation": {
-                "Kind": "DefinitionRef",
-                "Id": "AttackAnim"
+          "SlotName": "DefaultSlot",
+          "AnimTrack": {
+            "AnimSegments": [
+              {
+                "AnimReference": {
+                  "Kind": "DefinitionRef",
+                  "Id": "AttackAnim"
+                }
               }
-            }
-          ]
+            ]
+          }
         }
       ],
       "Notifies": [
@@ -330,34 +332,36 @@ capability map 只存在于 compiler 内部
         "Path": "/Game/Characters/SK_Mannequin.SK_Mannequin",
         "Class": "/Script/Engine.SkeletalMesh"
       },
-      "Slots": [
+      "SlotAnimTracks": [
         {
-          "Name": "DefaultSlot",
-          "Segments": [
-            {
-              "Animation": {
-                "Kind": "AssetRef",
-                "Path": "/Game/Anim/A_Attack.A_Attack",
-                "Class": "/Script/Engine.AnimSequence"
-              },
-              "StartPos": 0.0,
-              "AnimStartTime": 0.0,
-              "AnimEndTime": 0.8,
-              "AnimPlayRate": 1.0,
-              "LoopingCount": 1
-            }
-          ]
+          "SlotName": "DefaultSlot",
+          "AnimTrack": {
+            "AnimSegments": [
+              {
+                "AnimReference": {
+                  "Kind": "AssetRef",
+                  "Path": "/Game/Anim/A_Attack.A_Attack",
+                  "Class": "/Script/Engine.AnimSequence"
+                },
+                "StartPos": 0.0,
+                "AnimStartTime": 0.0,
+                "AnimEndTime": 0.8,
+                "AnimPlayRate": 1.0,
+                "LoopingCount": 1
+              }
+            ]
+          }
         }
       ],
-      "Sections": [
+      "CompositeSections": [
         {
-          "Name": "Start",
-          "Time": 0.0,
-          "NextSection": "End"
+          "SectionName": "Start",
+          "LinkableTime": 0.0,
+          "NextSectionName": "End"
         },
         {
-          "Name": "End",
-          "Time": 0.8
+          "SectionName": "End",
+          "LinkableTime": 0.8
         }
       ],
       "Blend": {
@@ -393,19 +397,21 @@ capability map 只存在于 compiler 内部
 
 说明：
 
-- JSON 字段使用面向用户的语义名；
+- JSON 字段优先使用 UE 稳定结构/字段名，不为了可读性发明别名；
+- 例外是 UE 字段已 deprecated、需要 lifecycle API 计算，或字段本身不是可安全写入的 source-of-truth，此时使用明确语义名并在 schema 中说明；
 - adapter 内部映射到 UE 结构：
   - `Skeleton` -> fragment compiler with `ExpectedBaseClass=USkeleton`;
   - `PreviewMesh` -> fragment compiler with `ExpectedBaseClass=USkeletalMesh`;
-  - `Slots[]` -> `UAnimMontage::SlotAnimTracks`;
-  - `Segments[]` -> `FAnimTrack::AnimSegments`;
-  - segment 字段 -> `FAnimSegment`;
-  - `Animation` -> fragment compiler with `ExpectedBaseClass=UAnimSequenceBase`;
-  - `Sections[]` -> `UAnimMontage::CompositeSections`;
-  - `NextSection` -> `FCompositeSection::NextSectionName`;
+  - `SlotAnimTracks[]` -> `UAnimMontage::SlotAnimTracks`;
+  - `AnimTrack` -> `FSlotAnimationTrack::AnimTrack`;
+  - `AnimSegments[]` -> `FAnimTrack::AnimSegments`;
+  - `AnimReference` -> fragment compiler with `ExpectedBaseClass=UAnimSequenceBase`;
+  - `CompositeSections[]` -> `UAnimMontage::CompositeSections`;
+  - `SectionName` -> `FCompositeSection::SectionName`;
+  - `NextSectionName` -> `FCompositeSection::NextSectionName`;
   - `Notifies[].Object` -> fragment compiler with `ExpectedBaseClass=UAnimNotify`;
   - `NotifyStates[].Object` -> fragment compiler with `ExpectedBaseClass=UAnimNotifyState`;
-- `Time` 使用 section linkable time，而不是直接写 deprecated editor-only `StartTime_DEPRECATED`。
+- `LinkableTime` 是明确的 semantic write operation：使用 section linkable time API，而不是直接写 deprecated editor-only `StartTime_DEPRECATED`。
 
 ---
 
@@ -474,8 +480,8 @@ public:
 Class=/Script/Engine.AnimMontage
 Body.Skeleton     -> AnimMontageCapability
 Body.PreviewMesh  -> AnimMontageCapability
-Body.Slots        -> AnimMontageCapability
-Body.Sections     -> AnimMontageCapability
+Body.SlotAnimTracks -> AnimMontageCapability
+Body.CompositeSections -> AnimMontageCapability
 Body.Notifies     -> AnimMontageCapability / AnimMontageNotifyTimelinePlacementAdapter
 Body.NotifyStates -> AnimMontageCapability / AnimMontageNotifyTimelinePlacementAdapter
 Body.Blend        -> AnimMontageCapability
@@ -852,13 +858,13 @@ adapter 必须校验：
 
 - `Skeleton` 必须能通过 fragment compiler 解析为 `USkeleton`；
 - `PreviewMesh` 如果提供，必须能通过 fragment compiler 解析为 `USkeletalMesh`；
-- `Animation` 必须能通过 fragment compiler 解析为 `UAnimSequenceBase`；
+- `AnimReference` 必须能通过 fragment compiler 解析为 `UAnimSequenceBase`；
 - animation 与 skeleton 兼容；
 - section name 非空且唯一；
 - segment 时间范围合法；
 - `AnimPlayRate` 非 0；
 - `LoopingCount` 大于 0；
-- `NextSection` 如果提供，必须指向已有 section。
+- `NextSectionName` 如果提供，必须指向已有 section。
 - `Notifies[].Object` 必须能通过 fragment compiler 解析为 `UAnimNotify` 实例；
 - `NotifyStates[].Object` 必须能通过 fragment compiler 解析为 `UAnimNotifyState` 实例；
 - notify / notify state 的 `Object.Properties` 必须能被通用 property setter 写入；
@@ -867,8 +873,8 @@ adapter 必须校验：
 错误需要带 JSON path，例如：
 
 ```text
-/Body/Slots[0]/Segments[1]/Animation
-/Body/Sections[2]/NextSection
+/Body/SlotAnimTracks[0]/AnimTrack/AnimSegments[1]/AnimReference
+/Body/CompositeSections[2]/NextSectionName
 /Body/NotifyStates[0]/Object/Class
 ```
 
@@ -876,8 +882,8 @@ adapter 必须校验：
 
 P0 采用 replace-owned-block 策略：
 
-- `Slots` 如果出现，则替换全部 slot tracks；
-- `Sections` 如果出现，则替换全部 composite sections；
+- `SlotAnimTracks` 如果出现，则替换全部 slot tracks；
+- `CompositeSections` 如果出现，则替换全部 composite sections；
 - `Notifies` 如果出现，则替换 AnimMontage body adapter 管理的全部 notify events；
 - `NotifyStates` 如果出现，则替换 AnimMontage body adapter 管理的全部 notify state events；
 - `Blend` 如果出现，则只更新声明字段；
@@ -894,15 +900,15 @@ P0 采用 replace-owned-block 策略：
 ```json
 {
   "Body": {
-    "Slots": [],
-    "Sections": []
+    "SlotAnimTracks": [],
+    "CompositeSections": []
   }
 }
 ```
 
 表示显式清空 slots/sections。
 
-如果 `Slots` 字段不存在，则不修改现有 slots。
+如果 `SlotAnimTracks` 字段不存在，则不修改现有 slots。
 如果 `Notifies` / `NotifyStates` 字段不存在，则不修改现有 notify timeline。
 
 ### 5.5 Extract 策略（辅助能力）
@@ -922,26 +928,28 @@ extract 默认输出与当前 asset 结构一致的 `Body` block，但它是辅�
         "Path": "...",
         "Class": "/Script/Engine.SkeletalMesh"
       },
-      "Slots": [
+      "SlotAnimTracks": [
         {
-          "Name": "DefaultSlot",
-          "Segments": [
-            {
-              "Animation": {
-                "Kind": "AssetRef",
-                "Path": "...",
-                "Class": "/Script/Engine.AnimSequence"
-              },
-              "StartPos": 0.0,
-              "AnimStartTime": 0.0,
-              "AnimEndTime": 0.8,
-              "AnimPlayRate": 1.0,
-              "LoopingCount": 1
-            }
-          ]
+          "SlotName": "DefaultSlot",
+          "AnimTrack": {
+            "AnimSegments": [
+              {
+                "AnimReference": {
+                  "Kind": "AssetRef",
+                  "Path": "...",
+                  "Class": "/Script/Engine.AnimSequence"
+                },
+                "StartPos": 0.0,
+                "AnimStartTime": 0.0,
+                "AnimEndTime": 0.8,
+                "AnimPlayRate": 1.0,
+                "LoopingCount": 1
+              }
+            ]
+          }
         }
       ],
-      "Sections": [],
+      "CompositeSections": [],
       "Notifies": [],
       "NotifyStates": []
   }
@@ -971,7 +979,7 @@ diff 输出与第一阶段 property diff 风格一致：
 数组元素 path 使用 index：
 
 ```text
-/Body/Slots[0]/Segments[0]/AnimEndTime
+/Body/SlotAnimTracks[0]/AnimTrack/AnimSegments[0]/AnimEndTime
 ```
 
 对于 replace-owned-block，diff 可以先按完整结构比较，不需要实现智能 move detection。
@@ -1033,8 +1041,8 @@ Agent 不应该依赖 extract 才知道怎么写文档；它应该先拿 profile
     "Body": {
       "Skeleton": "AssetRef<USkeleton>",
       "PreviewMesh": "AssetRef<USkeletalMesh>",
-      "Slots": "array",
-      "Sections": "array",
+      "SlotAnimTracks": "array",
+      "CompositeSections": "array",
       "Notifies": "array",
       "NotifyStates": "array",
       "Blend": "object"
@@ -1043,8 +1051,8 @@ Agent 不应该依赖 extract 才知道怎么写文档；它应该先拿 profile
   "BodySections": [
     "Skeleton",
     "PreviewMesh",
-    "Slots",
-    "Sections",
+    "SlotAnimTracks",
+    "CompositeSections",
     "Notifies",
     "NotifyStates",
     "Blend"
@@ -1059,7 +1067,7 @@ Agent 不应该依赖 extract 才知道怎么写文档；它应该先拿 profile
   "InternalAdapters": [
     {
       "Name": "AnimMontageCapability",
-      "BodySections": ["Skeleton", "PreviewMesh", "Slots", "Sections", "Notifies", "NotifyStates", "Blend"]
+      "BodySections": ["Skeleton", "PreviewMesh", "SlotAnimTracks", "CompositeSections", "Notifies", "NotifyStates", "Blend"]
     }
   ]
 }
@@ -1082,8 +1090,8 @@ Agent 不应该依赖 extract 才知道怎么写文档；它应该先拿 profile
   "Body": {
     "Skeleton": null,
     "PreviewMesh": null,
-    "Slots": [],
-    "Sections": [],
+    "SlotAnimTracks": [],
+    "CompositeSections": [],
     "Notifies": [],
     "NotifyStates": [],
     "Blend": {}
