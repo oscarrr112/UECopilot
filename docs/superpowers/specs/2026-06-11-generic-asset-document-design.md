@@ -624,6 +624,8 @@ get_asset_document_schema()
 
 `apply_asset_document` 接收 inline JSON。`apply_asset_document_file` 从 `.assetdoc.json` 路径读取文档，并从 sidecar 文件位置推导目标 `/Game/...` 路径。`get_asset_document_schema` 返回 AssetDocument schema，而不是复用 `get_generator_schema`。
 
+AssetDocument 不按资产类型新增 MCP tools。后续 `AnimMontage`、`WidgetTree`、`MaterialGraph`、`NiagaraGraph`、`AnimationBlueprint` 等能力只应扩展 profile/schema/template/compiler adapters，并继续通过同一组 AssetDocument tools 暴露。MCP tool catalog 不应出现 `create_anim_montage`、`update_montage_slots`、`create_material_graph` 这类资产专用入口。
+
 同时新增 read-side MCP/HTTP 能力：
 
 ```text

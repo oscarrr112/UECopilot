@@ -988,7 +988,28 @@ diff 输出与第一阶段 property diff 风格一致：
 
 ## 6. MCP / HTTP 能力
 
-第一版不新增一批 AnimMontage 专用 MCP tool。
+AssetDocument 的设计目标是不随资产类型新增专用 MCP tool。`AnimMontage`、后续 `MaterialGraph`、`NiagaraGraph`、`AnimationBlueprint` 等能力都应通过同一组 AssetDocument MCP/HTTP 入口暴露。
+
+禁止的扩展方式：
+
+```text
+create_anim_montage(...)
+update_anim_montage_slots(...)
+set_montage_sections(...)
+create_material_graph(...)
+```
+
+允许的扩展方式：
+
+```text
+inspect_asset_document_profile(Class=/Script/Engine.AnimMontage)
+create_asset_document_template(Class=/Script/Engine.AnimMontage, Target=/Game/Anim/AM_Attack)
+validate_asset_document(...)
+apply_asset_document_file(...)
+diff_asset_document(...)
+```
+
+新增资产能力只应扩展 profile/schema/template/compiler adapters，不应扩展 MCP tool catalog。
 
 继续复用 AssetDocument 入口：
 
