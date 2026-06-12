@@ -7,6 +7,12 @@
 class FAssetDocumentFragmentCompiler
 {
 public:
+	FAssetDocumentFragmentCompiler() = default;
+	FAssetDocumentFragmentCompiler(const FAssetDocumentFragmentCompiler&) = delete;
+	FAssetDocumentFragmentCompiler& operator=(const FAssetDocumentFragmentCompiler&) = delete;
+	FAssetDocumentFragmentCompiler(FAssetDocumentFragmentCompiler&&) = delete;
+	FAssetDocumentFragmentCompiler& operator=(FAssetDocumentFragmentCompiler&&) = delete;
+
 	void RegisterAdapter(TSharedRef<IAssetDocumentFragmentAdapter> Adapter);
 	void RegisterBuiltInAdapters();
 

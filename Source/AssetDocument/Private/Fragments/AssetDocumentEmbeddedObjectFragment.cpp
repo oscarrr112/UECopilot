@@ -70,6 +70,19 @@ public:
 				TEXT("embeddedobject-abstract-class"));
 		}
 
+		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+		const bool bHasProperties = FragmentJson->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr && PropertiesPtr->IsValid();
+		if (bHasProperties)
+		{
+			const FAssetDocumentPropertyApplyResult PreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(ResolvedClass, *PropertiesPtr);
+			if (!PreflightResult.bSuccess)
+			{
+				FAssetDocumentFragmentResult Failure = FAssetDocumentFragmentResult::Failure(PreflightResult.Message, Context.JsonPath, TEXT("embeddedobject-preflight-failed"));
+				Failure.Diagnostics.Append(PreflightResult.Diagnostics);
+				return Failure;
+			}
+		}
+
 		UObject* CreatedObject = NewObject<UObject>(Context.Outer, ResolvedClass, NAME_None, RF_Transactional);
 		if (!CreatedObject)
 		{
@@ -79,8 +92,7 @@ public:
 				TEXT("embeddedobject-create-failed"));
 		}
 
-		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
-		if (FragmentJson->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr && PropertiesPtr->IsValid())
+		if (bHasProperties)
 		{
 			const FAssetDocumentPropertyApplyResult ApplyResult = FAssetDocumentPropertyAdapter::ApplyProperties(CreatedObject, *PropertiesPtr);
 			if (!ApplyResult.bSuccess)

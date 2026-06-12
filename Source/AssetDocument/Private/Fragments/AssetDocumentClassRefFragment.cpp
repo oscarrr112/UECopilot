@@ -63,7 +63,11 @@ public:
 
 	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const override
 	{
-		UClass* Class = Context.ValueObject ? Context.ValueObject->GetClass() : nullptr;
+		UClass* Class = Cast<UClass>(Context.ValueObject);
+		if (!Class && Context.ValueObject)
+		{
+			Class = Context.ValueObject->GetClass();
+		}
 		if (!Class)
 		{
 			return FAssetDocumentFragmentResult::Failure(TEXT("ClassRef extraction requires ValueObject."), Context.JsonPath, TEXT("classref-extract-missing-object"));

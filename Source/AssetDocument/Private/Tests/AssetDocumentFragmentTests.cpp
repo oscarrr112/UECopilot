@@ -10,6 +10,7 @@
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/Package.h"
+#include "UObject/SoftObjectPath.h"
 #include "UObject/UnrealType.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -54,6 +55,14 @@ TSharedRef<FJsonObject> MakeFragment(const TCHAR* Kind)
 	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), Kind);
 	return Fragment;
+}
+
+bool HasDiagnosticCode(const FAssetDocumentFragmentResult& Result, const TCHAR* Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == Code;
+	});
 }
 }
 
@@ -136,6 +145,15 @@ bool FAssetDocumentBuiltInFragmentAdaptersTest::RunTest(const FString& Parameter
 	TestTrue(TEXT("ClassRef resolves a class that matches ExpectedBaseClass"), ClassRefResult.bSuccess);
 	TestEqual(TEXT("ClassRef returns AnimMontage class"), ClassRefResult.Class, UAnimMontage::StaticClass());
 
+	FAssetDocumentFragmentExtractContext ClassExtractContext;
+	ClassExtractContext.Kind = TEXT("ClassRef");
+	ClassExtractContext.ValueObject = UAnimMontage::StaticClass();
+	ClassExtractContext.JsonPath = TEXT("/Body/ClassExtract");
+	TSharedRef<FJsonObject> ExtractedClassRef = MakeShared<FJsonObject>();
+	const FAssetDocumentFragmentResult ClassExtractResult = Compiler.Extract(ClassExtractContext, ExtractedClassRef);
+	TestTrue(TEXT("ClassRef extracts a UClass value"), ClassExtractResult.bSuccess);
+	TestEqual(TEXT("ClassRef extracts the class value path"), ExtractedClassRef->GetStringField(TEXT("Class")), FString(TEXT("/Script/Engine.AnimMontage")));
+
 	TSharedRef<FJsonObject> StructValue = MakeFragment(TEXT("StructValue"));
 	StructValue->SetStringField(TEXT("Struct"), TEXT("/Script/CoreUObject.Vector"));
 	TSharedRef<FJsonObject> VectorProperties = MakeShared<FJsonObject>();
@@ -158,6 +176,32 @@ bool FAssetDocumentBuiltInFragmentAdaptersTest::RunTest(const FString& Parameter
 		TestEqual(TEXT("StructValue sets Z"), Vector->Z, 3.75);
 	}
 
+	FVector ExtractVector(4.0, 5.5, -6.25);
+	FAssetDocumentFragmentExtractContext StructExtractContext;
+	StructExtractContext.Kind = TEXT("StructValue");
+	StructExtractContext.StructType = TBaseStructure<FVector>::Get();
+	StructExtractContext.StructValue = &ExtractVector;
+	StructExtractContext.JsonPath = TEXT("/Body/StructExtract");
+	TSharedRef<FJsonObject> ExtractedStructValue = MakeShared<FJsonObject>();
+	const FAssetDocumentFragmentResult StructExtractResult = Compiler.Extract(StructExtractContext, ExtractedStructValue);
+	TestTrue(TEXT("StructValue extracts a struct value"), StructExtractResult.bSuccess);
+	const TSharedPtr<FJsonObject>* ExtractedPropertiesPtr = nullptr;
+	TestTrue(TEXT("StructValue extract writes Properties"), ExtractedStructValue->TryGetObjectField(TEXT("Properties"), ExtractedPropertiesPtr) && ExtractedPropertiesPtr && ExtractedPropertiesPtr->IsValid());
+	if (ExtractedPropertiesPtr && ExtractedPropertiesPtr->IsValid())
+	{
+		TestEqual(TEXT("StructValue extract writes X"), (*ExtractedPropertiesPtr)->GetNumberField(TEXT("X")), 4.0);
+		TestEqual(TEXT("StructValue extract writes Y"), (*ExtractedPropertiesPtr)->GetNumberField(TEXT("Y")), 5.5);
+		TestEqual(TEXT("StructValue extract writes Z"), (*ExtractedPropertiesPtr)->GetNumberField(TEXT("Z")), -6.25);
+	}
+
+	TSharedRef<FJsonObject> UnsupportedStructValue = MakeFragment(TEXT("StructValue"));
+	UnsupportedStructValue->SetStringField(TEXT("Struct"), TEXT("/Script/CoreUObject.SoftObjectPath"));
+	UnsupportedStructValue->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Context.ExpectedStruct = FSoftObjectPath::StaticStruct();
+	const FAssetDocumentFragmentResult UnsupportedStructResult = Compiler.Compile(UnsupportedStructValue, Context);
+	TestFalse(TEXT("StructValue rejects structs that need explicit destruction"), UnsupportedStructResult.bSuccess);
+	TestTrue(TEXT("StructValue unsupported lifecycle reports code"), HasDiagnosticCode(UnsupportedStructResult, TEXT("structvalue-unsupported-lifecycle")));
+
 	TSharedRef<FJsonObject> EmbeddedObject = MakeFragment(TEXT("EmbeddedObject"));
 	EmbeddedObject->SetStringField(TEXT("Class"), TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"));
 	Context.ExpectedStruct = nullptr;
@@ -172,6 +216,19 @@ bool FAssetDocumentBuiltInFragmentAdaptersTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("EmbeddedObject object is an AnimNotifyState"), EmbeddedObjectResult.Object->IsA(UAnimNotifyState::StaticClass()));
 		TestTrue(TEXT("EmbeddedObject uses the context Outer"), EmbeddedObjectResult.Object->GetOuter() == GetTransientPackage());
 	}
+
+	TSharedRef<FJsonObject> BadEmbeddedObject = MakeFragment(TEXT("EmbeddedObject"));
+	BadEmbeddedObject->SetStringField(TEXT("Class"), TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"));
+	TSharedRef<FJsonObject> BadProperties = MakeShared<FJsonObject>();
+	BadProperties->SetStringField(TEXT("DefinitelyNotAProperty"), TEXT("bad"));
+	BadEmbeddedObject->SetObjectField(TEXT("Properties"), BadProperties);
+	Context.ExpectedBaseClass = UAnimNotifyState::StaticClass();
+	Context.Outer = GetTransientPackage();
+
+	const FAssetDocumentFragmentResult BadEmbeddedObjectResult = Compiler.Compile(BadEmbeddedObject, Context);
+	TestFalse(TEXT("EmbeddedObject rejects bad properties before creation"), BadEmbeddedObjectResult.bSuccess);
+	TestTrue(TEXT("EmbeddedObject bad property failure reports preflight code"), HasDiagnosticCode(BadEmbeddedObjectResult, TEXT("embeddedobject-preflight-failed")));
+	TestNull(TEXT("EmbeddedObject bad property failure does not return an object"), BadEmbeddedObjectResult.Object);
 
 	TSharedPtr<FJsonObject> Definitions = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> AttackAnimDefinition = MakeFragment(TEXT("AssetRef"));
@@ -211,6 +268,11 @@ bool FAssetDocumentBuiltInFragmentAdaptersTest::RunTest(const FString& Parameter
 	const FAssetDocumentFragmentResult CyclicResult = Compiler.Compile(CyclicDefinitionRef, Context);
 	TestFalse(TEXT("DefinitionRef rejects cycles"), CyclicResult.bSuccess);
 	TestTrue(TEXT("DefinitionRef cycle failure reports diagnostics"), CyclicResult.Diagnostics.Num() > 0);
+	TestTrue(TEXT("DefinitionRef cycle failure reports code"), HasDiagnosticCode(CyclicResult, TEXT("definitionref-cycle")));
+	if (CyclicResult.Diagnostics.Num() > 0)
+	{
+		TestTrue(TEXT("DefinitionRef cycle path contains definition chain"), CyclicResult.Diagnostics[0].Path.Contains(TEXT("/Definitions/A")) && CyclicResult.Diagnostics[0].Path.Contains(TEXT("/Definitions/B")));
+	}
 
 	return true;
 }
