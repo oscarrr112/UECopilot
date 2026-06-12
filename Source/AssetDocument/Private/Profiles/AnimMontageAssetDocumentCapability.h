@@ -9,6 +9,8 @@ class UAnimMontage;
 class FAnimMontageAssetDocumentCapability final : public IAssetDocumentCapability
 {
 public:
+	static const TArray<FName>& GetCanonicalBodyKeys();
+
 	virtual FName GetName() const override;
 	virtual int32 GetApplyOrder() const override;
 	virtual bool SupportsAsset(const UObject* Asset) const override;

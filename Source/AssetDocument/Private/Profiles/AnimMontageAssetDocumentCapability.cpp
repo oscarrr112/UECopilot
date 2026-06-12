@@ -7,18 +7,16 @@
 
 namespace
 {
-const TSet<FString>& GetAnimMontageBodyKeys()
+bool IsKnownBodyKey(const FString& BodyKey)
 {
-	static const TSet<FString> Keys = {
-		TEXT("Skeleton"),
-		TEXT("PreviewMesh"),
-		TEXT("SlotAnimTracks"),
-		TEXT("CompositeSections"),
-		TEXT("Notifies"),
-		TEXT("NotifyStates"),
-		TEXT("Blend"),
-	};
-	return Keys;
+	for (const FName& KnownBodyKey : FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys())
+	{
+		if (KnownBodyKey.ToString() == BodyKey)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 FString GetLegacyBodyKeyGuidance(const FString& BodyKey)
@@ -61,6 +59,20 @@ bool IsObject(const TSharedPtr<FJsonValue>& Value)
 {
 	return Value.IsValid() && Value->Type == EJson::Object;
 }
+}
+
+const TArray<FName>& FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys()
+{
+	static const TArray<FName> Keys = {
+		TEXT("Skeleton"),
+		TEXT("PreviewMesh"),
+		TEXT("SlotAnimTracks"),
+		TEXT("CompositeSections"),
+		TEXT("Notifies"),
+		TEXT("NotifyStates"),
+		TEXT("Blend"),
+	};
+	return Keys;
 }
 
 FName FAnimMontageAssetDocumentCapability::GetName() const
@@ -146,7 +158,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBody
 				TEXT("DeprecatedBodyKey"));
 		}
 
-		if (!GetAnimMontageBodyKeys().Contains(Pair.Key))
+		if (!IsKnownBodyKey(Pair.Key))
 		{
 			return BodyFailure(
 				FString::Printf(TEXT("Unknown AnimMontage Body key '%s'"), *Pair.Key),

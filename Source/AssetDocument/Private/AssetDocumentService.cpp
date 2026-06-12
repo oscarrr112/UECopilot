@@ -347,8 +347,16 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		return MakeFailure(TEXT("SchemaVersion must be 1"));
 	}
 
+	const bool bHasStructuredShape = Document->HasField(TEXT("Body")) || Document->HasField(TEXT("Definitions"));
 	FString AssetType;
-	if (Document->TryGetStringField(TEXT("AssetType"), AssetType) && AssetType != TEXT("GenericAsset"))
+	if (Document->TryGetStringField(TEXT("AssetType"), AssetType))
+	{
+		if (AssetType != TEXT("GenericAsset"))
+		{
+			return MakeFailure(TEXT("AssetType must be GenericAsset"));
+		}
+	}
+	else if (!bHasStructuredShape)
 	{
 		return MakeFailure(TEXT("AssetType must be GenericAsset"));
 	}

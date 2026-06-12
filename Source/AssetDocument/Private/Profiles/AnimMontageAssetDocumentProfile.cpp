@@ -7,19 +7,6 @@
 
 namespace
 {
-TArray<FName> MakeAnimMontageBodyKeys()
-{
-	return {
-		TEXT("Skeleton"),
-		TEXT("PreviewMesh"),
-		TEXT("SlotAnimTracks"),
-		TEXT("CompositeSections"),
-		TEXT("Notifies"),
-		TEXT("NotifyStates"),
-		TEXT("Blend"),
-	};
-}
-
 TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
 {
 	return TArray<TSharedPtr<FJsonValue>>();
@@ -64,7 +51,7 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentProfile::CreateTemplate(const F
 
 TArray<FName> FAnimMontageAssetDocumentProfile::GetBodyKeys() const
 {
-	return MakeAnimMontageBodyKeys();
+	return FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys();
 }
 
 const IAssetDocumentCapability* FAnimMontageAssetDocumentProfile::ResolveBodyAdapter(FName BodyKey) const
@@ -74,7 +61,7 @@ const IAssetDocumentCapability* FAnimMontageAssetDocumentProfile::ResolveBodyAda
 		return &BodyCapability;
 	}
 
-	for (const FName& KnownBodyKey : MakeAnimMontageBodyKeys())
+	for (const FName& KnownBodyKey : FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys())
 	{
 		if (BodyKey == KnownBodyKey)
 		{

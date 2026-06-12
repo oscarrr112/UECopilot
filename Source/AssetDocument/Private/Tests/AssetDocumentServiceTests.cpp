@@ -477,6 +477,19 @@ bool FAssetDocumentSidecarValidationTest::RunTest(const FString& Parameters)
 	{
 		FAssetDocumentValidateRequest Request;
 		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Test"));
+		Request.Document->RemoveField(TEXT("AssetType"));
+		Request.Document->SetStringField(TEXT("Class"), TEXT("TestDataAsset"));
+		Request.Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+
+		const FAssetDocumentResult Result = Service.Validate(Request);
+
+		TestFalse(TEXT("Legacy reflected document without AssetType fails validation"), Result.IsSuccess());
+		TestTrue(TEXT("Legacy reflected document reports AssetType validation error"), Result.Message.Contains(TEXT("AssetType must be GenericAsset")));
+	}
+
+	{
+		FAssetDocumentValidateRequest Request;
+		Request.Document = MakeGenericAssetDocument(TEXT("/Game/Data/DA_Test"));
 		Request.Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 
 		const FAssetDocumentResult Result = Service.Validate(Request);
