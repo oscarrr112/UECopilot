@@ -316,7 +316,6 @@ const tools = [
                     description: "Absolute sidecar file path to validate. Use this instead of document when validating a file.",
                 },
             },
-            oneOf: [{ required: ["document"] }, { required: ["file_path"] }],
         },
     },
     {
@@ -335,7 +334,6 @@ const tools = [
                     description: "Absolute sidecar file path to diff. Use this instead of document when diffing a file.",
                 },
             },
-            oneOf: [{ required: ["document"] }, { required: ["file_path"] }],
         },
     },
     {
