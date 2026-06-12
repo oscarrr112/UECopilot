@@ -208,7 +208,6 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 		RequireArray(TEXT("Notifies")),
 		RequireArray(TEXT("NotifyStates")),
 		RequireObject(TEXT("Blend")),
-		RequireObject(TEXT("_Skipped")),
 	};
 
 	for (const FAssetDocumentCapabilityResult& Result : Results)
@@ -737,7 +736,6 @@ const TArray<FName>& FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys()
 		TEXT("Notifies"),
 		TEXT("NotifyStates"),
 		TEXT("Blend"),
-		TEXT("_Skipped"),
 	};
 	return Keys;
 }
@@ -772,7 +770,6 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentCapability::GetSchemaHint() con
 	Schema->SetStringField(TEXT("Notifies"), TEXT("array<AnimNotifyPlacement>"));
 	Schema->SetStringField(TEXT("NotifyStates"), TEXT("array<AnimNotifyStatePlacement>"));
 	Schema->SetStringField(TEXT("Blend"), TEXT("object"));
-	Schema->SetStringField(TEXT("_Skipped"), TEXT("extract-only skipped metadata"));
 	return Schema;
 }
 
@@ -880,11 +877,11 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 		UpdatedNotifies.Reserve(Montage->Notifies.Num() + ParsedBody.NotifyPlacements.Notifies.Num() + ParsedBody.NotifyPlacements.NotifyStates.Num());
 		for (const FAnimNotifyEvent& ExistingNotify : Montage->Notifies)
 		{
-			if (ParsedBody.NotifyPlacements.bHasNotifies && ExistingNotify.Notify)
+			if (ParsedBody.NotifyPlacements.bHasNotifies && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(ExistingNotify))
 			{
 				continue;
 			}
-			if (ParsedBody.NotifyPlacements.bHasNotifyStates && ExistingNotify.NotifyStateClass)
+			if (ParsedBody.NotifyPlacements.bHasNotifyStates && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(ExistingNotify))
 			{
 				continue;
 			}

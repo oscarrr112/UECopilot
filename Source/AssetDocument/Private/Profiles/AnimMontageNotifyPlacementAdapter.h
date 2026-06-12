@@ -20,6 +20,9 @@ struct FAnimMontageNotifyPlacementResult
 class FAnimMontageNotifyPlacementAdapter
 {
 public:
+	static bool IsManagedNotifyEvent(const FAnimNotifyEvent& Event);
+	static bool IsManagedNotifyStateEvent(const FAnimNotifyEvent& Event);
+
 	FAssetDocumentCapabilityResult Validate(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const;
 	FAssetDocumentCapabilityResult Compile(
 		const FAssetDocumentFragmentCompiler& Compiler,

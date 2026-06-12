@@ -9,11 +9,13 @@
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Dom/JsonValue.h"
-#include "UObject/UObjectIterator.h"
 #include "UObject/UObjectGlobals.h"
 
 namespace
 {
+const FName ManagedNotifyName(TEXT("AssetDocument.Notify"));
+const FName ManagedNotifyStateName(TEXT("AssetDocument.NotifyState"));
+
 FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
@@ -136,54 +138,15 @@ bool ResolveClassAllowAbstract(const FString& ClassName, UClass*& OutClass, FStr
 	return true;
 }
 
-UClass* FindLoadedConcreteChildClass(UClass* BaseClass)
-{
-	TArray<UClass*> Candidates;
-	for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
-	{
-		UClass* CandidateClass = *ClassIt;
-		if (!CandidateClass || CandidateClass == BaseClass)
-		{
-			continue;
-		}
-		if (CandidateClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
-		{
-			continue;
-		}
-		if (CandidateClass->IsChildOf(BaseClass))
-		{
-			Candidates.Add(CandidateClass);
-		}
-	}
-
-	Candidates.Sort([](const UClass& Left, const UClass& Right)
-	{
-		return Left.GetPathName() < Right.GetPathName();
-	});
-
-	return Candidates.Num() > 0 ? Candidates[0] : nullptr;
-}
-
-FAssetDocumentCapabilityResult ValidateFragmentClass(
+FAssetDocumentCapabilityResult ValidateEmbeddedObjectClass(
 	const TSharedRef<FJsonObject>& ObjectFragment,
 	UClass* ExpectedBaseClass,
 	const FString& Path)
 {
-	FString Kind;
-	if (!ObjectFragment->TryGetStringField(TEXT("Kind"), Kind) || Kind.TrimStartAndEnd().IsEmpty())
-	{
-		return BodyFailure(TEXT("Fragment Kind must be a string."), Path, TEXT("missing-fragment-kind"));
-	}
-
-	if (Kind != TEXT("EmbeddedObject") && Kind != TEXT("ClassRef"))
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
 	FString ClassName;
 	if (!ObjectFragment->TryGetStringField(TEXT("Class"), ClassName) || ClassName.TrimStartAndEnd().IsEmpty())
 	{
-		return BodyFailure(TEXT("Object fragment field 'Class' is required."), Path, TEXT("missing-object-class"));
+		return BodyFailure(TEXT("EmbeddedObject field 'Class' is required."), Path, TEXT("missing-embeddedobject-class"));
 	}
 
 	UClass* ResolvedClass = nullptr;
@@ -201,53 +164,69 @@ FAssetDocumentCapabilityResult ValidateFragmentClass(
 			TEXT("embeddedobject-base-class-mismatch"));
 	}
 
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Class '%s' is abstract and cannot be used as an AnimMontage notify object."), *ResolvedClass->GetName()),
+			Path,
+			TEXT("AbstractNotifyClass"));
+	}
+
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-bool TryCreateExpectedBaseDefaultObject(
+FAssetDocumentCapabilityResult ValidateObjectProducingFragment(
+	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& ObjectFragment,
 	UClass* ExpectedBaseClass,
-	UObject* Outer,
-	UObject*& OutObject)
+	const FString& Path,
+	TSet<FString>& DefinitionStack)
 {
-	OutObject = nullptr;
-
-	FString ClassName;
-	if (!ObjectFragment->TryGetStringField(TEXT("Class"), ClassName) || ClassName.TrimStartAndEnd().IsEmpty())
+	FString Kind;
+	if (!ObjectFragment->TryGetStringField(TEXT("Kind"), Kind) || Kind.TrimStartAndEnd().IsEmpty())
 	{
-		return false;
+		return BodyFailure(TEXT("Fragment Kind must be a string."), Path, TEXT("missing-fragment-kind"));
 	}
 
-	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
-	if (ObjectFragment->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr && PropertiesPtr->IsValid() && (*PropertiesPtr)->Values.Num() > 0)
+	if (Kind == TEXT("EmbeddedObject"))
 	{
-		return false;
+		return ValidateEmbeddedObjectClass(ObjectFragment, ExpectedBaseClass, Path);
 	}
 
-	UClass* ResolvedClass = nullptr;
-	FString Error;
-	if (!ResolveClassAllowAbstract(ClassName, ResolvedClass, Error))
+	if (Kind == TEXT("DefinitionRef"))
 	{
-		return false;
+		FString Id;
+		if (!ObjectFragment->TryGetStringField(TEXT("Id"), Id) || Id.TrimStartAndEnd().IsEmpty())
+		{
+			return BodyFailure(TEXT("DefinitionRef field 'Id' is required."), Path, TEXT("missing-definitionref-id"));
+		}
+
+		if (!Context.Definitions || !Context.Definitions->IsValid())
+		{
+			return BodyFailure(TEXT("DefinitionRef requires Definitions."), Path, TEXT("definitionref-missing-definitions"));
+		}
+
+		if (DefinitionStack.Contains(Id))
+		{
+			return BodyFailure(FString::Printf(TEXT("DefinitionRef cycle detected at '%s'."), *Id), Path, TEXT("definitionref-cycle"));
+		}
+
+		const TSharedPtr<FJsonObject>* DefinitionJson = nullptr;
+		if (!(*Context.Definitions)->TryGetObjectField(Id, DefinitionJson) || !DefinitionJson || !DefinitionJson->IsValid())
+		{
+			return BodyFailure(FString::Printf(TEXT("Definition '%s' was not found."), *Id), Path, TEXT("definitionref-missing-id"));
+		}
+
+		DefinitionStack.Add(Id);
+		const FAssetDocumentCapabilityResult Result = ValidateObjectProducingFragment(Context, DefinitionJson->ToSharedRef(), ExpectedBaseClass, Path, DefinitionStack);
+		DefinitionStack.Remove(Id);
+		return Result;
 	}
 
-	if (!ExpectedBaseClass || ResolvedClass != ExpectedBaseClass || !ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
-	{
-		return false;
-	}
-
-	UClass* ConcreteClass = FindLoadedConcreteChildClass(ResolvedClass);
-	if (!ConcreteClass)
-	{
-		return false;
-	}
-
-	OutObject = NewObject<UObject>(Outer, ConcreteClass, NAME_None, RF_Transactional);
-	return OutObject != nullptr;
+	return BodyFailure(TEXT("Notify placement Object must be an EmbeddedObject or DefinitionRef to an EmbeddedObject."), Path, TEXT("InvalidNotifyObjectFragment"));
 }
 
 FAssetDocumentCapabilityResult ValidatePlacementArray(
-	const FAssetDocumentFragmentCompiler& Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& BodyObject,
 	const TCHAR* SectionName,
@@ -308,19 +287,8 @@ FAssetDocumentCapabilityResult ValidatePlacementArray(
 			return Result;
 		}
 
-		FAssetDocumentFragmentContext FragmentContext;
-		FragmentContext.OwnerAsset = Context.Asset;
-		FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
-		FragmentContext.Definitions = Context.Definitions;
-		FragmentContext.JsonPath = BasePath / TEXT("Object");
-
-		const FAssetDocumentFragmentResult FragmentResult = Compiler.Validate(ObjectFragment.ToSharedRef(), FragmentContext);
-		if (!FragmentResult.bSuccess)
-		{
-			return FragmentFailure(FragmentResult);
-		}
-
-		Result = ValidateFragmentClass(ObjectFragment.ToSharedRef(), ExpectedBaseClass, BasePath / TEXT("Object"));
+		TSet<FString> DefinitionStack;
+		Result = ValidateObjectProducingFragment(Context, ObjectFragment.ToSharedRef(), ExpectedBaseClass, BasePath / TEXT("Object"), DefinitionStack);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -394,6 +362,13 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 			return Result;
 		}
 
+		TSet<FString> DefinitionStack;
+		Result = ValidateObjectProducingFragment(Context, ObjectFragment.ToSharedRef(), ExpectedBaseClass, BasePath / TEXT("Object"), DefinitionStack);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
 		FAssetDocumentFragmentContext FragmentContext;
 		FragmentContext.OwnerAsset = Montage;
 		FragmentContext.Outer = Montage;
@@ -404,14 +379,7 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		FAssetDocumentFragmentResult FragmentResult = Compiler.Compile(ObjectFragment.ToSharedRef(), FragmentContext);
 		if (!FragmentResult.bSuccess)
 		{
-			UObject* DefaultObject = nullptr;
-			if (!TryCreateExpectedBaseDefaultObject(ObjectFragment.ToSharedRef(), ExpectedBaseClass, Montage, DefaultObject))
-			{
-				return FragmentFailure(FragmentResult);
-			}
-
-			FragmentResult = FAssetDocumentFragmentResult::Success();
-			FragmentResult.Object = DefaultObject;
+			return FragmentFailure(FragmentResult);
 		}
 
 		UObject* NotifyObject = FragmentResult.Object;
@@ -432,14 +400,14 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		if (bState)
 		{
 			NotifyEvent.NotifyStateClass = Cast<UAnimNotifyState>(NotifyObject);
-			NotifyEvent.NotifyName = NotifyObject->GetClass()->GetFName();
+			NotifyEvent.NotifyName = ManagedNotifyStateName;
 			NotifyEvent.SetDuration(static_cast<float>(Duration));
 			NotifyEvent.RefreshEndTriggerOffset(Montage->CalculateOffsetForNotify(NotifyTime + static_cast<float>(Duration)));
 		}
 		else
 		{
 			NotifyEvent.Notify = Cast<UAnimNotify>(NotifyObject);
-			NotifyEvent.NotifyName = NotifyObject->GetClass()->GetFName();
+			NotifyEvent.NotifyName = ManagedNotifyName;
 		}
 
 		OutEvents.Add(NotifyEvent);
@@ -520,16 +488,23 @@ FAssetDocumentCapabilityResult ExtractPlacement(
 
 FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Validate(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const
 {
-	FAssetDocumentFragmentCompiler Compiler;
-	Compiler.RegisterBuiltInAdapters();
-
-	FAssetDocumentCapabilityResult Result = ValidatePlacementArray(Compiler, Context, BodyObject, TEXT("Notifies"), false, UAnimNotify::StaticClass());
+	FAssetDocumentCapabilityResult Result = ValidatePlacementArray(Context, BodyObject, TEXT("Notifies"), false, UAnimNotify::StaticClass());
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	return ValidatePlacementArray(Compiler, Context, BodyObject, TEXT("NotifyStates"), true, UAnimNotifyState::StaticClass());
+	return ValidatePlacementArray(Context, BodyObject, TEXT("NotifyStates"), true, UAnimNotifyState::StaticClass());
+}
+
+bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(const FAnimNotifyEvent& Event)
+{
+	return Event.Notify && Event.NotifyName == ManagedNotifyName;
+}
+
+bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(const FAnimNotifyEvent& Event)
+{
+	return Event.NotifyStateClass && Event.NotifyName == ManagedNotifyStateName;
 }
 
 FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Compile(
