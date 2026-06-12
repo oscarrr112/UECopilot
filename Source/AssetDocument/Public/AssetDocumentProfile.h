@@ -31,33 +31,27 @@ struct ASSETDOCUMENT_API FAssetDocumentCapabilityResult
 	TArray<FAssetDocumentDiagnostic> Diagnostics;
 	TSharedPtr<FJsonObject> Payload;
 
-	static FAssetDocumentCapabilityResult Success(const FString& InMessage)
+	static FAssetDocumentCapabilityResult Success(const FString& Message = TEXT(""))
 	{
 		FAssetDocumentCapabilityResult Result;
 		Result.bSuccess = true;
-		Result.Message = InMessage;
+		Result.Message = Message;
 		return Result;
 	}
 
-	static FAssetDocumentCapabilityResult Success(const FString& InMessage, TSharedPtr<FJsonObject> InPayload)
-	{
-		FAssetDocumentCapabilityResult Result = Success(InMessage);
-		Result.Payload = InPayload;
-		return Result;
-	}
-
-	static FAssetDocumentCapabilityResult Failure(const FString& InMessage)
+	static FAssetDocumentCapabilityResult Failure(const FString& Message, const FString& Path = TEXT(""), const FString& Code = TEXT("ValidationFailed"))
 	{
 		FAssetDocumentCapabilityResult Result;
 		Result.bSuccess = false;
-		Result.Message = InMessage;
-		return Result;
-	}
-
-	static FAssetDocumentCapabilityResult Failure(const FString& InMessage, TArray<FAssetDocumentDiagnostic> InDiagnostics)
-	{
-		FAssetDocumentCapabilityResult Result = Failure(InMessage);
-		Result.Diagnostics = MoveTemp(InDiagnostics);
+		Result.Message = Message;
+		if (!Path.IsEmpty() || !Code.IsEmpty())
+		{
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = Path;
+			Diagnostic.Code = Code;
+			Diagnostic.Message = Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+		}
 		return Result;
 	}
 };
@@ -69,13 +63,13 @@ public:
 
 	virtual FName GetName() const = 0;
 	virtual int32 GetApplyOrder() const = 0;
-	virtual bool SupportsAsset(const FAssetDocumentCapabilityContext& Context) const = 0;
-	virtual bool SupportsClass(UClass* AssetClass) const = 0;
-	virtual TSharedPtr<FJsonObject> GetSchemaHint(const FAssetDocumentCapabilityContext& Context) const = 0;
-	virtual FAssetDocumentCapabilityResult Validate(const FAssetDocumentCapabilityContext& Context, const TSharedPtr<FJsonValue>& BodyValue) const = 0;
-	virtual FAssetDocumentCapabilityResult Apply(const FAssetDocumentCapabilityContext& Context, const TSharedPtr<FJsonValue>& BodyValue) = 0;
-	virtual FAssetDocumentCapabilityResult Extract(const FAssetDocumentCapabilityContext& Context) const = 0;
-	virtual FAssetDocumentCapabilityResult Diff(const FAssetDocumentCapabilityContext& Context, const TSharedPtr<FJsonValue>& BodyValue) const = 0;
+	virtual bool SupportsAsset(const UObject* Asset) const = 0;
+	virtual bool SupportsClass(const UClass* AssetClass) const = 0;
+	virtual TSharedRef<FJsonObject> GetSchemaHint() const = 0;
+	virtual FAssetDocumentCapabilityResult Validate(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const = 0;
+	virtual FAssetDocumentCapabilityResult Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) = 0;
+	virtual FAssetDocumentCapabilityResult Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const = 0;
+	virtual FAssetDocumentCapabilityResult Diff(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const = 0;
 };
 
 class ASSETDOCUMENT_API IAssetDocumentProfile
@@ -84,8 +78,8 @@ public:
 	virtual ~IAssetDocumentProfile() = default;
 
 	virtual UClass* GetExactClass() const = 0;
-	virtual FName GetDocumentShape() const = 0;
-	virtual TSharedPtr<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const = 0;
-	virtual TArray<FString> GetBodyKeys() const = 0;
-	virtual TSharedPtr<IAssetDocumentCapability> ResolveBodyAdapter(const FString& BodyKey) const = 0;
+	virtual TSharedRef<FJsonObject> GetDocumentShape() const = 0;
+	virtual TSharedRef<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const = 0;
+	virtual TArray<FName> GetBodyKeys() const = 0;
+	virtual const IAssetDocumentCapability* ResolveBodyAdapter(FName BodyKey) const = 0;
 };

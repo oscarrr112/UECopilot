@@ -18,25 +18,27 @@ public:
 		return UObject::StaticClass();
 	}
 
-	virtual FName GetDocumentShape() const override
+	virtual TSharedRef<FJsonObject> GetDocumentShape() const override
 	{
-		return TEXT("TestShape");
+		TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
+		Shape->SetStringField(TEXT("Name"), TEXT("TestShape"));
+		return Shape;
 	}
 
-	virtual TSharedPtr<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const override
+	virtual TSharedRef<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const override
 	{
-		TSharedPtr<FJsonObject> Template = MakeShared<FJsonObject>();
+		TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
 		Template->SetStringField(TEXT("Target"), Context.Target);
 		Template->SetStringField(TEXT("Class"), Context.ClassPath);
 		return Template;
 	}
 
-	virtual TArray<FString> GetBodyKeys() const override
+	virtual TArray<FName> GetBodyKeys() const override
 	{
 		return {TEXT("TestBody")};
 	}
 
-	virtual TSharedPtr<IAssetDocumentCapability> ResolveBodyAdapter(const FString& BodyKey) const override
+	virtual const IAssetDocumentCapability* ResolveBodyAdapter(FName BodyKey) const override
 	{
 		return nullptr;
 	}

@@ -41,10 +41,8 @@ struct ASSETDOCUMENT_API FAssetDocumentFragmentResult
 	UScriptStruct* StructType = nullptr;
 	TArray<uint8> StructBytes;
 
-	static FAssetDocumentFragmentResult Success(const FString& InMessage);
-	static FAssetDocumentFragmentResult Success(TSharedPtr<FJsonValue> InValue);
-	static FAssetDocumentFragmentResult Failure(const FString& InMessage);
-	static FAssetDocumentFragmentResult Failure(const FString& InMessage, TArray<FAssetDocumentDiagnostic> InDiagnostics);
+	static FAssetDocumentFragmentResult Success();
+	static FAssetDocumentFragmentResult Failure(const FString& Message, const FString& Path = TEXT(""), const FString& Code = TEXT("FragmentFailed"));
 };
 
 class ASSETDOCUMENT_API IAssetDocumentFragmentAdapter
@@ -54,7 +52,7 @@ public:
 
 	virtual FName GetKind() const = 0;
 	virtual bool SupportsContext(const FAssetDocumentFragmentContext& Context) const = 0;
-	virtual FAssetDocumentFragmentResult Validate(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const = 0;
-	virtual FAssetDocumentFragmentResult Compile(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const = 0;
-	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context) const = 0;
+	virtual FAssetDocumentFragmentResult Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const = 0;
+	virtual FAssetDocumentFragmentResult Compile(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const = 0;
+	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const = 0;
 };

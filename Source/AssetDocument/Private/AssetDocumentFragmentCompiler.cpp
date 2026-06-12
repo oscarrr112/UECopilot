@@ -14,33 +14,22 @@ FAssetDocumentDiagnostic MakeFragmentDiagnostic(const FString& Path, const FStri
 }
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Success(const FString& InMessage)
+FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Success()
 {
 	FAssetDocumentFragmentResult Result;
 	Result.bSuccess = true;
-	Result.Message = InMessage;
 	return Result;
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Success(TSharedPtr<FJsonValue> InValue)
-{
-	FAssetDocumentFragmentResult Result = Success(TEXT("success"));
-	Result.Value = InValue;
-	return Result;
-}
-
-FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Failure(const FString& InMessage)
+FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Failure(const FString& Message, const FString& Path, const FString& Code)
 {
 	FAssetDocumentFragmentResult Result;
 	Result.bSuccess = false;
-	Result.Message = InMessage;
-	return Result;
-}
-
-FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Failure(const FString& InMessage, TArray<FAssetDocumentDiagnostic> InDiagnostics)
-{
-	FAssetDocumentFragmentResult Result = Failure(InMessage);
-	Result.Diagnostics = MoveTemp(InDiagnostics);
+	Result.Message = Message;
+	if (!Path.IsEmpty() || !Code.IsEmpty())
+	{
+		Result.Diagnostics.Add(MakeFragmentDiagnostic(Path, Code, Message));
+	}
 	return Result;
 }
 
@@ -49,44 +38,45 @@ void FAssetDocumentFragmentCompiler::RegisterAdapter(TSharedRef<IAssetDocumentFr
 	Adapters.Add(Adapter->GetKind(), Adapter);
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Validate(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const
+FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const
 {
 	const IAssetDocumentFragmentAdapter* Adapter = nullptr;
-	const FAssetDocumentFragmentResult ResolveResult = ResolveAdapter(Fragment, Context, Adapter);
+	const FAssetDocumentFragmentResult ResolveResult = ResolveAdapter(FragmentJson, Context, Adapter);
 	if (!ResolveResult.bSuccess)
 	{
 		return ResolveResult;
 	}
 
-	return Adapter->Validate(Fragment, Context);
+	return Adapter->Validate(FragmentJson, Context);
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Compile(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const
+FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Compile(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const
 {
 	const IAssetDocumentFragmentAdapter* Adapter = nullptr;
-	const FAssetDocumentFragmentResult ResolveResult = ResolveAdapter(Fragment, Context, Adapter);
+	const FAssetDocumentFragmentResult ResolveResult = ResolveAdapter(FragmentJson, Context, Adapter);
 	if (!ResolveResult.bSuccess)
 	{
 		return ResolveResult;
 	}
 
-	return Adapter->Compile(Fragment, Context);
+	return Adapter->Compile(FragmentJson, Context);
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Extract(FName Kind, const FAssetDocumentFragmentExtractContext& Context) const
+FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const
 {
 	FAssetDocumentFragmentContext AdapterContext;
 	AdapterContext.OwnerAsset = Context.OwnerAsset;
 	AdapterContext.JsonPath = Context.JsonPath;
 	AdapterContext.Role = Context.Role;
 
+	const FName Kind(*Context.Role);
 	const IAssetDocumentFragmentAdapter* Adapter = FindAdapter(Kind, AdapterContext);
 	if (!Adapter)
 	{
 		return UnknownKindFailure(Kind, AdapterContext);
 	}
 
-	return Adapter->Extract(Context);
+	return Adapter->Extract(Context, OutFragmentJson);
 }
 
 const IAssetDocumentFragmentAdapter* FAssetDocumentFragmentCompiler::FindAdapter(FName Kind, const FAssetDocumentFragmentContext& Context) const
@@ -102,16 +92,11 @@ const IAssetDocumentFragmentAdapter* FAssetDocumentFragmentCompiler::FindAdapter
 	return nullptr;
 }
 
-FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::ResolveAdapter(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context, const IAssetDocumentFragmentAdapter*& OutAdapter) const
+FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::ResolveAdapter(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context, const IAssetDocumentFragmentAdapter*& OutAdapter) const
 {
 	OutAdapter = nullptr;
 
-	if (!Fragment.IsValid())
-	{
-		return MissingKindFailure(Context);
-	}
-
-	const TSharedPtr<FJsonValue> KindValue = Fragment->TryGetField(TEXT("Kind"));
+	const TSharedPtr<FJsonValue> KindValue = FragmentJson->TryGetField(TEXT("Kind"));
 	if (!KindValue.IsValid() || KindValue->Type != EJson::String)
 	{
 		return MissingKindFailure(Context);
@@ -124,19 +109,18 @@ FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::ResolveAdapter(cons
 		return UnknownKindFailure(Kind, Context);
 	}
 
-	return FAssetDocumentFragmentResult::Success(TEXT("adapter resolved"));
+	return FAssetDocumentFragmentResult::Success();
 }
 
 FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::MissingKindFailure(const FAssetDocumentFragmentContext& Context) const
 {
-	TArray<FAssetDocumentDiagnostic> Diagnostics;
-	Diagnostics.Add(MakeFragmentDiagnostic(Context.JsonPath, TEXT("missing-fragment-kind"), TEXT("Fragment Kind must be a string.")));
-	return FAssetDocumentFragmentResult::Failure(TEXT("Fragment Kind must be a string."), MoveTemp(Diagnostics));
+	return FAssetDocumentFragmentResult::Failure(TEXT("Fragment Kind must be a string."), Context.JsonPath, TEXT("missing-fragment-kind"));
 }
 
 FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::UnknownKindFailure(FName Kind, const FAssetDocumentFragmentContext& Context) const
 {
-	TArray<FAssetDocumentDiagnostic> Diagnostics;
-	Diagnostics.Add(MakeFragmentDiagnostic(Context.JsonPath, TEXT("unknown-fragment-kind"), FString::Printf(TEXT("No fragment adapter is registered for Kind '%s'."), *Kind.ToString())));
-	return FAssetDocumentFragmentResult::Failure(TEXT("Unknown fragment Kind."), MoveTemp(Diagnostics));
+	return FAssetDocumentFragmentResult::Failure(
+		FString::Printf(TEXT("No fragment adapter is registered for Kind '%s'."), *Kind.ToString()),
+		Context.JsonPath,
+		TEXT("unknown-fragment-kind"));
 }

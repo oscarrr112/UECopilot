@@ -24,21 +24,22 @@ public:
 		return true;
 	}
 
-	virtual FAssetDocumentFragmentResult Validate(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const override
+	virtual FAssetDocumentFragmentResult Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const override
 	{
-		return FAssetDocumentFragmentResult::Success(TEXT("validated"));
+		return FAssetDocumentFragmentResult::Success();
 	}
 
-	virtual FAssetDocumentFragmentResult Compile(const TSharedPtr<FJsonObject>& Fragment, const FAssetDocumentFragmentContext& Context) const override
+	virtual FAssetDocumentFragmentResult Compile(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const override
 	{
-		return FAssetDocumentFragmentResult::Success(MakeShared<FJsonValueString>(TEXT("compiled")));
+		FAssetDocumentFragmentResult Result = FAssetDocumentFragmentResult::Success();
+		Result.Value = MakeShared<FJsonValueString>(TEXT("compiled"));
+		return Result;
 	}
 
-	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context) const override
+	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const override
 	{
-		TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
-		Fragment->SetStringField(TEXT("Kind"), GetKind().ToString());
-		return FAssetDocumentFragmentResult::Success(MakeShared<FJsonValueObject>(Fragment));
+		OutFragmentJson->SetStringField(TEXT("Kind"), GetKind().ToString());
+		return FAssetDocumentFragmentResult::Success();
 	}
 };
 }
@@ -56,14 +57,14 @@ bool FAssetDocumentFragmentCompilerDispatchTest::RunTest(const FString& Paramete
 	FAssetDocumentFragmentContext Context;
 	Context.JsonPath = TEXT("/Body/Test");
 
-	TSharedPtr<FJsonObject> KnownFragment = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> KnownFragment = MakeShared<FJsonObject>();
 	KnownFragment->SetStringField(TEXT("Kind"), TEXT("TestKind"));
 
 	const FAssetDocumentFragmentResult KnownResult = Compiler.Compile(KnownFragment, Context);
 	TestTrue(TEXT("Known fragment kind compiles"), KnownResult.bSuccess);
 	TestTrue(TEXT("Known fragment kind produces a JSON value"), KnownResult.Value.IsValid());
 
-	TSharedPtr<FJsonObject> MissingFragment = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> MissingFragment = MakeShared<FJsonObject>();
 	MissingFragment->SetStringField(TEXT("Kind"), TEXT("MissingKind"));
 
 	const FAssetDocumentFragmentResult MissingResult = Compiler.Compile(MissingFragment, Context);
@@ -73,6 +74,15 @@ bool FAssetDocumentFragmentCompilerDispatchTest::RunTest(const FString& Paramete
 	{
 		TestEqual(TEXT("Missing fragment diagnostic uses the fragment path"), MissingResult.Diagnostics[0].Path, FString(TEXT("/Body/Test")));
 	}
+
+	FAssetDocumentFragmentExtractContext ExtractContext;
+	ExtractContext.JsonPath = TEXT("/Body/Test");
+	ExtractContext.Role = TEXT("TestKind");
+
+	TSharedRef<FJsonObject> ExtractedFragment = MakeShared<FJsonObject>();
+	const FAssetDocumentFragmentResult ExtractResult = Compiler.Extract(ExtractContext, ExtractedFragment);
+	TestTrue(TEXT("Known fragment role extracts"), ExtractResult.bSuccess);
+	TestEqual(TEXT("Extract writes fragment Kind"), ExtractedFragment->GetStringField(TEXT("Kind")), FString(TEXT("TestKind")));
 
 	return true;
 }
