@@ -325,7 +325,7 @@ ValidateTargetMatchesSidecar(FilePath, Document)
 
 sidecar 必须使用 UTF-8 JSON。写入时保持稳定字段顺序，方便 git diff。
 
-第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释，后续如果需要人工注释，可以单独讨论 JSONC/YAML frontend，但 UE 侧 canonical sidecar 先保持 JSON。
+第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释；AssetDocument 的 canonical sidecar 保持 JSON，不规划 JSONC/YAML/source-language frontend。
 
 ### 5.4 创建策略
 
@@ -815,10 +815,11 @@ POST /assetdocument/diff
 1. **Structured Asset Adapter Spec**：使用 `AnimMontage` 或 `BlendSpace` 验证薄 adapter。
 2. **Blueprint Lifecycle Adapter Spec**：把 Blueprint CDO/default properties 接入通用框架。
 3. **WidgetTree Domain Spec**：将 WidgetTree 作为 tree domain 接入。
-4. **MaterialGraph Domain Spec**：新增 Material DSL -> canonical IR -> expression builder。
-5. **AnimationBlueprint Domain Specs**：复用同一套 `Domains[]` 管线接入 AnimGraph、StateMachine 和 BSLFragment。
+4. **GraphIR Substrate Spec**：定义 Agent-facing canonical JSON graph shape，包括 `Graphs`、`Nodes`、`Edges`、`Outputs`、typed pins、stable IDs、JSON Pointer diagnostics 和 profile-driven schema/template。
+5. **MaterialGraph Domain Spec**：使用 AssetDocument `Body.Graphs.Material` JSON GraphIR 作为唯一 Agent-facing 输入，再由 Material graph adapter 生成 UE material expressions。
+6. **AnimationBlueprint Domain Specs**：复用同一套 `Body.Graphs` / profile 管线接入 AnimGraph、StateMachine 和 Blueprint/EventGraph。不要新增 AnimGraphDSL、StateMachineDSL 或 BSLFragment 作为下一阶段主入口。
 
-这些后续工作都不应修改第一版 `GenericAsset` 的核心契约，而应通过 lifecycle/content/domain adapter 增量扩展。
+这些后续工作都不应修改第一版 `GenericAsset` 的核心契约，而应通过 lifecycle/content/domain adapter 增量扩展。图资产的长期方向是 typed JSON GraphIR，而不是“自定义语言 -> JSON IR -> UE 图”的管线。已有 BSL 工具可以作为历史 Blueprint 工具继续存在，但新的 AssetDocument 图能力不再把可选源码前端列为目标。
 
 ---
 

@@ -1351,11 +1351,12 @@ MCP 测试需要覆盖：
 | `DataTableRows` | `UDataTable` | rows | 适合替代专用 datatable row update |
 | `CurveKeys` | `UCurveFloat` / `UCurveVector` | keys/channels | 验证 channel-like 数据 |
 | `WidgetTree` | `UWidgetBlueprint` | tree / slots / style | 迁移 WidgetBlueprintGenerator 的动态经验 |
-| `MaterialGraph` | `UMaterial` | graph nodes/links | 可以先以 JSON workflow 表达 |
-| `NiagaraGraph` | Niagara assets | graph/modules | 需要更独立的图 DSL 或 workflow JSON |
+| `GraphIR` | graph-capable profiles | typed JSON nodes/edges/outputs | 先定义 Agent-facing canonical graph substrate，不新增自定义语言前端 |
+| `MaterialGraph` | `UMaterial` | `Body.Graphs.Material` | 使用 typed JSON GraphIR，adapter 生成 UE material expressions |
+| `NiagaraGraph` | Niagara assets | `Body.Graphs.*` / modules | 复用 GraphIR schema；Niagara 只新增 profile/adapter 语义，不新增图 DSL |
 | `AnimNotifyCapability` | `UAnimNotify` / `UAnimNotifyState` | class / properties / domain semantics | 后续独立 AN/ANS 能力应复用 fragment schema，不通过 capability-to-capability bridge 接入 |
 
-图资产不应该直接塞进 `Properties`。它们应该是 capability 下的 graph/workflow block，由图 adapter 负责解释。
+图资产不应该直接塞进 `Properties`，也不应该走“自定义语言 -> JSON -> UE 图”的主路径。下一阶段应先定义 `Body.Graphs` 的 Agent-facing canonical JSON GraphIR：节点、边、输出、pin、fragment 引用和 diagnostics 都必须显式可校验。`Class/Profile` 负责暴露 graph schema 和 template；图 adapter 负责把 canonical GraphIR materialize 成 UE 图结构。
 
 ---
 

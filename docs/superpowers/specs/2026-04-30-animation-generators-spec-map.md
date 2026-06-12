@@ -16,12 +16,12 @@
 - 通过官方 AnimBlueprint factory 和 compiler 路径创建的 `AnimationBlueprint` 资产。
 - Animation Blueprint 姿势图。
 - 动画状态机和过渡规则。
-- 通过 BSLFragment 集成的普通 Blueprint/EventGraph/function 逻辑。
+- 通过 `Body.Graphs.BlueprintGraphs` 集成的普通 Blueprint/EventGraph/function 逻辑。
 - `IKRig`、`IKRetargeter`、`PoseSearchSchema`、`PoseSearchDatabase`、`ChooserTable` 和 `ControlRigBlueprint` lifecycle 等后续动画工作流资产。
 - `AnimSequence` 的受限 minimal/patch 能力，以及对 `Skeleton`、`SkeletalMesh` 这类 import-heavy 资产的引用/验证边界。
 - MCP schemas、fixtures、提取和 round-trip 检查。
 
-设计保留 AssetFactory 的顶层输入 JSON。Animation graph 创作委托给专用源码块，因为 AnimGraph 和 StateMachine 语义不适合、也不稳定于低层 JSON node/pin 数组表达。
+设计保留 AssetFactory/AssetDocument 的顶层 JSON。2026-06-12 后，Animation graph 创作不再委托给专用源码块；长期方向改为 Agent-facing typed JSON GraphIR。AnimGraph、StateMachine 和 Blueprint/EventGraph 仍然分成不同 profile section，但它们都应通过 `Body.Graphs` 下的 canonical JSON 表达，而不是 `AnimGraphDSL`、`AnimStateMachineDSL` 或 `BSLFragment`。
 
 ---
 
@@ -44,32 +44,51 @@
     { "Name": "bIsInAir", "Type": "Bool", "DefaultValue": "false" }
   ],
   "DefaultProperties": {},
-  "AnimGraph": {
-    "Language": "AnimGraphDSL",
-    "Source": "output = machine Locomotion"
-  },
-  "StateMachines": [
-    {
-      "Name": "Locomotion",
-      "Language": "AnimStateMachineDSL",
-      "Source": "entry Idle\nstate Idle { pose = sequence(\"/Game/Anim/Idle.Idle\") }"
+  "Body": {
+    "Graphs": {
+      "AnimGraph": {
+        "Nodes": {
+          "Locomotion": {
+            "Kind": "StateMachineRef",
+            "StateMachine": "Locomotion"
+          }
+        },
+        "Outputs": {
+          "Pose": {
+            "From": { "Node": "Locomotion", "Pin": "Pose" }
+          }
+        }
+      },
+      "StateMachines": {
+        "Locomotion": {
+          "Entry": "Idle",
+          "States": {
+            "Idle": {
+              "Pose": {
+                "Kind": "SequencePlayer",
+                "Animation": "/Game/Anim/Idle.Idle"
+              }
+            }
+          },
+          "Transitions": []
+        }
+      },
+      "BlueprintGraphs": {
+        "EventGraph": {
+          "Nodes": {},
+          "Edges": []
+        }
+      }
     }
-  ],
-  "BlueprintGraphs": [
-    {
-      "Name": "EventGraph",
-      "Language": "BSLFragment",
-      "Source": "event BlueprintUpdateAnimation(DeltaTimeX: float) { }"
-    }
-  ]
+  }
 }
 ```
 
 顶层 variables 使用现有 `BlueprintGenerator` 形状：`Name`、`Type` 和可选字符串 `DefaultValue`。生成流程应接受 `Bool` 和 `Boolean` 作为 Blueprint bool 变量的别名，因为提取结果可能使用面向引擎的拼写。
 
-### AnimGraph Source
+### AnimGraph GraphIR
 
-`AnimGraph.Source` 表达姿势图结构。它负责 pose-flow 语义，例如：
+`Body.Graphs.AnimGraph` 表达姿势图结构。它负责 pose-flow 语义，例如：
 
 - output pose
 - sequence player
@@ -78,13 +97,13 @@
 - cached pose
 - slot
 - layered blend
-- raw animation node escape hatch
+- raw animation node object
 
 它不声明普通 Blueprint 变量，也不表达 K2 执行逻辑。
 
-### StateMachine Source
+### StateMachine GraphIR
 
-`StateMachines[].Source` 表达动画状态机结构。`StateMachines[].Name` 是权威的机器名来源。如果未来的 DSL header 也命名了该 machine，generator 应拒绝不匹配，而不是隐式选择其中一个。该 source 负责：
+`Body.Graphs.StateMachines` 表达动画状态机结构。map key 是权威的 machine 名来源。该 graph section 负责：
 
 - entry state
 - states
@@ -94,11 +113,11 @@
 - transition conditions
 - 支持时的 nested state machine references
 
-它不直接构建 EventGraph 逻辑。在 Spec 5 中，transition conditions 可以引用 variables、简单 expressions 或 named helper functions，并将它们作为未解析引用保留。Spec 6 负责用 BSLFragment 生成的 functions 满足这些 helper references。
+它不直接构建 EventGraph 逻辑。transition conditions 可以引用 variables、简单 expression graph 或 named helper functions，并将它们作为未解析引用保留。后续 Blueprint/EventGraph GraphIR 负责满足这些 helper references。
 
-### BlueprintGraphs Source
+### BlueprintGraphs GraphIR
 
-`BlueprintGraphs[].Source` 使用 `BSLFragment` 表达普通 Blueprint 图逻辑：
+`Body.Graphs.BlueprintGraphs` 使用 typed JSON GraphIR 表达普通 Blueprint 图逻辑：
 
 - `EventGraph`
 - animation update event
@@ -106,7 +125,7 @@
 - variable update logic
 - transition rules 引用的 bool functions
 
-此 source 应尽可能复用 BSL infrastructure，但 Animation Blueprint 图写入仍然需要一个感知 AnimationBlueprint 的 integration layer。当前 BSL parser 期望完整的 `blueprint ... extends ... { ... }` wrapper，因此 Spec 6 负责把 fragments 包装成有效 BSL，并将它们路由到请求的 graph。
+Animation Blueprint 图写入仍然需要一个感知 AnimationBlueprint 的 adapter layer，但它不应再依赖 BSL fragment wrapping 作为主路径。已有 BSL 工具可以保留为历史 Blueprint 工具；新的 AssetDocument graph pipeline 只接受 GraphIR JSON。
 
 ---
 
@@ -119,7 +138,7 @@
 范围：
 
 - 记录 BlendSpace 和 AnimationBlueprint 创建所需的 UE API 研究。
-- 定义顶层 JSON + AnimGraphDSL + AnimStateMachineDSL + BSLFragment 的拆分。
+- 定义顶层 JSON + `Body.Graphs` GraphIR sections 的拆分。
 - 定义依赖顺序和验证期望。
 - 识别哪些 specs 是实现规格，哪些是横切规格。
 
@@ -207,36 +226,37 @@
 
 依赖：Anim Spec 1、Anim Spec 2。
 
-### Anim Spec 4: AnimGraphDSL Parser
+### Anim Spec 4: Shared GraphIR Schema + Diagnostics
 
-**目标：** 让 agents 以 source text 编写 pose graphs，而不是使用低层 JSON AST。
+**目标：** 定义 AnimationBlueprint 使用的 Agent-facing typed JSON GraphIR schema，而不是新增 source language frontend。
 
 范围：
 
-- 添加 `AnimGraph.Language = "AnimGraphDSL"`。
-- 将 source 解析为 Spec 3 中的规范 AnimGraph IR。
-- 为 `sequence`、`blendspace`、`machine`、`cached_pose` 和 `raw_node` 支持一等语法。
-- 报告 parser errors，包含源码块、行、列和消息。
-- 继续接受规范 JSON AST，用于测试和未来提取。
+- 定义 `Body.Graphs.AnimGraph`、`Body.Graphs.StateMachines` 和 `Body.Graphs.BlueprintGraphs` 的共同 envelope。
+- 定义 node IDs、typed node payload、pin endpoint、edge、output、layout、fragment reference 和 raw object 的 JSON shape。
+- 为 profile/template/inspect 暴露 schema hints，让 agent 不靠猜字段。
+- 报告 validation errors，包含 JSON Pointer、graph name 和原因。
+- 继续接受 Spec 3 的最小 pose graph nodes，但把它们规范到 `Body.Graphs`。
 
 验收：
 
-- `output = sequence("...")` 构建与规范 JSON 相同的 graph。
-- `output = blendspace("...", Speed, Direction)` 构建与规范 JSON 相同的 graph。
-- 未知 identifiers 和 malformed syntax 返回本地 diagnostics。
+- `Body.Graphs.AnimGraph` 的 sequence player 能被 schema validate。
+- `Body.Graphs.StateMachines` 的 two-state machine 能被 schema validate。
+- 未知 node、unknown pin、unknown variable 和 malformed endpoint 返回 JSON Pointer diagnostics。
+- profile template 能生成最小可编辑的 GraphIR skeleton。
 
 依赖：Anim Spec 3。
 
-### Anim Spec 5: StateMachine DSL + Transition Rules
+### Anim Spec 5: StateMachine GraphIR + Transition Rules
 
-**目标：** 从语义化源码块生成动画状态机和 transition rule graphs。
+**目标：** 从 typed JSON GraphIR 生成动画状态机和 transition rule graphs。
 
 范围：
 
-- 添加带有 `Language = "AnimStateMachineDSL"` 的 `StateMachines[]` 源码块。
-- 使用 `StateMachines[].Name` 作为 machine identity，然后从 source 解析 entry state、states、state pose expression 和 transitions。
+- 使用 `Body.Graphs.StateMachines` map key 作为 machine identity。
+- 从 JSON GraphIR 读取 entry state、states、state pose graph 和 transitions。
 - 使用 UE lifecycle APIs 构建 `UAnimationStateMachineGraph`、state graphs 和 transition graphs。
-- 支持基于 variables 的简单 transition expressions。
+- 支持基于 variables 的简单 transition condition graph。
 - 将 named helper calls 作为未解析引用保留，供 Spec 6 满足。
 - 配置 transition blend/crossfade settings。
 
@@ -249,23 +269,23 @@
 
 依赖：Anim Spec 2、Anim Spec 3、Anim Spec 4。
 
-### Anim Spec 6: Animation Blueprints 的 BSL 集成
+### Anim Spec 6: Animation Blueprints 的 BlueprintGraph GraphIR
 
-**目标：** 通过 fragment contract，在 Animation Blueprints 内部为普通 Blueprint 逻辑复用 BSL infrastructure。
+**目标：** 通过 `Body.Graphs.BlueprintGraphs`，在 Animation Blueprints 内部生成普通 Blueprint/EventGraph/function 逻辑。
 
 范围：
 
-- 添加带有 `Language = "BSLFragment"` 的 `BlueprintGraphs[]` 源码块。
-- 将 fragments 包装为当前 parser 期望的完整 BSL，然后应用到 Animation Blueprint `EventGraph` 和 helper function graphs。
+- 添加 `Body.Graphs.BlueprintGraphs` JSON GraphIR。
+- 使用 typed nodes/edges/functions 应用到 Animation Blueprint `EventGraph` 和 helper function graphs。
 - 支持 `BlueprintUpdateAnimation` 等 animation events。
-- 允许 BSLFragment-generated functions 满足 Spec 5 中的 transition rule helper references。
-- 保持 BSLFragment 图逻辑与 AnimGraph pose links 分离。
+- 允许 GraphIR-generated functions 满足 Spec 5 中的 transition rule helper references。
+- 保持 BlueprintGraph 逻辑与 AnimGraph pose links 分离。
 
 验收：
 
 - 生成一个 Animation Blueprint，在 `BlueprintUpdateAnimation` 中从 owner velocity 更新 `Speed`。
 - 生成被 transition rule 引用的 bool helper function。
-- BSL parser/compiler errors 在 fragment wrapping 后标识相关的 `BlueprintGraphs[]` block。
+- GraphIR validation/build errors 标识相关的 `Body.Graphs.BlueprintGraphs` JSON Pointer。
 
 依赖：Anim Spec 2。Transition helper 集成还依赖 Anim Spec 5。
 
@@ -280,7 +300,7 @@
 - 支持 layered blend by bone。
 - 支持 aim offset players。
 - 如果 engine APIs 允许稳定生成，则支持 linked anim layers 和 input poses。
-- 添加 `raw_node` escape hatch，包含动态 class/path 和 reflection properties。
+- 添加 raw node object，包含动态 class/path 和 reflection properties。
 
 验收：
 
@@ -301,7 +321,7 @@
 - 添加 `MCP/schemas/AnimationBlueprint.md`。
 - 将 `BlendSpace` 和 `AnimationBlueprint` 添加到 MCP generator asset type list。
 - 为每个 spec 添加 positive 和 negative fixtures。
-- 为受支持的 BlendSpace、AnimationBlueprint metadata、AnimGraph IR、StateMachine IR 和可行的 BSL-backed graphs 添加提取。
+- 为受支持的 BlendSpace、AnimationBlueprint metadata、AnimGraph GraphIR、StateMachine GraphIR 和 BlueprintGraph GraphIR 添加提取。
 - 添加用于 generate/extract 检查的 smoke scripts。
 
 验收：
@@ -323,7 +343,7 @@
 ### 4.1 分类原则
 
 - **一等 asset generator：** UE editor 中本来就是独立 asset、agent 会直接创建/更新/提取、且有明确 factory 或 editor API 的资产。
-- **AnimationBlueprint 内部能力：** AnimGraph、StateMachine、BSLFragment、AnimLayerInterface 等应进入 `AnimationBlueprintGenerator` 的子规格，而不是暴露成独立顶层 `AssetType`。
+- **AnimationBlueprint 内部能力：** AnimGraph、StateMachine、BlueprintGraph GraphIR、AnimLayerInterface 等应进入 `AnimationBlueprintGenerator` 的子规格，而不是暴露成独立顶层 `AssetType`。
 - **边界型/patch 型能力：** `AnimSequence`、`Skeleton`、`SkeletalMesh` 等 import-heavy 资产不应被误设计成完全手写 JSON 资产。需要的是引用验证、最小 fixture、metadata/notifies/curves patch，或另一个 import pipeline。
 - **后续研究资产：** ControlRig RigVM、DeformerGraph、AnimNext 等可以规划，但不应该阻塞第一批 generator。
 
@@ -336,7 +356,7 @@
 | P0 | `AnimMontage` | 新增 Anim Asset Spec A | runtime 播放、slot、section、branching point、notify 的核心资产。AnimGraph slot node 也应以它为目标场景。 |
 | P0 | `PoseAsset` | 新增 Anim Asset Spec B | pose driver、pose library 和 facial/pose workflow 的基础资产。 |
 | P0 | `MirrorDataTable` | 新增 Anim Asset Spec B | mirrored animation、retarget/IK 工作流的基础数据。 |
-| P0 | `AnimationBlueprint` | Anim Spec 2-7 | 需要 lifecycle、AnimGraph、StateMachine、BSLFragment 和高级节点逐层实现。 |
+| P0 | `AnimationBlueprint` | Anim Spec 2-7 | 需要 lifecycle、AnimGraph GraphIR、StateMachine GraphIR、BlueprintGraph GraphIR 和高级节点逐层实现。 |
 | P1 | `IKRig` | 新增 Anim Asset Spec C | retarget pipeline 的第一半，依赖 skeleton/preview mesh 和 chain/goal contract。 |
 | P1 | `IKRetargeter` | 新增 Anim Asset Spec C | retarget pipeline 的第二半，依赖 source/target IKRig 和 retarget profiles。 |
 | P1 | `PoseSearchSchema` | 新增 Anim Asset Spec D | motion matching 的 schema/channel 定义。 |
@@ -408,9 +428,9 @@ flowchart TD
     SB["Anim Asset Spec B: PoseAsset + MirrorDataTable"]
     S2["Anim Spec 2: AnimationBlueprint lifecycle"]
     S3["Anim Spec 3: Canonical AnimGraph IR + minimal pose graph"]
-    S4["Anim Spec 4: AnimGraphDSL parser"]
-    S5["Anim Spec 5: StateMachine DSL + transition rules"]
-    S6["Anim Spec 6: BSL integration"]
+    S4["Anim Spec 4: Shared GraphIR schema + diagnostics"]
+    S5["Anim Spec 5: StateMachine GraphIR + transition rules"]
+    S6["Anim Spec 6: BlueprintGraph GraphIR"]
     S7["Anim Spec 7: Advanced animation nodes"]
     SC["Anim Asset Spec C: IKRig + IKRetargeter"]
     SD["Anim Asset Spec D: PoseSearch"]
@@ -461,7 +481,7 @@ flowchart TD
 5. `AnimationBlueprint Lifecycle`。
 6. `Canonical AnimGraph IR + Minimal Pose Graph`。
 
-这能先覆盖可独立打开和复用的动画资产，再进入 AnimationBlueprint 图语言。这样 `AnimMontage`、slot node、StateMachine 和 BSLFragment 的需求会在进入复杂图之前已经被资产侧验证过。
+这能先覆盖可独立打开和复用的动画资产，再进入 AnimationBlueprint GraphIR。这样 `AnimMontage`、slot node、StateMachine 和 BlueprintGraph helper function 的需求会在进入复杂图之前已经被资产侧验证过。
 
 ---
 
@@ -474,7 +494,7 @@ flowchart TD
 - agents 能够创建绑定到 skeletons 的真实、已编译 Animation Blueprints；
 - agents 能够表达 pose graphs，而无需编写 UE pin-level JSON；
 - agents 能够以语义化方式表达 state machines 和 transition rules；
-- 普通 Blueprint 逻辑通过 BSLFragment 或 BSL-compatible infrastructure 处理；
+- 普通 Blueprint 逻辑通过 `Body.Graphs.BlueprintGraphs` typed JSON GraphIR 处理；
 - agents 能够生成 IKRig/IKRetargeter 的核心 retarget authoring 数据；
 - agents 能够生成 PoseSearch/Chooser 这类动画选择和 motion matching 数据资产；
 - ControlRig 至少具备 lifecycle 级 generator，完整 RigVM 图语言作为独立后续目标；
