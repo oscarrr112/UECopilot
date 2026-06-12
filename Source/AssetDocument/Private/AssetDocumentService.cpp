@@ -656,22 +656,11 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
-	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
-	if (!PropertyResult.bSuccess)
-	{
-		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
-		Result.Target = Target;
-		Result.AssetPath = LifecycleResult.ObjectPath;
-		Result.SidecarFilePath = NormalizedSourceDocumentPath;
-		Result.Diagnostics = PropertyResult.Diagnostics;
-		return Result;
-	}
-
-	TArray<FAssetDocumentDiagnostic> Diagnostics = PropertyResult.Diagnostics;
+	TSharedPtr<FJsonValue> BodyValue;
+	TArray<const IAssetDocumentCapability*> BodyAdapters;
 	if (Request.Document->HasField(TEXT("Body")))
 	{
-		TSharedPtr<FJsonValue> BodyValue = Request.Document->TryGetField(TEXT("Body"));
+		BodyValue = Request.Document->TryGetField(TEXT("Body"));
 		if (!BodyValue.IsValid())
 		{
 			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
@@ -679,7 +668,6 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
 			Result.SidecarFilePath = NormalizedSourceDocumentPath;
-			Result.Diagnostics = Diagnostics;
 			return Result;
 		}
 
@@ -695,8 +683,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Diagnostic.Path = TEXT("/Body");
 			Diagnostic.Code = TEXT("InvalidBodyType");
 			Diagnostic.Message = Result.Message;
-			Diagnostics.Add(MoveTemp(Diagnostic));
-			Result.Diagnostics = Diagnostics;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
 			return Result;
 		}
 
@@ -712,12 +699,10 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Diagnostic.Path = TEXT("/Body");
 			Diagnostic.Code = TEXT("MissingProfile");
 			Diagnostic.Message = Result.Message;
-			Diagnostics.Add(MoveTemp(Diagnostic));
-			Result.Diagnostics = Diagnostics;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
 			return Result;
 		}
 
-		TArray<const IAssetDocumentCapability*> BodyAdapters;
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
 		{
 			const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(FName(*Pair.Key));
@@ -732,8 +717,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 				Diagnostic.Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
 				Diagnostic.Code = TEXT("MissingBodyAdapter");
 				Diagnostic.Message = Result.Message;
-				Diagnostics.Add(MoveTemp(Diagnostic));
-				Result.Diagnostics = Diagnostics;
+				Result.Diagnostics.Add(MoveTemp(Diagnostic));
 				return Result;
 			}
 
@@ -748,6 +732,42 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			}
 		}
 
+		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
+		{
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = LifecycleResult.Asset;
+			CapabilityContext.AssetClass = ResolvedClass;
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedSourceDocumentPath;
+			CapabilityContext.Definitions = DefinitionsPtr;
+			CapabilityContext.bIsDryRun = true;
+
+			const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Preflight(CapabilityContext, BodyValue.ToSharedRef());
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedSourceDocumentPath);
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				return Result;
+			}
+		}
+	}
+
+	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
+	if (!PropertyResult.bSuccess)
+	{
+		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics = PropertyResult.Diagnostics;
+		return Result;
+	}
+
+	TArray<FAssetDocumentDiagnostic> Diagnostics = PropertyResult.Diagnostics;
+	if (Request.Document->HasField(TEXT("Body")))
+	{
 		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
 		{
 			FAssetDocumentCapabilityContext CapabilityContext;

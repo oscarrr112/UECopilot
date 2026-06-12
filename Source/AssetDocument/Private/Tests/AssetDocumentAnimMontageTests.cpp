@@ -471,8 +471,16 @@ bool FAssetDocumentAnimMontageApplyFailureDoesNotMutateExistingTest::RunTest(con
 	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
 	const float OriginalBlendInTime = Montage->GetDefaultBlendInTime();
 	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
+	FFloatProperty* RateScaleProperty = FindFProperty<FFloatProperty>(Montage->GetClass(), TEXT("RateScale"));
+	TestNotNull(TEXT("AnimMontage exposes reflected RateScale property"), RateScaleProperty);
+	if (!RateScaleProperty)
+	{
+		return false;
+	}
+	const float OriginalRateScale = RateScaleProperty->GetPropertyValue_InContainer(Montage);
 
 	TSharedPtr<FJsonObject> InvalidDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	InvalidDocument->GetObjectField(TEXT("Properties"))->SetNumberField(TEXT("RateScale"), OriginalRateScale + 0.5f);
 	TSharedPtr<FJsonObject> InvalidBody = InvalidDocument->GetObjectField(TEXT("Body"));
 	InvalidBody->SetField(TEXT("Skeleton"), MakeShared<FJsonValueNull>());
 	InvalidBody->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
@@ -492,6 +500,7 @@ bool FAssetDocumentAnimMontageApplyFailureDoesNotMutateExistingTest::RunTest(con
 	TestEqual(TEXT("Composite sections are unchanged after failed patch"), Montage->CompositeSections.Num(), OriginalSectionCount);
 	TestEqual(TEXT("BlendInTime is unchanged after failed patch"), Montage->GetDefaultBlendInTime(), OriginalBlendInTime);
 	TestEqual(TEXT("BlendOutTime is unchanged after failed patch"), Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime);
+	TestEqual(TEXT("Reflected properties are unchanged after failed Body preflight"), RateScaleProperty->GetPropertyValue_InContainer(Montage), OriginalRateScale);
 
 	return true;
 }

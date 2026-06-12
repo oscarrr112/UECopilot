@@ -777,6 +777,32 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Validate(con
 	return ValidateBodyObject(Context, BodyObject.ToSharedRef());
 }
 
+FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
+{
+	UAnimMontage* Montage = Cast<UAnimMontage>(Context.Asset);
+	if (!Montage)
+	{
+		return BodyFailure(TEXT("AnimMontage body preflight requires UAnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	if (BodyJson->Type != EJson::Object)
+	{
+		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
+	}
+
+	const TSharedPtr<FJsonObject> BodyObject = BodyJson->AsObject();
+	if (!BodyObject.IsValid())
+	{
+		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
+	}
+
+	FAssetDocumentFragmentCompiler Compiler;
+	Compiler.RegisterBuiltInAdapters();
+
+	FParsedAnimMontageBody ParsedBody;
+	return ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, ParsedBody);
+}
+
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
 {
 	UAnimMontage* Montage = Cast<UAnimMontage>(Context.Asset);
