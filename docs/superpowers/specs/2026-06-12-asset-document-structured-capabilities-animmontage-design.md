@@ -96,7 +96,7 @@ AssetDocument
 
 ### 3.1 顶层字段
 
-在第一阶段格式基础上新增 `Capabilities`：
+在第一阶段格式基础上新增 `Definitions` 和 `Capabilities`：
 
 ```json
 {
@@ -104,15 +104,57 @@ AssetDocument
   "Action": "CreateOrUpdate",
   "Target": "/Game/Anim/AM_Attack",
   "Class": "/Script/Engine.AnimMontage",
+  "Definitions": {
+    "AttackAnim": {
+      "Kind": "AssetRef",
+      "Path": "/Game/Anim/A_Attack.A_Attack",
+      "Class": "/Script/Engine.AnimSequence"
+    },
+    "HitNotify": {
+      "Kind": "EmbeddedObject",
+      "Class": "/Script/Game.MyAttackNotify",
+      "Properties": {
+        "Damage": 10
+      }
+    }
+  },
   "Properties": {
     "RateScale": 1.0
   },
   "Capabilities": {
     "AnimMontage": {
-      "Skeleton": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
-      "PreviewMesh": "/Game/Characters/SK_Mannequin.SK_Mannequin",
-      "Slots": [],
-      "Sections": []
+      "Skeleton": {
+        "Kind": "AssetRef",
+        "Path": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
+        "Class": "/Script/Engine.Skeleton"
+      },
+      "PreviewMesh": {
+        "Kind": "AssetRef",
+        "Path": "/Game/Characters/SK_Mannequin.SK_Mannequin",
+        "Class": "/Script/Engine.SkeletalMesh"
+      },
+      "Slots": [
+        {
+          "Name": "DefaultSlot",
+          "Segments": [
+            {
+              "Animation": {
+                "Kind": "DefinitionRef",
+                "Id": "AttackAnim"
+              }
+            }
+          ]
+        }
+      ],
+      "Notifies": [
+        {
+          "Time": 0.35,
+          "Object": {
+            "Kind": "DefinitionRef",
+            "Id": "HitNotify"
+          }
+        }
+      ]
     }
   }
 }
@@ -123,6 +165,14 @@ AssetDocument
 - key 是 capability name，例如 `AnimMontage`；
 - value 是该 capability 自己的 schema；
 - compiler 只负责查找 adapter 和传递 JSON，不解释里面的业务字段。
+
+`Definitions` 是文档内部 fragment 表：
+
+- key 是文档内局部 ID；
+- value 必须是显式 `Kind` 的 fragment；
+- capability 内可以通过 `DefinitionRef` 引用；
+- `Definitions` 不拥有 UE package 生命周期，只是 AssetDocument 内部复用和 identity 语义；
+- compiler 必须检测循环引用，例如 `A -> B -> A`。
 
 ### 3.2 `Class` 字段
 
@@ -147,7 +197,109 @@ AssetDocument
 
 这样牺牲一点冗余，换来可读性、可移动性和安全检查。
 
-### 3.4 Capability block 示例
+### 3.4 Fragment kinds
+
+本阶段不只实现 `EmbeddedObject`。第一版 fragment substrate 支持以下 `Kind`：
+
+#### AssetRef
+
+引用已有外部 UE asset。
+
+```json
+{
+  "Kind": "AssetRef",
+  "Path": "/Game/Anim/A_Attack.A_Attack",
+  "Class": "/Script/Engine.AnimSequence"
+}
+```
+
+规则：
+
+- `Path` 必须是完整 asset path；
+- `Class` 必须是完整反射路径；
+- placement/capability 可以提供 expected base class；
+- validate 时必须 load 并校验 class 兼容性。
+
+#### ClassRef
+
+引用 UE class。
+
+```json
+{
+  "Kind": "ClassRef",
+  "Class": "/Script/Game.MyAttackNotify"
+}
+```
+
+规则：
+
+- `Class` 必须是完整反射路径；
+- fragment context 可以要求 expected base class；
+- 不实例化对象。
+
+#### StructValue
+
+描述一个 struct value。
+
+```json
+{
+  "Kind": "StructValue",
+  "Struct": "/Script/CoreUObject.Vector",
+  "Properties": {
+    "X": 1.0,
+    "Y": 2.0,
+    "Z": 3.0
+  }
+}
+```
+
+规则：
+
+- `Struct` 必须是完整反射路径；
+- `Properties` 使用通用 property setter；
+- 适合后续曲线 key、颜色、向量、transform、范围等值类型。
+
+#### EmbeddedObject
+
+描述内嵌 UObject。
+
+```json
+{
+  "Kind": "EmbeddedObject",
+  "Class": "/Script/Game.MyAttackNotify",
+  "Properties": {
+    "Damage": 10
+  }
+}
+```
+
+规则：
+
+- `Class` 必须是完整反射路径；
+- fragment context 必须提供 `Outer` 和 expected base class；
+- 对象创建、属性设置、extract、diff 走 fragment adapter；
+- 不允许 capability 直接 new 或硬编码具体 UObject class。
+
+#### DefinitionRef
+
+引用 `Definitions` 中的 fragment。
+
+```json
+{
+  "Kind": "DefinitionRef",
+  "Id": "AttackAnim"
+}
+```
+
+规则：
+
+- `Id` 必须存在于 `Definitions`；
+- 被引用 definition 自己也必须有 `Kind`；
+- compiler 展开时保留 reference path，便于 diff/error reporting；
+- validate 必须检测循环引用；
+- 同一个 `EmbeddedObject` definition 被多个 placement 引用时，默认语义是“同一份 definition 生成多个 placement-local object instance”，除非后续 schema 显式加入 shared instance 语义。
+
+### 3.5 Capability block 示例
 
 第一版 AnimMontage block 建议格式：
 
@@ -155,14 +307,26 @@ AssetDocument
 {
   "Capabilities": {
     "AnimMontage": {
-      "Skeleton": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
-      "PreviewMesh": "/Game/Characters/SK_Mannequin.SK_Mannequin",
+      "Skeleton": {
+        "Kind": "AssetRef",
+        "Path": "/Game/Characters/SK_Mannequin_Skeleton.SK_Mannequin_Skeleton",
+        "Class": "/Script/Engine.Skeleton"
+      },
+      "PreviewMesh": {
+        "Kind": "AssetRef",
+        "Path": "/Game/Characters/SK_Mannequin.SK_Mannequin",
+        "Class": "/Script/Engine.SkeletalMesh"
+      },
       "Slots": [
         {
           "Name": "DefaultSlot",
           "Segments": [
             {
-              "Animation": "/Game/Anim/A_Attack.A_Attack",
+              "Animation": {
+                "Kind": "AssetRef",
+                "Path": "/Game/Anim/A_Attack.A_Attack",
+                "Class": "/Script/Engine.AnimSequence"
+              },
               "StartPos": 0.0,
               "AnimStartTime": 0.0,
               "AnimEndTime": 0.8,
@@ -186,7 +350,30 @@ AssetDocument
       "Blend": {
         "BlendInTime": 0.25,
         "BlendOutTime": 0.25
-      }
+      },
+      "Notifies": [
+        {
+          "Time": 0.35,
+          "Object": {
+            "Kind": "EmbeddedObject",
+            "Class": "/Script/Game.MyAttackNotify",
+            "Properties": {
+              "Damage": 10
+            }
+          }
+        }
+      ],
+      "NotifyStates": [
+        {
+          "Time": 0.25,
+          "Duration": 0.35,
+          "Object": {
+            "Kind": "EmbeddedObject",
+            "Class": "/Script/Game.MyAttackWindowNotifyState",
+            "Properties": {}
+          }
+        }
+      ]
     }
   }
 }
@@ -196,11 +383,16 @@ AssetDocument
 
 - JSON 字段使用面向用户的语义名；
 - adapter 内部映射到 UE 结构：
+  - `Skeleton` -> fragment compiler with `ExpectedBaseClass=USkeleton`;
+  - `PreviewMesh` -> fragment compiler with `ExpectedBaseClass=USkeletalMesh`;
   - `Slots[]` -> `UAnimMontage::SlotAnimTracks`;
   - `Segments[]` -> `FAnimTrack::AnimSegments`;
   - segment 字段 -> `FAnimSegment`;
+  - `Animation` -> fragment compiler with `ExpectedBaseClass=UAnimSequenceBase`;
   - `Sections[]` -> `UAnimMontage::CompositeSections`;
   - `NextSection` -> `FCompositeSection::NextSectionName`;
+  - `Notifies[].Object` -> fragment compiler with `ExpectedBaseClass=UAnimNotify`;
+  - `NotifyStates[].Object` -> fragment compiler with `ExpectedBaseClass=UAnimNotifyState`;
 - `Time` 使用 section linkable time，而不是直接写 deprecated editor-only `StartTime_DEPRECATED`。
 
 ---
@@ -214,16 +406,19 @@ AssetDocument
 ```text
 1. Parse document
 2. Validate common fields
-3. Resolve sidecar target consistency
-4. Create or load UObject
-5. Validate class exact match
-6. Apply reflected Properties through PropertyPatchAdapter
-7. For each Capabilities entry in deterministic order:
+3. Validate Definitions and fragment graph
+4. Resolve sidecar target consistency
+5. Create or load UObject
+6. Validate class exact match
+7. Apply reflected Properties through PropertyPatchAdapter
+8. For each Capabilities entry in deterministic order:
      adapter = CapabilityRegistry.Find(Name)
      adapter.Validate(Context, JsonValue)
      adapter.Apply(Context, JsonValue)
-8. Mark dirty / post edit / save package
-9. Return structured result
+      if adapter encounters a fragment:
+        FragmentCompiler.Compile(FragmentJson, FragmentContext)
+9. Mark dirty / post edit / save package
+10. Return structured result
 ```
 
 关键点：
@@ -232,7 +427,8 @@ AssetDocument
 - unknown capability 是 validation error；
 - capability 不支持当前 asset class 是 validation error；
 - `Validate` 不能修改 asset；
-- `Apply` 只能修改自己声明负责的结构化区域。
+- `Apply` 只能修改自己声明负责的结构化区域；
+- capability 不直接创建 fragment 对象，只向 `AssetDocumentFragmentCompiler` 提交显式 `Kind` fragment 和上下文。
 
 ### 4.2 Capability 接口
 
@@ -335,6 +531,130 @@ void FAssetFactoryModule::StartupModule()
 
 后续如果拆模块，可以让各模块自行注册能力。
 
+### 4.5 Fragment compiler
+
+Capability adapter 处理结构化领域时，不应静态持有一串子 adapter。例如不允许写成：
+
+```text
+AnimMontageCapability owns NotifyTimelineAdapter owns AnimNotifyObjectAdapter
+```
+
+正确规则是：
+
+```text
+adapter 可以静态注册
+compiler 必须动态装配
+```
+
+第一版新增 `AssetDocumentFragmentCompiler`：
+
+```cpp
+class FAssetDocumentFragmentCompiler
+{
+public:
+	FAssetDocumentFragmentResult Validate(
+		const TSharedRef<FJsonObject>& FragmentJson,
+		const FAssetDocumentFragmentContext& Context) const;
+
+	FAssetDocumentFragmentResult Compile(
+		const TSharedRef<FJsonObject>& FragmentJson,
+		const FAssetDocumentFragmentContext& Context) const;
+
+	FAssetDocumentFragmentResult Extract(
+		const FAssetDocumentFragmentExtractContext& Context,
+		TSharedRef<FJsonObject>& OutFragmentJson) const;
+};
+```
+
+`FAssetDocumentFragmentContext` 至少包含：
+
+```cpp
+struct FAssetDocumentFragmentContext
+{
+	UObject* OwnerAsset = nullptr;
+	UObject* Outer = nullptr;
+	UClass* ExpectedBaseClass = nullptr;
+	UScriptStruct* ExpectedStruct = nullptr;
+	FString JsonPath;
+	FString Role;
+};
+```
+
+fragment compiler 通过 `Kind` 找 adapter：
+
+```text
+Kind=AssetRef        -> AssetRefFragmentAdapter
+Kind=ClassRef        -> ClassRefFragmentAdapter
+Kind=StructValue     -> StructValueFragmentAdapter
+Kind=EmbeddedObject  -> EmbeddedObjectFragmentAdapter
+Kind=DefinitionRef   -> DefinitionRefFragmentAdapter
+```
+
+建议接口：
+
+```cpp
+class IAssetDocumentFragmentAdapter
+{
+public:
+	virtual ~IAssetDocumentFragmentAdapter() = default;
+
+	virtual FName GetKind() const = 0;
+	virtual bool SupportsContext(const FAssetDocumentFragmentContext& Context) const = 0;
+
+	virtual FAssetDocumentFragmentResult Validate(
+		const TSharedRef<FJsonObject>& FragmentJson,
+		const FAssetDocumentFragmentContext& Context) const = 0;
+
+	virtual FAssetDocumentFragmentResult Compile(
+		const TSharedRef<FJsonObject>& FragmentJson,
+		const FAssetDocumentFragmentContext& Context) const = 0;
+
+	virtual FAssetDocumentFragmentResult Extract(
+		const FAssetDocumentFragmentExtractContext& Context,
+		TSharedRef<FJsonObject>& OutFragmentJson) const = 0;
+};
+```
+
+`DefinitionRefFragmentAdapter` 只负责：
+
+- 在 `Definitions` 中查找 `Id`；
+- 检测循环引用；
+- 把 referenced fragment 交回 `AssetDocumentFragmentCompiler`；
+- 保留原始 reference path，便于 error/diff。
+
+它不直接解释 `AssetRef` / `EmbeddedObject` / `StructValue`。
+
+#### Placement adapter 与 fragment compiler
+
+placement adapter 只负责容器位置，不负责对象语义。
+
+例如 montage notify：
+
+```text
+AnimMontageCapability
+  -> AnimMontageNotifyTimelinePlacementAdapter
+      - parse Time / Duration
+      - create or update FAnimNotifyEvent placement
+      - call FragmentCompiler with ExpectedBaseClass=UAnimNotify or UAnimNotifyState
+      - attach compiled UObject to FAnimNotifyEvent
+```
+
+这样后续 `AnimSequence` 或 `AnimComposite` 支持 notify 时，只新增自己的 placement adapter，并复用同一个 fragment compiler 和 object fragment adapters。
+
+禁止的形态：
+
+```text
+AnimMontageCapability -> AnimNotifyCapability
+AnimSequenceCapability -> AnimNotifyCapability
+MaterialCapability -> NiagaraCapability
+```
+
+允许的形态：
+
+```text
+ContainerCapability -> PlacementAdapter -> FragmentCompiler -> FragmentAdapterRegistry
+```
+
 ---
 
 ## 5. AnimMontage Capability
@@ -377,8 +697,9 @@ AnimMontage 第一版 deferred fields：
 Notify / NotifyState 不是独立 deferred 项。第一版可以支持“完整对象创建”，但边界是：
 
 - 支持在 `AnimMontage` capability 内创建 montage timeline 上的 notify event；
-- 支持 `NotifyClass` / `NotifyStateClass` 使用完整反射路径；
-- 支持 `Properties` 使用通用 property patch 设置 notify 对象字段；
+- 支持 `Object.Kind=EmbeddedObject` 或 `Object.Kind=DefinitionRef`；
+- 支持 `Object.Class` 使用完整反射路径；
+- 支持 `Object.Properties` 使用通用 property patch 设置 notify 对象字段；
 - 不在本阶段抽象独立的 `AnimNotify` / `AnimNotifyState` capability；
 - 不在本阶段理解每种 AN/ANS 的领域语义。
 
@@ -388,40 +709,42 @@ Notify / NotifyState 不是独立 deferred 项。第一版可以支持“完整�
 {
   "Notifies": [
     {
-      "Name": "Hit",
       "Time": 0.35,
-      "NotifyClass": "/Script/Engine.AnimNotify",
-      "Properties": {}
+      "Object": {
+        "Kind": "EmbeddedObject",
+        "Class": "/Script/Game.MyAttackNotify",
+        "Properties": {}
+      }
     }
   ],
   "NotifyStates": [
     {
-      "Name": "AttackWindow",
       "Time": 0.25,
       "Duration": 0.35,
-      "NotifyStateClass": "/Script/Engine.AnimNotifyState",
-      "Properties": {}
+      "Object": {
+        "Kind": "EmbeddedObject",
+        "Class": "/Script/Game.MyAttackWindowNotifyState",
+        "Properties": {}
+      }
     }
   ]
 }
 ```
 
-这需要新增一个很薄的 instanced object builder，但不需要新增一套 AN capability。它应复用现有动态 class load 和 property setter，而不是硬编码具体 notify 类型。
-
-同时，第一版必须给后续 AN/ANS 领域能力预留桥接点。推荐把 Montage 内的 notify 写入拆成两层：
+这不需要新增一套 AN capability。Montage 只负责 timeline placement，notify 对象自身由 fragment compiler 动态编译。
 
 ```text
 AnimMontageCapability
-  -> AnimMontageNotifyTimelineAdapter
-    -> AssetDocumentInstancedObjectBuilder
-    -> future: AnimNotifyCapabilityBridge
+  -> AnimMontageNotifyTimelinePlacementAdapter
+    -> AssetDocumentFragmentCompiler
+      -> EmbeddedObjectFragmentAdapter
+      -> DefinitionRefFragmentAdapter
 ```
 
 其中：
 
-- `AssetDocumentInstancedObjectBuilder` 只负责 class path、outer、实例化、反射属性 patch；
-- `AnimMontageNotifyTimelineAdapter` 只负责把 notify event / notify state event 放进 Montage timeline；
-- `AnimNotifyCapabilityBridge` 第一版可以不存在，但接口边界要留下；
+- `AnimMontageNotifyTimelinePlacementAdapter` 只负责把 notify event / notify state event 放进 Montage timeline；
+- `AssetDocumentFragmentCompiler` 根据 `Object.Kind` 动态装配 fragment adapter；
 - 后续如果新增独立 `AnimNotify` / `AnimNotifyState` capability，应复用同一套 class/properties schema，而不是发明第二套 notify object 表达；
 - Montage 文档里的 `Notifies` / `NotifyStates` 应能迁移到未来 AN/ANS capability 的 richer schema。
 
@@ -451,25 +774,25 @@ UE 5.7 相关结构：
 - `SetAnimReference` 设置 segment 动画引用；
 - linkable element 的公开方法设置 time；
 - montage 提供的 section/link helper 如果存在，应优先使用；
-- notify / notify state 对象创建应使用完整 class path 动态加载，并限制基类为 `UAnimNotify` 或 `UAnimNotifyState`；
+- notify / notify state 对象创建必须通过 fragment compiler，并由 placement context 限制基类为 `UAnimNotify` 或 `UAnimNotifyState`；
 - raw array mutation 只允许在 adapter 内部小范围使用，并且必须配套 post edit/rebuild/validation。
 
 ### 5.3 引用校验
 
 adapter 必须校验：
 
-- `Skeleton` 能 load 到 `USkeleton`；
-- `PreviewMesh` 如果提供，能 load 到 `USkeletalMesh`；
-- `Animation` 能 load 到 `UAnimSequenceBase`；
+- `Skeleton` 必须能通过 fragment compiler 解析为 `USkeleton`；
+- `PreviewMesh` 如果提供，必须能通过 fragment compiler 解析为 `USkeletalMesh`；
+- `Animation` 必须能通过 fragment compiler 解析为 `UAnimSequenceBase`；
 - animation 与 skeleton 兼容；
 - section name 非空且唯一；
 - segment 时间范围合法；
 - `AnimPlayRate` 非 0；
 - `LoopingCount` 大于 0；
 - `NextSection` 如果提供，必须指向已有 section。
-- `NotifyClass` 必须是 `UAnimNotify` 的可实例化 class；
-- `NotifyStateClass` 必须是 `UAnimNotifyState` 的可实例化 class；
-- notify / notify state 的 `Properties` 必须能被通用 property setter 写入；
+- `Notifies[].Object` 必须能通过 fragment compiler 解析为 `UAnimNotify` 实例；
+- `NotifyStates[].Object` 必须能通过 fragment compiler 解析为 `UAnimNotifyState` 实例；
+- notify / notify state 的 `Object.Properties` 必须能被通用 property setter 写入；
 - notify state `Duration` 必须大于 0。
 
 错误需要带 JSON path，例如：
@@ -477,7 +800,7 @@ adapter 必须校验：
 ```text
 /Capabilities/AnimMontage/Slots[0]/Segments[1]/Animation
 /Capabilities/AnimMontage/Sections[2]/NextSection
-/Capabilities/AnimMontage/NotifyStates[0]/NotifyStateClass
+/Capabilities/AnimMontage/NotifyStates[0]/Object/Class
 ```
 
 ### 5.4 Apply 策略
@@ -521,14 +844,26 @@ extract 默认输出与当前 asset 结构一致的 capability block：
 {
   "Capabilities": {
     "AnimMontage": {
-      "Skeleton": "...",
-      "PreviewMesh": "...",
+      "Skeleton": {
+        "Kind": "AssetRef",
+        "Path": "...",
+        "Class": "/Script/Engine.Skeleton"
+      },
+      "PreviewMesh": {
+        "Kind": "AssetRef",
+        "Path": "...",
+        "Class": "/Script/Engine.SkeletalMesh"
+      },
       "Slots": [
         {
           "Name": "DefaultSlot",
           "Segments": [
             {
-              "Animation": "...",
+              "Animation": {
+                "Kind": "AssetRef",
+                "Path": "...",
+                "Class": "/Script/Engine.AnimSequence"
+              },
               "StartPos": 0.0,
               "AnimStartTime": 0.0,
               "AnimEndTime": 0.8,
@@ -647,7 +982,8 @@ DefaultObjectLifecycleAdapter
 
 - `AnimMontageLifecycleCapability` 或 `FactoryCreatePolicy`；
 - `AnimMontageAssetDocumentCapability`；
-- `AssetDocumentInstancedObjectBuilder`，用于 timeline notify / notify state 等内嵌 UObject 创建；
+- `AssetDocumentFragmentCompiler` 和 `AssetDocumentFragmentAdapterRegistry`；
+- `AssetRef` / `ClassRef` / `StructValue` / `EmbeddedObject` / `DefinitionRef` fragment adapters；
 - small helper for loading animation references。
 
 不允许新增一个承载完整业务的：
@@ -668,15 +1004,29 @@ AnimMontageGenerator : IAssetGenerator
 Source/AssetFactory/Public/AssetDocument/
   AssetDocumentCapability.h
   AssetDocumentCapabilityRegistry.h
+  AssetDocumentFragmentCompiler.h
+  AssetDocumentFragmentAdapter.h
+  AssetDocumentFragmentAdapterRegistry.h
 
 Source/AssetFactory/Private/AssetDocument/
   AssetDocumentCapabilityRegistry.cpp
   AssetDocumentCompiler.cpp
+  AssetDocumentFragmentCompiler.cpp
+  AssetDocumentFragmentAdapterRegistry.cpp
   AssetDocumentSchemaService.cpp
+
+Source/AssetFactory/Private/AssetDocument/Fragments/
+  AssetRefFragmentAdapter.cpp
+  ClassRefFragmentAdapter.cpp
+  StructValueFragmentAdapter.cpp
+  EmbeddedObjectFragmentAdapter.cpp
+  DefinitionRefFragmentAdapter.cpp
 
 Source/AssetFactory/Private/AssetDocument/Capabilities/
   AnimMontageAssetDocumentCapability.h
   AnimMontageAssetDocumentCapability.cpp
+  AnimMontageNotifyTimelinePlacementAdapter.h
+  AnimMontageNotifyTimelinePlacementAdapter.cpp
 
 docs/superpowers/specs/asset-document-deferred-fields/
   2026-06-12-animmontage.md
@@ -701,16 +1051,23 @@ implementation plan 需要通过 UBT 验证具体依赖，不在 spec 中提前�
 
 新增 `AssetFactory.AssetDocument.Capabilities` 测试组：
 
-1. registry 能注册并发现 `AnimMontage` capability；
-2. unknown capability validate 失败；
-3. capability 与 class 不匹配时 validate 失败；
-4. validate 不修改资产；
-5. apply 可以创建 montage；
-6. apply 可以更新 slots/sections；
-7. diff 能识别 changed/unchanged；
-8. extract 能输出 `Capabilities.AnimMontage`；
-9. sidecar watcher 保存后能自动 apply montage document；
-10. invalid animation/skeleton/section link 返回带 JSON path 的错误。
+1. fragment registry 能注册并发现 `AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef` adapters；
+2. `DefinitionRef` 能展开到 `Definitions` 中的 fragment；
+3. `DefinitionRef` 循环引用 validate 失败；
+4. `AssetRef` 能校验 expected base class；
+5. `ClassRef` 能校验 expected base class；
+6. `StructValue` 能通过反射写入 struct properties；
+7. `EmbeddedObject` 能使用指定 outer 创建 UObject 并应用 properties；
+8. capability registry 能注册并发现 `AnimMontage` capability；
+9. unknown capability validate 失败；
+10. capability 与 class 不匹配时 validate 失败；
+11. validate 不修改资产；
+12. apply 可以创建 montage；
+13. apply 可以更新 slots/sections；
+14. diff 能识别 changed/unchanged；
+15. extract 能输出 `Capabilities.AnimMontage`；
+16. sidecar watcher 保存后能自动 apply montage document；
+17. invalid animation/skeleton/section link/fragment ref 返回带 JSON path 的错误。
 
 ### 9.2 测试资产
 
@@ -771,7 +1128,9 @@ MCP 测试需要覆盖：
 8. `extract_asset_document` 能输出 `Capabilities.AnimMontage`。
 9. `diff_asset_document` 能比较 capability block。
 10. notify / notify state 可以用完整 class path 创建内嵌对象，并通过反射设置属性。
-11. UBT、automation、MCP tests、live smoke 均通过。
+11. `Definitions` + `DefinitionRef` 可以被 capability 内字段复用。
+12. `AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef` 都通过 `AssetDocumentFragmentCompiler` 动态分发，不靠 capability 手写解析。
+13. UBT、automation、MCP tests、live smoke 均通过。
 
 ---
 
@@ -808,13 +1167,14 @@ MCP 测试需要覆盖：
 
 - notify event、notify state、branching point 语义复杂；
 - 完整 AN/ANS 领域能力会牵涉每种 notify class 的专用语义；
-- 内嵌 UObject 创建如果没有统一 builder，容易在 Montage adapter 内产生硬编码。
+- 内嵌 UObject 创建如果不走 fragment compiler，容易在 Montage adapter 内产生硬编码。
 
 决策：
 
 - P0 支持 timeline 内嵌 `UAnimNotify` / `UAnimNotifyState` 对象创建；
 - P0 不实现独立 `AnimNotify` / `AnimNotifyState` capability；
 - P0 不理解 AN/ANS 领域语义，只做 class path、实例化、反射属性 patch、timeline 挂接；
+- P0 使用 `EmbeddedObject` / `DefinitionRef` fragment 表达 notify 对象；
 - branching point 仍 deferred，并记录到 deferred fields 文件。
 
 ### 11.4 Partial patch
@@ -843,7 +1203,7 @@ MCP 测试需要覆盖：
 | `WidgetTree` | `UWidgetBlueprint` | tree / slots / style | 迁移 WidgetBlueprintGenerator 的动态经验 |
 | `MaterialGraph` | `UMaterial` | graph nodes/links | 可以先以 JSON workflow 表达 |
 | `NiagaraGraph` | Niagara assets | graph/modules | 需要更独立的图 DSL 或 workflow JSON |
-| `AnimNotifyBridge` | `UAnimNotify` / `UAnimNotifyState` | class / properties / domain semantics | 衔接 Montage timeline 内嵌对象和未来独立 AN/ANS capability |
+| `AnimNotifyCapability` | `UAnimNotify` / `UAnimNotifyState` | class / properties / domain semantics | 后续独立 AN/ANS 能力应复用 fragment schema，不通过 capability-to-capability bridge 接入 |
 
 图资产不应该直接塞进 `Properties`。它们应该是 capability 下的 graph/workflow block，由图 adapter 负责解释。
 
@@ -853,17 +1213,19 @@ MCP 测试需要覆盖：
 
 implementation plan 建议拆成：
 
-1. **Capability substrate**
-   - interface、registry、compiler dispatch、schema hint、unknown capability validation。
-2. **AnimMontage research + lifecycle**
+1. **Fragment substrate**
+   - `AssetDocumentFragmentCompiler`、fragment registry、`AssetRef`、`ClassRef`、`StructValue`、`EmbeddedObject`、`DefinitionRef`。
+2. **Capability substrate**
+   - interface、registry、compiler dispatch、schema hint、unknown capability validation、capability 调用 fragment compiler 的上下文协议。
+3. **AnimMontage research + lifecycle**
    - 确认 UE 5.7 创建路径，完成 create/load/save。
-3. **AnimMontage apply**
-   - skeleton、preview mesh、slots、segments、sections、blend、notify timeline adapter、instanced object builder。
-4. **Extract/diff/inspect**
-   - capability schema hints、extract block、diff entries。
-5. **Sidecar watcher + MCP smoke**
+4. **AnimMontage apply**
+   - skeleton、preview mesh、slots、segments、sections、blend、notify timeline placement adapter、fragment-driven notify object creation。
+5. **Extract/diff/inspect**
+   - capability schema hints、fragment schema hints、extract block、diff entries。
+6. **Sidecar watcher + MCP smoke**
    - 保存 `.assetdoc.json` 自动更新 montage。
-6. **Review and hardening**
+7. **Review and hardening**
    - error paths、no mutation on validate、UBT/automation/MCP/live smoke。
 
 每个 task 仍然按项目规则记录 `TASK_BASE=HEAD`，完成后 checkpoint commit。

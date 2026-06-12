@@ -153,11 +153,11 @@ deferred 原因：
 
 - metadata 是 instanced UObject，但它的语义和 notify object 不同；
 - 需要确认 outer、duplication、editor display、asset save 稳定性；
-- 可以复用第一版为 notify object 引入的 `AssetDocumentInstancedObjectBuilder`，但不与 notify authoring 绑在同一个 task。
+- 可以复用第一版为 notify object 引入的 `AssetDocumentFragmentCompiler` 和 `EmbeddedObjectFragmentAdapter`，但不与 notify authoring 绑在同一个 task。
 
 清理条件：
 
-- instanced UObject builder 已经通过 notify / notify state 验证；
+- `EmbeddedObjectFragmentAdapter` 已经通过 notify / notify state 验证；
 - metadata class path + properties + array ordering 有稳定 schema；
 - extract/diff 能 round-trip。
 
@@ -201,29 +201,31 @@ deferred 原因：
 边界：
 
 - 支持在 Montage timeline 内创建 `UAnimNotify` / `UAnimNotifyState` 实例；
-- 支持完整 class path；
-- 支持通过通用 property setter 设置对象字段；
+- 支持 `Object.Kind=EmbeddedObject` 或 `Object.Kind=DefinitionRef`；
+- 支持 `Object.Class` 完整 class path；
+- 支持通过 `Object.Properties` 和通用 property setter 设置对象字段；
 - 不实现独立 `AnimNotify` / `AnimNotifyState` capability；
 - 不理解具体 AN/ANS class 的领域语义。
 
-但这两个字段需要保留后续桥接约束：
+但这两个字段需要保留后续组合边界：
 
 ```text
 AnimMontageCapability
-  -> AnimMontageNotifyTimelineAdapter
-    -> AssetDocumentInstancedObjectBuilder
-    -> future: AnimNotifyCapabilityBridge
+  -> AnimMontageNotifyTimelinePlacementAdapter
+    -> AssetDocumentFragmentCompiler
+      -> EmbeddedObjectFragmentAdapter
+      -> DefinitionRefFragmentAdapter
 ```
 
 第一版实现时应避免把 notify 逻辑直接散落在 Montage adapter 主流程中。至少要保留以下边界：
 
 - timeline placement：由 Montage notify timeline adapter 负责；
-- object creation：由 instanced object builder 负责；
+- object creation：由 fragment compiler 和 fragment adapter registry 负责；
 - class/properties schema：必须可被未来 AN/ANS capability 复用；
-- domain semantics：暂不实现，但未来通过 bridge 接入。
+- domain semantics：暂不实现，未来通过独立 AN/ANS capability 接入，但不建立 capability-to-capability bridge。
 
 后续清理条件：
 
 - 当独立 `AnimNotify` / `AnimNotifyState` capability 出现时，Montage 内嵌 notify 表达不应破坏；
-- 如果 richer schema 增加了 AN/ANS 专属字段，旧的 `NotifyClass` / `NotifyStateClass` + `Properties` 仍应能作为基础子集；
-- bridge 应提供从 Montage timeline event 到 AN/ANS object document 的转换点。
+- 如果 richer schema 增加了 AN/ANS 专属字段，旧的 `Object.Kind=EmbeddedObject` + `Object.Class` + `Object.Properties` 仍应能作为基础子集；
+- AN/ANS capability 应复用 fragment schema；Montage 侧只负责 timeline placement。
