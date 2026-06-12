@@ -4,8 +4,13 @@
 
 #include "AssetDocumentFragmentCompiler.h"
 
+#include "Animation/AnimMontage.h"
+#include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Animation/Skeleton.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/Package.h"
+#include "UObject/UnrealType.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -43,6 +48,13 @@ public:
 		return FAssetDocumentFragmentResult::Success();
 	}
 };
+
+TSharedRef<FJsonObject> MakeFragment(const TCHAR* Kind)
+{
+	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Kind"), Kind);
+	return Fragment;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -86,6 +98,119 @@ bool FAssetDocumentFragmentCompilerDispatchTest::RunTest(const FString& Paramete
 	TestTrue(TEXT("Known fragment role extracts"), ExtractResult.bSuccess);
 	TestEqual(TEXT("Extract writes fragment Kind"), ExtractedFragment->GetStringField(TEXT("Kind")), FString(TEXT("TestKind")));
 	TestEqual(TEXT("Extract preserves semantic role separately from kind"), ExtractedFragment->GetStringField(TEXT("Role")), FString(TEXT("SemanticRole")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBuiltInFragmentAdaptersTest,
+	"AssetFactory.AssetDocument.Fragments.BuiltInAdapters",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBuiltInFragmentAdaptersTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentFragmentCompiler Compiler;
+	Compiler.RegisterBuiltInAdapters();
+
+	FAssetDocumentFragmentContext Context;
+	Context.JsonPath = TEXT("/Body/Test");
+
+	TSharedRef<FJsonObject> AssetRef = MakeFragment(TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton"));
+	Context.ExpectedBaseClass = USkeleton::StaticClass();
+
+	const FAssetDocumentFragmentResult AssetRefResult = Compiler.Compile(AssetRef, Context);
+	TestTrue(TEXT("AssetRef loads an asset that matches ExpectedBaseClass"), AssetRefResult.bSuccess);
+	TestTrue(TEXT("AssetRef returns the loaded asset object"), IsValid(AssetRefResult.Object));
+	if (AssetRefResult.Object)
+	{
+		TestTrue(TEXT("AssetRef object is a skeleton"), AssetRefResult.Object->IsA(USkeleton::StaticClass()));
+	}
+	TestTrue(TEXT("AssetRef returns the original path as Value"), AssetRefResult.Value.IsValid() && AssetRefResult.Value->AsString().Contains(TEXT("TutorialTPP_Skeleton")));
+
+	TSharedRef<FJsonObject> ClassRef = MakeFragment(TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimMontage"));
+	Context.ExpectedBaseClass = UObject::StaticClass();
+
+	const FAssetDocumentFragmentResult ClassRefResult = Compiler.Compile(ClassRef, Context);
+	TestTrue(TEXT("ClassRef resolves a class that matches ExpectedBaseClass"), ClassRefResult.bSuccess);
+	TestEqual(TEXT("ClassRef returns AnimMontage class"), ClassRefResult.Class, UAnimMontage::StaticClass());
+
+	TSharedRef<FJsonObject> StructValue = MakeFragment(TEXT("StructValue"));
+	StructValue->SetStringField(TEXT("Struct"), TEXT("/Script/CoreUObject.Vector"));
+	TSharedRef<FJsonObject> VectorProperties = MakeShared<FJsonObject>();
+	VectorProperties->SetNumberField(TEXT("X"), 1.25);
+	VectorProperties->SetNumberField(TEXT("Y"), -2.5);
+	VectorProperties->SetNumberField(TEXT("Z"), 3.75);
+	StructValue->SetObjectField(TEXT("Properties"), VectorProperties);
+	Context.ExpectedBaseClass = nullptr;
+	Context.ExpectedStruct = TBaseStructure<FVector>::Get();
+
+	const FAssetDocumentFragmentResult StructValueResult = Compiler.Compile(StructValue, Context);
+	TestTrue(TEXT("StructValue compiles a reflected FVector"), StructValueResult.bSuccess);
+	TestEqual(TEXT("StructValue returns the expected struct type"), StructValueResult.StructType, TBaseStructure<FVector>::Get());
+	TestEqual(TEXT("StructValue returns bytes sized for the struct"), StructValueResult.StructBytes.Num(), TBaseStructure<FVector>::Get()->GetStructureSize());
+	if (StructValueResult.StructBytes.Num() == TBaseStructure<FVector>::Get()->GetStructureSize())
+	{
+		const FVector* Vector = reinterpret_cast<const FVector*>(StructValueResult.StructBytes.GetData());
+		TestEqual(TEXT("StructValue sets X"), Vector->X, 1.25);
+		TestEqual(TEXT("StructValue sets Y"), Vector->Y, -2.5);
+		TestEqual(TEXT("StructValue sets Z"), Vector->Z, 3.75);
+	}
+
+	TSharedRef<FJsonObject> EmbeddedObject = MakeFragment(TEXT("EmbeddedObject"));
+	EmbeddedObject->SetStringField(TEXT("Class"), TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"));
+	Context.ExpectedStruct = nullptr;
+	Context.ExpectedBaseClass = UAnimNotifyState::StaticClass();
+	Context.Outer = GetTransientPackage();
+
+	const FAssetDocumentFragmentResult EmbeddedObjectResult = Compiler.Compile(EmbeddedObject, Context);
+	TestTrue(TEXT("EmbeddedObject creates an object using the supplied Outer"), EmbeddedObjectResult.bSuccess);
+	TestTrue(TEXT("EmbeddedObject returns an object"), IsValid(EmbeddedObjectResult.Object));
+	if (EmbeddedObjectResult.Object)
+	{
+		TestTrue(TEXT("EmbeddedObject object is an AnimNotifyState"), EmbeddedObjectResult.Object->IsA(UAnimNotifyState::StaticClass()));
+		TestTrue(TEXT("EmbeddedObject uses the context Outer"), EmbeddedObjectResult.Object->GetOuter() == GetTransientPackage());
+	}
+
+	TSharedPtr<FJsonObject> Definitions = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> AttackAnimDefinition = MakeFragment(TEXT("AssetRef"));
+	AttackAnimDefinition->SetStringField(TEXT("Path"), TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton"));
+	Definitions->SetObjectField(TEXT("AttackAnim"), AttackAnimDefinition);
+
+	TSharedRef<FJsonObject> DefinitionRef = MakeFragment(TEXT("DefinitionRef"));
+	DefinitionRef->SetStringField(TEXT("Id"), TEXT("AttackAnim"));
+	Context.ExpectedBaseClass = USkeleton::StaticClass();
+	Context.Outer = nullptr;
+	Context.Definitions = &Definitions;
+	Context.JsonPath = TEXT("/Body/DefinitionRef");
+
+	const FAssetDocumentFragmentResult DefinitionRefResult = Compiler.Compile(DefinitionRef, Context);
+	TestTrue(TEXT("DefinitionRef expands a named definition through the compiler"), DefinitionRefResult.bSuccess);
+	TestTrue(TEXT("DefinitionRef returns the expanded asset object"), IsValid(DefinitionRefResult.Object));
+	if (DefinitionRefResult.Object)
+	{
+		TestTrue(TEXT("DefinitionRef expanded object is a skeleton"), DefinitionRefResult.Object->IsA(USkeleton::StaticClass()));
+	}
+
+	TSharedPtr<FJsonObject> CyclicDefinitions = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> A = MakeFragment(TEXT("DefinitionRef"));
+	A->SetStringField(TEXT("Id"), TEXT("B"));
+	TSharedRef<FJsonObject> B = MakeFragment(TEXT("DefinitionRef"));
+	B->SetStringField(TEXT("Id"), TEXT("A"));
+	CyclicDefinitions->SetObjectField(TEXT("A"), A);
+	CyclicDefinitions->SetObjectField(TEXT("B"), B);
+
+	TSharedRef<FJsonObject> CyclicDefinitionRef = MakeFragment(TEXT("DefinitionRef"));
+	CyclicDefinitionRef->SetStringField(TEXT("Id"), TEXT("A"));
+	Context.ExpectedBaseClass = nullptr;
+	Context.Definitions = &CyclicDefinitions;
+	Context.DefinitionStack.Reset();
+	Context.JsonPath = TEXT("/Body/Cycle");
+
+	const FAssetDocumentFragmentResult CyclicResult = Compiler.Compile(CyclicDefinitionRef, Context);
+	TestFalse(TEXT("DefinitionRef rejects cycles"), CyclicResult.bSuccess);
+	TestTrue(TEXT("DefinitionRef cycle failure reports diagnostics"), CyclicResult.Diagnostics.Num() > 0);
 
 	return true;
 }

@@ -8,6 +8,7 @@ class FAssetDocumentFragmentCompiler
 {
 public:
 	void RegisterAdapter(TSharedRef<IAssetDocumentFragmentAdapter> Adapter);
+	void RegisterBuiltInAdapters();
 
 	FAssetDocumentFragmentResult Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const;
 	FAssetDocumentFragmentResult Compile(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const;

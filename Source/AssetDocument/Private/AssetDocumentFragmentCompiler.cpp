@@ -2,6 +2,12 @@
 
 #include "AssetDocumentFragmentCompiler.h"
 
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentAssetRefFragmentAdapter();
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentClassRefFragmentAdapter();
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentStructValueFragmentAdapter();
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentEmbeddedObjectFragmentAdapter();
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentDefinitionRefFragmentAdapter(const FAssetDocumentFragmentCompiler& Compiler);
+
 namespace
 {
 FAssetDocumentDiagnostic MakeFragmentDiagnostic(const FString& Path, const FString& Code, const FString& Message)
@@ -36,6 +42,15 @@ FAssetDocumentFragmentResult FAssetDocumentFragmentResult::Failure(const FString
 void FAssetDocumentFragmentCompiler::RegisterAdapter(TSharedRef<IAssetDocumentFragmentAdapter> Adapter)
 {
 	Adapters.Add(Adapter->GetKind(), Adapter);
+}
+
+void FAssetDocumentFragmentCompiler::RegisterBuiltInAdapters()
+{
+	RegisterAdapter(CreateAssetDocumentAssetRefFragmentAdapter());
+	RegisterAdapter(CreateAssetDocumentClassRefFragmentAdapter());
+	RegisterAdapter(CreateAssetDocumentStructValueFragmentAdapter());
+	RegisterAdapter(CreateAssetDocumentEmbeddedObjectFragmentAdapter());
+	RegisterAdapter(CreateAssetDocumentDefinitionRefFragmentAdapter(*this));
 }
 
 FAssetDocumentFragmentResult FAssetDocumentFragmentCompiler::Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const
