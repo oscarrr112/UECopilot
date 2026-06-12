@@ -5,9 +5,13 @@
 #include "CoreMinimal.h"
 #include "AssetDocumentTypes.h"
 
+class FAssetDocumentProfileRegistry;
+
 class ASSETDOCUMENT_API FAssetDocumentService
 {
 public:
+	static FAssetDocumentProfileRegistry& GetProfileRegistry();
+
 	FAssetDocumentResult Apply(const FAssetDocumentApplyRequest& Request);
 	FAssetDocumentResult ApplyFile(const FAssetDocumentApplyFileRequest& Request);
 	FAssetDocumentResult Inspect(const FAssetDocumentInspectRequest& Request) const;

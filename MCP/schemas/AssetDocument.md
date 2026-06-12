@@ -2,7 +2,33 @@
 
 AssetDocument is the generic asset sidecar format for reflected Unreal assets. It is not a `generate_assets` payload and it does not encode generator-specific subtypes in the `type` field. MCP tools forward documents to the `/assetfactory/assetdocument/*` HTTP routes; reflection, class lookup, property coercion, validation, and apply behavior live in the Unreal plugin.
 
-## Document Shape
+## Structured Template Shape
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/Data/DA_Test",
+  "Class": "/Script/AssetFactory.TestDataAsset",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {}
+}
+```
+
+This is the canonical shape returned by `create_asset_document_template`. It is generic and profile-driven; it does not include `AssetType`.
+
+Structured template fields:
+
+- `SchemaVersion`: Use `1`.
+- `Target`: The canonical asset package path the document owns, such as `/Game/Data/DA_Test`.
+- `Class`: A native path or class name that the Unreal route resolves dynamically.
+- `Action`: Use `Create`, `Update`, or `CreateOrUpdate`.
+- `Definitions`: A map of reusable fragments keyed by stable names.
+- `Properties`: Reflected asset properties to set.
+
+## Legacy Reflected Apply Shape
+
+The current reflected apply, validate, diff, extract, and sidecar file routes still use the legacy GenericAsset sidecar shape:
 
 ```json
 {
@@ -22,10 +48,10 @@ AssetDocument is the generic asset sidecar format for reflected Unreal assets. I
 }
 ```
 
-Required fields:
+Required fields for legacy reflected apply/validate/diff paths:
 
 - `SchemaVersion`: Use `1`.
-- `AssetType`: Use `GenericAsset`.
+- `AssetType`: Use `GenericAsset` for these legacy reflected paths.
 - `Target`: Required in sidecar files. It is the canonical asset path the sidecar owns, such as `/Game/Data/DA_Test`.
 - `Class`: Required for validation, diff, and apply. It can be a native path or class name that the Unreal route resolves dynamically.
 - `Action`: Required for validation, diff, and apply. Use `Create`, `Update`, or `CreateOrUpdate`.
@@ -80,7 +106,7 @@ AssetDocument MCP tools are generic. Do not add asset-specific AssetDocument too
 
 ## Tool Arguments
 
-Apply inline:
+Apply inline using the legacy reflected shape:
 
 ```json
 {
@@ -146,6 +172,19 @@ Create template:
 }
 ```
 
+Example template result:
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/Data/DA_Test",
+  "Class": "/Script/AssetFactory.TestDataAsset",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {}
+}
+```
+
 Extract:
 
 ```json
@@ -156,7 +195,7 @@ Extract:
 }
 ```
 
-Validate or diff inline:
+Validate or diff inline using the legacy reflected shape:
 
 ```json
 {

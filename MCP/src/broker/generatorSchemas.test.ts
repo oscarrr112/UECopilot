@@ -154,6 +154,8 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
 			"apply_asset_document_file",
 			"get_asset_document_schema",
 			"inspect_asset_document_target",
+			"inspect_asset_document_profile",
+			"create_asset_document_template",
 			"extract_asset_document",
 			"validate_asset_document",
 			"diff_asset_document",

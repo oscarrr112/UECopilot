@@ -4,6 +4,7 @@
 
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "TestDataAsset.h"
 
 #include "Misc/AutomationTest.h"
 
@@ -16,7 +17,7 @@ class FTestAssetDocumentProfile final : public IAssetDocumentProfile
 public:
 	virtual UClass* GetExactClass() const override
 	{
-		return UObject::StaticClass();
+		return UTestDataAsset::StaticClass();
 	}
 
 	virtual TSharedRef<FJsonObject> GetDocumentShape() const override
@@ -31,6 +32,7 @@ public:
 		TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
 		Template->SetStringField(TEXT("Target"), Context.Target);
 		Template->SetStringField(TEXT("Class"), Context.ClassPath);
+		Template->SetBoolField(TEXT("ExactProfileTemplate"), true);
 		return Template;
 	}
 
@@ -56,7 +58,7 @@ bool FAssetDocumentProfileRegistryTest::RunTest(const FString& Parameters)
 	FAssetDocumentProfileRegistry Registry;
 	Registry.Register(MakeShared<FTestAssetDocumentProfile>());
 
-	TestNotNull(TEXT("Registry finds a profile for the exact registered class"), Registry.FindForClass(UObject::StaticClass()).Get());
+	TestNotNull(TEXT("Registry finds a profile for the exact registered class"), Registry.FindForClass(UTestDataAsset::StaticClass()).Get());
 	TestNull(TEXT("Registry does not return profiles for unregistered classes"), Registry.FindForClass(UPackage::StaticClass()).Get());
 
 	return true;
@@ -71,10 +73,10 @@ bool FAssetDocumentGenericInspectProfileTest::RunTest(const FString& Parameters)
 {
 	const FAssetDocumentService Service;
 	FAssetDocumentProfileRequest Request;
-	Request.ClassOrAsset = TEXT("/Script/AssetFactory.TestDataAsset");
+	Request.ClassOrAsset = TEXT("/Script/AssetFactory.TestActorBase");
 
 	const FAssetDocumentResult Result = Service.InspectProfile(Request);
-	TestTrue(TEXT("InspectProfile succeeds for reflected TestDataAsset class"), Result.IsSuccess());
+	TestTrue(TEXT("InspectProfile succeeds for reflected TestActorBase class"), Result.IsSuccess());
 	TestTrue(TEXT("InspectProfile returns a payload"), Result.Payload.IsValid());
 
 	if (!Result.Payload.IsValid())
@@ -82,7 +84,7 @@ bool FAssetDocumentGenericInspectProfileTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestEqual(TEXT("Profile reports canonical class path"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestDataAsset")));
+	TestEqual(TEXT("Profile reports canonical class path"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestActorBase")));
 
 	const TSharedPtr<FJsonObject>* DocumentShape = nullptr;
 	TestTrue(TEXT("Profile includes DocumentShape"), Result.Payload->TryGetObjectField(TEXT("DocumentShape"), DocumentShape));
@@ -125,11 +127,11 @@ bool FAssetDocumentGenericCreateTemplateTest::RunTest(const FString& Parameters)
 {
 	const FAssetDocumentService Service;
 	FAssetDocumentTemplateRequest Request;
-	Request.Class = TEXT("/Script/AssetFactory.TestDataAsset");
-	Request.Target = TEXT("/Game/AssetDocumentTests/DA_Template");
+	Request.Class = TEXT("/Script/AssetFactory.TestActorBase");
+	Request.Target = TEXT("/Game/AssetDocumentTests/DA_Template.DA_Template");
 
 	const FAssetDocumentResult Result = Service.CreateTemplate(Request);
-	TestTrue(TEXT("CreateTemplate succeeds for reflected TestDataAsset class"), Result.IsSuccess());
+	TestTrue(TEXT("CreateTemplate succeeds for reflected TestActorBase class"), Result.IsSuccess());
 	TestTrue(TEXT("CreateTemplate returns a payload"), Result.Payload.IsValid());
 
 	if (!Result.Payload.IsValid())
@@ -138,8 +140,9 @@ bool FAssetDocumentGenericCreateTemplateTest::RunTest(const FString& Parameters)
 	}
 
 	TestEqual(TEXT("Template schema version is canonical"), static_cast<int32>(Result.Payload->GetNumberField(TEXT("SchemaVersion"))), 1);
-	TestEqual(TEXT("Template target is preserved"), Result.Payload->GetStringField(TEXT("Target")), Request.Target);
-	TestEqual(TEXT("Template class is canonical"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestDataAsset")));
+	TestEqual(TEXT("Template target is normalized to package path"), Result.Payload->GetStringField(TEXT("Target")), FString(TEXT("/Game/AssetDocumentTests/DA_Template")));
+	TestEqual(TEXT("Result target is normalized to package path"), Result.Target, FString(TEXT("/Game/AssetDocumentTests/DA_Template")));
+	TestEqual(TEXT("Template class is canonical"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestActorBase")));
 	TestEqual(TEXT("Template action is CreateOrUpdate"), Result.Payload->GetStringField(TEXT("Action")), FString(TEXT("CreateOrUpdate")));
 	TestFalse(TEXT("Generic template does not include AssetType"), Result.Payload->HasField(TEXT("AssetType")));
 
@@ -155,6 +158,105 @@ bool FAssetDocumentGenericCreateTemplateTest::RunTest(const FString& Parameters)
 	if (Properties && Properties->IsValid())
 	{
 		TestEqual(TEXT("Template Properties starts empty"), (*Properties)->Values.Num(), 0);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGenericCreateTemplateRejectsInvalidTargetTest,
+	"AssetFactory.AssetDocument.Profile.GenericTemplateRejectsInvalidTarget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGenericCreateTemplateRejectsInvalidTargetTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentService Service;
+	FAssetDocumentTemplateRequest Request;
+	Request.Class = TEXT("/Script/AssetFactory.TestDataAsset");
+	Request.Target = TEXT("AssetDocumentTests/DA_InvalidTarget");
+
+	const FAssetDocumentResult Result = Service.CreateTemplate(Request);
+	TestFalse(TEXT("CreateTemplate rejects non-/Game target"), Result.IsSuccess());
+	TestTrue(TEXT("CreateTemplate reports long package name error"), Result.Message.Contains(TEXT("must be a long package name under /Game")));
+	TestEqual(TEXT("Invalid result target is normalized request target"), Result.Target, Request.Target);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentExactProfileServiceTest,
+	"AssetFactory.AssetDocument.Profile.ExactProfileService",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentExactProfileServiceTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FTestAssetDocumentProfile>());
+
+	const FAssetDocumentService Service;
+	FAssetDocumentProfileRequest ProfileRequest;
+	ProfileRequest.ClassOrAsset = TEXT("/Script/AssetFactory.TestDataAsset");
+
+	const FAssetDocumentResult ProfileResult = Service.InspectProfile(ProfileRequest);
+	TestTrue(TEXT("InspectProfile succeeds for exact registered profile"), ProfileResult.IsSuccess());
+	TestTrue(TEXT("InspectProfile exact profile returns payload"), ProfileResult.Payload.IsValid());
+	if (!ProfileResult.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* DocumentShape = nullptr;
+	TestTrue(TEXT("Exact profile exposes its document shape"), ProfileResult.Payload->TryGetObjectField(TEXT("DocumentShape"), DocumentShape));
+	if (DocumentShape && DocumentShape->IsValid())
+	{
+		TestEqual(TEXT("Exact profile document shape is used"), (*DocumentShape)->GetStringField(TEXT("Name")), FString(TEXT("TestShape")));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* BodySections = nullptr;
+	TestTrue(TEXT("Exact profile includes BodySections"), ProfileResult.Payload->TryGetArrayField(TEXT("BodySections"), BodySections));
+	if (BodySections)
+	{
+		TestEqual(TEXT("Exact profile body section count"), BodySections->Num(), 1);
+		TestEqual(TEXT("Exact profile body section name"), (*BodySections)[0]->AsString(), FString(TEXT("TestBody")));
+	}
+
+	FAssetDocumentTemplateRequest TemplateRequest;
+	TemplateRequest.Class = TEXT("/Script/AssetFactory.TestDataAsset");
+	TemplateRequest.Target = TEXT("/Game/AssetDocumentTests/DA_Exact.DA_Exact");
+	const FAssetDocumentResult TemplateResult = Service.CreateTemplate(TemplateRequest);
+	TestTrue(TEXT("CreateTemplate succeeds for exact registered profile"), TemplateResult.IsSuccess());
+	TestTrue(TEXT("CreateTemplate exact profile returns payload"), TemplateResult.Payload.IsValid());
+	if (TemplateResult.Payload.IsValid())
+	{
+		TestEqual(TEXT("Exact template receives normalized target"), TemplateResult.Payload->GetStringField(TEXT("Target")), FString(TEXT("/Game/AssetDocumentTests/DA_Exact")));
+		TestEqual(TEXT("Exact template receives canonical class"), TemplateResult.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AssetFactory.TestDataAsset")));
+		TestTrue(TEXT("Exact template path was used"), TemplateResult.Payload->GetBoolField(TEXT("ExactProfileTemplate")));
+	}
+
+	const FAssetDocumentResult SchemaResult = Service.GetSchema();
+	TestTrue(TEXT("GetSchema succeeds with registered profile"), SchemaResult.IsSuccess());
+	TestTrue(TEXT("GetSchema returns payload with registered profile"), SchemaResult.Payload.IsValid());
+	if (SchemaResult.Payload.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* RegisteredProfiles = nullptr;
+		TestTrue(TEXT("Schema includes registered_profiles"), SchemaResult.Payload->TryGetArrayField(TEXT("registered_profiles"), RegisteredProfiles));
+		if (RegisteredProfiles)
+		{
+			bool bFoundObjectProfile = false;
+			for (const TSharedPtr<FJsonValue>& Entry : *RegisteredProfiles)
+			{
+				const TSharedPtr<FJsonObject> EntryObject = Entry.IsValid() ? Entry->AsObject() : nullptr;
+				if (EntryObject.IsValid())
+				{
+					FString ClassPath;
+					if (EntryObject->TryGetStringField(TEXT("Class"), ClassPath) && ClassPath == TEXT("/Script/AssetFactory.TestDataAsset"))
+					{
+						bFoundObjectProfile = true;
+						break;
+					}
+				}
+			}
+			TestTrue(TEXT("Schema registered_profiles includes exact TestDataAsset profile"), bFoundObjectProfile);
+		}
 	}
 
 	return true;

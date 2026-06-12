@@ -4,6 +4,7 @@
 
 #include "AssetDocumentClassResolver.h"
 #include "AssetDocumentLifecycle.h"
+#include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
 
@@ -210,13 +211,14 @@ TSharedRef<FJsonObject> MakeGenericDocumentShape()
 struct FAssetDocumentProfileResolution
 {
 	UClass* Class = nullptr;
-	TSharedPtr<FJsonObject> ExactProfilePayload;
+	TSharedPtr<IAssetDocumentProfile> ExactProfile;
 };
 
-FAssetDocumentProfileResolution ResolveAssetDocumentProfile(UClass* Class)
+FAssetDocumentProfileResolution ResolveAssetDocumentProfile(const FAssetDocumentProfileRegistry& Registry, UClass* Class)
 {
 	FAssetDocumentProfileResolution Resolution;
 	Resolution.Class = Class;
+	Resolution.ExactProfile = Registry.FindForClass(Class);
 	return Resolution;
 }
 
@@ -228,6 +230,47 @@ TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileRes
 	Payload->SetArrayField(TEXT("BodySections"), TArray<TSharedPtr<FJsonValue>>());
 	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
 	return Payload;
+}
+
+TSharedRef<FJsonObject> MakeExactProfilePayload(const FAssetDocumentProfileResolution& Resolution)
+{
+	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetStringField(TEXT("Class"), Resolution.Class ? Resolution.Class->GetPathName() : FString());
+	Payload->SetObjectField(TEXT("DocumentShape"), Resolution.ExactProfile->GetDocumentShape());
+
+	TArray<TSharedPtr<FJsonValue>> BodySections;
+	for (const FName& BodyKey : Resolution.ExactProfile->GetBodyKeys())
+	{
+		BodySections.Add(MakeShared<FJsonValueString>(BodyKey.ToString()));
+	}
+	Payload->SetArrayField(TEXT("BodySections"), BodySections);
+	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+	return Payload;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeRegisteredProfileArray(const FAssetDocumentProfileRegistry& Registry)
+{
+	TArray<TSharedPtr<FJsonValue>> RegisteredProfiles;
+	for (const TSharedRef<IAssetDocumentProfile>& Profile : Registry.GetAllProfiles())
+	{
+		UClass* ExactClass = Profile->GetExactClass();
+		if (!ExactClass)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("Class"), ExactClass->GetPathName());
+
+		TArray<TSharedPtr<FJsonValue>> BodySections;
+		for (const FName& BodyKey : Profile->GetBodyKeys())
+		{
+			BodySections.Add(MakeShared<FJsonValueString>(BodyKey.ToString()));
+		}
+		Entry->SetArrayField(TEXT("BodySections"), BodySections);
+		RegisteredProfiles.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+	return RegisteredProfiles;
 }
 
 FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
@@ -414,6 +457,12 @@ TSharedPtr<FJsonObject> FAssetDocumentResult::ToJson() const
 	}
 
 	return Json;
+}
+
+FAssetDocumentProfileRegistry& FAssetDocumentService::GetProfileRegistry()
+{
+	static FAssetDocumentProfileRegistry Registry;
+	return Registry;
 }
 
 FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyRequest& Request)
@@ -631,9 +680,9 @@ FAssetDocumentResult FAssetDocumentService::InspectProfile(const FAssetDocumentP
 		return ResolveResult;
 	}
 
-	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(ResolvedTarget.Class);
-	TSharedPtr<FJsonObject> Payload = ProfileResolution.ExactProfilePayload.IsValid()
-		? ProfileResolution.ExactProfilePayload
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), ResolvedTarget.Class);
+	TSharedPtr<FJsonObject> Payload = ProfileResolution.ExactProfile.IsValid()
+		? MakeExactProfilePayload(ProfileResolution)
 		: MakeGenericProfilePayload(ProfileResolution);
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument profile inspected"));
@@ -645,9 +694,18 @@ FAssetDocumentResult FAssetDocumentService::InspectProfile(const FAssetDocumentP
 
 FAssetDocumentResult FAssetDocumentService::CreateTemplate(const FAssetDocumentTemplateRequest& Request) const
 {
-	if (Request.Target.IsEmpty())
+	const FString NormalizedTarget = NormalizeValidateTarget(Request.Target);
+	if (NormalizedTarget.IsEmpty())
 	{
 		return FAssetDocumentResult::Failure(TEXT("CreateTemplate requires a target"));
+	}
+
+	FString Error;
+	if (!ValidateApplyTarget(NormalizedTarget, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = NormalizedTarget;
+		return Result;
 	}
 
 	UClass* ResolvedClass = nullptr;
@@ -657,16 +715,29 @@ FAssetDocumentResult FAssetDocumentService::CreateTemplate(const FAssetDocumentT
 		return ResolveResult;
 	}
 
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), ResolvedClass);
+	if (ProfileResolution.ExactProfile.IsValid())
+	{
+		FAssetDocumentTemplateContext Context;
+		Context.Target = NormalizedTarget;
+		Context.ClassPath = ResolvedClass->GetPathName();
+
+		FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument template created"));
+		Result.Target = NormalizedTarget;
+		Result.Payload = ProfileResolution.ExactProfile->CreateTemplate(Context);
+		return Result;
+	}
+
 	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
 	Payload->SetNumberField(TEXT("SchemaVersion"), 1);
-	Payload->SetStringField(TEXT("Target"), Request.Target);
+	Payload->SetStringField(TEXT("Target"), NormalizedTarget);
 	Payload->SetStringField(TEXT("Class"), ResolvedClass->GetPathName());
 	Payload->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 	Payload->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
 	Payload->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument template created"));
-	Result.Target = Request.Target;
+	Result.Target = NormalizedTarget;
 	Result.Payload = Payload;
 	return Result;
 }
@@ -693,7 +764,7 @@ FAssetDocumentResult FAssetDocumentService::GetSchema() const
 	}));
 	Payload->SetArrayField(TEXT("fragment_kinds"), MakeFragmentKindArray());
 	Payload->SetObjectField(TEXT("field_naming"), FieldNaming);
-	Payload->SetArrayField(TEXT("registered_profiles"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("registered_profiles"), MakeRegisteredProfileArray(GetProfileRegistry()));
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument schema described"));
 	Result.Payload = Payload;
