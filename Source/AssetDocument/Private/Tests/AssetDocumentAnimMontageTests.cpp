@@ -10,6 +10,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -45,6 +46,14 @@ TSharedPtr<FJsonObject> MakeDefinitionRef(const FString& Id)
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("DefinitionRef"));
 	Fragment->SetStringField(TEXT("Id"), Id);
+	return Fragment;
+}
+
+TSharedPtr<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath)
+{
+	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Kind"), TEXT("EmbeddedObject"));
+	Fragment->SetStringField(TEXT("Class"), ClassPath);
 	return Fragment;
 }
 
@@ -204,6 +213,16 @@ bool HasDiagnosticMessage(const FAssetDocumentResult& Result, const FString& Pat
 		}
 	}
 	return false;
+}
+
+int32 CountDirectObjectsWithOuter(const UObject* Outer)
+{
+	int32 Count = 0;
+	ForEachObjectWithOuter(Outer, [&Count](UObject*)
+	{
+		++Count;
+	}, false);
+	return Count;
 }
 
 FAssetDocumentResult ValidateDocument(TSharedPtr<FJsonObject> Document)
@@ -501,6 +520,65 @@ bool FAssetDocumentAnimMontageApplyFailureDoesNotMutateExistingTest::RunTest(con
 	TestEqual(TEXT("BlendInTime is unchanged after failed patch"), Montage->GetDefaultBlendInTime(), OriginalBlendInTime);
 	TestEqual(TEXT("BlendOutTime is unchanged after failed patch"), Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime);
 	TestEqual(TEXT("Reflected properties are unchanged after failed Body preflight"), RateScaleProperty->GetPropertyValue_InContainer(Montage), OriginalRateScale);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageApplyPreflightDoesNotCreateEmbeddedObjectsTest,
+	"AssetFactory.AssetDocument.AnimMontage.Apply.PreflightDoesNotCreateEmbeddedObjects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageApplyPreflightDoesNotCreateEmbeddedObjectsTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_PreflightEmbeddedObject"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Created AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	FFloatProperty* RateScaleProperty = FindFProperty<FFloatProperty>(Montage->GetClass(), TEXT("RateScale"));
+	TestNotNull(TEXT("AnimMontage exposes reflected RateScale property"), RateScaleProperty);
+	if (!RateScaleProperty)
+	{
+		return false;
+	}
+
+	const int32 OriginalDirectObjectCount = CountDirectObjectsWithOuter(Montage);
+	const float OriginalRateScale = RateScaleProperty->GetPropertyValue_InContainer(Montage);
+	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
+	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
+
+	TSharedPtr<FJsonObject> InvalidDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	InvalidDocument->GetObjectField(TEXT("Properties"))->SetNumberField(TEXT("RateScale"), OriginalRateScale + 0.5f);
+	GetFirstSegment(InvalidDocument)->SetObjectField(TEXT("AnimReference"), MakeEmbeddedObjectRef(TEXT("/Script/Engine.AnimComposite")));
+	GetCompositeSection(InvalidDocument, 0)->SetStringField(TEXT("NextSectionName"), TEXT("Missing"));
+
+	const FAssetDocumentResult InvalidResult = ApplyDocument(InvalidDocument);
+	TestFalse(TEXT("Invalid patch fails"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Invalid patch reports NextSectionName diagnostic"), HasDiagnostic(InvalidResult, TEXT("/Body/CompositeSections/0/NextSectionName"), TEXT("InvalidNextSectionName")));
+
+	TestEqual(TEXT("Preflight does not create direct child objects under production montage"), CountDirectObjectsWithOuter(Montage), OriginalDirectObjectCount);
+	TestEqual(TEXT("Reflected property is unchanged after failed Body preflight"), RateScaleProperty->GetPropertyValue_InContainer(Montage), OriginalRateScale);
+	TestEqual(TEXT("Slot tracks are unchanged after failed preflight"), Montage->SlotAnimTracks.Num(), OriginalSlotCount);
+	TestEqual(TEXT("Composite sections are unchanged after failed preflight"), Montage->CompositeSections.Num(), OriginalSectionCount);
 
 	return true;
 }

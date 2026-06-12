@@ -8,6 +8,7 @@
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
@@ -799,8 +800,13 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FA
 	FAssetDocumentFragmentCompiler Compiler;
 	Compiler.RegisterBuiltInAdapters();
 
+	UAnimMontage* PreflightMontage = NewObject<UAnimMontage>(GetTransientPackage(), UAnimMontage::StaticClass(), NAME_None, RF_Transient);
+	FAssetDocumentCapabilityContext PreflightContext = Context;
+	PreflightContext.Asset = PreflightMontage;
+	PreflightContext.AssetClass = UAnimMontage::StaticClass();
+
 	FParsedAnimMontageBody ParsedBody;
-	return ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, ParsedBody);
+	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, ParsedBody);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
