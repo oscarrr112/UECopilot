@@ -15,6 +15,8 @@ namespace
 {
 const FName ManagedNotifyName(TEXT("AssetDocument.Notify"));
 const FName ManagedNotifyStateName(TEXT("AssetDocument.NotifyState"));
+const TCHAR* ManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_Notify_");
+const TCHAR* ManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_NotifyState_");
 
 FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
 {
@@ -26,6 +28,28 @@ FAssetDocumentCapabilityResult FragmentFailure(const FAssetDocumentFragmentResul
 	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(FragmentResult.Message);
 	Result.Diagnostics = FragmentResult.Diagnostics;
 	return Result;
+}
+
+bool HasReservedManagedObjectName(const UObject* Object, const TCHAR* Prefix)
+{
+	return Object && Object->GetName().StartsWith(Prefix);
+}
+
+bool HasExpectedOuter(const UObject* Object, const UAnimMontage* Montage)
+{
+	return !Montage || (Object && Object->GetOuter() == Montage);
+}
+
+void MarkManagedNotifyObject(UObject* NotifyObject, UAnimMontage* Montage, bool bState)
+{
+	if (!NotifyObject || !Montage)
+	{
+		return;
+	}
+
+	const TCHAR* Prefix = bState ? ManagedNotifyStateObjectPrefix : ManagedNotifyObjectPrefix;
+	const FName ManagedObjectName = MakeUniqueObjectName(Montage, NotifyObject->GetClass(), Prefix);
+	NotifyObject->Rename(*ManagedObjectName.ToString(), Montage, REN_DontCreateRedirectors | REN_NonTransactional);
 }
 
 FString PlacementPath(const TCHAR* SectionName, int32 Index)
@@ -387,6 +411,7 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		{
 			return BodyFailure(TEXT("Object fragment did not resolve to the expected notify class"), BasePath / TEXT("Object"), TEXT("InvalidNotifyObject"));
 		}
+		MarkManagedNotifyObject(NotifyObject, Montage, bState);
 
 		const float NotifyTime = static_cast<float>(Time);
 		FAnimNotifyEvent NotifyEvent;
@@ -484,6 +509,29 @@ FAssetDocumentCapabilityResult ExtractPlacement(
 	OutPlacement->SetObjectField(TEXT("Object"), ObjectFragment);
 	return FAssetDocumentCapabilityResult::Success();
 }
+
+TSharedRef<FJsonObject> MakeSkippedNotifyMetadata(const FAnimNotifyEvent& Event, bool bState)
+{
+	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+	const UObject* NotifyObject = bState ? static_cast<const UObject*>(Event.NotifyStateClass) : static_cast<const UObject*>(Event.Notify);
+	Metadata->SetStringField(TEXT("Reason"), bState ? TEXT("unmanaged-notify-state") : TEXT("unmanaged-notify"));
+	Metadata->SetNumberField(TEXT("Time"), Event.GetTime());
+	Metadata->SetNumberField(TEXT("TrackIndex"), Event.TrackIndex);
+	if (bState)
+	{
+		Metadata->SetNumberField(TEXT("Duration"), Event.GetDuration());
+	}
+	if (NotifyObject)
+	{
+		Metadata->SetStringField(TEXT("Class"), NotifyObject->GetClass()->GetPathName());
+		Metadata->SetStringField(TEXT("ObjectName"), NotifyObject->GetName());
+	}
+	if (!Event.NotifyName.IsNone())
+	{
+		Metadata->SetStringField(TEXT("NotifyName"), Event.NotifyName.ToString());
+	}
+	return Metadata;
+}
 }
 
 FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Validate(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const
@@ -497,14 +545,20 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Validate(cons
 	return ValidatePlacementArray(Context, BodyObject, TEXT("NotifyStates"), true, UAnimNotifyState::StaticClass());
 }
 
-bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(const FAnimNotifyEvent& Event)
+bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(const FAnimNotifyEvent& Event, const UAnimMontage* Montage)
 {
-	return Event.Notify && Event.NotifyName == ManagedNotifyName;
+	return Event.Notify
+		&& Event.NotifyName == ManagedNotifyName
+		&& HasReservedManagedObjectName(Event.Notify, ManagedNotifyObjectPrefix)
+		&& HasExpectedOuter(Event.Notify, Montage);
 }
 
-bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(const FAnimNotifyEvent& Event)
+bool FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(const FAnimNotifyEvent& Event, const UAnimMontage* Montage)
 {
-	return Event.NotifyStateClass && Event.NotifyName == ManagedNotifyStateName;
+	return Event.NotifyStateClass
+		&& Event.NotifyName == ManagedNotifyStateName
+		&& HasReservedManagedObjectName(Event.NotifyStateClass, ManagedNotifyStateObjectPrefix)
+		&& HasExpectedOuter(Event.NotifyStateClass, Montage);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Compile(
@@ -549,6 +603,8 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Extract(
 
 	TArray<TSharedPtr<FJsonValue>> Notifies;
 	TArray<TSharedPtr<FJsonValue>> NotifyStates;
+	TArray<TSharedPtr<FJsonValue>> SkippedNotifies;
+	TArray<TSharedPtr<FJsonValue>> SkippedNotifyStates;
 	int32 NotifyIndex = 0;
 	int32 NotifyStateIndex = 0;
 
@@ -556,6 +612,12 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Extract(
 	{
 		if (Event.Notify)
 		{
+			if (!IsManagedNotifyEvent(Event, Montage))
+			{
+				SkippedNotifies.Add(MakeShared<FJsonValueObject>(MakeSkippedNotifyMetadata(Event, false)));
+				continue;
+			}
+
 			TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
 			const FAssetDocumentCapabilityResult Result = ExtractPlacement(Compiler, Montage, Event, false, NotifyIndex, Placement);
 			if (!Result.bSuccess)
@@ -567,6 +629,12 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Extract(
 		}
 		else if (Event.NotifyStateClass)
 		{
+			if (!IsManagedNotifyStateEvent(Event, Montage))
+			{
+				SkippedNotifyStates.Add(MakeShared<FJsonValueObject>(MakeSkippedNotifyMetadata(Event, true)));
+				continue;
+			}
+
 			TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
 			const FAssetDocumentCapabilityResult Result = ExtractPlacement(Compiler, Montage, Event, true, NotifyStateIndex, Placement);
 			if (!Result.bSuccess)
@@ -583,6 +651,10 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Extract(
 
 	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
 	Skipped->SetStringField(TEXT("BranchingPoints"), TEXT("deferred"));
+	Skipped->SetNumberField(TEXT("UnmanagedNotifies"), SkippedNotifies.Num());
+	Skipped->SetNumberField(TEXT("UnmanagedNotifyStates"), SkippedNotifyStates.Num());
+	Skipped->SetArrayField(TEXT("SkippedNotifies"), SkippedNotifies);
+	Skipped->SetArrayField(TEXT("SkippedNotifyStates"), SkippedNotifyStates);
 	OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
 
 	return FAssetDocumentCapabilityResult::Success();

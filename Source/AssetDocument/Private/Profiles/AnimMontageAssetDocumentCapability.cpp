@@ -877,11 +877,11 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 		UpdatedNotifies.Reserve(Montage->Notifies.Num() + ParsedBody.NotifyPlacements.Notifies.Num() + ParsedBody.NotifyPlacements.NotifyStates.Num());
 		for (const FAnimNotifyEvent& ExistingNotify : Montage->Notifies)
 		{
-			if (ParsedBody.NotifyPlacements.bHasNotifies && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(ExistingNotify))
+			if (ParsedBody.NotifyPlacements.bHasNotifies && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(ExistingNotify, Montage))
 			{
 				continue;
 			}
-			if (ParsedBody.NotifyPlacements.bHasNotifyStates && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(ExistingNotify))
+			if (ParsedBody.NotifyPlacements.bHasNotifyStates && FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(ExistingNotify, Montage))
 			{
 				continue;
 			}
