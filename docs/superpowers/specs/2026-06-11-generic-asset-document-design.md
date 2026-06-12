@@ -181,7 +181,20 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 这些值是否合法，必须由目标属性的反射类型决定，而不是由 `type` 字符串里的 subtype 决定。
 
-### 4.4 更新已有资产
+### 4.4 AssetDocument 字段命名
+
+AssetDocument 是 Agent-facing canonical JSON，不是人类友好 DSL。公开字段名必须稳定、完整、可被 schema 和 diagnostics 精确引用。
+
+命名规则：
+
+- 禁止为了省 token 或可读性发明缩写，例如 `AnimRef`、`SlotTracks`、`CompSections`、`Noti`；
+- 禁止为 UE 已有稳定字段发明短别名，例如用 `Slots` 代替 `SlotAnimTracks`，或用 `Animation` 代替 `AnimReference`；
+- `Properties` 下的 reflected property 默认使用 UE 反射属性名；
+- profile-owned `Body` 字段优先使用 UE 稳定结构/字段名；
+- 只有在 UE 字段已 deprecated、必须通过 lifecycle API 写入，或原字段不是安全 source-of-truth 时，才允许定义语义字段名；
+- 任何语义字段名都必须在 profile schema/template 中明确说明目标 UE 行为和拒绝直接使用原字段的原因。
+
+### 4.5 更新已有资产
 
 ```json
 {
@@ -197,7 +210,7 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 更新时 `Class` 可选。如果提供 `Class`，`AssetDocumentCompiler` / lifecycle adapter 应验证它与已有资产 class 兼容；如果不提供，则使用已有资产 class。
 
-### 4.5 Sidecar hook 行为
+### 4.6 Sidecar hook 行为
 
 第一版应注册 editor hook，使 sidecar 与 `.uasset` 一起移动：
 

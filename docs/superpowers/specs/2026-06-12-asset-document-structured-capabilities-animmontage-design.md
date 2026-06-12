@@ -190,6 +190,18 @@ capability map 只存在于 compiler 内部
 - `Definitions` 不拥有 UE package 生命周期，只是 AssetDocument 内部复用和 identity 语义；
 - compiler 必须检测循环引用，例如 `A -> B -> A`。
 
+#### Body/Profile 字段命名总则
+
+`Body` 和 profile schema 继承 AssetDocument 全局命名规则：禁止缩写、禁止短别名、禁止为了可读性重命名 UE 稳定字段。
+
+规则：
+
+- 如果 UE 稳定字段名可作为 source-of-truth，就直接使用完整字段名，例如 `SlotAnimTracks`、`AnimSegments`、`AnimReference`、`CompositeSections`；
+- 不使用 `Slots`、`Segments`、`Animation`、`Sections` 这类短别名；
+- Agent-facing JSON path 应尽量能让实现者直接定位到 UE 结构或 profile schema；
+- 只有 deprecated 字段、lifecycle API 字段、derived 字段或 unsafe raw field 才允许使用语义名；
+- 语义名必须在 profile schema 中写明它不是 UE 原字段，并说明 adapter 如何 materialize。
+
 ### 3.2 `Class` 字段
 
 本阶段延续第一阶段约束：
