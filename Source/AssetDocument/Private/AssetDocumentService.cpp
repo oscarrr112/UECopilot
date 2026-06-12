@@ -229,6 +229,7 @@ TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileRes
 	Payload->SetObjectField(TEXT("DocumentShape"), MakeGenericDocumentShape());
 	Payload->SetArrayField(TEXT("BodySections"), TArray<TSharedPtr<FJsonValue>>());
 	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+	Payload->SetArrayField(TEXT("InternalAdapters"), TArray<TSharedPtr<FJsonValue>>());
 	return Payload;
 }
 
@@ -245,6 +246,35 @@ TSharedRef<FJsonObject> MakeExactProfilePayload(const FAssetDocumentProfileResol
 	}
 	Payload->SetArrayField(TEXT("BodySections"), BodySections);
 	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+
+	TArray<TSharedPtr<FJsonValue>> InternalAdapters;
+	TSet<FName> SeenAdapterNames;
+	auto AddInternalAdapterNames = [&InternalAdapters, &SeenAdapterNames](const IAssetDocumentCapability* BodyAdapter)
+	{
+		if (!BodyAdapter)
+		{
+			return;
+		}
+
+		for (const FName& AdapterName : BodyAdapter->GetInternalAdapterNames())
+		{
+			if (!SeenAdapterNames.Contains(AdapterName))
+			{
+				SeenAdapterNames.Add(AdapterName);
+				InternalAdapters.Add(MakeShared<FJsonValueString>(AdapterName.ToString()));
+			}
+		}
+	};
+
+	if (const IAssetDocumentCapability* BodyAdapter = Resolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+	{
+		AddInternalAdapterNames(BodyAdapter);
+	}
+	for (const FName& BodyKey : Resolution.ExactProfile->GetBodyKeys())
+	{
+		AddInternalAdapterNames(Resolution.ExactProfile->ResolveBodyAdapter(BodyKey));
+	}
+	Payload->SetArrayField(TEXT("InternalAdapters"), InternalAdapters);
 	return Payload;
 }
 
@@ -288,6 +318,8 @@ void AddNamedValueEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& 
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
+	Entry->SetStringField(TEXT("status"), TEXT("unchanged"));
 	Entry->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
@@ -296,6 +328,8 @@ void AddChangedEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Nam
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
+	Entry->SetStringField(TEXT("status"), TEXT("changed"));
 	Entry->SetField(TEXT("before"), Before.IsValid() ? Before : MakeShared<FJsonValueNull>());
 	Entry->SetField(TEXT("after"), After.IsValid() ? After : MakeShared<FJsonValueNull>());
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
@@ -305,9 +339,57 @@ void AddReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
 	Entry->SetStringField(TEXT("code"), Code);
 	Entry->SetStringField(TEXT("message"), Message);
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void AddPathReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Path, const FString& Status, const FString& Code, const FString& Message)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), Path);
+	Entry->SetStringField(TEXT("status"), Status);
+	Entry->SetStringField(TEXT("code"), Code);
+	Entry->SetStringField(TEXT("message"), Message);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void RouteCapabilityDiffEntries(
+	const TArray<TSharedPtr<FJsonValue>>& Entries,
+	TArray<TSharedPtr<FJsonValue>>& Changed,
+	TArray<TSharedPtr<FJsonValue>>& Unchanged,
+	TArray<TSharedPtr<FJsonValue>>& Skipped,
+	TArray<TSharedPtr<FJsonValue>>& Failed)
+{
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		if (!EntryObject.IsValid())
+		{
+			Failed.Add(EntryValue.IsValid() ? EntryValue : MakeShared<FJsonValueNull>());
+			continue;
+		}
+
+		FString Status;
+		EntryObject->TryGetStringField(TEXT("status"), Status);
+		if (Status == TEXT("changed"))
+		{
+			Changed.Add(EntryValue);
+		}
+		else if (Status == TEXT("unchanged"))
+		{
+			Unchanged.Add(EntryValue);
+		}
+		else if (Status == TEXT("skipped"))
+		{
+			Skipped.Add(EntryValue);
+		}
+		else
+		{
+			Failed.Add(EntryValue);
+		}
+	}
 }
 
 FAssetDocumentResult MakeCapabilityValidationFailure(const FAssetDocumentCapabilityResult& CapabilityResult, const FString& Target, const FString& NormalizedFilePath)
@@ -1204,6 +1286,43 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 		else
 		{
 			AddChangedEntry(Changed, Pair.Key, BeforeValue, AfterValue);
+		}
+	}
+
+	const TSharedPtr<FJsonValue>* BodyValue = Document->Values.Find(TEXT("Body"));
+	if (BodyValue && BodyValue->IsValid())
+	{
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), Asset->GetClass());
+		const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile.IsValid()
+			? ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"))
+			: nullptr;
+		if (!BodyAdapter)
+		{
+			AddPathReasonEntry(Skipped, TEXT("/Body"), TEXT("skipped"), TEXT("MissingBodyAdapter"), TEXT("No AssetDocument Body adapter is registered for this asset class"));
+		}
+		else
+		{
+			const TSharedPtr<FJsonObject>* Definitions = nullptr;
+			Document->TryGetObjectField(TEXT("Definitions"), Definitions);
+
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = Asset;
+			CapabilityContext.AssetClass = Asset->GetClass();
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+			CapabilityContext.Definitions = Definitions;
+			CapabilityContext.bIsDryRun = true;
+
+			TArray<TSharedPtr<FJsonValue>> BodyDiffEntries;
+			const FAssetDocumentCapabilityResult BodyDiffResult = BodyAdapter->Diff(CapabilityContext, BodyValue->ToSharedRef(), BodyDiffEntries);
+			if (!BodyDiffResult.bSuccess)
+			{
+				AddPathReasonEntry(Failed, TEXT("/Body"), TEXT("failed"), BodyDiffResult.Diagnostics.Num() > 0 ? BodyDiffResult.Diagnostics[0].Code : TEXT("BodyDiffFailed"), BodyDiffResult.Message);
+			}
+			else
+			{
+				RouteCapabilityDiffEntries(BodyDiffEntries, Changed, Unchanged, Skipped, Failed);
+			}
 		}
 	}
 

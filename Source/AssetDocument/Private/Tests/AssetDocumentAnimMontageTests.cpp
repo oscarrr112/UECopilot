@@ -218,6 +218,29 @@ bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const
 	return false;
 }
 
+bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath, const FString& ExpectedStatus)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString Path;
+		FString Status;
+		if (Object->TryGetStringField(TEXT("path"), Path)
+			&& Object->TryGetStringField(TEXT("status"), Status)
+			&& Path == ExpectedPath
+			&& Status == ExpectedStatus)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool HasExpectedBodySections(const TArray<TSharedPtr<FJsonValue>>& BodySections)
 {
 	return JsonArrayContainsString(BodySections, TEXT("Skeleton"))
@@ -227,6 +250,15 @@ bool HasExpectedBodySections(const TArray<TSharedPtr<FJsonValue>>& BodySections)
 		&& JsonArrayContainsString(BodySections, TEXT("Notifies"))
 		&& JsonArrayContainsString(BodySections, TEXT("NotifyStates"))
 		&& JsonArrayContainsString(BodySections, TEXT("Blend"));
+}
+
+bool HasExpectedFragmentKinds(const TArray<TSharedPtr<FJsonValue>>& FragmentKinds)
+{
+	return JsonArrayContainsString(FragmentKinds, TEXT("AssetRef"))
+		&& JsonArrayContainsString(FragmentKinds, TEXT("ClassRef"))
+		&& JsonArrayContainsString(FragmentKinds, TEXT("StructValue"))
+		&& JsonArrayContainsString(FragmentKinds, TEXT("EmbeddedObject"))
+		&& JsonArrayContainsString(FragmentKinds, TEXT("DefinitionRef"));
 }
 
 int32 CountNotifyEventsByName(const UAnimMontage* Montage, FName NotifyName)
@@ -353,6 +385,14 @@ FAssetDocumentResult ApplyDocument(TSharedPtr<FJsonObject> Document)
 	Request.Document = Document;
 	Request.bSaveAsset = false;
 	return Service.Apply(Request);
+}
+
+FAssetDocumentResult DiffDocument(TSharedPtr<FJsonObject> Document)
+{
+	FAssetDocumentService Service;
+	FAssetDocumentDiffRequest Request;
+	Request.Document = Document;
+	return Service.Diff(Request);
 }
 
 bool ExpectInvalidValidate(
@@ -1125,6 +1165,59 @@ bool FAssetDocumentAnimMontageApplyDefinitionRefBodyTest::RunTest(const FString&
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageDiffReportsChangedBodySectionsTest,
+	"AssetFactory.AssetDocument.AnimMontage.DiffReportsChangedBodySections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageDiffReportsChangedBodySectionsTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_DiffBody"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DesiredDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TArray<TSharedPtr<FJsonValue>> SlotAnimTracks = DesiredDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("SlotAnimTracks"));
+
+	TSharedPtr<FJsonObject> ExtraSlot = MakeShared<FJsonObject>();
+	ExtraSlot->SetStringField(TEXT("SlotName"), TEXT("UpperBody"));
+	TSharedPtr<FJsonObject> ExtraAnimTrack = MakeShared<FJsonObject>();
+	ExtraAnimTrack->SetArrayField(TEXT("AnimSegments"), TArray<TSharedPtr<FJsonValue>>());
+	ExtraSlot->SetObjectField(TEXT("AnimTrack"), ExtraAnimTrack);
+	SlotAnimTracks.Add(MakeShared<FJsonValueObject>(ExtraSlot));
+	DesiredDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("SlotAnimTracks"), SlotAnimTracks);
+
+	const FAssetDocumentResult DiffResult = DiffDocument(DesiredDocument);
+	TestTrue(TEXT("Diff succeeds for changed AnimMontage Body"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Diff returns a payload"), DiffResult.Payload.IsValid());
+	if (!DiffResult.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("Diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TestTrue(TEXT("Diff reports changed SlotAnimTracks path"), Changed && JsonArrayContainsPathStatus(*Changed, TEXT("/Body/SlotAnimTracks"), TEXT("changed")));
+
+	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+	TestTrue(TEXT("Diff payload includes failed array"), DiffResult.Payload->TryGetArrayField(TEXT("failed"), Failed));
+	TestTrue(TEXT("Diff has no failed Body entries"), Failed && Failed->Num() == 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageInspectProfileTest,
 	"AssetFactory.AssetDocument.AnimMontage.InspectProfile",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1149,6 +1242,21 @@ bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Paramet
 	{
 		TestTrue(TEXT("BodySections includes expected AnimMontage keys"), HasExpectedBodySections(*BodySections));
 		TestFalse(TEXT("BodySections does not expose extract-only skipped metadata"), JsonArrayContainsString(*BodySections, TEXT("_Skipped")));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FragmentKinds = nullptr;
+	TestTrue(TEXT("AnimMontage profile includes FragmentKinds"), Result.Payload->TryGetArrayField(TEXT("FragmentKinds"), FragmentKinds));
+	if (FragmentKinds)
+	{
+		TestTrue(TEXT("FragmentKinds includes expected AssetDocument fragment kinds"), HasExpectedFragmentKinds(*FragmentKinds));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* InternalAdapters = nullptr;
+	TestTrue(TEXT("AnimMontage profile includes internal adapters"), Result.Payload->TryGetArrayField(TEXT("InternalAdapters"), InternalAdapters));
+	if (InternalAdapters)
+	{
+		TestTrue(TEXT("InternalAdapters includes AnimMontage body adapter"), JsonArrayContainsString(*InternalAdapters, TEXT("AnimMontageBody")));
+		TestTrue(TEXT("InternalAdapters includes AnimMontage notify placement adapter"), JsonArrayContainsString(*InternalAdapters, TEXT("AnimMontageNotifyPlacementAdapter")));
 	}
 
 	return true;
@@ -1194,6 +1302,11 @@ bool FAssetDocumentAnimMontageCreateTemplateTest::RunTest(const FString& Paramet
 		TestTrue(TEXT("Body includes Notifies"), (*Body)->HasField(TEXT("Notifies")));
 		TestTrue(TEXT("Body includes NotifyStates"), (*Body)->HasField(TEXT("NotifyStates")));
 		TestTrue(TEXT("Body includes Blend"), (*Body)->HasField(TEXT("Blend")));
+		TestFalse(TEXT("Body does not include abbreviated Slots"), (*Body)->HasField(TEXT("Slots")));
+		TestFalse(TEXT("Body does not include abbreviated Segments"), (*Body)->HasField(TEXT("Segments")));
+		TestFalse(TEXT("Body does not include abbreviated Animation"), (*Body)->HasField(TEXT("Animation")));
+		TestFalse(TEXT("Body does not include abbreviated Sections"), (*Body)->HasField(TEXT("Sections")));
+		TestFalse(TEXT("Body does not include extract-only skipped metadata"), (*Body)->HasField(TEXT("_Skipped")));
 	}
 
 	return true;
@@ -1356,6 +1469,18 @@ bool FAssetDocumentAnimMontageRegisteredProfileSchemaTest::RunTest(const FString
 	if (!RegisteredProfiles)
 	{
 		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* AssetDocumentTools = nullptr;
+	TestTrue(TEXT("Schema includes asset_document_tools"), Result.Payload->TryGetArrayField(TEXT("asset_document_tools"), AssetDocumentTools));
+	if (AssetDocumentTools)
+	{
+		TestTrue(TEXT("Schema includes inspect_asset_document_profile"), JsonArrayContainsString(*AssetDocumentTools, TEXT("inspect_asset_document_profile")));
+		TestTrue(TEXT("Schema includes create_asset_document_template"), JsonArrayContainsString(*AssetDocumentTools, TEXT("create_asset_document_template")));
+		TestTrue(TEXT("Schema includes diff_asset_document"), JsonArrayContainsString(*AssetDocumentTools, TEXT("diff_asset_document")));
+		TestFalse(TEXT("Schema does not include asset-specific AnimMontage inspect tool"), JsonArrayContainsString(*AssetDocumentTools, TEXT("inspect_anim_montage_document")));
+		TestFalse(TEXT("Schema does not include asset-specific AnimMontage create tool"), JsonArrayContainsString(*AssetDocumentTools, TEXT("create_anim_montage_document")));
+		TestFalse(TEXT("Schema does not include asset-specific AnimMontage diff tool"), JsonArrayContainsString(*AssetDocumentTools, TEXT("diff_anim_montage_document")));
 	}
 
 	bool bFoundAnimMontageProfile = false;

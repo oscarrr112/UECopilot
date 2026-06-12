@@ -8,6 +8,8 @@
 #include "Animation/AnimMontage.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -23,6 +25,32 @@ bool IsKnownBodyKey(const FString& BodyKey)
 		}
 	}
 	return false;
+}
+
+FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
+{
+	TSharedPtr<FJsonObject> Wrapper = MakeShared<FJsonObject>();
+	Wrapper->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
+
+	FString JsonText;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+	FJsonSerializer::Serialize(Wrapper.ToSharedRef(), Writer);
+	return JsonText;
+}
+
+void AddBodyDiffEntry(
+	TArray<TSharedPtr<FJsonValue>>& Entries,
+	const FString& Path,
+	const FString& Status,
+	TSharedPtr<FJsonValue> Current,
+	TSharedPtr<FJsonValue> Desired)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), Path);
+	Entry->SetStringField(TEXT("status"), Status);
+	Entry->SetField(TEXT("current"), Current.IsValid() ? Current : MakeShared<FJsonValueNull>());
+	Entry->SetField(TEXT("desired"), Desired.IsValid() ? Desired : MakeShared<FJsonValueNull>());
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
 
 FString GetLegacyBodyKeyGuidance(const FString& BodyKey)
@@ -745,6 +773,14 @@ FName FAnimMontageAssetDocumentCapability::GetName() const
 	return TEXT("AnimMontageBody");
 }
 
+TArray<FName> FAnimMontageAssetDocumentCapability::GetInternalAdapterNames() const
+{
+	return {
+		TEXT("AnimMontageBody"),
+		TEXT("AnimMontageNotifyPlacementAdapter"),
+	};
+}
+
 int32 FAnimMontageAssetDocumentCapability::GetApplyOrder() const
 {
 	return 0;
@@ -1005,7 +1041,48 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage body diff is deferred"));
+	if (DesiredJson->Type != EJson::Object)
+	{
+		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
+	}
+
+	const TSharedPtr<FJsonObject> DesiredBody = DesiredJson->AsObject();
+	if (!DesiredBody.IsValid())
+	{
+		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
+	}
+
+	const FAssetDocumentCapabilityResult ValidateResult = ValidateBodyObject(Context, DesiredBody.ToSharedRef());
+	if (!ValidateResult.bSuccess)
+	{
+		return ValidateResult;
+	}
+
+	TSharedRef<FJsonObject> CurrentBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Extract(Context, CurrentBody);
+	if (!ExtractResult.bSuccess)
+	{
+		return ExtractResult;
+	}
+	CurrentBody->RemoveField(TEXT("_Skipped"));
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBody->Values)
+	{
+		if (Pair.Key == TEXT("_Skipped"))
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonValue>* CurrentValue = CurrentBody->Values.Find(Pair.Key);
+		const TSharedPtr<FJsonValue> Current = CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>();
+		const TSharedPtr<FJsonValue> Desired = Pair.Value.IsValid() ? Pair.Value : MakeShared<FJsonValueNull>();
+		const FString Status = JsonValueToComparableString(Current) == JsonValueToComparableString(Desired)
+			? TEXT("unchanged")
+			: TEXT("changed");
+		AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Status, Current, Desired);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage Body diffed"));
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBodyObject(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const

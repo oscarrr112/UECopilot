@@ -12,6 +12,7 @@ public:
 	static const TArray<FName>& GetCanonicalBodyKeys();
 
 	virtual FName GetName() const override;
+	virtual TArray<FName> GetInternalAdapterNames() const override;
 	virtual int32 GetApplyOrder() const override;
 	virtual bool SupportsAsset(const UObject* Asset) const override;
 	virtual bool SupportsClass(const UClass* AssetClass) const override;

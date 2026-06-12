@@ -71,6 +71,30 @@ test("buildVisibleTools returns the modern BSL-only catalog for generic", () => 
   assert.ok(!visibleTools.some((tool: Tool) => tool.name === "chat_completion"));
 });
 
+test("AssetDocument catalog exposes only generic AssetDocument tools", () => {
+  const visibleTools = buildVisibleTools(ALL_TOOLS, "codex") as Tool[];
+  const toolNames = visibleTools.map((tool: Tool) => tool.name);
+
+  for (const toolName of [
+    "inspect_asset_document_profile",
+    "create_asset_document_template",
+    "validate_asset_document",
+    "diff_asset_document",
+    "apply_asset_document",
+  ]) {
+    assert.ok(toolNames.includes(toolName), `${toolName} should be visible`);
+  }
+
+  for (const forbidden of [
+    "inspect_anim_montage_document",
+    "create_anim_montage_document",
+    "diff_anim_montage_document",
+    "apply_anim_montage_document",
+  ]) {
+    assert.ok(!toolNames.includes(forbidden), `${forbidden} should not be visible`);
+  }
+});
+
 test("Codex blueprint descriptions prefer the BSL path", () => {
   const visibleTools = buildVisibleTools(ALL_TOOLS, "codex") as Tool[];
   const tool = visibleTools.find((entry: Tool) => entry.name === "apply_blueprint_as_bsl");

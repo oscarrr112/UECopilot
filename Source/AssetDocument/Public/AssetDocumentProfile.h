@@ -63,6 +63,10 @@ public:
 	virtual ~IAssetDocumentCapability() = default;
 
 	virtual FName GetName() const = 0;
+	virtual TArray<FName> GetInternalAdapterNames() const
+	{
+		return {GetName()};
+	}
 	virtual int32 GetApplyOrder() const = 0;
 	virtual bool SupportsAsset(const UObject* Asset) const = 0;
 	virtual bool SupportsClass(const UClass* AssetClass) const = 0;

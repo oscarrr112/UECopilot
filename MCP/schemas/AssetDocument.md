@@ -11,7 +11,8 @@ AssetDocument is the generic asset sidecar format for reflected Unreal assets. I
   "Class": "/Script/AssetFactory.TestDataAsset",
   "Action": "CreateOrUpdate",
   "Definitions": {},
-  "Properties": {}
+  "Properties": {},
+  "Body": {}
 }
 ```
 
@@ -25,6 +26,89 @@ Structured template fields:
 - `Action`: Use `Create`, `Update`, or `CreateOrUpdate`.
 - `Definitions`: A map of reusable fragments keyed by stable names.
 - `Properties`: Reflected asset properties to set.
+- `Body`: Optional profile-specific structured sections. Use `inspect_asset_document_profile` to discover the sections for the target class.
+
+## Definitions
+
+`Definitions` is a document-local map of reusable fragments. Each key is a stable author-chosen identifier, and each value is a fragment object. Body sections and property values may refer to entries with `DefinitionRef` instead of repeating the same fragment.
+
+Example:
+
+```json
+{
+  "Definitions": {
+    "WalkAnim": {
+      "Kind": "AssetRef",
+      "Path": "/Game/Animations/AS_Walk.AS_Walk"
+    }
+  },
+  "Body": {
+    "SlotAnimTracks": [
+      {
+        "SlotName": "DefaultSlot",
+        "AnimTrack": {
+          "AnimSegments": [
+            {
+              "AnimReference": {
+                "Kind": "DefinitionRef",
+                "Id": "WalkAnim"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+## Fragment Kinds
+
+Supported generic fragment kinds:
+
+- `AssetRef`: References an existing asset by path.
+- `ClassRef`: References a class by native path, blueprint class path, or resolvable class name.
+- `StructValue`: Carries a reflected struct payload.
+- `EmbeddedObject`: Creates or updates an object owned by the asset being authored.
+- `DefinitionRef`: References an entry in `Definitions` by `Id`.
+
+Fragment validation and compilation are handled by Unreal-side adapters. MCP tools do not hardcode asset-specific fragment behavior.
+
+## Profile And Template Workflow
+
+Use the generic profile/template workflow for authoring:
+
+1. Call `inspect_asset_document_profile` with a class path or asset path.
+2. Read `DocumentShape`, `BodySections`, `FragmentKinds`, and `InternalAdapters` from the profile response.
+3. Call `create_asset_document_template` with the class and target path.
+4. Fill `Properties`, `Definitions`, and profile-specific `Body` sections.
+5. Use `validate_asset_document` and `diff_asset_document` before `apply_asset_document` or `apply_asset_document_file`.
+
+`extract_asset_document` is auxiliary. It is useful for inspecting an existing asset or creating a draft, but it is not required for authoring a new AssetDocument. Extracted `_Skipped` metadata is diagnostic/extract-only and must not be authored back into `Body`.
+
+## Body Naming Rule
+
+`Body` keys must use canonical Unreal/profile field names. Do not introduce abbreviations or short aliases.
+
+Use names such as `SlotAnimTracks`, `AnimSegments`, `AnimReference`, and `CompositeSections`. Do not use abbreviated keys such as `Slots`, `Segments`, `Animation`, or `Sections`.
+
+Unknown `Body` keys and extract-only keys such as `_Skipped` are rejected during validation for profile-owned bodies.
+
+## UAnimMontage Profile
+
+The `/Script/Engine.AnimMontage` profile owns the following `Body` keys:
+
+- `Skeleton`: `null` or `AssetRef<USkeleton>`.
+- `PreviewMesh`: `null` or `AssetRef<USkeletalMesh>`.
+- `SlotAnimTracks`: array of slot animation tracks.
+- `CompositeSections`: array of montage composite sections.
+- `Notifies`: array of anim notify placements.
+- `NotifyStates`: array of anim notify state placements.
+- `Blend`: object with blend timing fields.
+
+`SlotAnimTracks` entries use `SlotName` and `AnimTrack.AnimSegments`. Segment animation references use the canonical `AnimReference` field. Notify and notify-state placements use fragment objects so notify classes and embedded notify objects can be resolved dynamically.
+
+The profile's `InternalAdapters` include `AnimMontageBody` and `AnimMontageNotifyPlacementAdapter`.
 
 ## Legacy Reflected Apply Shape
 
