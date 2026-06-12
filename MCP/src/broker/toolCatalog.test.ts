@@ -25,6 +25,8 @@ test("buildVisibleTools returns shared asset tools, shared editor tools, and BSL
       "generate_assets",
       "get_asset_document_schema",
       "inspect_asset_document_target",
+      "inspect_asset_document_profile",
+      "create_asset_document_template",
       "validate_asset_document",
       "diff_asset_document",
       "extract_asset_document",

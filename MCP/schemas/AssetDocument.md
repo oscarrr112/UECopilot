@@ -68,11 +68,15 @@ Rule: no subtype in `type`. For arrays, maps, sets, structs, objects, soft refer
 
 - `get_asset_document_schema`: Reads this schema document from `MCP/schemas/AssetDocument.md`.
 - `inspect_asset_document_target`: Calls `GET /assetfactory/assetdocument/inspect?class_or_asset=...` to inspect writable reflected properties for a class or asset.
+- `inspect_asset_document_profile`: Calls `GET /assetfactory/assetdocument/profile?class_or_asset=...` to inspect the generic AssetDocument profile for a class or asset.
+- `create_asset_document_template`: Calls `POST /assetfactory/assetdocument/template` with `Class` and `Target` to create a canonical generic AssetDocument template.
 - `extract_asset_document`: Calls `POST /assetfactory/assetdocument/extract` and returns an AssetDocument draft for an existing asset.
 - `validate_asset_document`: Calls `POST /assetfactory/assetdocument/validate` for exactly one inline document or sidecar file path.
 - `diff_asset_document`: Calls `POST /assetfactory/assetdocument/diff` to compare exactly one inline document or sidecar file against the current asset state.
 - `apply_asset_document`: Calls `POST /assetfactory/assetdocument/apply` with an inline AssetDocument JSON object.
 - `apply_asset_document_file`: Calls `POST /assetfactory/assetdocument/apply-file` with a sidecar file path. The sidecar `Target` must match the path-derived `/Game` asset target; use `validate_asset_document` or `diff_asset_document` first when you need a preflight check.
+
+AssetDocument MCP tools are generic. Do not add asset-specific AssetDocument tools; use profile inspection and reflected schema data to discover capabilities for a class or asset.
 
 ## Tool Arguments
 
@@ -122,6 +126,23 @@ Inspect:
 ```json
 {
   "class_or_asset": "/Script/AssetFactory.TestDataAsset"
+}
+```
+
+Inspect profile:
+
+```json
+{
+  "class_or_asset": "/Script/AssetFactory.TestDataAsset"
+}
+```
+
+Create template:
+
+```json
+{
+  "class": "/Script/AssetFactory.TestDataAsset",
+  "target": "/Game/Data/DA_Test"
 }
 ```
 

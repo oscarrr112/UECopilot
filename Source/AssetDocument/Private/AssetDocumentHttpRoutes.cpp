@@ -130,23 +130,19 @@ void AddRouteDescriptor(TArray<TSharedPtr<FJsonValue>>& Routes, const FString& M
 	Routes.Add(MakeShared<FJsonValueObject>(Route));
 }
 
-TSharedPtr<FJsonObject> BuildSchemaResponse()
+TArray<TSharedPtr<FJsonValue>> BuildRouteDescriptors()
 {
 	TArray<TSharedPtr<FJsonValue>> Routes;
 	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/apply"), TEXT("Apply an AssetDocument JSON document"), true);
 	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/apply-file"), TEXT("Apply an AssetDocument sidecar file"), true);
 	AddRouteDescriptor(Routes, TEXT("GET"), TEXT("/assetfactory/assetdocument/schema"), TEXT("Describe AssetDocument HTTP routes"), false);
 	AddRouteDescriptor(Routes, TEXT("GET"), TEXT("/assetfactory/assetdocument/inspect"), TEXT("Inspect writable reflected properties for a class or asset"), false);
+	AddRouteDescriptor(Routes, TEXT("GET"), TEXT("/assetfactory/assetdocument/profile"), TEXT("Inspect the AssetDocument profile for a class or asset"), false);
+	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/template"), TEXT("Create a generic AssetDocument template"), true);
 	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/extract"), TEXT("Extract an asset as an AssetDocument JSON document"), true);
 	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/validate"), TEXT("Validate an AssetDocument JSON document or sidecar file"), true);
 	AddRouteDescriptor(Routes, TEXT("POST"), TEXT("/assetfactory/assetdocument/diff"), TEXT("Diff an AssetDocument JSON document or sidecar file against the current asset"), true);
-
-	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
-	Json->SetBoolField(TEXT("success"), true);
-	Json->SetNumberField(TEXT("schema_version"), 1);
-	Json->SetStringField(TEXT("asset_type"), TEXT("GenericAsset"));
-	Json->SetArrayField(TEXT("routes"), Routes);
-	return Json;
+	return Routes;
 }
 
 TSharedPtr<FJsonObject> MakeServiceUnavailableJson(int32& OutStatusCode)
@@ -220,8 +216,21 @@ TSharedPtr<FJsonObject> HandleApplyFile(const TSharedRef<FAssetDocumentService>&
 
 TSharedPtr<FJsonObject> HandleSchema(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
 {
-	OutStatusCode = 200;
-	return BuildSchemaResponse();
+	const FAssetDocumentResult Result = RunOnGameThread([Service]()
+	{
+		return Service->GetSchema();
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	if (!Result.IsSuccess() || !Result.Payload.IsValid())
+	{
+		return Result.ToJson();
+	}
+
+	TSharedPtr<FJsonObject> Json = Result.Payload;
+	Json->SetBoolField(TEXT("success"), true);
+	Json->SetArrayField(TEXT("routes"), BuildRouteDescriptors());
+	return Json;
 }
 
 TSharedPtr<FJsonObject> HandleInspect(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
@@ -236,6 +245,55 @@ TSharedPtr<FJsonObject> HandleInspect(const TSharedRef<FAssetDocumentService>& S
 	const FAssetDocumentResult Result = RunOnGameThread([Service, InspectRequest]()
 	{
 		return Service->Inspect(InspectRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleProfile(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	FAssetDocumentProfileRequest ProfileRequest;
+	if (!TryGetQueryParamAny(QueryParams, {TEXT("class_or_asset"), TEXT("ClassOrAsset"), TEXT("target"), TEXT("Target")}, ProfileRequest.ClassOrAsset) || ProfileRequest.ClassOrAsset.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("InspectProfile requires class_or_asset, ClassOrAsset, target, or Target"));
+	}
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, ProfileRequest]()
+	{
+		return Service->InspectProfile(ProfileRequest);
+	});
+
+	OutStatusCode = GetStatusCode(Result);
+	return Result.ToJson();
+}
+
+TSharedPtr<FJsonObject> HandleTemplate(const TSharedRef<FAssetDocumentService>& Service, const FString& RequestBody, const TMap<FString, FString>& QueryParams, int32& OutStatusCode)
+{
+	TSharedPtr<FJsonObject> Json;
+	FString Error;
+	if (!TryParseJsonBody(RequestBody, Json, Error))
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(Error);
+	}
+
+	FAssetDocumentTemplateRequest TemplateRequest;
+	if (!TryGetStringFieldAny(Json, {TEXT("Class"), TEXT("class")}, TemplateRequest.Class) || TemplateRequest.Class.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("CreateTemplate requires Class or class"));
+	}
+	if (!TryGetStringFieldAny(Json, {TEXT("Target"), TEXT("target")}, TemplateRequest.Target) || TemplateRequest.Target.IsEmpty())
+	{
+		OutStatusCode = 400;
+		return MakeErrorJson(TEXT("CreateTemplate requires Target or target"));
+	}
+
+	const FAssetDocumentResult Result = RunOnGameThread([Service, TemplateRequest]()
+	{
+		return Service->CreateTemplate(TemplateRequest);
 	});
 
 	OutStatusCode = GetStatusCode(Result);
@@ -358,6 +416,8 @@ void FAssetDocumentHttpRoutes::Register()
 	RegisterRoute(TEXT("/assetfactory/assetdocument/apply-file"), CreateServiceRouteHandler(Service, HandleApplyFile), TEXT("POST"), TEXT("Apply an AssetDocument sidecar file"), true, RouteHandles);
 	RegisterRoute(TEXT("/assetfactory/assetdocument/schema"), CreateServiceRouteHandler(Service, HandleSchema), TEXT("GET"), TEXT("Describe AssetDocument HTTP routes"), false, RouteHandles);
 	RegisterRoute(TEXT("/assetfactory/assetdocument/inspect"), CreateServiceRouteHandler(Service, HandleInspect), TEXT("GET"), TEXT("Inspect writable reflected properties for a class or asset"), false, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/profile"), CreateServiceRouteHandler(Service, HandleProfile), TEXT("GET"), TEXT("Inspect the AssetDocument profile for a class or asset"), false, RouteHandles);
+	RegisterRoute(TEXT("/assetfactory/assetdocument/template"), CreateServiceRouteHandler(Service, HandleTemplate), TEXT("POST"), TEXT("Create a generic AssetDocument template"), true, RouteHandles);
 	RegisterRoute(TEXT("/assetfactory/assetdocument/extract"), CreateServiceRouteHandler(Service, HandleExtract), TEXT("POST"), TEXT("Extract an asset as an AssetDocument JSON document"), true, RouteHandles);
 	RegisterRoute(TEXT("/assetfactory/assetdocument/validate"), CreateServiceRouteHandler(Service, HandleValidate), TEXT("POST"), TEXT("Validate an AssetDocument JSON document or sidecar file"), true, RouteHandles);
 	RegisterRoute(TEXT("/assetfactory/assetdocument/diff"), CreateServiceRouteHandler(Service, HandleDiff), TEXT("POST"), TEXT("Diff an AssetDocument JSON document or sidecar file against the current asset"), true, RouteHandles);

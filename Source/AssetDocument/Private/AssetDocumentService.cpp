@@ -14,6 +14,8 @@
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
 
+#include <initializer_list>
+
 namespace
 {
 FString NormalizeValidateFilePath(const FString& FilePath)
@@ -110,6 +112,122 @@ UObject* LoadAssetFromPackageOrObjectPath(const FString& PackageOrObjectPath)
 		Asset = LoadObject<UObject>(nullptr, *PackageOrObjectPath);
 	}
 	return Asset;
+}
+
+struct FAssetDocumentResolvedTarget
+{
+	UObject* Asset = nullptr;
+	UClass* Class = nullptr;
+	FString Target;
+	FString AssetPath;
+};
+
+FAssetDocumentResult ResolveClassOrAssetTarget(const FString& ClassOrAsset, const FString& OperationName, FAssetDocumentResolvedTarget& OutTarget)
+{
+	if (ClassOrAsset.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(FString::Printf(TEXT("%s requires a class name or asset path"), *OperationName));
+	}
+
+	OutTarget.Target = ClassOrAsset;
+
+	if (ClassOrAsset.StartsWith(TEXT("/Game/")))
+	{
+		OutTarget.Asset = LoadAssetFromPackageOrObjectPath(ClassOrAsset);
+		if (!OutTarget.Asset)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *ClassOrAsset));
+			Result.Target = ClassOrAsset;
+			Result.AssetPath = ToObjectPath(ClassOrAsset);
+			return Result;
+		}
+
+		OutTarget.Class = OutTarget.Asset->GetClass();
+		OutTarget.Target = NormalizeValidateTarget(ClassOrAsset);
+		OutTarget.AssetPath = OutTarget.Asset->GetPathName();
+		return FAssetDocumentResult::Success(TEXT("Resolved class or asset target"));
+	}
+
+	FString Error;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassOrAsset, OutTarget.Class, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = ClassOrAsset;
+		return Result;
+	}
+
+	return FAssetDocumentResult::Success(TEXT("Resolved class or asset target"));
+}
+
+FAssetDocumentResult ResolveClassTarget(const FString& ClassName, UClass*& OutClass)
+{
+	if (ClassName.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("CreateTemplate requires a class"));
+	}
+
+	FString Error;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassName, OutClass, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = ClassName;
+		return Result;
+	}
+
+	return FAssetDocumentResult::Success(TEXT("Resolved class target"));
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeStringArray(std::initializer_list<const TCHAR*> Values)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const TCHAR* Value : Values)
+	{
+		Result.Add(MakeShared<FJsonValueString>(Value));
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeFragmentKindArray()
+{
+	return MakeStringArray({
+		TEXT("AssetRef"),
+		TEXT("ClassRef"),
+		TEXT("StructValue"),
+		TEXT("EmbeddedObject"),
+		TEXT("DefinitionRef"),
+	});
+}
+
+TSharedRef<FJsonObject> MakeGenericDocumentShape()
+{
+	TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
+	Shape->SetStringField(TEXT("Definitions"), TEXT("map<string, Fragment>"));
+	Shape->SetStringField(TEXT("Properties"), TEXT("reflected CDO-diff properties"));
+	Shape->SetObjectField(TEXT("Body"), MakeShared<FJsonObject>());
+	return Shape;
+}
+
+struct FAssetDocumentProfileResolution
+{
+	UClass* Class = nullptr;
+	TSharedPtr<FJsonObject> ExactProfilePayload;
+};
+
+FAssetDocumentProfileResolution ResolveAssetDocumentProfile(UClass* Class)
+{
+	FAssetDocumentProfileResolution Resolution;
+	Resolution.Class = Class;
+	return Resolution;
+}
+
+TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileResolution& Resolution)
+{
+	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetStringField(TEXT("Class"), Resolution.Class ? Resolution.Class->GetPathName() : FString());
+	Payload->SetObjectField(TEXT("DocumentShape"), MakeGenericDocumentShape());
+	Payload->SetArrayField(TEXT("BodySections"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+	return Payload;
 }
 
 FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
@@ -481,54 +599,103 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectRequest& Request) const
 {
-	if (Request.ClassOrAsset.IsEmpty())
+	FAssetDocumentResolvedTarget ResolvedTarget;
+	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("Inspect"), ResolvedTarget);
+	if (!ResolveResult.IsSuccess())
 	{
-		return FAssetDocumentResult::Failure(TEXT("Inspect requires a class name or asset path"));
+		return ResolveResult;
 	}
 
-	UObject* Asset = nullptr;
-	UClass* Class = nullptr;
-	FString Target = Request.ClassOrAsset;
-	FString Error;
-
-	if (Request.ClassOrAsset.StartsWith(TEXT("/Game/")))
-	{
-		Asset = LoadAssetFromPackageOrObjectPath(Request.ClassOrAsset);
-		if (!Asset)
-		{
-			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Request.ClassOrAsset));
-			Result.Target = Request.ClassOrAsset;
-			Result.AssetPath = ToObjectPath(Request.ClassOrAsset);
-			return Result;
-		}
-		Class = Asset->GetClass();
-		Target = NormalizeValidateTarget(Request.ClassOrAsset);
-	}
-	else if (!FAssetDocumentClassResolver::ResolveClass(Request.ClassOrAsset, Class, Error))
-	{
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
-		Result.Target = Request.ClassOrAsset;
-		return Result;
-	}
-
-	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(Class, Asset);
+	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(ResolvedTarget.Class, ResolvedTarget.Asset);
 	if (!Payload.IsValid())
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Failed to inspect reflected properties"));
-		Result.Target = Target;
-		if (Asset)
-		{
-			Result.AssetPath = Asset->GetPathName();
-		}
+		Result.Target = ResolvedTarget.Target;
+		Result.AssetPath = ResolvedTarget.AssetPath;
 		return Result;
 	}
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument inspected"));
-	Result.Target = Target;
-	if (Asset)
+	Result.Target = ResolvedTarget.Target;
+	Result.AssetPath = ResolvedTarget.AssetPath;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::InspectProfile(const FAssetDocumentProfileRequest& Request) const
+{
+	FAssetDocumentResolvedTarget ResolvedTarget;
+	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("InspectProfile"), ResolvedTarget);
+	if (!ResolveResult.IsSuccess())
 	{
-		Result.AssetPath = Asset->GetPathName();
+		return ResolveResult;
 	}
+
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(ResolvedTarget.Class);
+	TSharedPtr<FJsonObject> Payload = ProfileResolution.ExactProfilePayload.IsValid()
+		? ProfileResolution.ExactProfilePayload
+		: MakeGenericProfilePayload(ProfileResolution);
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument profile inspected"));
+	Result.Target = ResolvedTarget.Target;
+	Result.AssetPath = ResolvedTarget.AssetPath;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::CreateTemplate(const FAssetDocumentTemplateRequest& Request) const
+{
+	if (Request.Target.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("CreateTemplate requires a target"));
+	}
+
+	UClass* ResolvedClass = nullptr;
+	FAssetDocumentResult ResolveResult = ResolveClassTarget(Request.Class, ResolvedClass);
+	if (!ResolveResult.IsSuccess())
+	{
+		return ResolveResult;
+	}
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetNumberField(TEXT("SchemaVersion"), 1);
+	Payload->SetStringField(TEXT("Target"), Request.Target);
+	Payload->SetStringField(TEXT("Class"), ResolvedClass->GetPathName());
+	Payload->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Payload->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Payload->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument template created"));
+	Result.Target = Request.Target;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::GetSchema() const
+{
+	TSharedPtr<FJsonObject> FieldNaming = MakeShared<FJsonObject>();
+	FieldNaming->SetBoolField(TEXT("ban_abbreviations"), true);
+	FieldNaming->SetBoolField(TEXT("use_ue_stable_field_names"), true);
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetNumberField(TEXT("schema_version"), 1);
+	Payload->SetStringField(TEXT("asset_type"), TEXT("GenericAsset"));
+	Payload->SetArrayField(TEXT("asset_document_tools"), MakeStringArray({
+		TEXT("get_asset_document_schema"),
+		TEXT("inspect_asset_document_target"),
+		TEXT("inspect_asset_document_profile"),
+		TEXT("create_asset_document_template"),
+		TEXT("extract_asset_document"),
+		TEXT("validate_asset_document"),
+		TEXT("diff_asset_document"),
+		TEXT("apply_asset_document"),
+		TEXT("apply_asset_document_file"),
+	}));
+	Payload->SetArrayField(TEXT("fragment_kinds"), MakeFragmentKindArray());
+	Payload->SetObjectField(TEXT("field_naming"), FieldNaming);
+	Payload->SetArrayField(TEXT("registered_profiles"), TArray<TSharedPtr<FJsonValue>>());
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument schema described"));
 	Result.Payload = Payload;
 	return Result;
 }

@@ -40,6 +40,17 @@ struct ASSETDOCUMENT_API FAssetDocumentInspectRequest
 	FString ClassOrAsset;
 };
 
+struct ASSETDOCUMENT_API FAssetDocumentProfileRequest
+{
+	FString ClassOrAsset;
+};
+
+struct ASSETDOCUMENT_API FAssetDocumentTemplateRequest
+{
+	FString Class;
+	FString Target;
+};
+
 struct ASSETDOCUMENT_API FAssetDocumentExtractRequest
 {
 	FString AssetPath;
