@@ -206,3 +206,24 @@ deferred 原因：
 - 不实现独立 `AnimNotify` / `AnimNotifyState` capability；
 - 不理解具体 AN/ANS class 的领域语义。
 
+但这两个字段需要保留后续桥接约束：
+
+```text
+AnimMontageCapability
+  -> AnimMontageNotifyTimelineAdapter
+    -> AssetDocumentInstancedObjectBuilder
+    -> future: AnimNotifyCapabilityBridge
+```
+
+第一版实现时应避免把 notify 逻辑直接散落在 Montage adapter 主流程中。至少要保留以下边界：
+
+- timeline placement：由 Montage notify timeline adapter 负责；
+- object creation：由 instanced object builder 负责；
+- class/properties schema：必须可被未来 AN/ANS capability 复用；
+- domain semantics：暂不实现，但未来通过 bridge 接入。
+
+后续清理条件：
+
+- 当独立 `AnimNotify` / `AnimNotifyState` capability 出现时，Montage 内嵌 notify 表达不应破坏；
+- 如果 richer schema 增加了 AN/ANS 专属字段，旧的 `NotifyClass` / `NotifyStateClass` + `Properties` 仍应能作为基础子集；
+- bridge 应提供从 Montage timeline event 到 AN/ANS object document 的转换点。

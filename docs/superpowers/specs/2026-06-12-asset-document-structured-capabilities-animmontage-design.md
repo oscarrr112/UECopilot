@@ -408,6 +408,23 @@ Notify / NotifyState 不是独立 deferred 项。第一版可以支持“完整�
 
 这需要新增一个很薄的 instanced object builder，但不需要新增一套 AN capability。它应复用现有动态 class load 和 property setter，而不是硬编码具体 notify 类型。
 
+同时，第一版必须给后续 AN/ANS 领域能力预留桥接点。推荐把 Montage 内的 notify 写入拆成两层：
+
+```text
+AnimMontageCapability
+  -> AnimMontageNotifyTimelineAdapter
+    -> AssetDocumentInstancedObjectBuilder
+    -> future: AnimNotifyCapabilityBridge
+```
+
+其中：
+
+- `AssetDocumentInstancedObjectBuilder` 只负责 class path、outer、实例化、反射属性 patch；
+- `AnimMontageNotifyTimelineAdapter` 只负责把 notify event / notify state event 放进 Montage timeline；
+- `AnimNotifyCapabilityBridge` 第一版可以不存在，但接口边界要留下；
+- 后续如果新增独立 `AnimNotify` / `AnimNotifyState` capability，应复用同一套 class/properties schema，而不是发明第二套 notify object 表达；
+- Montage 文档里的 `Notifies` / `NotifyStates` 应能迁移到未来 AN/ANS capability 的 richer schema。
+
 ### 5.2 UE 结构映射
 
 UE 5.7 相关结构：
@@ -826,6 +843,7 @@ MCP 测试需要覆盖：
 | `WidgetTree` | `UWidgetBlueprint` | tree / slots / style | 迁移 WidgetBlueprintGenerator 的动态经验 |
 | `MaterialGraph` | `UMaterial` | graph nodes/links | 可以先以 JSON workflow 表达 |
 | `NiagaraGraph` | Niagara assets | graph/modules | 需要更独立的图 DSL 或 workflow JSON |
+| `AnimNotifyBridge` | `UAnimNotify` / `UAnimNotifyState` | class / properties / domain semantics | 衔接 Montage timeline 内嵌对象和未来独立 AN/ANS capability |
 
 图资产不应该直接塞进 `Properties`。它们应该是 capability 下的 graph/workflow block，由图 adapter 负责解释。
 
@@ -840,7 +858,7 @@ implementation plan 建议拆成：
 2. **AnimMontage research + lifecycle**
    - 确认 UE 5.7 创建路径，完成 create/load/save。
 3. **AnimMontage apply**
-   - skeleton、preview mesh、slots、segments、sections、blend。
+   - skeleton、preview mesh、slots、segments、sections、blend、notify timeline adapter、instanced object builder。
 4. **Extract/diff/inspect**
    - capability schema hints、extract block、diff entries。
 5. **Sidecar watcher + MCP smoke**
