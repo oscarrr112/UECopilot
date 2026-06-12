@@ -3,6 +3,7 @@
 #include "Profiles/AnimMontageAssetDocumentCapability.h"
 
 #include "AssetDocumentFragmentCompiler.h"
+#include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
 #include "Dom/JsonValue.h"
@@ -130,6 +131,7 @@ struct FParsedAnimMontageBody
 	float CompositeLength = 0.0f;
 	bool bHasCompositeSections = false;
 	TArray<FCompositeSection> CompositeSections;
+	FAnimMontageNotifyPlacementResult NotifyPlacements;
 	bool bHasBlendInTime = false;
 	float BlendInTime = 0.0f;
 	bool bHasBlendOutTime = false;
@@ -206,6 +208,7 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 		RequireArray(TEXT("Notifies")),
 		RequireArray(TEXT("NotifyStates")),
 		RequireObject(TEXT("Blend")),
+		RequireObject(TEXT("_Skipped")),
 	};
 
 	for (const FAssetDocumentCapabilityResult& Result : Results)
@@ -689,6 +692,20 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 		return Result;
 	}
 
+	FAnimMontageNotifyPlacementAdapter NotifyPlacementAdapter;
+	if (bResolveFragments)
+	{
+		Result = NotifyPlacementAdapter.Compile(*Compiler, Context, Montage, BodyObject, OutParsed.NotifyPlacements);
+	}
+	else
+	{
+		Result = NotifyPlacementAdapter.Validate(Context, BodyObject);
+	}
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	return ParseBlend(BodyObject, OutParsed);
 }
 
@@ -720,6 +737,7 @@ const TArray<FName>& FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys()
 		TEXT("Notifies"),
 		TEXT("NotifyStates"),
 		TEXT("Blend"),
+		TEXT("_Skipped"),
 	};
 	return Keys;
 }
@@ -754,6 +772,7 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentCapability::GetSchemaHint() con
 	Schema->SetStringField(TEXT("Notifies"), TEXT("array<AnimNotifyPlacement>"));
 	Schema->SetStringField(TEXT("NotifyStates"), TEXT("array<AnimNotifyStatePlacement>"));
 	Schema->SetStringField(TEXT("Blend"), TEXT("object"));
+	Schema->SetStringField(TEXT("_Skipped"), TEXT("extract-only skipped metadata"));
 	return Schema;
 }
 
@@ -855,6 +874,29 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->CompositeSections = MoveTemp(ParsedBody.CompositeSections);
 	}
+	if (ParsedBody.NotifyPlacements.bHasNotifies || ParsedBody.NotifyPlacements.bHasNotifyStates)
+	{
+		TArray<FAnimNotifyEvent> UpdatedNotifies;
+		UpdatedNotifies.Reserve(Montage->Notifies.Num() + ParsedBody.NotifyPlacements.Notifies.Num() + ParsedBody.NotifyPlacements.NotifyStates.Num());
+		for (const FAnimNotifyEvent& ExistingNotify : Montage->Notifies)
+		{
+			if (ParsedBody.NotifyPlacements.bHasNotifies && ExistingNotify.Notify)
+			{
+				continue;
+			}
+			if (ParsedBody.NotifyPlacements.bHasNotifyStates && ExistingNotify.NotifyStateClass)
+			{
+				continue;
+			}
+			UpdatedNotifies.Add(ExistingNotify);
+		}
+
+		UpdatedNotifies.Append(ParsedBody.NotifyPlacements.Notifies);
+		UpdatedNotifies.Append(ParsedBody.NotifyPlacements.NotifyStates);
+		UpdatedNotifies.Sort();
+		Montage->Notifies = MoveTemp(UpdatedNotifies);
+		Montage->RefreshCacheData();
+	}
 	if (ParsedBody.bHasBlendInTime)
 	{
 		Montage->BlendIn.SetBlendTime(ParsedBody.BlendInTime);
@@ -948,6 +990,13 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 		CompositeSections.Add(MakeShared<FJsonValueObject>(SectionObject));
 	}
 	OutBodyJson->SetArrayField(TEXT("CompositeSections"), CompositeSections);
+
+	FAnimMontageNotifyPlacementAdapter NotifyPlacementAdapter;
+	FAssetDocumentCapabilityResult NotifyExtractResult = NotifyPlacementAdapter.Extract(Compiler, Montage, OutBodyJson);
+	if (!NotifyExtractResult.bSuccess)
+	{
+		return NotifyExtractResult;
+	}
 
 	TSharedRef<FJsonObject> Blend = MakeShared<FJsonObject>();
 	Blend->SetNumberField(TEXT("BlendInTime"), Montage->GetDefaultBlendInTime());

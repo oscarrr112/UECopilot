@@ -2,8 +2,11 @@
 
 #include "AssetDocumentService.h"
 
+#include "AssetFactoryNamedAnimNotifyState.h"
+
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
 #include "Engine/SkeletalMesh.h"
 #include "Generators/AnimSequenceGenerator.h"
 #include "Dom/JsonValue.h"
@@ -54,6 +57,13 @@ TSharedPtr<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath)
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("EmbeddedObject"));
 	Fragment->SetStringField(TEXT("Class"), ClassPath);
+	return Fragment;
+}
+
+TSharedPtr<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath, TSharedPtr<FJsonObject> Properties)
+{
+	TSharedPtr<FJsonObject> Fragment = MakeEmbeddedObjectRef(ClassPath);
+	Fragment->SetObjectField(TEXT("Properties"), Properties);
 	return Fragment;
 }
 
@@ -166,6 +176,21 @@ TSharedPtr<FJsonObject> GetCompositeSection(TSharedPtr<FJsonObject> Document, in
 {
 	const TArray<TSharedPtr<FJsonValue>>& CompositeSections = Document->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("CompositeSections"));
 	return CompositeSections[Index]->AsObject();
+}
+
+TSharedPtr<FJsonObject> MakeNotifyPlacement(double Time, TSharedPtr<FJsonObject> Object)
+{
+	TSharedPtr<FJsonObject> Placement = MakeShared<FJsonObject>();
+	Placement->SetNumberField(TEXT("Time"), Time);
+	Placement->SetObjectField(TEXT("Object"), Object);
+	return Placement;
+}
+
+TSharedPtr<FJsonObject> MakeNotifyStatePlacement(double Time, double Duration, TSharedPtr<FJsonObject> Object)
+{
+	TSharedPtr<FJsonObject> Placement = MakeNotifyPlacement(Time, Object);
+	Placement->SetNumberField(TEXT("Duration"), Duration);
+	return Placement;
 }
 
 bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& Expected)
@@ -377,6 +402,124 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageApplyNotifiesTest,
+	"AssetFactory.AssetDocument.AnimMontage.Apply.Notifies",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageApplyNotifiesTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_Notifies"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+
+	TArray<TSharedPtr<FJsonValue>> Notifies;
+	Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+		0.10,
+		MakeEmbeddedObjectRef(TEXT("/Script/Engine.AnimNotify")))));
+	Body->SetArrayField(TEXT("Notifies"), Notifies);
+
+	TArray<TSharedPtr<FJsonValue>> NotifyStates;
+	NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+		0.12,
+		0.05,
+		MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+	Body->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+
+	const FAssetDocumentResult Result = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for AnimMontage notifies"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const FAnimNotifyEvent* NotifyEvent = Montage->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
+	{
+		return Event.Notify && Event.Notify->IsA<UAnimNotify>();
+	});
+	TestNotNull(TEXT("Montage contains UAnimNotify event"), NotifyEvent);
+
+	const FAnimNotifyEvent* NotifyStateEvent = Montage->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
+	{
+		return Event.NotifyStateClass && Event.NotifyStateClass->IsA<UAssetFactoryNamedAnimNotifyState>();
+	});
+	TestNotNull(TEXT("Montage contains named UAnimNotifyState event"), NotifyStateEvent);
+	if (NotifyStateEvent)
+	{
+		TestTrue(TEXT("Notify state duration is positive"), NotifyStateEvent->GetDuration() > 0.0f);
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds for AnimMontage notifies"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns payload"), ExtractResult.Payload.IsValid());
+	if (ExtractResult.Payload.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+		TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+		if (ExtractedBody && ExtractedBody->IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ExtractedNotifies = nullptr;
+			TestTrue(TEXT("Extract includes Notifies"), (*ExtractedBody)->TryGetArrayField(TEXT("Notifies"), ExtractedNotifies));
+			TestTrue(TEXT("Extract has one notify"), ExtractedNotifies && ExtractedNotifies->Num() == 1);
+			if (ExtractedNotifies && ExtractedNotifies->Num() == 1)
+			{
+				const TSharedPtr<FJsonObject> ExtractedNotify = (*ExtractedNotifies)[0]->AsObject();
+				TestTrue(TEXT("Extracted notify is object"), ExtractedNotify.IsValid());
+				if (ExtractedNotify.IsValid())
+				{
+					TestEqual(TEXT("Extracted notify time"), ExtractedNotify->GetNumberField(TEXT("Time")), 0.10);
+					TestTrue(TEXT("Extracted notify has Object"), ExtractedNotify->HasTypedField<EJson::Object>(TEXT("Object")));
+				}
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* ExtractedNotifyStates = nullptr;
+			TestTrue(TEXT("Extract includes NotifyStates"), (*ExtractedBody)->TryGetArrayField(TEXT("NotifyStates"), ExtractedNotifyStates));
+			TestTrue(TEXT("Extract has one notify state"), ExtractedNotifyStates && ExtractedNotifyStates->Num() == 1);
+			if (ExtractedNotifyStates && ExtractedNotifyStates->Num() == 1)
+			{
+				const TSharedPtr<FJsonObject> ExtractedNotifyState = (*ExtractedNotifyStates)[0]->AsObject();
+				TestTrue(TEXT("Extracted notify state is object"), ExtractedNotifyState.IsValid());
+				if (ExtractedNotifyState.IsValid())
+				{
+					TestEqual(TEXT("Extracted notify state time"), ExtractedNotifyState->GetNumberField(TEXT("Time")), 0.12);
+					TestTrue(TEXT("Extracted notify state duration is positive"), ExtractedNotifyState->GetNumberField(TEXT("Duration")) > 0.0);
+					TestTrue(TEXT("Extracted notify state has Object"), ExtractedNotifyState->HasTypedField<EJson::Object>(TEXT("Object")));
+				}
+			}
+
+			const TSharedPtr<FJsonObject>* Skipped = nullptr;
+			TestTrue(TEXT("Extract includes skipped metadata"), (*ExtractedBody)->TryGetObjectField(TEXT("_Skipped"), Skipped));
+			if (Skipped && Skipped->IsValid())
+			{
+				TestTrue(TEXT("Skipped metadata includes branching point note"), (*Skipped)->HasField(TEXT("BranchingPoints")));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest,
 	"AssetFactory.AssetDocument.AnimMontage.RejectsSemanticInvalidBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -450,6 +593,23 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 	{
 		GetCompositeSection(Document, 0)->SetStringField(TEXT("NextSectionName"), TEXT("Missing"));
 	}, TEXT("/Body/CompositeSections/0/NextSectionName"), TEXT("InvalidNextSectionName"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("NotifyState zero duration"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> NotifyStates;
+		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+			0.12,
+			0.0,
+			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+	}, TEXT("/Body/NotifyStates[0]/Duration"), TEXT("InvalidNotifyStateDuration"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify wrong base class"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TEXT("/Script/Engine.AnimNotifyState")))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/Object"), TEXT("embeddedobject-base-class-mismatch"));
 
 	return bAllCasesPassed;
 }
