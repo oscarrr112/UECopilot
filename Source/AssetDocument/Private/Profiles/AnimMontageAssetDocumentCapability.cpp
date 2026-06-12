@@ -100,6 +100,7 @@ FAssetDocumentCapabilityResult RequireArrayValue(const TSharedPtr<FJsonValue>& V
 
 FAssetDocumentCapabilityResult CompileObjectFragment(
 	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& CapabilityContext,
 	UAnimMontage* Montage,
 	const TSharedRef<FJsonObject>& Fragment,
 	UClass* ExpectedBaseClass,
@@ -110,20 +111,168 @@ FAssetDocumentCapabilityResult CompileObjectFragment(
 	FragmentContext.OwnerAsset = Montage;
 	FragmentContext.Outer = Montage;
 	FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
+	FragmentContext.Definitions = CapabilityContext.Definitions;
 	FragmentContext.JsonPath = JsonPath;
 
 	OutFragmentResult = Compiler.Compile(Fragment, FragmentContext);
 	return OutFragmentResult.bSuccess ? FAssetDocumentCapabilityResult::Success() : FragmentFailure(OutFragmentResult);
 }
 
-FAssetDocumentCapabilityResult ApplyObjectReference(
-	const FAssetDocumentFragmentCompiler& Compiler,
+struct FParsedAnimMontageBody
+{
+	bool bHasSkeleton = false;
+	USkeleton* Skeleton = nullptr;
+	bool bHasPreviewMesh = false;
+	USkeletalMesh* PreviewMesh = nullptr;
+	bool bHasSlotAnimTracks = false;
+	TArray<FSlotAnimationTrack> SlotAnimTracks;
+	float CompositeLength = 0.0f;
+	bool bHasCompositeSections = false;
+	TArray<FCompositeSection> CompositeSections;
+	bool bHasBlendInTime = false;
+	float BlendInTime = 0.0f;
+	bool bHasBlendOutTime = false;
+	float BlendOutTime = 0.0f;
+};
+
+FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObject>& BodyObject)
+{
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
+	{
+		const FString Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
+		const FString Guidance = GetLegacyBodyKeyGuidance(Pair.Key);
+		if (!Guidance.IsEmpty())
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Body key '%s' is not supported. %s"), *Pair.Key, *Guidance),
+				Path,
+				TEXT("DeprecatedBodyKey"));
+		}
+
+		if (!IsKnownBodyKey(Pair.Key))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Unknown AnimMontage Body key '%s'"), *Pair.Key),
+				Path,
+				TEXT("UnknownBodyKey"));
+		}
+	}
+
+	auto RequireNullOrObject = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
+	{
+		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
+		{
+			if (!IsNullOrObject(*Value))
+			{
+				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
+				return BodyFailure(FString::Printf(TEXT("Body.%s must be null or an object fragment"), FieldName), Path, TEXT("InvalidBodySectionType"));
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	auto RequireArray = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
+	{
+		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
+		{
+			if (!IsArray(*Value))
+			{
+				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
+				return BodyFailure(FString::Printf(TEXT("Body.%s must be an array"), FieldName), Path, TEXT("InvalidBodySectionType"));
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	auto RequireObject = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
+	{
+		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
+		{
+			if (!IsObject(*Value))
+			{
+				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
+				return BodyFailure(FString::Printf(TEXT("Body.%s must be an object"), FieldName), Path, TEXT("InvalidBodySectionType"));
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	const TArray<FAssetDocumentCapabilityResult> Results = {
+		RequireNullOrObject(TEXT("Skeleton")),
+		RequireNullOrObject(TEXT("PreviewMesh")),
+		RequireArray(TEXT("SlotAnimTracks")),
+		RequireArray(TEXT("CompositeSections")),
+		RequireArray(TEXT("Notifies")),
+		RequireArray(TEXT("NotifyStates")),
+		RequireObject(TEXT("Blend")),
+	};
+
+	for (const FAssetDocumentCapabilityResult& Result : Results)
+	{
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadOptionalNumber(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	bool& bOutHasValue,
+	double& OutValue)
+{
+	bOutHasValue = false;
+	if (const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName))
+	{
+		if (!Value->IsValid() || (*Value)->Type != EJson::Number)
+		{
+			return BodyFailure(FString::Printf(TEXT("%s must be a number"), FieldName), Path, TEXT("InvalidNumericField"));
+		}
+
+		bOutHasValue = true;
+		OutValue = (*Value)->AsNumber();
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadOptionalNonNegativeNumber(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	bool& bOutHasValue,
+	double& OutValue)
+{
+	const FAssetDocumentCapabilityResult Result = ReadOptionalNumber(Object, FieldName, Path, bOutHasValue, OutValue);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	if (bOutHasValue && OutValue < 0.0)
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be non-negative"), FieldName), Path, TEXT("InvalidTime"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseObjectReference(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
 	UAnimMontage* Montage,
 	const TSharedRef<FJsonObject>& BodyObject,
 	const TCHAR* FieldName,
 	UClass* ExpectedBaseClass,
-	TFunctionRef<void(UObject*)> ApplyObject)
+	bool bResolveFragments,
+	bool& bOutHasValue,
+	UObject*& OutObject)
 {
+	bOutHasValue = false;
+	OutObject = nullptr;
+
 	const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName);
 	if (!Value)
 	{
@@ -132,7 +281,7 @@ FAssetDocumentCapabilityResult ApplyObjectReference(
 
 	if (!Value->IsValid() || (*Value)->Type == EJson::Null)
 	{
-		ApplyObject(nullptr);
+		bOutHasValue = true;
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
@@ -144,26 +293,40 @@ FAssetDocumentCapabilityResult ApplyObjectReference(
 		return ObjectResult;
 	}
 
+	bOutHasValue = true;
+	if (!bResolveFragments)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!Compiler || !Montage)
+	{
+		return BodyFailure(TEXT("Fragment resolution requires an AnimMontage asset"), Path, TEXT("UnsupportedAsset"));
+	}
+
 	FAssetDocumentFragmentResult FragmentResult;
-	const FAssetDocumentCapabilityResult CompileResult = CompileObjectFragment(Compiler, Montage, FragmentObject.ToSharedRef(), ExpectedBaseClass, Path, FragmentResult);
+	const FAssetDocumentCapabilityResult CompileResult = CompileObjectFragment(*Compiler, Context, Montage, FragmentObject.ToSharedRef(), ExpectedBaseClass, Path, FragmentResult);
 	if (!CompileResult.bSuccess)
 	{
 		return CompileResult;
 	}
 
-	ApplyObject(FragmentResult.Object);
+	if (FragmentResult.Object && !FragmentResult.Object->IsA(ExpectedBaseClass))
+	{
+		return BodyFailure(FString::Printf(TEXT("%s did not resolve to %s"), FieldName, *ExpectedBaseClass->GetName()), Path, TEXT("InvalidObjectReference"));
+	}
+
+	OutObject = FragmentResult.Object;
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-bool TryGetNumber(const TSharedRef<FJsonObject>& Object, const TCHAR* FieldName, double& OutValue)
-{
-	return Object->TryGetNumberField(FieldName, OutValue);
-}
-
-FAssetDocumentCapabilityResult ApplySlotAnimTracks(
-	const FAssetDocumentFragmentCompiler& Compiler,
+FAssetDocumentCapabilityResult ParseSlotAnimTracks(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
 	UAnimMontage* Montage,
-	const TSharedRef<FJsonObject>& BodyObject)
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool bResolveFragments,
+	FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* SlotAnimTracksValue = BodyObject->Values.Find(TEXT("SlotAnimTracks"));
 	if (!SlotAnimTracksValue)
@@ -228,53 +391,72 @@ FAssetDocumentCapabilityResult ApplySlotAnimTracks(
 				return BodyFailure(TEXT("AnimSegment requires AnimReference fragment"), SegmentPath / TEXT("AnimReference"), TEXT("MissingAnimReference"));
 			}
 
-			FAssetDocumentFragmentResult AnimReferenceResult;
-			FAssetDocumentCapabilityResult CompileResult = CompileObjectFragment(
-				Compiler,
-				Montage,
-				AnimReferenceObject->ToSharedRef(),
-				UAnimSequenceBase::StaticClass(),
-				SegmentPath / TEXT("AnimReference"),
-				AnimReferenceResult);
-			if (!CompileResult.bSuccess)
-			{
-				return CompileResult;
-			}
-
-			UAnimSequenceBase* AnimReference = Cast<UAnimSequenceBase>(AnimReferenceResult.Object);
-			if (!AnimReference)
-			{
-				return BodyFailure(TEXT("AnimReference did not resolve to UAnimSequenceBase"), SegmentPath / TEXT("AnimReference"), TEXT("InvalidAnimReference"));
-			}
-
 			FAnimSegment Segment;
-			Segment.SetAnimReference(AnimReference);
 
 			double NumberValue = 0.0;
-			if (TryGetNumber(SegmentObject.ToSharedRef(), TEXT("StartPos"), NumberValue))
+			bool bHasNumber = false;
+			FAssetDocumentCapabilityResult NumberResult = ReadOptionalNonNegativeNumber(SegmentObject.ToSharedRef(), TEXT("StartPos"), SegmentPath / TEXT("StartPos"), bHasNumber, NumberValue);
+			if (!NumberResult.bSuccess)
+			{
+				return NumberResult;
+			}
+			if (bHasNumber)
 			{
 				Segment.StartPos = static_cast<float>(NumberValue);
 			}
-			if (TryGetNumber(SegmentObject.ToSharedRef(), TEXT("AnimStartTime"), NumberValue))
+
+			NumberResult = ReadOptionalNonNegativeNumber(SegmentObject.ToSharedRef(), TEXT("AnimStartTime"), SegmentPath / TEXT("AnimStartTime"), bHasNumber, NumberValue);
+			if (!NumberResult.bSuccess)
+			{
+				return NumberResult;
+			}
+			if (bHasNumber)
 			{
 				Segment.AnimStartTime = static_cast<float>(NumberValue);
 			}
-			if (TryGetNumber(SegmentObject.ToSharedRef(), TEXT("AnimEndTime"), NumberValue))
+
+			NumberResult = ReadOptionalNonNegativeNumber(SegmentObject.ToSharedRef(), TEXT("AnimEndTime"), SegmentPath / TEXT("AnimEndTime"), bHasNumber, NumberValue);
+			if (!NumberResult.bSuccess)
+			{
+				return NumberResult;
+			}
+			if (bHasNumber)
 			{
 				Segment.AnimEndTime = static_cast<float>(NumberValue);
 			}
-			if (TryGetNumber(SegmentObject.ToSharedRef(), TEXT("AnimPlayRate"), NumberValue))
+
+			NumberResult = ReadOptionalNumber(SegmentObject.ToSharedRef(), TEXT("AnimPlayRate"), SegmentPath / TEXT("AnimPlayRate"), bHasNumber, NumberValue);
+			if (!NumberResult.bSuccess)
 			{
+				return NumberResult;
+			}
+			if (bHasNumber)
+			{
+				if (NumberValue <= 0.0)
+				{
+					return BodyFailure(TEXT("AnimPlayRate must be greater than zero"), SegmentPath / TEXT("AnimPlayRate"), TEXT("InvalidAnimPlayRate"));
+				}
 				Segment.AnimPlayRate = static_cast<float>(NumberValue);
 			}
-			if (TryGetNumber(SegmentObject.ToSharedRef(), TEXT("LoopingCount"), NumberValue))
+
+			NumberResult = ReadOptionalNumber(SegmentObject.ToSharedRef(), TEXT("LoopingCount"), SegmentPath / TEXT("LoopingCount"), bHasNumber, NumberValue);
+			if (!NumberResult.bSuccess)
 			{
-				Segment.LoopingCount = static_cast<int32>(NumberValue);
+				return NumberResult;
+			}
+			if (bHasNumber)
+			{
+				const double RoundedLoopingCount = FMath::RoundToDouble(NumberValue);
+				if (NumberValue <= 0.0 || !FMath::IsNearlyEqual(NumberValue, RoundedLoopingCount))
+				{
+					return BodyFailure(TEXT("LoopingCount must be a positive integer"), SegmentPath / TEXT("LoopingCount"), TEXT("InvalidLoopingCount"));
+				}
+				Segment.LoopingCount = static_cast<int32>(RoundedLoopingCount);
 			}
 
-			if (FMath::IsNearlyZero(Segment.AnimPlayRate))
+			if (Segment.AnimPlayRate <= 0.0f)
 			{
-				return BodyFailure(TEXT("AnimPlayRate must not be zero"), SegmentPath / TEXT("AnimPlayRate"), TEXT("InvalidAnimPlayRate"));
+				return BodyFailure(TEXT("AnimPlayRate must be greater than zero"), SegmentPath / TEXT("AnimPlayRate"), TEXT("InvalidAnimPlayRate"));
 			}
 			if (Segment.LoopingCount <= 0)
 			{
@@ -285,6 +467,36 @@ FAssetDocumentCapabilityResult ApplySlotAnimTracks(
 				return BodyFailure(TEXT("AnimEndTime must be greater than or equal to AnimStartTime"), SegmentPath / TEXT("AnimEndTime"), TEXT("InvalidAnimEndTime"));
 			}
 
+			if (bResolveFragments)
+			{
+				if (!Compiler || !Montage)
+				{
+					return BodyFailure(TEXT("Fragment resolution requires an AnimMontage asset"), SegmentPath / TEXT("AnimReference"), TEXT("UnsupportedAsset"));
+				}
+
+				FAssetDocumentFragmentResult AnimReferenceResult;
+				FAssetDocumentCapabilityResult CompileResult = CompileObjectFragment(
+					*Compiler,
+					Context,
+					Montage,
+					AnimReferenceObject->ToSharedRef(),
+					UAnimSequenceBase::StaticClass(),
+					SegmentPath / TEXT("AnimReference"),
+					AnimReferenceResult);
+				if (!CompileResult.bSuccess)
+				{
+					return CompileResult;
+				}
+
+				UAnimSequenceBase* AnimReference = Cast<UAnimSequenceBase>(AnimReferenceResult.Object);
+				if (!AnimReference)
+				{
+					return BodyFailure(TEXT("AnimReference did not resolve to UAnimSequenceBase"), SegmentPath / TEXT("AnimReference"), TEXT("InvalidAnimReference"));
+				}
+
+				Segment.SetAnimReference(AnimReference);
+			}
+
 			CompositeLength = FMath::Max(CompositeLength, Segment.GetEndPos());
 			SlotAnimTrack.AnimTrack.AnimSegments.Add(Segment);
 		}
@@ -292,12 +504,13 @@ FAssetDocumentCapabilityResult ApplySlotAnimTracks(
 		NewSlotAnimTracks.Add(SlotAnimTrack);
 	}
 
-	Montage->SlotAnimTracks = MoveTemp(NewSlotAnimTracks);
-	Montage->SetCompositeLength(CompositeLength);
+	OutParsed.bHasSlotAnimTracks = true;
+	OutParsed.SlotAnimTracks = MoveTemp(NewSlotAnimTracks);
+	OutParsed.CompositeLength = CompositeLength;
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyCompositeSections(UAnimMontage* Montage, const TSharedRef<FJsonObject>& BodyObject)
+FAssetDocumentCapabilityResult ParseCompositeSections(const TSharedRef<FJsonObject>& BodyObject, FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* CompositeSectionsValue = BodyObject->Values.Find(TEXT("CompositeSections"));
 	if (!CompositeSectionsValue)
@@ -314,6 +527,7 @@ FAssetDocumentCapabilityResult ApplyCompositeSections(UAnimMontage* Montage, con
 
 	TArray<FCompositeSection> NewCompositeSections;
 	TSet<FName> SectionNames;
+	TMap<FName, FString> NextSectionPaths;
 
 	for (int32 SectionIndex = 0; SectionIndex < CompositeSectionsArray->Num(); ++SectionIndex)
 	{
@@ -330,6 +544,7 @@ FAssetDocumentCapabilityResult ApplyCompositeSections(UAnimMontage* Montage, con
 		{
 			return BodyFailure(TEXT("CompositeSection requires SectionName"), SectionPath / TEXT("SectionName"), TEXT("MissingSectionName"));
 		}
+		SectionNameString.TrimStartAndEndInline();
 
 		const FName SectionName(*SectionNameString);
 		if (SectionNames.Contains(SectionName))
@@ -340,15 +555,33 @@ FAssetDocumentCapabilityResult ApplyCompositeSections(UAnimMontage* Montage, con
 
 		FCompositeSection Section;
 		Section.SectionName = SectionName;
+
 		double LinkableTime = 0.0;
-		SectionObject->TryGetNumberField(TEXT("LinkableTime"), LinkableTime);
-		Section.Link(Montage, static_cast<float>(LinkableTime), 0);
+		bool bHasLinkableTime = false;
+		const FAssetDocumentCapabilityResult LinkableTimeResult = ReadOptionalNonNegativeNumber(SectionObject.ToSharedRef(), TEXT("LinkableTime"), SectionPath / TEXT("LinkableTime"), bHasLinkableTime, LinkableTime);
+		if (!LinkableTimeResult.bSuccess)
+		{
+			return LinkableTimeResult;
+		}
 		Section.SetTime(static_cast<float>(LinkableTime));
 
-		FString NextSectionNameString;
-		if (SectionObject->TryGetStringField(TEXT("NextSectionName"), NextSectionNameString) && !NextSectionNameString.TrimStartAndEnd().IsEmpty())
+		if (const TSharedPtr<FJsonValue>* NextSectionNameValue = SectionObject->Values.Find(TEXT("NextSectionName")))
 		{
+			const FString NextSectionNamePath = SectionPath / TEXT("NextSectionName");
+			if (!NextSectionNameValue->IsValid() || (*NextSectionNameValue)->Type != EJson::String)
+			{
+				return BodyFailure(TEXT("NextSectionName must be a non-empty string when present"), NextSectionNamePath, TEXT("InvalidNextSectionName"));
+			}
+
+			FString NextSectionNameString = (*NextSectionNameValue)->AsString();
+			NextSectionNameString.TrimStartAndEndInline();
+			if (NextSectionNameString.IsEmpty())
+			{
+				return BodyFailure(TEXT("NextSectionName must be a non-empty string when present"), NextSectionNamePath, TEXT("InvalidNextSectionName"));
+			}
+
 			Section.NextSectionName = FName(*NextSectionNameString);
+			NextSectionPaths.Add(Section.NextSectionName, NextSectionNamePath);
 		}
 
 		NewCompositeSections.Add(Section);
@@ -358,18 +591,20 @@ FAssetDocumentCapabilityResult ApplyCompositeSections(UAnimMontage* Montage, con
 	{
 		if (!Section.NextSectionName.IsNone() && !SectionNames.Contains(Section.NextSectionName))
 		{
+			const FString* NextSectionPath = NextSectionPaths.Find(Section.NextSectionName);
 			return BodyFailure(
 				FString::Printf(TEXT("NextSectionName '%s' does not reference an existing CompositeSection"), *Section.NextSectionName.ToString()),
-				TEXT("/Body/CompositeSections"),
+				NextSectionPath ? *NextSectionPath : TEXT("/Body/CompositeSections"),
 				TEXT("InvalidNextSectionName"));
 		}
 	}
 
-	Montage->CompositeSections = MoveTemp(NewCompositeSections);
+	OutParsed.bHasCompositeSections = true;
+	OutParsed.CompositeSections = MoveTemp(NewCompositeSections);
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyBlend(UAnimMontage* Montage, const TSharedRef<FJsonObject>& BodyObject)
+FAssetDocumentCapabilityResult ParseBlend(const TSharedRef<FJsonObject>& BodyObject, FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* BlendValue = BodyObject->Values.Find(TEXT("Blend"));
 	if (!BlendValue)
@@ -385,16 +620,75 @@ FAssetDocumentCapabilityResult ApplyBlend(UAnimMontage* Montage, const TSharedRe
 	}
 
 	double BlendTime = 0.0;
-	if (BlendObject->TryGetNumberField(TEXT("BlendInTime"), BlendTime))
+	bool bHasBlendTime = false;
+	FAssetDocumentCapabilityResult BlendTimeResult = ReadOptionalNonNegativeNumber(BlendObject.ToSharedRef(), TEXT("BlendInTime"), TEXT("/Body/Blend/BlendInTime"), bHasBlendTime, BlendTime);
+	if (!BlendTimeResult.bSuccess)
 	{
-		Montage->BlendIn.SetBlendTime(static_cast<float>(BlendTime));
+		return BlendTimeResult;
 	}
-	if (BlendObject->TryGetNumberField(TEXT("BlendOutTime"), BlendTime))
+	if (bHasBlendTime)
 	{
-		Montage->BlendOut.SetBlendTime(static_cast<float>(BlendTime));
+		OutParsed.bHasBlendInTime = true;
+		OutParsed.BlendInTime = static_cast<float>(BlendTime);
+	}
+
+	BlendTimeResult = ReadOptionalNonNegativeNumber(BlendObject.ToSharedRef(), TEXT("BlendOutTime"), TEXT("/Body/Blend/BlendOutTime"), bHasBlendTime, BlendTime);
+	if (!BlendTimeResult.bSuccess)
+	{
+		return BlendTimeResult;
+	}
+	if (bHasBlendTime)
+	{
+		OutParsed.bHasBlendOutTime = true;
+		OutParsed.BlendOutTime = static_cast<float>(BlendTime);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseAnimMontageBody(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimMontage* Montage,
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool bResolveFragments,
+	FParsedAnimMontageBody& OutParsed)
+{
+	FAssetDocumentCapabilityResult Result = ValidateBodyObjectShape(BodyObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UObject* SkeletonObject = nullptr;
+	Result = ParseObjectReference(Compiler, Context, Montage, BodyObject, TEXT("Skeleton"), USkeleton::StaticClass(), bResolveFragments, OutParsed.bHasSkeleton, SkeletonObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutParsed.Skeleton = Cast<USkeleton>(SkeletonObject);
+
+	UObject* PreviewMeshObject = nullptr;
+	Result = ParseObjectReference(Compiler, Context, Montage, BodyObject, TEXT("PreviewMesh"), USkeletalMesh::StaticClass(), bResolveFragments, OutParsed.bHasPreviewMesh, PreviewMeshObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutParsed.PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
+
+	Result = ParseSlotAnimTracks(Compiler, Context, Montage, BodyObject, bResolveFragments, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ParseCompositeSections(BodyObject, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	return ParseBlend(BodyObject, OutParsed);
 }
 
 FAssetDocumentCapabilityResult ExtractAssetRef(
@@ -480,7 +774,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Validate(con
 		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
 	}
 
-	return ValidateBodyObject(BodyObject.ToSharedRef());
+	return ValidateBodyObject(Context, BodyObject.ToSharedRef());
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
@@ -505,46 +799,37 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	FAssetDocumentFragmentCompiler Compiler;
 	Compiler.RegisterBuiltInAdapters();
 
-	FAssetDocumentCapabilityResult Result = ApplyObjectReference(
-		Compiler,
-		Montage,
-		BodyObject.ToSharedRef(),
-		TEXT("Skeleton"),
-		USkeleton::StaticClass(),
-		[Montage](UObject* Object)
-		{
-			Montage->SetSkeleton(Cast<USkeleton>(Object));
-		});
+	FParsedAnimMontageBody ParsedBody;
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, ParsedBody);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	Result = ApplyObjectReference(
-		Compiler,
-		Montage,
-		BodyObject.ToSharedRef(),
-		TEXT("PreviewMesh"),
-		USkeletalMesh::StaticClass(),
-		[Montage](UObject* Object)
-		{
-			Montage->SetPreviewMesh(Cast<USkeletalMesh>(Object), false);
-		});
-	if (!Result.bSuccess)
+	if (ParsedBody.bHasSkeleton)
 	{
-		return Result;
+		Montage->SetSkeleton(ParsedBody.Skeleton);
 	}
-
-	for (const FAssetDocumentCapabilityResult StepResult : {
-		ApplySlotAnimTracks(Compiler, Montage, BodyObject.ToSharedRef()),
-		ApplyCompositeSections(Montage, BodyObject.ToSharedRef()),
-		ApplyBlend(Montage, BodyObject.ToSharedRef()),
-	})
+	if (ParsedBody.bHasPreviewMesh)
 	{
-		if (!StepResult.bSuccess)
-		{
-			return StepResult;
-		}
+		Montage->SetPreviewMesh(ParsedBody.PreviewMesh, false);
+	}
+	if (ParsedBody.bHasSlotAnimTracks)
+	{
+		Montage->SlotAnimTracks = MoveTemp(ParsedBody.SlotAnimTracks);
+		Montage->SetCompositeLength(ParsedBody.CompositeLength);
+	}
+	if (ParsedBody.bHasCompositeSections)
+	{
+		Montage->CompositeSections = MoveTemp(ParsedBody.CompositeSections);
+	}
+	if (ParsedBody.bHasBlendInTime)
+	{
+		Montage->BlendIn.SetBlendTime(ParsedBody.BlendInTime);
+	}
+	if (ParsedBody.bHasBlendOutTime)
+	{
+		Montage->BlendOut.SetBlendTime(ParsedBody.BlendOutTime);
 	}
 
 	Montage->MarkPackageDirty();
@@ -645,82 +930,13 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage body diff is deferred"));
 }
 
-FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBodyObject(const TSharedRef<FJsonObject>& BodyObject) const
+FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBodyObject(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const
 {
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
+	FParsedAnimMontageBody ParsedBody;
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(nullptr, Context, nullptr, BodyObject, false, ParsedBody);
+	if (!Result.bSuccess)
 	{
-		const FString Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
-		const FString Guidance = GetLegacyBodyKeyGuidance(Pair.Key);
-		if (!Guidance.IsEmpty())
-		{
-			return BodyFailure(
-				FString::Printf(TEXT("Body key '%s' is not supported. %s"), *Pair.Key, *Guidance),
-				Path,
-				TEXT("DeprecatedBodyKey"));
-		}
-
-		if (!IsKnownBodyKey(Pair.Key))
-		{
-			return BodyFailure(
-				FString::Printf(TEXT("Unknown AnimMontage Body key '%s'"), *Pair.Key),
-				Path,
-				TEXT("UnknownBodyKey"));
-		}
-	}
-
-	auto RequireNullOrObject = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
-	{
-		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
-		{
-			if (!IsNullOrObject(*Value))
-			{
-				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
-				return BodyFailure(FString::Printf(TEXT("Body.%s must be null or an object fragment"), FieldName), Path, TEXT("InvalidBodySectionType"));
-			}
-		}
-		return FAssetDocumentCapabilityResult::Success();
-	};
-
-	auto RequireArray = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
-	{
-		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
-		{
-			if (!IsArray(*Value))
-			{
-				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
-				return BodyFailure(FString::Printf(TEXT("Body.%s must be an array"), FieldName), Path, TEXT("InvalidBodySectionType"));
-			}
-		}
-		return FAssetDocumentCapabilityResult::Success();
-	};
-
-	auto RequireObject = [&BodyObject](const TCHAR* FieldName) -> FAssetDocumentCapabilityResult
-	{
-		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName))
-		{
-			if (!IsObject(*Value))
-			{
-				const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
-				return BodyFailure(FString::Printf(TEXT("Body.%s must be an object"), FieldName), Path, TEXT("InvalidBodySectionType"));
-			}
-		}
-		return FAssetDocumentCapabilityResult::Success();
-	};
-
-	for (const FAssetDocumentCapabilityResult Result : {
-		RequireNullOrObject(TEXT("Skeleton")),
-		RequireNullOrObject(TEXT("PreviewMesh")),
-		RequireArray(TEXT("SlotAnimTracks")),
-		RequireArray(TEXT("CompositeSections")),
-		RequireArray(TEXT("Notifies")),
-		RequireArray(TEXT("NotifyStates")),
-		RequireObject(TEXT("Blend")),
-	})
-	{
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+		return Result;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage Body is valid"));

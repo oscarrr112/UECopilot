@@ -22,5 +22,5 @@ public:
 	virtual FAssetDocumentCapabilityResult Diff(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const override;
 
 private:
-	FAssetDocumentCapabilityResult ValidateBodyObject(const TSharedRef<FJsonObject>& BodyObject) const;
+	FAssetDocumentCapabilityResult ValidateBodyObject(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const;
 };

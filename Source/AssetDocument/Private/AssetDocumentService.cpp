@@ -402,9 +402,9 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		return MakeFailure(Error);
 	}
 
+	const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
 	if (Document->HasField(TEXT("Definitions")))
 	{
-		const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
 		if (!Document->TryGetObjectField(TEXT("Definitions"), DefinitionsPtr) || !DefinitionsPtr)
 		{
 			return MakeFailure(TEXT("Definitions must be a JSON object"));
@@ -458,6 +458,7 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		CapabilityContext.AssetClass = ResolvedClass;
 		CapabilityContext.TargetAssetPath = Target;
 		CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+		CapabilityContext.Definitions = DefinitionsPtr;
 		CapabilityContext.bIsDryRun = true;
 
 		const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Validate(CapabilityContext, BodyValue.ToSharedRef());
@@ -547,6 +548,8 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return FAssetDocumentResult::Failure(TEXT("Apply requires a JSON document"));
 	}
 
+	const FString NormalizedSourceDocumentPath = NormalizeValidateFilePath(Request.SourceDocumentPath);
+
 	double SchemaVersion = 0.0;
 	if (!Request.Document->TryGetNumberField(TEXT("SchemaVersion"), SchemaVersion) || SchemaVersion != 1.0)
 	{
@@ -614,6 +617,18 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
+	const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
+	if (Request.Document->HasField(TEXT("Definitions")))
+	{
+		if (!Request.Document->TryGetObjectField(TEXT("Definitions"), DefinitionsPtr) || !DefinitionsPtr)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Definitions must be a JSON object"));
+			Result.Target = Target;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			return Result;
+		}
+	}
+
 	TSharedPtr<FJsonObject> Properties;
 	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
 	if (Request.Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
@@ -626,6 +641,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PreflightResult.Message);
 		Result.Target = Target;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		Result.Diagnostics = PreflightResult.Diagnostics;
 		return Result;
 	}
@@ -636,6 +652,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		return Result;
 	}
 
@@ -646,6 +663,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		Result.Diagnostics = PropertyResult.Diagnostics;
 		return Result;
 	}
@@ -660,6 +678,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body is required when present"));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
 			Result.Diagnostics = Diagnostics;
 			return Result;
 		}
@@ -671,6 +690,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body must be a JSON object"));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
 			FAssetDocumentDiagnostic Diagnostic;
 			Diagnostic.Path = TEXT("/Body");
 			Diagnostic.Code = TEXT("InvalidBodyType");
@@ -687,6 +707,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
 			FAssetDocumentDiagnostic Diagnostic;
 			Diagnostic.Path = TEXT("/Body");
 			Diagnostic.Code = TEXT("MissingProfile");
@@ -706,6 +727,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 				FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Profile for class '%s' does not provide Body adapter for '%s'"), *ResolvedClass->GetPathName(), *Pair.Key));
 				Result.Target = Target;
 				Result.AssetPath = LifecycleResult.ObjectPath;
+				Result.SidecarFilePath = NormalizedSourceDocumentPath;
 				FAssetDocumentDiagnostic Diagnostic;
 				Diagnostic.Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
 				Diagnostic.Code = TEXT("MissingBodyAdapter");
@@ -732,14 +754,15 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			CapabilityContext.Asset = LifecycleResult.Asset;
 			CapabilityContext.AssetClass = ResolvedClass;
 			CapabilityContext.TargetAssetPath = Target;
-			CapabilityContext.SourceDocumentPath = FString();
+			CapabilityContext.SourceDocumentPath = NormalizedSourceDocumentPath;
+			CapabilityContext.Definitions = DefinitionsPtr;
 			CapabilityContext.bIsDryRun = false;
 
 			FAssetDocumentCapabilityResult CapabilityResult = const_cast<IAssetDocumentCapability*>(BodyAdapter)->Apply(CapabilityContext, BodyValue.ToSharedRef());
 			if (!CapabilityResult.bSuccess)
 			{
 				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
-				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, FString());
+				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedSourceDocumentPath);
 				Result.AssetPath = LifecycleResult.ObjectPath;
 				Result.Diagnostics.Insert(Diagnostics, 0);
 				return Result;
@@ -752,6 +775,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
 	Result.Target = Target;
 	Result.AssetPath = LifecycleResult.ObjectPath;
+	Result.SidecarFilePath = NormalizedSourceDocumentPath;
 	Result.Diagnostics = Diagnostics;
 	Result.bWroteSidecar = false;
 
@@ -769,6 +793,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
 			Result.Diagnostics = Diagnostics;
 			Result.bSavedAsset = false;
 			Result.bWroteSidecar = false;
@@ -812,6 +837,7 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 	FAssetDocumentApplyRequest ApplyRequest;
 	ApplyRequest.Document = Document;
+	ApplyRequest.SourceDocumentPath = NormalizedFilePath;
 	ApplyRequest.bSaveAsset = Request.bSaveAsset;
 	ApplyRequest.bWriteSidecar = false;
 

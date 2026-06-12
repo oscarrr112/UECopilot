@@ -22,6 +22,7 @@ struct ASSETDOCUMENT_API FAssetDocumentDiagnostic
 struct ASSETDOCUMENT_API FAssetDocumentApplyRequest
 {
 	TSharedPtr<FJsonObject> Document;
+	FString SourceDocumentPath;
 	bool bWriteSidecar = false;
 	bool bSaveAsset = true;
 };

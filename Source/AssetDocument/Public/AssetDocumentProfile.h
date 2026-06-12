@@ -20,6 +20,7 @@ struct ASSETDOCUMENT_API FAssetDocumentCapabilityContext
 	UClass* AssetClass = nullptr;
 	FString TargetAssetPath;
 	FString SourceDocumentPath;
+	const TSharedPtr<FJsonObject>* Definitions = nullptr;
 	bool bIsDryRun = false;
 	FAssetDocumentResult* Result = nullptr;
 };
