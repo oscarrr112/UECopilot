@@ -310,6 +310,19 @@ void AddReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
 
+FAssetDocumentResult MakeCapabilityValidationFailure(const FAssetDocumentCapabilityResult& CapabilityResult, const FString& Target, const FString& NormalizedFilePath)
+{
+	FAssetDocumentResult Result = FAssetDocumentResult::Failure(CapabilityResult.Message);
+	Result.Target = Target;
+	Result.SidecarFilePath = NormalizedFilePath;
+	Result.Diagnostics = CapabilityResult.Diagnostics;
+	if (CapabilityResult.Payload.IsValid())
+	{
+		Result.Payload = CapabilityResult.Payload;
+	}
+	return Result;
+}
+
 FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Document, const FString& NormalizedFilePath, bool bPreflightProperties)
 {
 	if (!Document.IsValid())
@@ -335,7 +348,7 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 	}
 
 	FString AssetType;
-	if (!Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	if (Document->TryGetStringField(TEXT("AssetType"), AssetType) && AssetType != TEXT("GenericAsset"))
 	{
 		return MakeFailure(TEXT("AssetType must be GenericAsset"));
 	}
@@ -381,6 +394,15 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		return MakeFailure(Error);
 	}
 
+	if (Document->HasField(TEXT("Definitions")))
+	{
+		const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
+		if (!Document->TryGetObjectField(TEXT("Definitions"), DefinitionsPtr) || !DefinitionsPtr)
+		{
+			return MakeFailure(TEXT("Definitions must be a JSON object"));
+		}
+	}
+
 	TSharedPtr<FJsonObject> Properties;
 	if (Document->HasField(TEXT("Properties")))
 	{
@@ -390,6 +412,51 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 			return MakeFailure(TEXT("Properties must be a JSON object"));
 		}
 		Properties = *PropertiesPtr;
+	}
+
+	if (Document->HasField(TEXT("Body")))
+	{
+		TSharedPtr<FJsonValue> BodyValue = Document->TryGetField(TEXT("Body"));
+		if (!BodyValue.IsValid())
+		{
+			return MakeFailure(TEXT("Body is required when present"));
+		}
+
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+		if (!ProfileResolution.ExactProfile.IsValid())
+		{
+			FAssetDocumentResult Result = MakeFailure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingProfile");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+		if (!BodyAdapter)
+		{
+			FAssetDocumentResult Result = MakeFailure(FString::Printf(TEXT("Profile for class '%s' does not provide Body validation"), *ResolvedClass->GetPathName()));
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingBodyAdapter");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		FAssetDocumentCapabilityContext CapabilityContext;
+		CapabilityContext.AssetClass = ResolvedClass;
+		CapabilityContext.TargetAssetPath = Target;
+		CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+		CapabilityContext.bIsDryRun = true;
+
+		const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Validate(CapabilityContext, BodyValue.ToSharedRef());
+		if (!CapabilityResult.bSuccess)
+		{
+			return MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedFilePath);
+		}
 	}
 
 	if (bPreflightProperties)
