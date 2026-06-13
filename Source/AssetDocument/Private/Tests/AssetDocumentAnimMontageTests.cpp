@@ -8,6 +8,7 @@
 #include "AssetDocumentSyncStateStore.h"
 #include "AssetFactoryNamedAnimNotifyState.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
+#include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequenceBase.h"
@@ -516,13 +517,25 @@ int32 CountNotifyEventsByObjectName(const UAnimMontage* Montage, const FString& 
 	return Count;
 }
 
-int32 CountNotifyEventsWithObjectPrefix(const UAnimMontage* Montage, const FString& ObjectPrefix)
+int32 CountManagedNotifyEvents(const UAnimMontage* Montage)
 {
 	int32 Count = 0;
 	for (const FAnimNotifyEvent& Event : Montage->Notifies)
 	{
-		const UObject* NotifyObject = Event.Notify ? static_cast<const UObject*>(Event.Notify) : static_cast<const UObject*>(Event.NotifyStateClass);
-		if (NotifyObject && NotifyObject->GetName().StartsWith(ObjectPrefix))
+		if (FAnimMontageNotifyPlacementAdapter::IsManagedNotifyEvent(Event, Montage))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+int32 CountManagedNotifyStateEvents(const UAnimMontage* Montage)
+{
+	int32 Count = 0;
+	for (const FAnimNotifyEvent& Event : Montage->Notifies)
+	{
+		if (FAnimMontageNotifyPlacementAdapter::IsManagedNotifyStateEvent(Event, Montage))
 		{
 			++Count;
 		}
@@ -534,6 +547,12 @@ UAnimNotify* CreateTestNotify(UAnimMontage* Montage, FName ObjectName = NAME_Non
 {
 	UClass* NotifyClass = StaticLoadClass(UAnimNotify::StaticClass(), nullptr, TestConcreteNotifyClassPath);
 	return NotifyClass ? NewObject<UAnimNotify>(Montage, NotifyClass, ObjectName, RF_Transactional) : nullptr;
+}
+
+UAnimNotify* CreateTestNotifyWithOuter(UObject* Outer, FName ObjectName)
+{
+	UClass* NotifyClass = StaticLoadClass(UAnimNotify::StaticClass(), nullptr, TestConcreteNotifyClassPath);
+	return NotifyClass ? NewObject<UAnimNotify>(Outer, NotifyClass, ObjectName, RF_Transactional) : nullptr;
 }
 
 void AddNotifyEvent(UAnimMontage* Montage, UAnimNotify* Notify, FName NotifyName, float Time)
@@ -1443,8 +1462,8 @@ bool FAssetDocumentAnimMontageApplyNotifiesPreservesUnmanagedTest::RunTest(const
 	TestEqual(TEXT("Unmanaged notify state is preserved"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
 	TestEqual(TEXT("Same-name manual notify is preserved"), CountNotifyEventsByObjectName(Montage, TEXT("ManualNotifyNameCollision")), 1);
 	TestEqual(TEXT("Same-name manual notify state is preserved"), CountNotifyEventsByObjectName(Montage, TEXT("ManualNotifyStateNameCollision")), 1);
-	TestEqual(TEXT("Managed notify is replaced without duplicate"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Managed notify state is replaced without duplicate"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Managed notify is replaced without duplicate"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Managed notify state is replaced without duplicate"), CountManagedNotifyStateEvents(Montage), 1);
 	const int32 CountAfterFirstApply = Montage->Notifies.Num();
 
 	const FAssetDocumentResult ReapplyResult = ApplyDocument(Document);
@@ -1460,8 +1479,8 @@ bool FAssetDocumentAnimMontageApplyNotifiesPreservesUnmanagedTest::RunTest(const
 	TestEqual(TEXT("Repeated apply keeps unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
 	TestEqual(TEXT("Repeated apply keeps same-name manual notify"), CountNotifyEventsByObjectName(Montage, TEXT("ManualNotifyNameCollision")), 1);
 	TestEqual(TEXT("Repeated apply keeps same-name manual notify state"), CountNotifyEventsByObjectName(Montage, TEXT("ManualNotifyStateNameCollision")), 1);
-	TestEqual(TEXT("Repeated apply keeps one managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Repeated apply keeps one managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Repeated apply keeps one managed notify"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Repeated apply keeps one managed notify state"), CountManagedNotifyStateEvents(Montage), 1);
 
 	return true;
 }
@@ -1502,8 +1521,34 @@ bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(
 
 	AddNotifyEvent(Montage, CreateTestNotify(Montage), FName(TEXT("Manual.Notify")), 0.02f);
 	AddNotifyStateEvent(Montage, NewObject<UAssetFactoryNamedAnimNotifyState>(Montage, NAME_None, RF_Transactional), FName(TEXT("Manual.NotifyState")), 0.04f, 0.02f);
-	TestEqual(TEXT("Initial managed notify exists"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Initial managed notify state exists"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	const FString WrongNameNotifyObjectName = MakeUniqueTestAssetName(TestManagedNotifyObjectPrefix);
+	const FString WrongOuterNotifyObjectName = MakeUniqueTestAssetName(TestManagedNotifyObjectPrefix);
+	const FString WrongNameNotifyStateObjectName = MakeUniqueTestAssetName(TestManagedNotifyStateObjectPrefix);
+	const FString WrongOuterNotifyStateObjectName = MakeUniqueTestAssetName(TestManagedNotifyStateObjectPrefix);
+	AddNotifyEvent(
+		Montage,
+		CreateTestNotify(Montage, FName(*WrongNameNotifyObjectName)),
+		FName(TEXT("Manual.ReservedPrefixNotify")),
+		0.06f);
+	AddNotifyEvent(
+		Montage,
+		CreateTestNotifyWithOuter(GetTransientPackage(), FName(*WrongOuterNotifyObjectName)),
+		TestManagedNotifyName,
+		0.07f);
+	AddNotifyStateEvent(
+		Montage,
+		NewObject<UAssetFactoryNamedAnimNotifyState>(Montage, FName(*WrongNameNotifyStateObjectName), RF_Transactional),
+		FName(TEXT("Manual.ReservedPrefixNotifyState")),
+		0.08f,
+		0.02f);
+	AddNotifyStateEvent(
+		Montage,
+		NewObject<UAssetFactoryNamedAnimNotifyState>(GetTransientPackage(), FName(*WrongOuterNotifyStateObjectName), RF_Transactional),
+		TestManagedNotifyStateName,
+		0.09f,
+		0.02f);
+	TestEqual(TEXT("Initial managed notify exists"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Initial managed notify state exists"), CountManagedNotifyStateEvents(Montage), 1);
 
 	TSharedPtr<FJsonObject> MissingNotifyRegionsDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	const FAssetDocumentResult MissingNotifyRegionsResult = ApplyDocument(MissingNotifyRegionsDocument);
@@ -1514,8 +1559,8 @@ bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(
 		return false;
 	}
 
-	TestEqual(TEXT("Missing Body.Notifies preserves managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Missing Body.NotifyStates preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Missing Body.Notifies preserves managed notify"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Missing Body.NotifyStates preserves managed notify state"), CountManagedNotifyStateEvents(Montage), 1);
 	TestEqual(TEXT("Missing notify regions preserve unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
 	TestEqual(TEXT("Missing notify regions preserve unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
 
@@ -1529,10 +1574,12 @@ bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(
 		return false;
 	}
 
-	TestEqual(TEXT("Empty Body.Notifies clears managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 0);
-	TestEqual(TEXT("Empty Body.Notifies preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Empty Body.Notifies clears managed notify"), CountManagedNotifyEvents(Montage), 0);
+	TestEqual(TEXT("Empty Body.Notifies preserves managed notify state"), CountManagedNotifyStateEvents(Montage), 1);
 	TestEqual(TEXT("Empty Body.Notifies preserves unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
 	TestEqual(TEXT("Empty Body.Notifies preserves unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
+	TestEqual(TEXT("Empty Body.Notifies preserves reserved-prefix notify with wrong NotifyName"), CountNotifyEventsByObjectName(Montage, WrongNameNotifyObjectName), 1);
+	TestEqual(TEXT("Empty Body.Notifies preserves reserved-prefix notify with wrong Outer"), CountNotifyEventsByObjectName(Montage, WrongOuterNotifyObjectName), 1);
 
 	TSharedPtr<FJsonObject> RebuildNotifiesDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	SetSingleManagedNotify(RebuildNotifiesDocument->GetObjectField(TEXT("Body")));
@@ -1544,8 +1591,10 @@ bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(
 		return false;
 	}
 
-	TestEqual(TEXT("Body.Notifies with values rebuilds managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Body.Notifies rebuild preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Body.Notifies with values rebuilds managed notify"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Body.Notifies rebuild preserves managed notify state"), CountManagedNotifyStateEvents(Montage), 1);
+	TestEqual(TEXT("Body.Notifies rebuild preserves reserved-prefix notify with wrong NotifyName"), CountNotifyEventsByObjectName(Montage, WrongNameNotifyObjectName), 1);
+	TestEqual(TEXT("Body.Notifies rebuild preserves reserved-prefix notify with wrong Outer"), CountNotifyEventsByObjectName(Montage, WrongOuterNotifyObjectName), 1);
 
 	TSharedPtr<FJsonObject> EmptyNotifyStatesDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	EmptyNotifyStatesDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), TArray<TSharedPtr<FJsonValue>>());
@@ -1557,10 +1606,12 @@ bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(
 		return false;
 	}
 
-	TestEqual(TEXT("Empty Body.NotifyStates preserves managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Empty Body.NotifyStates clears managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 0);
+	TestEqual(TEXT("Empty Body.NotifyStates preserves managed notify"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Empty Body.NotifyStates clears managed notify state"), CountManagedNotifyStateEvents(Montage), 0);
 	TestEqual(TEXT("Empty Body.NotifyStates preserves unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
 	TestEqual(TEXT("Empty Body.NotifyStates preserves unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
+	TestEqual(TEXT("Empty Body.NotifyStates preserves reserved-prefix notify state with wrong NotifyName"), CountNotifyEventsByObjectName(Montage, WrongNameNotifyStateObjectName), 1);
+	TestEqual(TEXT("Empty Body.NotifyStates preserves reserved-prefix notify state with wrong Outer"), CountNotifyEventsByObjectName(Montage, WrongOuterNotifyStateObjectName), 1);
 
 	return true;
 }
@@ -1661,8 +1712,8 @@ bool FAssetDocumentAnimMontageExtractSkipsUnmanagedNotifiesTest::RunTest(const F
 
 	TestEqual(TEXT("Reapply preserves unmanaged notify once"), CountNotifyEventsByObjectName(Montage, TEXT("ManualRoundtripNotify")), 1);
 	TestEqual(TEXT("Reapply preserves unmanaged notify state once"), CountNotifyEventsByObjectName(Montage, TEXT("ManualRoundtripNotifyState")), 1);
-	TestEqual(TEXT("Reapply keeps one managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
-	TestEqual(TEXT("Reapply keeps one managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Reapply keeps one managed notify"), CountManagedNotifyEvents(Montage), 1);
+	TestEqual(TEXT("Reapply keeps one managed notify state"), CountManagedNotifyStateEvents(Montage), 1);
 
 	return true;
 }
