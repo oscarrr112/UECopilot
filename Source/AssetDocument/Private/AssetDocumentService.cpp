@@ -3,6 +3,7 @@
 #include "AssetDocumentService.h"
 
 #include "AssetDocumentClassResolver.h"
+#include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
 #include "AssetDocumentPolicyRegistry.h"
@@ -267,6 +268,109 @@ FAssetDocumentProfileResolution ResolveAssetDocumentProfile(const FAssetDocument
 	Resolution.Class = Class;
 	Resolution.ExactProfile = Registry.FindForClass(Class);
 	return Resolution;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValuePreservingFields(const TSharedPtr<FJsonValue>& Value);
+
+TSharedRef<FJsonObject> CloneJsonObjectPreservingFields(const TSharedRef<FJsonObject>& Object)
+{
+	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		Clone->SetField(Pair.Key, CloneJsonValuePreservingFields(Pair.Value));
+	}
+	return Clone;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValuePreservingFields(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type == EJson::Null || Value->Type == EJson::None)
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::String:
+		return MakeShared<FJsonValueString>(Value->AsString());
+	case EJson::Number:
+		return MakeShared<FJsonValueNumber>(Value->AsNumber());
+	case EJson::Boolean:
+		return MakeShared<FJsonValueBoolean>(Value->AsBool());
+	case EJson::Array:
+		{
+			TArray<TSharedPtr<FJsonValue>> ClonedArray;
+			for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+			{
+				ClonedArray.Add(CloneJsonValuePreservingFields(Entry));
+			}
+			return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
+		}
+	case EJson::Object:
+		{
+			const TSharedPtr<FJsonObject> Object = Value->AsObject();
+			if (Object.IsValid())
+			{
+				return MakeShared<FJsonValueObject>(CloneJsonObjectPreservingFields(Object.ToSharedRef()));
+			}
+			return MakeShared<FJsonValueNull>();
+		}
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+bool ExtractAssetBodyEvidenceDocument(
+	UObject* Asset,
+	const TSharedRef<FJsonObject>& SidecarDocument,
+	const FString& SourceDocumentPath,
+	const FAssetDocumentProfileResolution& ProfileResolution,
+	TSharedRef<FJsonObject>& OutEvidenceDocument,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!Asset)
+	{
+		OutError = TEXT("Asset is required");
+		return false;
+	}
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		OutError = FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *Asset->GetClass()->GetPathName());
+		return false;
+	}
+
+	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+	if (!BodyAdapter)
+	{
+		OutError = TEXT("Exact AssetDocument profile has no Body adapter");
+		return false;
+	}
+
+	FString Target;
+	SidecarDocument->TryGetStringField(TEXT("Target"), Target);
+	Target = NormalizeValidateTarget(Target);
+	if (Target.IsEmpty())
+	{
+		Target = Asset->GetPathName();
+	}
+
+	TSharedRef<FJsonObject> EvidenceBody = MakeShared<FJsonObject>();
+	FAssetDocumentCapabilityContext CapabilityContext;
+	CapabilityContext.Asset = Asset;
+	CapabilityContext.AssetClass = Asset->GetClass();
+	CapabilityContext.TargetAssetPath = Target;
+	CapabilityContext.SourceDocumentPath = SourceDocumentPath;
+
+	const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(CapabilityContext, EvidenceBody);
+	if (!ExtractResult.bSuccess)
+	{
+		OutError = ExtractResult.Message.IsEmpty() ? TEXT("Failed to extract asset evidence") : ExtractResult.Message;
+		return false;
+	}
+
+	OutEvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
+	return true;
 }
 
 bool TryWriteApplyFileSyncState(
@@ -743,6 +847,136 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
 	return Result;
 }
+}
+
+FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
+	UObject* Asset,
+	const TSharedRef<FJsonObject>& SidecarDocument,
+	const TArray<FName>& RegionIds,
+	const FString& SourceDocumentPath)
+{
+	if (!Asset)
+	{
+		return FAssetDocumentResult::Failure(TEXT("RegenerateSidecarRegionsFromAsset requires an asset"));
+	}
+
+	if (RegionIds.Num() == 0)
+	{
+		return FAssetDocumentResult::Failure(TEXT("RegenerateSidecarRegionsFromAsset requires at least one region id"));
+	}
+
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+			FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *Asset->GetClass()->GetPathName()));
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	TArray<FAssetDocumentRegionPolicy> RequestedPolicies;
+	RequestedPolicies.Reserve(RegionIds.Num());
+	for (const FName& RegionId : RegionIds)
+	{
+		FAssetDocumentRegionPolicy Policy;
+		if (!ProfileResolution.ExactProfile->GetRegionPolicy(RegionId, Policy))
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Requested region '%s' is not declared by profile '%s'"), *RegionId.ToString(), *Asset->GetClass()->GetPathName()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		RequestedPolicies.Add(MoveTemp(Policy));
+	}
+
+	TSharedRef<FJsonObject> EvidenceDocument = MakeShared<FJsonObject>();
+	FString Error;
+	if (!ExtractAssetBodyEvidenceDocument(Asset, SidecarDocument, SourceDocumentPath, ProfileResolution, EvidenceDocument, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	FAssetDocumentSyncState SyncState;
+	if (!FAssetDocumentSyncStateStore::LoadFromDocumentJson(SidecarDocument, SyncState, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error.IsEmpty() ? TEXT("Malformed existing sync state") : Error);
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	TSharedRef<FJsonObject> StagedDocument = CloneJsonObjectPreservingFields(SidecarDocument);
+	SyncState.AssetObjectPath = Asset->GetPathName();
+	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+	TArray<TSharedPtr<FJsonValue>> RegeneratedRegionIds;
+	for (const FAssetDocumentRegionPolicy& Policy : RequestedPolicies)
+	{
+		const FAssetDocumentSidecarRegionValue EvidenceRegion = FAssetDocumentSidecarDelta::FindRegionValue(EvidenceDocument, Policy);
+		if (EvidenceRegion.State == EAssetDocumentSidecarRegionState::Unset)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Asset evidence for requested region '%s' is missing"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(EvidenceDocument, Policy);
+		if (AssetEvidenceHash.IsEmpty())
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Asset evidence hash is empty for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const TSharedPtr<FJsonValue> RegionValue = FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(EvidenceRegion.Value, &Policy);
+		if (!FAssetDocumentSidecarDelta::SetRegionValue(StagedDocument, Policy, RegionValue, Error))
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error.IsEmpty()
+				? FString::Printf(TEXT("Failed to set requested region '%s'"), *Policy.RegionId.ToString())
+				: Error);
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(StagedDocument, Policy);
+		if (SidecarHash.IsEmpty())
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Regenerated sidecar hash is empty for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+		if (SidecarHash != AssetEvidenceHash)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Regenerated sidecar hash differs from asset evidence hash for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		FAssetDocumentRegionSyncState RegionState;
+		RegionState.SidecarHash = SidecarHash;
+		RegionState.AssetEvidenceHash = AssetEvidenceHash;
+		RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+		FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+		RegeneratedRegionIds.Add(MakeShared<FJsonValueString>(Policy.RegionId.ToString()));
+	}
+
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(StagedDocument, SyncState);
+	SidecarDocument->Values = StagedDocument->Values;
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument sidecar regions regenerated from asset"));
+	Result.Target = NormalizeValidateTarget(Asset->GetPathName());
+	Result.AssetPath = Asset->GetPathName();
+	Result.SidecarFilePath = SourceDocumentPath;
+	Result.Payload = MakeShared<FJsonObject>();
+	Result.Payload->SetArrayField(TEXT("regenerated_regions"), MoveTemp(RegeneratedRegionIds));
+	return Result;
 }
 
 FAssetDocumentResult FAssetDocumentResult::Success(const FString& InMessage)

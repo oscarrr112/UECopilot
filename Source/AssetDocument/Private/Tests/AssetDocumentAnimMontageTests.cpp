@@ -4,6 +4,8 @@
 
 #include "AssetDocumentSidecar.h"
 #include "AssetDocumentSidecarDelta.h"
+#include "AssetDocumentSidecarSyncEngine.h"
+#include "AssetDocumentSyncStateStore.h"
 #include "AssetFactoryNamedAnimNotifyState.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 
@@ -19,6 +21,12 @@
 #include "Misc/PackageName.h"
 #include "Misc/ScopeExit.h"
 #include "UObject/UObjectIterator.h"
+
+FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
+	UObject* Asset,
+	const TSharedRef<FJsonObject>& SidecarDocument,
+	const TArray<FName>& RegionIds,
+	const FString& SourceDocumentPath);
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -630,6 +638,42 @@ bool ExpectExtractSyncRegion(
 	return true;
 }
 
+bool ExpectSyncRegionMatchesSidecar(
+	FAutomationTestBase* Test,
+	const TSharedRef<FJsonObject>& Document,
+	const FAssetDocumentRegionPolicy& Policy,
+	FAssetDocumentRegionSyncState& OutRegionState)
+{
+	FAssetDocumentSyncState SyncState;
+	FString Error;
+	const bool bLoaded = Test->TestTrue(
+		FString::Printf(TEXT("Loads sync state for %s"), *Policy.RegionId.ToString()),
+		FAssetDocumentSyncStateStore::LoadFromDocumentJson(Document, SyncState, Error));
+	if (!bLoaded)
+	{
+		Test->AddError(Error);
+		return false;
+	}
+
+	const FAssetDocumentRegionSyncState* RegionState = SyncState.Regions.Find(Policy.RegionId.ToString());
+	const bool bHasRegion = Test->TestNotNull(
+		FString::Printf(TEXT("Sync state includes %s"), *Policy.RegionId.ToString()),
+		RegionState);
+	if (!bHasRegion || !RegionState)
+	{
+		return false;
+	}
+
+	const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document, Policy);
+	Test->TestFalse(FString::Printf(TEXT("%s regenerated sidecar hash is non-empty"), *Policy.RegionId.ToString()), SidecarHash.IsEmpty());
+	Test->TestEqual(FString::Printf(TEXT("%s sync sidecarHash matches regenerated region"), *Policy.RegionId.ToString()), RegionState->SidecarHash, SidecarHash);
+	Test->TestEqual(FString::Printf(TEXT("%s sync assetEvidenceHash matches regenerated sidecar"), *Policy.RegionId.ToString()), RegionState->AssetEvidenceHash, RegionState->SidecarHash);
+	Test->TestFalse(FString::Printf(TEXT("%s lastSyncedAtUtc is updated"), *Policy.RegionId.ToString()), RegionState->LastSyncedAtUtc.IsEmpty());
+
+	OutRegionState = *RegionState;
+	return true;
+}
+
 bool ExpectInvalidValidate(
 	FAutomationTestBase* Test,
 	const FString& CaseName,
@@ -1008,6 +1052,187 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	{
 		TestFalse(TEXT("Failed ApplyFile leaves _meta.sync absent"), HasSyncRegions(ReloadedMismatchDocument));
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarSyncAcceptAssetRegeneratesManagedRegionTest,
+	"AssetFactory.AssetDocument.SidecarSync.AcceptAssetRegeneratesManagedRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarSyncAcceptAssetRegeneratesManagedRegionTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_AcceptAssetBlend"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Created AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds before accept asset"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns baseline sidecar"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	FAnimMontageAssetDocumentProfile Profile;
+	FAssetDocumentRegionPolicy BlendPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
+	FAssetDocumentRegionPolicy CompositeSectionsPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+
+	TSharedPtr<FJsonObject> SidecarDocument = ExtractResult.Payload;
+	SidecarDocument->SetStringField(TEXT("ManualTopLevelField"), TEXT("keep-me"));
+	SidecarDocument->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	SidecarDocument->GetObjectField(TEXT("Definitions"))->SetObjectField(TEXT("ManualDefinition"), MakeAssetRef(TestSkeletonPath));
+	SidecarDocument->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("ManualProperty"), TEXT("preserve"));
+
+	TArray<TSharedPtr<FJsonValue>> AuthoredCompositeSections;
+	TSharedPtr<FJsonObject> AuthoredSection = MakeShared<FJsonObject>();
+	AuthoredSection->SetStringField(TEXT("SectionName"), TEXT("AuthoredSidecarOnly"));
+	AuthoredSection->SetNumberField(TEXT("LinkableTime"), 0.11);
+	AuthoredCompositeSections.Add(MakeShared<FJsonValueObject>(AuthoredSection));
+	SidecarDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("CompositeSections"), AuthoredCompositeSections);
+	const FString CompositeSectionsHashBefore = FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), CompositeSectionsPolicy);
+
+	Montage->BlendIn.SetBlendTime(0.33f);
+	Montage->BlendOut.SetBlendTime(0.44f);
+
+	const FAssetDocumentResult RegenerateResult = RegenerateSidecarRegionsFromAsset(
+		Montage,
+		SidecarDocument.ToSharedRef(),
+		{TEXT("Body.Blend")},
+		FString());
+
+	TestTrue(TEXT("Accept asset regeneration succeeds"), RegenerateResult.IsSuccess());
+	if (!RegenerateResult.IsSuccess())
+	{
+		AddError(RegenerateResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* RegeneratedBlend = nullptr;
+	TestTrue(TEXT("Regenerated sidecar includes Body.Blend"), SidecarDocument->GetObjectField(TEXT("Body"))->TryGetObjectField(TEXT("Blend"), RegeneratedBlend));
+	if (RegeneratedBlend && RegeneratedBlend->IsValid())
+	{
+		TestTrue(TEXT("BlendInTime comes from changed asset"), FMath::IsNearlyEqual((*RegeneratedBlend)->GetNumberField(TEXT("BlendInTime")), 0.33, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("BlendOutTime comes from changed asset"), FMath::IsNearlyEqual((*RegeneratedBlend)->GetNumberField(TEXT("BlendOutTime")), 0.44, KINDA_SMALL_NUMBER));
+	}
+
+	TestEqual(TEXT("Manual top-level field is preserved"), SidecarDocument->GetStringField(TEXT("ManualTopLevelField")), FString(TEXT("keep-me")));
+	TestTrue(TEXT("Manual definition is preserved"), SidecarDocument->GetObjectField(TEXT("Definitions"))->HasTypedField<EJson::Object>(TEXT("ManualDefinition")));
+	TestEqual(TEXT("Manual Properties field is preserved"), SidecarDocument->GetObjectField(TEXT("Properties"))->GetStringField(TEXT("ManualProperty")), FString(TEXT("preserve")));
+	TestEqual(TEXT("Non-target Body.CompositeSections region is preserved"), FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), CompositeSectionsPolicy), CompositeSectionsHashBefore);
+
+	FAssetDocumentRegionSyncState BlendSyncState;
+	if (ExpectSyncRegionMatchesSidecar(this, SidecarDocument.ToSharedRef(), BlendPolicy, BlendSyncState))
+	{
+		const FString BlendHash = FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), BlendPolicy);
+		const FAssetDocumentRegionSyncDecision Decision = FAssetDocumentSidecarSyncEngine::DecideRegion(
+			TEXT("Body.Blend"),
+			BlendHash,
+			BlendHash,
+			&BlendSyncState);
+		TestEqual(TEXT("Updated sync state makes Body.Blend NoChange"), Decision.Direction, EAssetDocumentSyncDirection::NoChange);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarSyncAcceptAssetPreservesUnmanagedFieldsTest,
+	"AssetFactory.AssetDocument.SidecarSync.AcceptAssetPreservesUnmanagedFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarSyncAcceptAssetPreservesUnmanagedFieldsTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_AcceptAssetUnknown"));
+	const FAssetDocumentResult CreateResult = ApplyDocument(MakeStructuredMontageDocument(Target, AnimSequence->GetPathName()));
+	TestTrue(TEXT("Initial AnimMontage apply succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Created AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds before unknown accept asset"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns baseline sidecar"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> SidecarDocument = ExtractResult.Payload;
+	SidecarDocument->SetStringField(TEXT("ManualTopLevelField"), TEXT("keep-me"));
+
+	const FAssetDocumentResult RegenerateResult = RegenerateSidecarRegionsFromAsset(
+		Montage,
+		SidecarDocument.ToSharedRef(),
+		{TEXT("Body.UnknownRegion")},
+		FString());
+
+	TestFalse(TEXT("Unknown accept asset region fails"), RegenerateResult.IsSuccess());
+	TestTrue(TEXT("Unknown region failure mentions region id"), RegenerateResult.Message.Contains(TEXT("Body.UnknownRegion")));
+	TestEqual(TEXT("Failed regeneration preserves manual top-level field"), SidecarDocument->GetStringField(TEXT("ManualTopLevelField")), FString(TEXT("keep-me")));
+
+	SidecarDocument->SetStringField(TEXT("Body"), TEXT("not-an-object"));
+	const FAssetDocumentResult NonObjectBodyResult = RegenerateSidecarRegionsFromAsset(
+		Montage,
+		SidecarDocument.ToSharedRef(),
+		{TEXT("Body.Blend")},
+		FString());
+	TestFalse(TEXT("Non-object Body intermediate path fails"), NonObjectBodyResult.IsSuccess());
+	TestTrue(TEXT("Non-object Body failure reports path error"), NonObjectBodyResult.Message.Contains(TEXT("Body")) && NonObjectBodyResult.Message.Contains(TEXT("not an object")));
+	TestEqual(TEXT("Failed non-object regeneration preserves Body string"), SidecarDocument->GetStringField(TEXT("Body")), FString(TEXT("not-an-object")));
+	TestEqual(TEXT("Failed non-object regeneration preserves manual top-level field"), SidecarDocument->GetStringField(TEXT("ManualTopLevelField")), FString(TEXT("keep-me")));
 
 	return true;
 }
