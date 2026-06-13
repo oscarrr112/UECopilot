@@ -52,6 +52,21 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	}
 	TestTrue(TEXT("ProjectedBody has Skeleton"), ProjectedBody->HasField(TEXT("Skeleton")));
 	TestTrue(TEXT("ProjectedBody has PreviewMesh"), ProjectedBody->HasField(TEXT("PreviewMesh")));
+
+	const TSharedPtr<FJsonValue>* SkeletonValue = ProjectedBody->Values.Find(TEXT("Skeleton"));
+	TestTrue(TEXT("Skeleton field exists"), SkeletonValue && SkeletonValue->IsValid());
+	if (SkeletonValue && SkeletonValue->IsValid())
+	{
+		TestTrue(TEXT("Transient fixture emits null Skeleton"), (*SkeletonValue)->Type == EJson::Null);
+	}
+
+	const TSharedPtr<FJsonValue>* PreviewMeshValue = ProjectedBody->Values.Find(TEXT("PreviewMesh"));
+	TestTrue(TEXT("PreviewMesh field exists"), PreviewMeshValue && PreviewMeshValue->IsValid());
+	if (PreviewMeshValue && PreviewMeshValue->IsValid())
+	{
+		TestTrue(TEXT("Transient fixture emits null PreviewMesh"), (*PreviewMeshValue)->Type == EJson::Null);
+	}
+
 	TestTrue(TEXT("ProjectedBody has SlotAnimTracks"), ProjectedBody->HasField(TEXT("SlotAnimTracks")));
 	TestTrue(TEXT("ProjectedBody has CompositeSections"), ProjectedBody->HasField(TEXT("CompositeSections")));
 	TestTrue(TEXT("ProjectedBody has Notifies"), ProjectedBody->HasField(TEXT("Notifies")));
@@ -76,6 +91,26 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 				const TArray<TSharedPtr<FJsonValue>>* AnimSegments = nullptr;
 				TestTrue(TEXT("AnimSegments is an array"), (*AnimTrack)->TryGetArrayField(TEXT("AnimSegments"), AnimSegments));
 				TestEqual(TEXT("One anim segment is emitted"), AnimSegments ? AnimSegments->Num() : 0, 1);
+				if (AnimSegments && AnimSegments->Num() == 1)
+				{
+					const TSharedPtr<FJsonObject> SegmentObject = (*AnimSegments)[0]->AsObject();
+					TestTrue(TEXT("Anim segment object exists"), SegmentObject.IsValid());
+					if (SegmentObject.IsValid())
+					{
+						TestEqual(TEXT("Segment StartPos is projected"), SegmentObject->GetNumberField(TEXT("StartPos")), 0.0);
+						TestEqual(TEXT("Segment AnimStartTime is projected"), SegmentObject->GetNumberField(TEXT("AnimStartTime")), 0.0);
+						TestEqual(TEXT("Segment AnimEndTime is projected"), SegmentObject->GetNumberField(TEXT("AnimEndTime")), 1.0);
+						TestEqual(TEXT("Segment AnimPlayRate is projected"), SegmentObject->GetNumberField(TEXT("AnimPlayRate")), 1.0);
+						TestEqual(TEXT("Segment LoopingCount is projected"), SegmentObject->GetNumberField(TEXT("LoopingCount")), 1.0);
+
+						const TSharedPtr<FJsonValue>* AnimReferenceValue = SegmentObject->Values.Find(TEXT("AnimReference"));
+						TestTrue(TEXT("AnimReference field exists"), AnimReferenceValue && AnimReferenceValue->IsValid());
+						if (AnimReferenceValue && AnimReferenceValue->IsValid())
+						{
+							TestTrue(TEXT("Transient fixture emits null AnimReference"), (*AnimReferenceValue)->Type == EJson::Null);
+						}
+					}
+				}
 			}
 		}
 	}
