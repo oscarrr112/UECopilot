@@ -909,6 +909,54 @@ npm test
   - asset 端修改后 `accept asset` 能更新 sidecar managed region
   - sidecar 与 asset 同时修改时报告 conflict，不自动 merge
 
+### 执行记录（2026-06-14）
+
+- `git status --short`：Task 12 开始前工作区无无关 dirty diff。
+- UBT 使用 validation host，避免真实项目同名插件 shadowing：
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload
+```
+
+结果：`Target is up to date`，`Result: Succeeded`。
+
+- MCP/schema 测试：
+
+```powershell
+Set-Location E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec/MCP
+npm test
+```
+
+结果：`node --test dist/broker/*.test.js` 通过，`39` tests passed，`0` failed。
+
+- Automation 使用 validation host：
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -NoSound -NoSplash -ExecCmds="Automation RunTests AssetFactory.AssetDocument; Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/Automation/AssetDocumentTask12All"
+```
+
+结果：report `C:/AVH1/Saved/Automation/AssetDocumentTask12All/index.json`，`50` succeeded，`6` succeeded with warnings，`0` failed，`0` not run。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -NoSound -NoSplash -ExecCmds="Automation RunTests AssetDocument; Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/Automation/AssetDocumentTask12Bare"
+```
+
+结果：report `C:/AVH1/Saved/Automation/AssetDocumentTask12Bare/index.json`，`85` succeeded，`6` succeeded with warnings，`0` failed，`0` not run。覆盖 `AssetDocument.Policy.*`、`AssetDocument.CanonicalJson.*`、`AssetDocument.SyncState.*`、`AssetDocument.SidecarDelta.*`、`AssetDocument.SidecarSync.*`，并包含 `AssetFactory.AssetDocument.AnimMontage.*`、`AssetFactory.AssetDocument.SidecarSync.*` 等集成测试。
+
+- 真实 AnimMontage smoke asset：
+  - 创建/复制的真实资产路径：`/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`。
+  - 磁盘文件：`C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.uasset`。
+  - 资产来自 validation host 中已有的 `AM_StructuredBodyDemo` 复制件，class 确认为 `AnimMontage`。
+  - HTTP server：后台启动 `UnrealEditor.exe C:/AVH1/AVH1.uproject -Unattended -NullRHI -NoSound -NoSplash`，`GET http://127.0.0.1:8559/assetfactory/health` 返回 `status=ok`、`subsystemAvailable=true`。
+  - `POST /assetfactory/assetdocument/extract` 对 `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke` 成功，输出保存到 `C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json`。提取 payload 包含 `_meta.sync`，region 包含 `Body.Blend`、`Body.CompositeSections`、`Body.Notifies`、`Body.NotifyStates`、`Body.SlotAnimTracks`。
+  - 将 sidecar 放到 uasset 同目录：`C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json`。删除 extract-only 的 `Body._Skipped` 后，把 `Body.Blend.BlendInTime` 改为 `0.5`，`Body.Blend.BlendOutTime` 改为 `0.25`。
+  - `POST /assetfactory/assetdocument/apply-file` 成功：`success=true`、`saved_asset=true`、`wrote_sidecar=true`。
+  - 再次 `extract` 确认真实 uasset 当前值为 `BlendInTime=0.5`、`BlendOutTime=0.25`，输出保存到 `C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.after-exact-apply.assetdoc.json`。
+  - `POST /assetfactory/assetdocument/diff` 使用同目录 sidecar 返回 `success=true`，`payload.changed` 为空，结果保存到 `C:/AVH1/Saved/AssetDocumentSmoke/diff-after-exact-apply.json`。
+  - 说明：第一次 smoke 使用 `0.35/0.45` 时 apply 到 uasset 成功，但由于 UE float 回读为 `0.349999994/0.449999988`，post-apply evidence hash 与 sidecar canonical hash 不一致，`ApplyFile` 按设计跳过 `_meta.sync` 更新并返回 `sidecar_sync_update_skip_reason="Post-apply asset evidence hash differs for region 'Body.Blend'"`。改用可精确表示的 `0.5/0.25` 后验证了 sync state 成功更新路径。
+  - 当前 HTTP routes 未暴露独立的 `accept asset` / conflict resolution endpoint；`accept asset` managed region regenerate 和 conflict/no-merge 行为由 `AssetDocument.SidecarSync.*` 与 `AssetFactory.AssetDocument.SidecarSync.*` automation 覆盖。
+  - 验证后已关闭后台 editor 进程，`/assetfactory/health` 不再可达。
+
 ### Checkpoint
 
 ```powershell
