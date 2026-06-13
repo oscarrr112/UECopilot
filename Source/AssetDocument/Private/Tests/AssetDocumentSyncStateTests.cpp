@@ -48,6 +48,14 @@ bool FAssetDocumentSyncStateLoadEmptyTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("Default updated-at is empty"), State.UpdatedAtUtc.IsEmpty());
 	TestEqual(TEXT("Default sync state has no regions"), State.Regions.Num(), 0);
 
+	Document->SetStringField(TEXT("_meta"), TEXT("legacy diagnostic"));
+	State.AssetObjectPath = TEXT("stale");
+	Error = TEXT("stale error");
+	TestTrue(TEXT("Legacy non-object _meta loads as default state"), FAssetDocumentSyncStateStore::LoadFromDocumentJson(Document, State, Error));
+	TestTrue(TEXT("Legacy non-object _meta leaves error empty"), Error.IsEmpty());
+	TestTrue(TEXT("Legacy non-object _meta resets state"), State.AssetObjectPath.IsEmpty());
+	TestEqual(TEXT("Legacy non-object _meta has no regions"), State.Regions.Num(), 0);
+
 	return true;
 }
 
@@ -64,6 +72,9 @@ bool FAssetDocumentSyncStateRoundTripMetaTest::RunTest(const FString& Parameters
 	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
 	Document->SetStringField(TEXT("Target"), TEXT("/Game/AssetDocumentTest/M_Test"));
 	Document->SetObjectField(TEXT("Body"), Body);
+	TSharedRef<FJsonObject> ExistingMeta = MakeShared<FJsonObject>();
+	ExistingMeta->SetStringField(TEXT("existingNote"), TEXT("keep-me"));
+	Document->SetObjectField(TEXT("_meta"), ExistingMeta);
 
 	FAssetDocumentSyncState State;
 	State.SchemaVersion = 1;
@@ -102,6 +113,7 @@ bool FAssetDocumentSyncStateRoundTripMetaTest::RunTest(const FString& Parameters
 	if (Meta && Meta->IsValid())
 	{
 		TestEqual(TEXT("Write sets _meta.assetDocumentVersion"), static_cast<int32>((*Meta)->GetNumberField(TEXT("assetDocumentVersion"))), 1);
+		TestEqual(TEXT("Write preserves existing _meta fields"), (*Meta)->GetStringField(TEXT("existingNote")), FString(TEXT("keep-me")));
 	}
 	if (Sync && Sync->IsValid())
 	{
@@ -132,6 +144,48 @@ bool FAssetDocumentSyncStateRoundTripMetaTest::RunTest(const FString& Parameters
 	TestTrue(
 		TEXT("ValidateTargetMatchesSidecar ignores _meta.sync and uses Target"),
 		FAssetDocumentSidecar::ValidateTargetMatchesSidecar(SidecarPath, Document, ValidationError));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSyncStateRegionKeysPreserveOriginalStringTest,
+	"AssetDocument.SyncState.RegionKeysPreserveOriginalString",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSyncStateRegionKeysPreserveOriginalStringTest::RunTest(const FString& Parameters)
+{
+	const FString RegionId = TEXT("Body.CustomCASE");
+	FAssetDocumentRegionSyncState Region;
+	Region.SidecarHash = TEXT("sha1:case");
+
+	FAssetDocumentSyncState State;
+	FAssetDocumentSyncStateStore::UpdateRegionState(State, RegionId, Region);
+
+	TestEqual(TEXT("String region id is stored once"), State.Regions.Num(), 1);
+	const FAssetDocumentRegionSyncState* Loaded = State.Regions.Find(RegionId);
+	TestTrue(TEXT("Original region id remains addressable"), Loaded != nullptr);
+	if (Loaded)
+	{
+		TestEqual(TEXT("Original region id keeps value"), Loaded->SidecarHash, FString(TEXT("sha1:case")));
+	}
+
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(Document, State);
+
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	TestTrue(TEXT("Written document has regions object"),
+		Document->TryGetObjectField(TEXT("_meta"), Meta)
+		&& Meta && Meta->IsValid()
+		&& (*Meta)->TryGetObjectField(TEXT("sync"), Sync)
+		&& Sync && Sync->IsValid()
+		&& (*Sync)->TryGetObjectField(TEXT("regions"), Regions));
+	if (Regions && Regions->IsValid())
+	{
+		TestTrue(TEXT("Written regions keep original key spelling"), (*Regions)->HasField(RegionId));
+	}
 
 	return true;
 }
@@ -197,6 +251,80 @@ bool FAssetDocumentSyncStateMalformedRegionsTest::RunTest(const FString& Paramet
 	TestFalse(TEXT("Malformed regions fails to load"), FAssetDocumentSyncStateStore::LoadFromDocumentJson(Document, State, Error));
 	TestFalse(TEXT("Malformed regions reports an error"), Error.IsEmpty());
 	TestEqual(TEXT("Malformed input JSON is not rewritten"), Sync->GetStringField(TEXT("regions")), FString(TEXT("not-an-object")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSyncStateMalformedIntegerOverflowTest,
+	"AssetDocument.SyncState.MalformedIntegerOverflow",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSyncStateMalformedIntegerOverflowTest::RunTest(const FString& Parameters)
+{
+	TSharedRef<FJsonObject> Sync = MakeShared<FJsonObject>();
+	Sync->SetNumberField(TEXT("schemaVersion"), static_cast<double>(MAX_int32) + 1.0);
+
+	TSharedRef<FJsonObject> Meta = MakeShared<FJsonObject>();
+	Meta->SetObjectField(TEXT("sync"), Sync);
+
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetObjectField(TEXT("_meta"), Meta);
+
+	FAssetDocumentSyncState State;
+	FString Error;
+	TestFalse(TEXT("Overflowing schemaVersion fails to load"), FAssetDocumentSyncStateStore::LoadFromDocumentJson(Document, State, Error));
+	TestFalse(TEXT("Overflowing schemaVersion reports an error"), Error.IsEmpty());
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSyncStateUpdateRegionNormalizesTest,
+	"AssetDocument.SyncState.UpdateRegionNormalizes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSyncStateUpdateRegionNormalizesTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentSyncState State;
+	FAssetDocumentRegionSyncState Region;
+	Region.PolicyVersion = 0;
+	Region.SidecarHash = TEXT("sha1:value");
+
+	FAssetDocumentSyncStateStore::UpdateRegionState(State, FString(), Region);
+	TestEqual(TEXT("Empty region id is ignored"), State.Regions.Num(), 0);
+
+	FAssetDocumentSyncStateStore::UpdateRegionState(State, FString(TEXT("Body.Blend")), Region);
+	const FAssetDocumentRegionSyncState* LoadedRegion = State.Regions.Find(TEXT("Body.Blend"));
+	TestTrue(TEXT("Non-empty region id is written"), LoadedRegion != nullptr);
+	if (LoadedRegion)
+	{
+		TestEqual(TEXT("Non-positive policy version normalizes to 1"), LoadedRegion->PolicyVersion, 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSyncStateWriteReplacesNonObjectMetaTest,
+	"AssetDocument.SyncState.WriteReplacesNonObjectMeta",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSyncStateWriteReplacesNonObjectMetaTest::RunTest(const FString& Parameters)
+{
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetStringField(TEXT("_meta"), TEXT("legacy diagnostic"));
+
+	FAssetDocumentSyncState State;
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(Document, State);
+
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	TestTrue(TEXT("Write replaces non-object _meta with object"), Document->TryGetObjectField(TEXT("_meta"), Meta));
+	if (Meta && Meta->IsValid())
+	{
+		TestEqual(TEXT("Replaced _meta has assetDocumentVersion"), static_cast<int32>((*Meta)->GetNumberField(TEXT("assetDocumentVersion"))), 1);
+		TestTrue(TEXT("Replaced _meta has sync object"), (*Meta)->HasTypedField<EJson::Object>(TEXT("sync")));
+	}
 
 	return true;
 }

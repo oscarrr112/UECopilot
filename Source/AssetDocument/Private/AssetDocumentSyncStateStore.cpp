@@ -39,6 +39,11 @@ bool TryReadOptionalInt(const TSharedRef<FJsonObject>& Object, const FString& Fi
 		OutError = FString::Printf(TEXT("Sync field '%s' must be an integer."), *FieldName);
 		return false;
 	}
+	if (NumberValue < static_cast<double>(MIN_int32) || NumberValue > static_cast<double>(MAX_int32))
+	{
+		OutError = FString::Printf(TEXT("Sync field '%s' is outside int32 range."), *FieldName);
+		return false;
+	}
 
 	OutValue = static_cast<int32>(NumberValue);
 	return true;
@@ -120,15 +125,12 @@ bool FAssetDocumentSyncStateStore::LoadFromDocumentJson(
 	OutError.Reset();
 
 	TSharedPtr<FJsonObject> MetaObject;
-	if (!TryGetOptionalObject(DocumentJson, TEXT("_meta"), MetaObject, OutError))
-	{
-		return false;
-	}
-
-	if (!MetaObject.IsValid())
+	const TSharedPtr<FJsonObject>* FoundMetaObject = nullptr;
+	if (!DocumentJson->TryGetObjectField(TEXT("_meta"), FoundMetaObject) || !FoundMetaObject || !FoundMetaObject->IsValid())
 	{
 		return true;
 	}
+	MetaObject = *FoundMetaObject;
 
 	TSharedPtr<FJsonObject> SyncObject;
 	if (!TryGetOptionalObject(MetaObject.ToSharedRef(), TEXT("sync"), SyncObject, OutError))
@@ -174,7 +176,7 @@ bool FAssetDocumentSyncStateStore::LoadFromDocumentJson(
 			return false;
 		}
 
-		OutState.Regions.Add(FName(*Pair.Key), RegionState);
+		OutState.Regions.Add(Pair.Key, RegionState);
 	}
 
 	return true;
@@ -195,18 +197,15 @@ void FAssetDocumentSyncStateStore::WriteToDocumentJson(
 	SyncObject->SetStringField(TEXT("updatedAtUtc"), State.UpdatedAtUtc);
 
 	TSharedRef<FJsonObject> RegionsObject = MakeShared<FJsonObject>();
-	TArray<FName> RegionIds;
+	TArray<FString> RegionIds;
 	State.Regions.GetKeys(RegionIds);
-	RegionIds.Sort([](const FName& Left, const FName& Right)
-	{
-		return Left.ToString() < Right.ToString();
-	});
+	RegionIds.Sort();
 
-	for (const FName& RegionId : RegionIds)
+	for (const FString& RegionId : RegionIds)
 	{
 		if (const FAssetDocumentRegionSyncState* RegionState = State.Regions.Find(RegionId))
 		{
-			RegionsObject->SetObjectField(RegionId.ToString(), MakeRegionJson(*RegionState));
+			RegionsObject->SetObjectField(RegionId, MakeRegionJson(*RegionState));
 		}
 	}
 	SyncObject->SetObjectField(TEXT("regions"), RegionsObject);
@@ -216,10 +215,10 @@ void FAssetDocumentSyncStateStore::WriteToDocumentJson(
 
 void FAssetDocumentSyncStateStore::UpdateRegionState(
 	FAssetDocumentSyncState& State,
-	FName RegionId,
+	const FString& RegionId,
 	const FAssetDocumentRegionSyncState& RegionState)
 {
-	if (RegionId.IsNone())
+	if (RegionId.IsEmpty())
 	{
 		return;
 	}
@@ -236,4 +235,20 @@ void FAssetDocumentSyncStateStore::UpdateRegionState(
 	}
 
 	State.Regions.Add(RegionId, NormalizedRegionState);
+}
+
+void FAssetDocumentSyncStateStore::UpdateRegionState(
+	FAssetDocumentSyncState& State,
+	FName RegionId,
+	const FAssetDocumentRegionSyncState& RegionState)
+{
+	UpdateRegionState(State, RegionId.IsNone() ? FString() : RegionId.ToString(), RegionState);
+}
+
+void FAssetDocumentSyncStateStore::UpdateRegionState(
+	FAssetDocumentSyncState& State,
+	const TCHAR* RegionId,
+	const FAssetDocumentRegionSyncState& RegionState)
+{
+	UpdateRegionState(State, FString(RegionId ? RegionId : TEXT("")), RegionState);
 }

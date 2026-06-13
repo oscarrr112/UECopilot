@@ -18,5 +18,5 @@ struct FAssetDocumentSyncState
 	FString AssetObjectPath;
 	FString AssetPackageGuid;
 	FString UpdatedAtUtc;
-	TMap<FName, FAssetDocumentRegionSyncState> Regions;
+	TMap<FString, FAssetDocumentRegionSyncState> Regions;
 };
