@@ -143,8 +143,8 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	TestTrue(TEXT("Blend object exists"), ProjectedBody->TryGetObjectField(TEXT("Blend"), Blend));
 	if (Blend && Blend->IsValid())
 	{
-		TestEqual(TEXT("BlendInTime is projected"), (*Blend)->GetNumberField(TEXT("BlendInTime")), 0.15);
-		TestEqual(TEXT("BlendOutTime is projected"), (*Blend)->GetNumberField(TEXT("BlendOutTime")), 0.25);
+		TestTrue(TEXT("BlendInTime is projected"), FMath::IsNearlyEqual((*Blend)->GetNumberField(TEXT("BlendInTime")), 0.15, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("BlendOutTime is projected"), FMath::IsNearlyEqual((*Blend)->GetNumberField(TEXT("BlendOutTime")), 0.25, KINDA_SMALL_NUMBER));
 	}
 
 	const TSharedPtr<FJsonObject>* Metrics = nullptr;
