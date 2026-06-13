@@ -4,8 +4,10 @@
 
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "AssetDocumentSidecarDelta.h"
 #include "TestDataAsset.h"
 
+#include "Engine/Texture2D.h"
 #include "Misc/AutomationTest.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -77,6 +79,109 @@ public:
 	{
 		return nullptr;
 	}
+};
+
+class FTestExtractBodyCapability final : public IAssetDocumentCapability
+{
+public:
+	virtual FName GetName() const override
+	{
+		return TEXT("TestExtractBody");
+	}
+
+	virtual int32 GetApplyOrder() const override
+	{
+		return 0;
+	}
+
+	virtual bool SupportsAsset(const UObject* Asset) const override
+	{
+		return Asset && Asset->IsA<UTexture2D>();
+	}
+
+	virtual bool SupportsClass(const UClass* AssetClass) const override
+	{
+		return AssetClass && AssetClass->IsChildOf(UTexture2D::StaticClass());
+	}
+
+	virtual TSharedRef<FJsonObject> GetSchemaHint() const override
+	{
+		return MakeShared<FJsonObject>();
+	}
+
+	virtual FAssetDocumentCapabilityResult Validate(const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&) const override
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Test body valid"));
+	}
+
+	virtual FAssetDocumentCapabilityResult Apply(FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&) override
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Test body applied"));
+	}
+
+	virtual FAssetDocumentCapabilityResult Extract(const FAssetDocumentCapabilityContext&, TSharedRef<FJsonObject>& OutBodyJson) const override
+	{
+		TSharedRef<FJsonObject> Present = MakeShared<FJsonObject>();
+		Present->SetStringField(TEXT("Value"), TEXT("Evidence"));
+		OutBodyJson->SetObjectField(TEXT("Present"), Present);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Test body extracted"));
+	}
+
+	virtual FAssetDocumentCapabilityResult Diff(const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&, TArray<TSharedPtr<FJsonValue>>&) const override
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Test body diffed"));
+	}
+};
+
+class FTestSyncRegionProfile final : public IAssetDocumentProfile
+{
+public:
+	virtual UClass* GetExactClass() const override
+	{
+		return UTexture2D::StaticClass();
+	}
+
+	virtual TSharedRef<FJsonObject> GetDocumentShape() const override
+	{
+		TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
+		Shape->SetStringField(TEXT("Name"), TEXT("TestSyncRegionShape"));
+		return Shape;
+	}
+
+	virtual TSharedRef<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const override
+	{
+		TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
+		Template->SetStringField(TEXT("Target"), Context.Target);
+		Template->SetStringField(TEXT("Class"), Context.ClassPath);
+		Template->SetObjectField(TEXT("Body"), MakeShared<FJsonObject>());
+		return Template;
+	}
+
+	virtual TArray<FName> GetBodyKeys() const override
+	{
+		return {TEXT("Body")};
+	}
+
+	virtual const IAssetDocumentCapability* ResolveBodyAdapter(FName BodyKey) const override
+	{
+		return BodyKey == TEXT("Body") ? &BodyCapability : nullptr;
+	}
+
+	virtual TArray<FAssetDocumentRegionPolicy> GetRegionPolicies() const override
+	{
+		FAssetDocumentRegionPolicy PresentPolicy;
+		PresentPolicy.RegionId = TEXT("Body.Present");
+		PresentPolicy.BodyPath = TEXT("Body.Present");
+
+		FAssetDocumentRegionPolicy MissingPolicy;
+		MissingPolicy.RegionId = TEXT("Body.Missing");
+		MissingPolicy.BodyPath = TEXT("Body.Missing");
+
+		return {PresentPolicy, MissingPolicy};
+	}
+
+private:
+	FTestExtractBodyCapability BodyCapability;
 };
 }
 
@@ -187,6 +292,55 @@ bool FAssetDocumentGenericExtractDoesNotForceSyncRegionsTest::RunTest(const FStr
 			const TSharedPtr<FJsonObject>* Regions = nullptr;
 			TestFalse(TEXT("Generic extract does not force sync regions"), (*Sync)->TryGetObjectField(TEXT("regions"), Regions) && Regions && Regions->IsValid() && (*Regions)->Values.Num() > 0);
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentExtractSkipsUnsetSyncRegionTest,
+	"AssetFactory.AssetDocument.Profile.ExtractSkipsUnsetSyncRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentExtractSkipsUnsetSyncRegionTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FTestSyncRegionProfile>());
+
+	const FAssetDocumentService Service;
+	FAssetDocumentExtractRequest Request;
+	Request.AssetPath = TEXT("/Engine/EngineResources/DefaultTexture.DefaultTexture");
+	Request.bDiffOnly = true;
+	Request.bIncludeAllWritable = false;
+
+	const FAssetDocumentResult Result = Service.Extract(Request);
+	TestTrue(TEXT("Exact profile extract succeeds for test texture"), Result.IsSuccess());
+	TestTrue(TEXT("Exact profile extract returns payload"), Result.Payload.IsValid());
+	if (!Result.Payload.IsValid())
+	{
+		return false;
+	}
+
+	FAssetDocumentRegionPolicy PresentPolicy;
+	PresentPolicy.RegionId = TEXT("Body.Present");
+	PresentPolicy.BodyPath = TEXT("Body.Present");
+	TestFalse(TEXT("Present region hash is non-empty"), FAssetDocumentSidecarDelta::HashSidecarRegion(Result.Payload.ToSharedRef(), PresentPolicy).IsEmpty());
+
+	FAssetDocumentRegionPolicy MissingPolicy;
+	MissingPolicy.RegionId = TEXT("Body.Missing");
+	MissingPolicy.BodyPath = TEXT("Body.Missing");
+	TestTrue(TEXT("Missing region hash is empty"), FAssetDocumentSidecarDelta::HashSidecarRegion(Result.Payload.ToSharedRef(), MissingPolicy).IsEmpty());
+
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	TestTrue(TEXT("Exact profile extract includes _meta"), Result.Payload->TryGetObjectField(TEXT("_meta"), Meta));
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	TestTrue(TEXT("Exact profile extract includes _meta.sync"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	TestTrue(TEXT("Exact profile extract includes sync regions"), Sync && Sync->IsValid() && (*Sync)->TryGetObjectField(TEXT("regions"), Regions));
+	if (Regions && Regions->IsValid())
+	{
+		const TSharedPtr<FJsonObject>* PresentRegion = nullptr;
+		TestTrue(TEXT("Present region gets sync state"), (*Regions)->TryGetObjectField(TEXT("Body.Present"), PresentRegion));
+		TestFalse(TEXT("Missing region does not get empty sync baseline"), (*Regions)->HasField(TEXT("Body.Missing")));
 	}
 
 	return true;

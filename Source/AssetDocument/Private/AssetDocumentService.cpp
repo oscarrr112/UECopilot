@@ -1197,6 +1197,11 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 			for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
 			{
 				const FString RegionHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document.ToSharedRef(), Policy);
+				if (RegionHash.IsEmpty())
+				{
+					continue;
+				}
+
 				FAssetDocumentRegionSyncState RegionState;
 				RegionState.SidecarHash = RegionHash;
 				RegionState.AssetEvidenceHash = RegionHash;
@@ -1204,7 +1209,10 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 				FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
 			}
 
-			FAssetDocumentSyncStateStore::WriteToDocumentJson(Document.ToSharedRef(), SyncState);
+			if (SyncState.Regions.Num() > 0)
+			{
+				FAssetDocumentSyncStateStore::WriteToDocumentJson(Document.ToSharedRef(), SyncState);
+			}
 		}
 	}
 
