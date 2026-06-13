@@ -15,7 +15,7 @@ UAnimMontage* NewTransientMontageForProjectorSlice()
 	UAnimMontage* Montage = NewObject<UAnimMontage>(
 		GetTransientPackage(),
 		UAnimMontage::StaticClass(),
-		FName(TEXT("AssetDocumentProjectorSliceMontage")));
+		NAME_None);
 	if (!Montage)
 	{
 		return nullptr;
