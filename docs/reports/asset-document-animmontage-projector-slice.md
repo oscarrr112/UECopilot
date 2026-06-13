@@ -8,7 +8,7 @@
 
 ## 测试范围
 
-本报告基于当前 worktree 文件内容与计划中的文件集合统计。记录到的 `HEAD` 与用户给定 base 相同，都是 `3c46798720ede814d38cee66ae80108100333a28`，因此 `3c46798..HEAD` 当前没有额外代码 diff；报告仍按当前 worktree 中已存在的 production 与 projector slice 文件做 LOC 和结构评估。
+本报告基于当前 worktree 文件内容与计划中的文件集合统计。代码评估基线为 `3c46798720ede814d38cee66ae80108100333a28`，报告提交本身只新增本文档；LOC 和结构评估按该基线中的 production 与 projector slice 文件计算。
 
 计划要求的目标测试覆盖包括：
 
