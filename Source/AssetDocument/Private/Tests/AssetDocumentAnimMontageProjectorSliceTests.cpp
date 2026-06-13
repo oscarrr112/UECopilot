@@ -4,6 +4,7 @@
 
 #include "Animation/AnimMontage.h"
 #include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -49,11 +50,76 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	{
 		return false;
 	}
+	TestTrue(TEXT("ProjectedBody has Skeleton"), ProjectedBody->HasField(TEXT("Skeleton")));
+	TestTrue(TEXT("ProjectedBody has PreviewMesh"), ProjectedBody->HasField(TEXT("PreviewMesh")));
 	TestTrue(TEXT("ProjectedBody has SlotAnimTracks"), ProjectedBody->HasField(TEXT("SlotAnimTracks")));
 	TestTrue(TEXT("ProjectedBody has CompositeSections"), ProjectedBody->HasField(TEXT("CompositeSections")));
 	TestTrue(TEXT("ProjectedBody has Notifies"), ProjectedBody->HasField(TEXT("Notifies")));
 	TestTrue(TEXT("ProjectedBody has NotifyStates"), ProjectedBody->HasField(TEXT("NotifyStates")));
 	TestTrue(TEXT("ProjectedBody has Blend"), ProjectedBody->HasField(TEXT("Blend")));
+
+	const TArray<TSharedPtr<FJsonValue>>* SlotAnimTracks = nullptr;
+	TestTrue(TEXT("SlotAnimTracks is an array"), ProjectedBody->TryGetArrayField(TEXT("SlotAnimTracks"), SlotAnimTracks));
+	TestEqual(TEXT("One slot track is emitted"), SlotAnimTracks ? SlotAnimTracks->Num() : 0, 1);
+	if (SlotAnimTracks && SlotAnimTracks->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> SlotAnimTrack = (*SlotAnimTracks)[0]->AsObject();
+		TestTrue(TEXT("Slot track object exists"), SlotAnimTrack.IsValid());
+		if (SlotAnimTrack.IsValid())
+		{
+			TestEqual(TEXT("SlotName is projected"), SlotAnimTrack->GetStringField(TEXT("SlotName")), FString(TEXT("DefaultSlot")));
+
+			const TSharedPtr<FJsonObject>* AnimTrack = nullptr;
+			TestTrue(TEXT("AnimTrack object exists"), SlotAnimTrack->TryGetObjectField(TEXT("AnimTrack"), AnimTrack));
+			if (AnimTrack && AnimTrack->IsValid())
+			{
+				const TArray<TSharedPtr<FJsonValue>>* AnimSegments = nullptr;
+				TestTrue(TEXT("AnimSegments is an array"), (*AnimTrack)->TryGetArrayField(TEXT("AnimSegments"), AnimSegments));
+				TestEqual(TEXT("One anim segment is emitted"), AnimSegments ? AnimSegments->Num() : 0, 1);
+			}
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* CompositeSections = nullptr;
+	TestTrue(TEXT("CompositeSections is an array"), ProjectedBody->TryGetArrayField(TEXT("CompositeSections"), CompositeSections));
+	TestEqual(TEXT("One composite section is emitted"), CompositeSections ? CompositeSections->Num() : 0, 1);
+	if (CompositeSections && CompositeSections->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> SectionObject = (*CompositeSections)[0]->AsObject();
+		TestTrue(TEXT("Composite section object exists"), SectionObject.IsValid());
+		if (SectionObject.IsValid())
+		{
+			TestEqual(TEXT("SectionName is projected"), SectionObject->GetStringField(TEXT("SectionName")), FString(TEXT("Start")));
+			TestEqual(TEXT("LinkableTime is projected"), SectionObject->GetNumberField(TEXT("LinkableTime")), 0.0);
+			TestFalse(TEXT("NAME_None next section is omitted"), SectionObject->HasField(TEXT("NextSectionName")));
+			TestFalse(TEXT("StartTime is not emitted by projector slice"), SectionObject->HasField(TEXT("StartTime")));
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
+	TestTrue(TEXT("Notifies is an array"), ProjectedBody->TryGetArrayField(TEXT("Notifies"), Notifies));
+	TestEqual(TEXT("No managed notifies are emitted"), Notifies ? Notifies->Num() : -1, 0);
+
+	const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
+	TestTrue(TEXT("NotifyStates is an array"), ProjectedBody->TryGetArrayField(TEXT("NotifyStates"), NotifyStates));
+	TestEqual(TEXT("No managed notify states are emitted"), NotifyStates ? NotifyStates->Num() : -1, 0);
+
+	const TSharedPtr<FJsonObject>* Blend = nullptr;
+	TestTrue(TEXT("Blend object exists"), ProjectedBody->TryGetObjectField(TEXT("Blend"), Blend));
+	if (Blend && Blend->IsValid())
+	{
+		TestEqual(TEXT("BlendInTime is projected"), (*Blend)->GetNumberField(TEXT("BlendInTime")), 0.15);
+		TestEqual(TEXT("BlendOutTime is projected"), (*Blend)->GetNumberField(TEXT("BlendOutTime")), 0.25);
+	}
+
+	const TSharedPtr<FJsonObject>* Metrics = nullptr;
+	TestTrue(TEXT("Projection metrics exist"), ProjectedBody->TryGetObjectField(TEXT("_ProjectionMetrics"), Metrics));
+	if (Metrics && Metrics->IsValid())
+	{
+		TestTrue(TEXT("Projection metrics include AssetSpecificFields"), (*Metrics)->HasField(TEXT("AssetSpecificFields")));
+		TestTrue(TEXT("Projection metrics include ReusableProjectedFields"), (*Metrics)->HasField(TEXT("ReusableProjectedFields")));
+		TestTrue(TEXT("Projection metrics include SkippedFields"), (*Metrics)->HasField(TEXT("SkippedFields")));
+	}
 
 	return true;
 }
