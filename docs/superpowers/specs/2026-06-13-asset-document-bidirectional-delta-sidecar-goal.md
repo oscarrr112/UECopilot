@@ -30,6 +30,27 @@ A missing field means the sidecar does not declare a persistent difference for t
 
 This differs from sparse one-shot patch semantics. The sidecar is a source-of-truth delta, not an imperative partial update.
 
+## Architecture Overview
+
+The architecture should keep extraction, reduction, sidecar validation, synchronization, and application as separate responsibilities.
+
+```text
+Unreal asset, reflected data, raw dumps, text exports
+  -> EvidenceExtractor
+  -> EvidenceBundle
+  -> DefaultReducer
+  -> AssetDoc sidecar delta
+
+AssetDoc sidecar delta
+  -> SidecarDeltaCapability
+  -> AuthoritativeApplyAdapter
+  -> Unreal asset
+
+SidecarSyncEngine coordinates both directions with per-region sync state.
+```
+
+The important boundary is that the sidecar remains the authoring surface. The internal system may compute deltas, hashes, or rebuild instructions, but agents still edit AssetDoc content rather than an operation language.
+
 ## Region-Level Synchronization
 
 For version 1, complex structured regions should prefer region-level regeneration over element-level merging.
@@ -42,6 +63,31 @@ Examples:
 
 Identity remains useful for stable output, reduced textual churn, and future conflict detection, but it should not force version 1 into a complex element-level merge engine.
 
+## Region-Level Conflict Resolution
+
+Conflict detection is owned by `SidecarSyncEngine`, not by individual element adapters.
+
+For each managed region, the sync engine tracks enough state to compare:
+
+- the last synced sidecar region hash
+- the last synced asset evidence hash
+- the current sidecar region hash
+- the current asset evidence hash
+
+The direction rules are:
+
+- If only the sidecar region changed, synchronize sidecar to asset.
+- If only the asset evidence changed, synchronize asset to sidecar.
+- If neither changed, do nothing.
+- If both changed, mark the region as conflicted.
+
+Version 1 conflict resolution is intentionally directional:
+
+- `accept sidecar`: the sidecar wins. Apply the sidecar region to the Unreal asset, then update the region sync state.
+- `accept asset`: the Unreal asset wins. Regenerate the sidecar region from current asset evidence, then update the region sync state.
+
+There is no element-level three-way merge in the first version. For example, if both `Body.Notifies` in the sidecar and the montage notifies in the Unreal asset changed since the last sync, version 1 does not try to merge individual notify rows. It asks for a region-level direction and then rebuilds that region from the chosen side.
+
 ## Identity Preference
 
 Use Unreal's native stable identity when it exists.
@@ -52,12 +98,12 @@ For AnimMontage, `FAnimNotifyEvent::Guid` is available under editor-only data an
 
 The target architecture is:
 
-- `EvidenceExtractor`: reads facts from Unreal assets, reflected data, raw dumps, or text exports.
-- `DefaultReducer`: reduces facts into effective sidecar deltas by removing defaults and non-meaningful state.
-- `SemanticCapability`: declares sidecar-visible regions, stable keys, default sources, identity rules, comparison rules, and synchronization scope.
-- `SidecarDeltaCapability`: validates and normalizes sidecar delta content without exposing an operation DSL.
-- `SidecarSyncEngine`: coordinates asset-to-sidecar and sidecar-to-asset synchronization, directionality, and conflict policy.
-- `AuthoritativeApplyAdapter`: writes normalized sidecar deltas back to Unreal objects by rebuilding or resetting managed fields and regions, then applying sidecar values.
+- `EvidenceExtractor`: reads low-level facts from Unreal assets, reflected data, raw dumps, or text exports. It may be dirty and debug-oriented, but it should not decide authoring semantics. It should emit region evidence and stable evidence hashes where possible.
+- `DefaultReducer`: compares extracted facts against the selected default source, such as CDO values, empty templates, current asset baselines, or profile-declared defaults. It outputs only effective sidecar deltas.
+- `SemanticCapability`: declares sidecar-visible regions, stable keys, default sources, identity rules, comparison rules, constraints, synchronization scope, and whether a region is rebuilt as a whole in version 1.
+- `SidecarDeltaCapability`: validates and normalizes sidecar delta content. It understands the AssetDoc-native schema, but it does not expose an agent-facing patch or command DSL.
+- `SidecarSyncEngine`: coordinates asset-to-sidecar and sidecar-to-asset synchronization. It owns per-region sync state, direction detection, conflict marking, and `accept sidecar` / `accept asset` resolution.
+- `AuthoritativeApplyAdapter`: writes normalized sidecar deltas back to Unreal objects. It resets or rebuilds managed fields and regions before applying sidecar values, because applying is not the reverse of extraction.
 
 Existing full Body replacement behavior can remain as a compatibility layer, but it should not be the long-term authoring model.
 
@@ -67,3 +113,4 @@ Existing full Body replacement behavior can remain as a compatibility layer, but
 - Do not treat raw `.uasset`, raw JSON dumps, or text exports as direct authoring formats.
 - Do not grow one-off per-asset interpreters when a shared extractor, reducer, semantic capability, or apply adapter can cover the behavior.
 - Do not require element-level merge for the first version of bidirectional synchronization.
+- Do not guess region conflicts from array index, timestamp, class name, or other unstable element-level heuristics when a simple directional resolution is enough.
