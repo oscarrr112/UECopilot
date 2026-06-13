@@ -20,6 +20,18 @@ EAssetDocumentSyncDirection DecideInitialRegion(
 
 	return EAssetDocumentSyncDirection::NeedsInitialBaseline;
 }
+
+void AddSortedRegionIds(const TSet<FString>& RegionIdSet, TArray<FString>& OutRegionIds)
+{
+	OutRegionIds.Reset();
+	OutRegionIds.Reserve(RegionIdSet.Num());
+	for (const FString& RegionId : RegionIdSet)
+	{
+		OutRegionIds.Add(RegionId);
+	}
+
+	OutRegionIds.Sort();
+}
 }
 
 FAssetDocumentRegionSyncDecision FAssetDocumentSidecarSyncEngine::DecideRegion(
@@ -71,24 +83,75 @@ TArray<FAssetDocumentRegionSyncDecision> FAssetDocumentSidecarSyncEngine::Decide
 	const TMap<FString, FAssetDocumentCurrentRegionHashes>& CurrentRegionHashes,
 	const FAssetDocumentSyncState& LastSyncState)
 {
-	TArray<FAssetDocumentRegionSyncDecision> Decisions;
-	Decisions.Reserve(CurrentRegionHashes.Num());
-
+	TSet<FString> RegionIdSet;
+	RegionIdSet.Reserve(CurrentRegionHashes.Num() + LastSyncState.Regions.Num());
 	for (const TPair<FString, FAssetDocumentCurrentRegionHashes>& CurrentRegion : CurrentRegionHashes)
 	{
-		const FAssetDocumentRegionSyncState* LastRegionState = LastSyncState.Regions.Find(CurrentRegion.Key);
+		RegionIdSet.Add(CurrentRegion.Key);
+	}
+	for (const TPair<FString, FAssetDocumentRegionSyncState>& LastRegion : LastSyncState.Regions)
+	{
+		RegionIdSet.Add(LastRegion.Key);
+	}
+
+	TArray<FString> RegionIds;
+	AddSortedRegionIds(RegionIdSet, RegionIds);
+
+	TArray<FAssetDocumentRegionSyncDecision> Decisions;
+	Decisions.Reserve(RegionIds.Num());
+
+	for (const FString& RegionId : RegionIds)
+	{
+		const FAssetDocumentCurrentRegionHashes* CurrentRegion = CurrentRegionHashes.Find(RegionId);
+		const FAssetDocumentRegionSyncState* LastRegionState = LastSyncState.Regions.Find(RegionId);
 		Decisions.Add(DecideRegion(
-			CurrentRegion.Key,
-			CurrentRegion.Value.SidecarHash,
-			CurrentRegion.Value.AssetEvidenceHash,
+			RegionId,
+			CurrentRegion ? CurrentRegion->SidecarHash : FString(),
+			CurrentRegion ? CurrentRegion->AssetEvidenceHash : FString(),
 			LastRegionState));
 	}
 
-	Decisions.Sort(
-		[](const FAssetDocumentRegionSyncDecision& Left, const FAssetDocumentRegionSyncDecision& Right)
-		{
-			return Left.RegionId < Right.RegionId;
-		});
+	return Decisions;
+}
+
+TArray<FAssetDocumentRegionSyncDecision> FAssetDocumentSidecarSyncEngine::DecideDocument(
+	const TMap<FString, FString>& CurrentSidecarHashes,
+	const TMap<FString, FString>& CurrentAssetEvidenceHashes,
+	const FAssetDocumentSyncState& LastSyncState)
+{
+	TSet<FString> RegionIdSet;
+	RegionIdSet.Reserve(CurrentSidecarHashes.Num() + CurrentAssetEvidenceHashes.Num() + LastSyncState.Regions.Num());
+	for (const TPair<FString, FString>& CurrentSidecar : CurrentSidecarHashes)
+	{
+		RegionIdSet.Add(CurrentSidecar.Key);
+	}
+	for (const TPair<FString, FString>& CurrentAssetEvidence : CurrentAssetEvidenceHashes)
+	{
+		RegionIdSet.Add(CurrentAssetEvidence.Key);
+	}
+	for (const TPair<FString, FAssetDocumentRegionSyncState>& LastRegion : LastSyncState.Regions)
+	{
+		RegionIdSet.Add(LastRegion.Key);
+	}
+
+	TArray<FString> RegionIds;
+	AddSortedRegionIds(RegionIdSet, RegionIds);
+
+	TArray<FAssetDocumentRegionSyncDecision> Decisions;
+	Decisions.Reserve(RegionIds.Num());
+
+	for (const FString& RegionId : RegionIds)
+	{
+		const FString* CurrentSidecarHash = CurrentSidecarHashes.Find(RegionId);
+		const FString* CurrentAssetEvidenceHash = CurrentAssetEvidenceHashes.Find(RegionId);
+		const FAssetDocumentRegionSyncState* LastRegionState = LastSyncState.Regions.Find(RegionId);
+		Decisions.Add(DecideRegion(
+			RegionId,
+			CurrentSidecarHash ? *CurrentSidecarHash : FString(),
+			CurrentAssetEvidenceHash ? *CurrentAssetEvidenceHash : FString(),
+			LastRegionState));
+	}
+
 	return Decisions;
 }
 

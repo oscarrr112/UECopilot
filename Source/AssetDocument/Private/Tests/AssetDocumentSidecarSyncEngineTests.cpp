@@ -180,6 +180,55 @@ bool FAssetDocumentSidecarSyncInitialBaselineTest::RunTest(const FString& Parame
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarSyncDocumentAggregationTest,
+	"AssetDocument.SidecarSync.DocumentAggregation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarSyncDocumentAggregationTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentSyncState SyncState;
+	SyncState.Regions.Add(TEXT("Body.Removed"), MakeLastState(TEXT("sha1:removed-sidecar"), TEXT("sha1:removed-asset")));
+
+	const TMap<FString, FAssetDocumentCurrentRegionHashes> CurrentHashes;
+	const TArray<FAssetDocumentRegionSyncDecision> Decisions = FAssetDocumentSidecarSyncEngine::DecideDocument(CurrentHashes, SyncState);
+
+	TestEqual(TEXT("DecideDocument includes regions present only in last sync state"), Decisions.Num(), 1);
+	if (Decisions.Num() == 1)
+	{
+		TestEqual(TEXT("Last-only region id is preserved"), Decisions[0].RegionId, FString(TEXT("Body.Removed")));
+		TestEqual(TEXT("Last-only region uses empty current sidecar hash"), Decisions[0].CurrentSidecarHash, FString());
+		TestEqual(TEXT("Last-only region uses empty current asset evidence hash"), Decisions[0].CurrentAssetEvidenceHash, FString());
+		TestEqual(TEXT("Last-only region compares empty current hashes against last hashes"), Decisions[0].Direction, EAssetDocumentSyncDirection::Conflict);
+	}
+
+	FAssetDocumentSyncState SidecarDeletedState;
+	SidecarDeletedState.Regions.Add(TEXT("Body.SidecarDeleted"), MakeLastState(TEXT("sha1:deleted-sidecar"), TEXT("sha1:unchanged-asset")));
+
+	const TMap<FString, FString> CurrentSidecarHashes;
+	TMap<FString, FString> CurrentAssetEvidenceHashes;
+	CurrentAssetEvidenceHashes.Add(TEXT("Body.SidecarDeleted"), TEXT("sha1:unchanged-asset"));
+
+	const TArray<FAssetDocumentRegionSyncDecision> SidecarDeletedDecisions = FAssetDocumentSidecarSyncEngine::DecideDocument(
+		CurrentSidecarHashes,
+		CurrentAssetEvidenceHashes,
+		SidecarDeletedState);
+
+	TestEqual(TEXT("DecideDocument can represent missing sidecar with unchanged asset evidence"), SidecarDeletedDecisions.Num(), 1);
+	if (SidecarDeletedDecisions.Num() == 1)
+	{
+		TestEqual(TEXT("Sidecar-deleted region id is preserved"), SidecarDeletedDecisions[0].RegionId, FString(TEXT("Body.SidecarDeleted")));
+		TestTrue(TEXT("Sidecar-deleted region has empty current sidecar hash"), SidecarDeletedDecisions[0].CurrentSidecarHash.IsEmpty());
+		TestEqual(TEXT("Sidecar-deleted region keeps current asset evidence hash"), SidecarDeletedDecisions[0].CurrentAssetEvidenceHash, FString(TEXT("sha1:unchanged-asset")));
+		TestEqual(TEXT("Sidecar deletion with unchanged asset applies sidecar back to asset"), SidecarDeletedDecisions[0].Direction, EAssetDocumentSyncDirection::ApplySidecarToAsset);
+		const FAssetDocumentSyncResolutionAction Action = FAssetDocumentSidecarSyncEngine::MakeAction(SidecarDeletedDecisions[0]);
+		TestTrue(TEXT("Sidecar deletion action applies sidecar"), Action.bShouldApplySidecarToAsset);
+		TestFalse(TEXT("Sidecar deletion action does not regenerate sidecar"), Action.bShouldRegenerateSidecarRegion);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentSidecarSyncAcceptSidecarTest,
 	"AssetDocument.SidecarSync.AcceptSidecar",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

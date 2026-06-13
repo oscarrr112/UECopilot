@@ -58,6 +58,11 @@ public:
 		const TMap<FString, FAssetDocumentCurrentRegionHashes>& CurrentRegionHashes,
 		const FAssetDocumentSyncState& LastSyncState);
 
+	static TArray<FAssetDocumentRegionSyncDecision> DecideDocument(
+		const TMap<FString, FString>& CurrentSidecarHashes,
+		const TMap<FString, FString>& CurrentAssetEvidenceHashes,
+		const FAssetDocumentSyncState& LastSyncState);
+
 	static FAssetDocumentSyncResolutionAction MakeAction(const FAssetDocumentRegionSyncDecision& Decision);
 
 	static FAssetDocumentSyncResolutionAction ApplyResolution(
