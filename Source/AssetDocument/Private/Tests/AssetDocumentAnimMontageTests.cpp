@@ -278,6 +278,23 @@ TSharedPtr<FJsonObject> MakeNotifyStatePlacement(double Time, double Duration, T
 	return Placement;
 }
 
+void SetSingleManagedNotify(TSharedPtr<FJsonObject> Body)
+{
+	TArray<TSharedPtr<FJsonValue>> Notifies;
+	Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(0.10, MakeEmbeddedObjectRef(TestConcreteNotifyClassPath))));
+	Body->SetArrayField(TEXT("Notifies"), Notifies);
+}
+
+void SetSingleManagedNotifyState(TSharedPtr<FJsonObject> Body)
+{
+	TArray<TSharedPtr<FJsonValue>> NotifyStates;
+	NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+		0.12,
+		0.05,
+		MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+	Body->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+}
+
 bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& Expected)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
@@ -781,11 +798,17 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 		TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
 		FAssetDocumentRegionPolicy CompositeSectionsPolicy;
 		TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+		FAssetDocumentRegionPolicy NotifiesPolicy;
+		TestTrue(TEXT("AnimMontage profile has Body.Notifies policy"), Profile.GetRegionPolicy(TEXT("Body.Notifies"), NotifiesPolicy));
+		FAssetDocumentRegionPolicy NotifyStatesPolicy;
+		TestTrue(TEXT("AnimMontage profile has Body.NotifyStates policy"), Profile.GetRegionPolicy(TEXT("Body.NotifyStates"), NotifyStatesPolicy));
 		if (SyncRegions && SyncRegions->IsValid())
 		{
 			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, BlendPolicy);
 			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, SlotAnimTracksPolicy);
 			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, CompositeSectionsPolicy);
+			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, NotifiesPolicy);
+			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, NotifyStatesPolicy);
 		}
 
 		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
@@ -1444,6 +1467,105 @@ bool FAssetDocumentAnimMontageApplyNotifiesPreservesUnmanagedTest::RunTest(const
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyReplacesExistingManagedNotifies",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageApplyReplacesExistingManagedNotifiesTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_NotifyManagedRegion"));
+	TSharedPtr<FJsonObject> InitialDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetSingleManagedNotify(InitialDocument->GetObjectField(TEXT("Body")));
+	SetSingleManagedNotifyState(InitialDocument->GetObjectField(TEXT("Body")));
+
+	const FAssetDocumentResult InitialApplyResult = ApplyDocument(InitialDocument);
+	TestTrue(TEXT("Initial managed notify apply succeeds"), InitialApplyResult.IsSuccess());
+	if (!InitialApplyResult.IsSuccess())
+	{
+		AddError(InitialApplyResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	AddNotifyEvent(Montage, CreateTestNotify(Montage), FName(TEXT("Manual.Notify")), 0.02f);
+	AddNotifyStateEvent(Montage, NewObject<UAssetFactoryNamedAnimNotifyState>(Montage, NAME_None, RF_Transactional), FName(TEXT("Manual.NotifyState")), 0.04f, 0.02f);
+	TestEqual(TEXT("Initial managed notify exists"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
+	TestEqual(TEXT("Initial managed notify state exists"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+
+	TSharedPtr<FJsonObject> MissingNotifyRegionsDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	const FAssetDocumentResult MissingNotifyRegionsResult = ApplyDocument(MissingNotifyRegionsDocument);
+	TestTrue(TEXT("Apply succeeds when notify regions are missing"), MissingNotifyRegionsResult.IsSuccess());
+	if (!MissingNotifyRegionsResult.IsSuccess())
+	{
+		AddError(MissingNotifyRegionsResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Missing Body.Notifies preserves managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
+	TestEqual(TEXT("Missing Body.NotifyStates preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Missing notify regions preserve unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
+	TestEqual(TEXT("Missing notify regions preserve unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
+
+	TSharedPtr<FJsonObject> EmptyNotifiesDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	EmptyNotifiesDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), TArray<TSharedPtr<FJsonValue>>());
+	const FAssetDocumentResult EmptyNotifiesResult = ApplyDocument(EmptyNotifiesDocument);
+	TestTrue(TEXT("Apply succeeds with empty Body.Notifies"), EmptyNotifiesResult.IsSuccess());
+	if (!EmptyNotifiesResult.IsSuccess())
+	{
+		AddError(EmptyNotifiesResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Empty Body.Notifies clears managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 0);
+	TestEqual(TEXT("Empty Body.Notifies preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+	TestEqual(TEXT("Empty Body.Notifies preserves unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
+	TestEqual(TEXT("Empty Body.Notifies preserves unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
+
+	TSharedPtr<FJsonObject> RebuildNotifiesDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetSingleManagedNotify(RebuildNotifiesDocument->GetObjectField(TEXT("Body")));
+	const FAssetDocumentResult RebuildNotifiesResult = ApplyDocument(RebuildNotifiesDocument);
+	TestTrue(TEXT("Apply rebuilds managed notify region"), RebuildNotifiesResult.IsSuccess());
+	if (!RebuildNotifiesResult.IsSuccess())
+	{
+		AddError(RebuildNotifiesResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Body.Notifies with values rebuilds managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
+	TestEqual(TEXT("Body.Notifies rebuild preserves managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 1);
+
+	TSharedPtr<FJsonObject> EmptyNotifyStatesDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	EmptyNotifyStatesDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), TArray<TSharedPtr<FJsonValue>>());
+	const FAssetDocumentResult EmptyNotifyStatesResult = ApplyDocument(EmptyNotifyStatesDocument);
+	TestTrue(TEXT("Apply succeeds with empty Body.NotifyStates"), EmptyNotifyStatesResult.IsSuccess());
+	if (!EmptyNotifyStatesResult.IsSuccess())
+	{
+		AddError(EmptyNotifyStatesResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Empty Body.NotifyStates preserves managed notify"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyObjectPrefix), 1);
+	TestEqual(TEXT("Empty Body.NotifyStates clears managed notify state"), CountNotifyEventsWithObjectPrefix(Montage, TestManagedNotifyStateObjectPrefix), 0);
+	TestEqual(TEXT("Empty Body.NotifyStates preserves unmanaged notify"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.Notify"))), 1);
+	TestEqual(TEXT("Empty Body.NotifyStates preserves unmanaged notify state"), CountNotifyEventsByName(Montage, FName(TEXT("Manual.NotifyState"))), 1);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageExtractSkipsUnmanagedNotifiesTest,
 	"AssetFactory.AssetDocument.AnimMontage.Extract.SkipsUnmanagedNotifies",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1661,6 +1783,18 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 			MakeClassRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState")))));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
 	}, TEXT("/Body/NotifyStates[0]/Object"), TEXT("InvalidNotifyObjectFragment"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify non-object placement"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		Notifies.Add(MakeShared<FJsonValueString>(TEXT("bad")));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]"), TEXT("InvalidNotifyPlacement"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("NotifyState non-object placement"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> NotifyStates;
+		NotifyStates.Add(MakeShared<FJsonValueString>(TEXT("bad")));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+	}, TEXT("/Body/NotifyStates[0]"), TEXT("InvalidNotifyPlacement"));
 
 	return bAllCasesPassed;
 }
