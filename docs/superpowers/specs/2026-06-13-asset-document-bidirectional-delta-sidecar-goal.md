@@ -30,6 +30,23 @@ A missing field means the sidecar does not declare a persistent difference for t
 
 This differs from sparse one-shot patch semantics. The sidecar is a source-of-truth delta, not an imperative partial update.
 
+This rule only applies inside regions declared as AssetDoc-managed. Unmanaged Unreal asset data is outside the synchronization scope and must be preserved by sidecar-to-asset application. A missing sidecar field must never be interpreted as permission to reset unrelated asset state.
+
+## Managed Region Scope
+
+`SemanticCapability` declares the managed region list for each supported asset shape. Every extractor, reducer, sync decision, and apply operation is scoped to those regions.
+
+For AnimMontage, version 1 should avoid one coarse `Body` region. A more useful region split is:
+
+- `Body.Blend`
+- `Body.SlotTracks`
+- `Body.CompositeSections`
+- `Body.Notifies`
+- `Body.Curves`
+- `Body.RootMotion`
+
+This keeps the conflict model region-level while avoiding unnecessary conflicts when the sidecar and Unreal editor changed unrelated parts of the same asset. For example, a sidecar edit to `Body.Blend` should not conflict with an editor edit to `Body.Notifies` if both regions have independent sync state.
+
 ## Architecture Overview
 
 The architecture should keep extraction, reduction, sidecar validation, synchronization, and application as separate responsibilities.
@@ -46,10 +63,73 @@ AssetDoc sidecar delta
   -> AuthoritativeApplyAdapter
   -> Unreal asset
 
-SidecarSyncEngine coordinates both directions with per-region sync state.
+SidecarSyncEngine coordinates both directions with SyncStateStore-backed per-region sync state.
 ```
 
 The important boundary is that the sidecar remains the authoring surface. The internal system may compute deltas, hashes, or rebuild instructions, but agents still edit AssetDoc content rather than an operation language.
+
+## Architecture Class Diagram
+
+```mermaid
+classDiagram
+    class SemanticCapability {
+        +ListManagedRegions()
+        +GetRegionSchema(regionId)
+        +GetDefaultSource(regionId)
+        +GetIdentityRule(regionId)
+        +GetComparisonRule(regionId)
+        +GetApplyPolicy(regionId)
+    }
+
+    class EvidenceExtractor {
+        +Extract(asset, regions)
+        +BuildEvidenceHash(regionEvidence)
+    }
+
+    class DefaultReducer {
+        +Reduce(evidence, defaultSource)
+        +BuildSidecarDelta(regionEvidence)
+    }
+
+    class SidecarDeltaCapability {
+        +Parse(sidecar)
+        +Validate(regionDelta)
+        +Canonicalize(regionDelta)
+        +BuildSidecarHash(regionDelta)
+    }
+
+    class SyncStateStore {
+        +Load(assetId)
+        +GetRegionState(regionId)
+        +UpdateRegionState(regionId, state)
+        +Save(assetId)
+    }
+
+    class SidecarSyncEngine {
+        +SyncAssetToSidecar(asset, sidecar)
+        +SyncSidecarToAsset(sidecar, asset)
+        +DetectRegionDirection(regionId)
+        +ResolveConflict(regionId, direction)
+    }
+
+    class AuthoritativeApplyAdapter {
+        +BeginTransaction(context)
+        +ResetManagedRegion(regionId)
+        +ApplyRegionDelta(regionId, delta)
+        +CommitTransaction(context)
+    }
+
+    SemanticCapability <.. EvidenceExtractor
+    SemanticCapability <.. DefaultReducer
+    SemanticCapability <.. SidecarDeltaCapability
+    SemanticCapability <.. AuthoritativeApplyAdapter
+    SidecarSyncEngine --> SemanticCapability
+    SidecarSyncEngine --> EvidenceExtractor
+    SidecarSyncEngine --> DefaultReducer
+    SidecarSyncEngine --> SidecarDeltaCapability
+    SidecarSyncEngine --> SyncStateStore
+    SidecarSyncEngine --> AuthoritativeApplyAdapter
+```
 
 ## Region-Level Synchronization
 
@@ -62,6 +142,32 @@ Examples:
 - The same default approach applies to structured regions such as `CompositeSections`, `SlotAnimTracks`, `NotifyStates`, and similar future graph or timeline regions.
 
 Identity remains useful for stable output, reduced textual churn, and future conflict detection, but it should not force version 1 into a complex element-level merge engine.
+
+## Canonical Hashing
+
+Conflict detection depends on canonical region hashes, not raw text comparison or raw UObject memory comparison.
+
+`SidecarDeltaCapability` is responsible for canonicalizing sidecar regions before hashing. Canonicalization should remove formatting differences, normalize ordering where ordering is not semantic, normalize omitted-default forms, and use stable field names from the AssetDoc schema.
+
+`EvidenceExtractor` and `DefaultReducer` are responsible for producing canonical asset evidence hashes. These hashes should represent the meaningful extracted state for a managed region after applying the same semantic comparison rules declared by `SemanticCapability`.
+
+Canonical hash rules must be owned per region. For example, montage section order may be semantic, while object property key order in the sidecar is not.
+
+## Sync State Store
+
+`SidecarSyncEngine` cannot detect direction or conflicts from the current sidecar and current asset alone. It requires persistent last-sync state.
+
+`SyncStateStore` stores per managed region:
+
+- region id
+- last synced sidecar hash
+- last synced asset evidence hash
+- last sync revision or timestamp
+- last accepted direction
+
+The state may be stored in sidecar metadata or in a companion state file, but it must be associated with the sidecar and asset identity. The first implementation can choose one storage mechanism, but the architecture requires the state to be explicit.
+
+When a region successfully syncs in either direction, `SidecarSyncEngine` updates the sidecar hash and asset evidence hash together. If a sync operation fails before both representations are stable, the previous state must remain intact so the next sync can retry or report the same conflict.
 
 ## Region-Level Conflict Resolution
 
@@ -88,6 +194,80 @@ Version 1 conflict resolution is intentionally directional:
 
 There is no element-level three-way merge in the first version. For example, if both `Body.Notifies` in the sidecar and the montage notifies in the Unreal asset changed since the last sync, version 1 does not try to merge individual notify rows. It asks for a region-level direction and then rebuilds that region from the chosen side.
 
+## Direction Detection Flow
+
+```mermaid
+flowchart TD
+    A["Change observed"] --> B["Load SemanticCapability"]
+    B --> C["List managed regions"]
+    C --> D["Load SyncStateStore"]
+    D --> E["Extract current asset evidence"]
+    E --> F["Canonicalize current sidecar regions"]
+    F --> G["Compute current asset and sidecar hashes"]
+    G --> H{"Compare region hashes with last-sync state"}
+    H --> I["Neither changed: no-op"]
+    H --> J["Only sidecar changed: apply sidecar to asset"]
+    H --> K["Only asset changed: regenerate sidecar region"]
+    H --> L["Both changed: mark conflict"]
+    L --> M{"User chooses direction"}
+    M --> N["Accept sidecar: apply sidecar region"]
+    M --> O["Accept asset: regenerate sidecar region"]
+    J --> P["Update SyncStateStore"]
+    K --> P
+    N --> P
+    O --> P
+```
+
+## Sidecar To Asset Sequence
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent or sidecar editor
+    participant Engine as SidecarSyncEngine
+    participant Sidecar as SidecarDeltaCapability
+    participant State as SyncStateStore
+    participant Sem as SemanticCapability
+    participant Extractor as EvidenceExtractor
+    participant Apply as AuthoritativeApplyAdapter
+    participant Asset as Unreal asset
+
+    Agent->>Engine: Sidecar changed
+    Engine->>Sem: List managed regions and policies
+    Engine->>Sidecar: Parse, validate, canonicalize sidecar regions
+    Engine->>State: Load last synced region hashes
+    Engine->>Extractor: Extract current asset evidence
+    Extractor->>Asset: Read reflected/raw asset facts
+    Extractor-->>Engine: Region evidence and asset hashes
+    Engine->>Engine: Detect changed regions and conflicts
+    alt only sidecar changed for region
+        Engine->>Apply: Begin transaction with source sidecar
+        Apply->>Asset: Reset or rebuild managed region
+        Apply->>Asset: Apply canonical sidecar delta
+        Apply-->>Engine: Post-apply result
+        Engine->>Extractor: Re-extract affected region
+        Extractor-->>Engine: Verified post-apply asset hash
+        Engine->>State: Update sidecar and asset hashes
+    else both sidecar and asset changed
+        Engine-->>Agent: Report region conflict
+        Agent->>Engine: accept sidecar or accept asset
+    end
+```
+
+## Sync Transactions And Loop Prevention
+
+Bidirectional synchronization must distinguish user/editor changes from changes produced by the sync engine itself.
+
+`SidecarSyncEngine` should create a sync transaction for every apply or regenerate operation. The transaction records:
+
+- source direction, such as sidecar, asset, accept sidecar, or accept asset
+- affected regions
+- expected post-operation sidecar hashes
+- expected post-operation asset evidence hashes
+
+If applying a sidecar change causes an Unreal asset save event, the next sync pass should compare the event against the active or recently completed transaction. If the resulting asset hash matches the expected post-apply hash, it is not a new user conflict; it is the expected result of the previous sync.
+
+Transactions should be short-lived and region-scoped. They are not an operation log for agents and should not become the authoring format.
+
 ## Identity Preference
 
 Use Unreal's native stable identity when it exists.
@@ -102,7 +282,8 @@ The target architecture is:
 - `DefaultReducer`: compares extracted facts against the selected default source, such as CDO values, empty templates, current asset baselines, or profile-declared defaults. It outputs only effective sidecar deltas.
 - `SemanticCapability`: declares sidecar-visible regions, stable keys, default sources, identity rules, comparison rules, constraints, synchronization scope, and whether a region is rebuilt as a whole in version 1.
 - `SidecarDeltaCapability`: validates and normalizes sidecar delta content. It understands the AssetDoc-native schema, but it does not expose an agent-facing patch or command DSL.
-- `SidecarSyncEngine`: coordinates asset-to-sidecar and sidecar-to-asset synchronization. It owns per-region sync state, direction detection, conflict marking, and `accept sidecar` / `accept asset` resolution.
+- `SyncStateStore`: persists last-sync sidecar and asset evidence hashes per managed region. It makes direction detection and conflict detection reliable across editor restarts and separate agent runs.
+- `SidecarSyncEngine`: coordinates asset-to-sidecar and sidecar-to-asset synchronization. It owns direction detection, conflict marking, sync transactions, loop prevention, and `accept sidecar` / `accept asset` resolution.
 - `AuthoritativeApplyAdapter`: writes normalized sidecar deltas back to Unreal objects. It resets or rebuilds managed fields and regions before applying sidecar values, because applying is not the reverse of extraction.
 
 Existing full Body replacement behavior can remain as a compatibility layer, but it should not be the long-term authoring model.
@@ -114,3 +295,4 @@ Existing full Body replacement behavior can remain as a compatibility layer, but
 - Do not grow one-off per-asset interpreters when a shared extractor, reducer, semantic capability, or apply adapter can cover the behavior.
 - Do not require element-level merge for the first version of bidirectional synchronization.
 - Do not guess region conflicts from array index, timestamp, class name, or other unstable element-level heuristics when a simple directional resolution is enough.
+- Do not let synchronization transactions become agent-authored operations or long-term edit history.
