@@ -2,6 +2,7 @@
 
 #include "AssetDocumentService.h"
 
+#include "AssetDocumentSidecar.h"
 #include "AssetDocumentSidecarDelta.h"
 #include "AssetFactoryNamedAnimNotifyState.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
@@ -12,6 +13,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Generators/AnimSequenceGenerator.h"
 #include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -277,6 +279,81 @@ bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const
 		}
 	}
 	return false;
+}
+
+bool LoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSharedPtr<FJsonObject>& OutDocument)
+{
+	FString Error;
+	const bool bLoaded = FAssetDocumentSidecar::LoadJsonFile(SidecarPath, OutDocument, Error);
+	Test->TestTrue(FString::Printf(TEXT("Loads sidecar JSON '%s'"), *SidecarPath), bLoaded);
+	if (!bLoaded)
+	{
+		Test->AddError(Error);
+	}
+	return bLoaded;
+}
+
+bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+{
+	FString Error;
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
+	Test->TestTrue(FString::Printf(TEXT("Writes sidecar JSON '%s'"), *SidecarPath), bWrote);
+	if (!bWrote)
+	{
+		Test->AddError(Error);
+	}
+	return bWrote;
+}
+
+const TSharedPtr<FJsonObject>* FindSyncRegions(TSharedPtr<FJsonObject> Document)
+{
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	if (!Document.IsValid() || !Document->TryGetObjectField(TEXT("_meta"), Meta) || !Meta || !Meta->IsValid())
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	if (!(*Meta)->TryGetObjectField(TEXT("sync"), Sync) || !Sync || !Sync->IsValid())
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	if (!(*Sync)->TryGetObjectField(TEXT("regions"), Regions) || !Regions || !Regions->IsValid())
+	{
+		return nullptr;
+	}
+	return Regions;
+}
+
+bool HasSyncRegions(TSharedPtr<FJsonObject> Document)
+{
+	return FindSyncRegions(Document) != nullptr;
+}
+
+void ExpectApplyFileSyncRegion(
+	FAutomationTestBase* Test,
+	const TSharedRef<FJsonObject>& AppliedSidecarDocument,
+	const TSharedPtr<FJsonObject>& SyncRegions,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	const TSharedPtr<FJsonObject>* RegionObject = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("ApplyFile sync includes %s"), *Policy.RegionId.ToString()),
+		SyncRegions->TryGetObjectField(Policy.RegionId.ToString(), RegionObject));
+	if (!RegionObject || !RegionObject->IsValid())
+	{
+		return;
+	}
+
+	const FString SidecarHash = (*RegionObject)->GetStringField(TEXT("sidecarHash"));
+	const FString AssetEvidenceHash = (*RegionObject)->GetStringField(TEXT("assetEvidenceHash"));
+	const FString ExpectedSidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(AppliedSidecarDocument, Policy);
+	Test->TestFalse(FString::Printf(TEXT("%s sidecar hash is initialized after ApplyFile"), *Policy.RegionId.ToString()), SidecarHash.IsEmpty());
+	Test->TestFalse(FString::Printf(TEXT("%s asset evidence hash is initialized after ApplyFile"), *Policy.RegionId.ToString()), AssetEvidenceHash.IsEmpty());
+	Test->TestEqual(FString::Printf(TEXT("%s sidecar hash matches source sidecar"), *Policy.RegionId.ToString()), SidecarHash, ExpectedSidecarHash);
+	Test->TestEqual(FString::Printf(TEXT("%s asset evidence hash matches applied sidecar"), *Policy.RegionId.ToString()), AssetEvidenceHash, SidecarHash);
 }
 
 bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath, const FString& ExpectedStatus)
@@ -733,6 +810,129 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 		}
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageApplyFileSyncStateTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyFile.SyncState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	FAnimMontageAssetDocumentProfile Profile;
+	FAssetDocumentRegionPolicy BlendPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
+	FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
+	FAssetDocumentRegionPolicy CompositeSectionsPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ApplyFileSync"));
+	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> SyncBlend = Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
+	SyncBlend->SetNumberField(TEXT("BlendInTime"), 0.125);
+	SyncBlend->SetNumberField(TEXT("BlendOutTime"), 0.25);
+	Document->RemoveField(TEXT("_meta"));
+	if (!WriteSidecarJson(this, SidecarPath, Document))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest Request;
+	Request.FilePath = SidecarPath;
+	Request.bSaveAsset = false;
+
+	const FAssetDocumentResult Result = Service.ApplyFile(Request);
+	TestTrue(TEXT("ApplyFile succeeds for structured AnimMontage sidecar"), Result.IsSuccess());
+	TestTrue(TEXT("ApplyFile reports sidecar sync rewrite"), Result.bWroteSidecar);
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> ReloadedDocument;
+	if (LoadSidecarJson(this, SidecarPath, ReloadedDocument))
+	{
+		const TSharedPtr<FJsonObject>* Meta = nullptr;
+		TestTrue(TEXT("ApplyFile sidecar includes _meta"), ReloadedDocument->TryGetObjectField(TEXT("_meta"), Meta));
+		const TSharedPtr<FJsonObject>* Sync = nullptr;
+		TestTrue(TEXT("ApplyFile sidecar includes _meta.sync"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+		const TSharedPtr<FJsonObject>* SyncRegions = FindSyncRegions(ReloadedDocument);
+		TestTrue(TEXT("ApplyFile sidecar includes _meta.sync.regions"), SyncRegions != nullptr);
+		if (Sync && Sync->IsValid())
+		{
+			TestEqual(TEXT("ApplyFile sync asset object path"), (*Sync)->GetStringField(TEXT("assetObjectPath")), MakeObjectPathFromTarget(Target));
+		}
+		if (SyncRegions)
+		{
+			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, BlendPolicy);
+			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, SlotAnimTracksPolicy);
+			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, CompositeSectionsPolicy);
+		}
+	}
+
+	const FString NoRewriteTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileNoRewrite"));
+	const FString NoRewriteSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(NoRewriteTarget);
+	TSharedPtr<FJsonObject> NoRewriteDocument = MakeStructuredMontageDocument(NoRewriteTarget, AnimSequence->GetPathName());
+	NoRewriteDocument->RemoveField(TEXT("_meta"));
+	if (!WriteSidecarJson(this, NoRewriteSidecarPath, NoRewriteDocument))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest NoRewriteRequest;
+	NoRewriteRequest.FilePath = NoRewriteSidecarPath;
+	NoRewriteRequest.bSaveAsset = false;
+	NoRewriteRequest.bAllowSidecarRewrite = false;
+	NoRewriteRequest.bTriggeredByWatcher = true;
+
+	const FAssetDocumentResult NoRewriteResult = Service.ApplyFile(NoRewriteRequest);
+	TestTrue(TEXT("ApplyFile succeeds when sidecar rewrite is disabled"), NoRewriteResult.IsSuccess());
+	TestFalse(TEXT("ApplyFile does not report sidecar rewrite when disabled"), NoRewriteResult.bWroteSidecar);
+
+	TSharedPtr<FJsonObject> ReloadedNoRewriteDocument;
+	if (LoadSidecarJson(this, NoRewriteSidecarPath, ReloadedNoRewriteDocument))
+	{
+		TestFalse(TEXT("ApplyFile does not write _meta.sync when rewrite is disabled"), HasSyncRegions(ReloadedNoRewriteDocument));
+	}
+
+	const FString MismatchTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileMismatch"));
+	const FString MismatchSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(MismatchTarget);
+	TSharedPtr<FJsonObject> MismatchDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_WrongTarget")), AnimSequence->GetPathName());
+	MismatchDocument->RemoveField(TEXT("_meta"));
+	if (!WriteSidecarJson(this, MismatchSidecarPath, MismatchDocument))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest MismatchRequest;
+	MismatchRequest.FilePath = MismatchSidecarPath;
+	MismatchRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult MismatchResult = Service.ApplyFile(MismatchRequest);
+	TestFalse(TEXT("ApplyFile fails for target mismatch"), MismatchResult.IsSuccess());
+	TestFalse(TEXT("Failed ApplyFile does not report sidecar rewrite"), MismatchResult.bWroteSidecar);
+
+	TSharedPtr<FJsonObject> ReloadedMismatchDocument;
+	if (LoadSidecarJson(this, MismatchSidecarPath, ReloadedMismatchDocument))
+	{
+		TestFalse(TEXT("Failed ApplyFile leaves _meta.sync absent"), HasSyncRegions(ReloadedMismatchDocument));
+	}
+
+	IFileManager::Get().Delete(*SidecarPath);
+	IFileManager::Get().Delete(*NoRewriteSidecarPath);
+	IFileManager::Get().Delete(*MismatchSidecarPath);
 	return true;
 }
 

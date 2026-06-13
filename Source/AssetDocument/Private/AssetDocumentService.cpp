@@ -3,6 +3,7 @@
 #include "AssetDocumentService.h"
 
 #include "AssetDocumentClassResolver.h"
+#include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "AssetDocumentProfileRegistry.h"
@@ -266,6 +267,104 @@ FAssetDocumentProfileResolution ResolveAssetDocumentProfile(const FAssetDocument
 	Resolution.Class = Class;
 	Resolution.ExactProfile = Registry.FindForClass(Class);
 	return Resolution;
+}
+
+bool TryWriteApplyFileSyncState(
+	const FString& SidecarFilePath,
+	UObject* AppliedAsset,
+	const FAssetDocumentResult& ApplyResult)
+{
+	if (SidecarFilePath.IsEmpty() || !AppliedAsset)
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> SourceDocument;
+	FString Error;
+	if (!FAssetDocumentSidecar::LoadJsonFile(SidecarFilePath, SourceDocument, Error) || !SourceDocument.IsValid())
+	{
+		return false;
+	}
+
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), AppliedAsset->GetClass());
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
+	if (RegionPolicies.Num() == 0)
+	{
+		return false;
+	}
+
+	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+	if (!BodyAdapter)
+	{
+		return false;
+	}
+
+	FString Target;
+	SourceDocument->TryGetStringField(TEXT("Target"), Target);
+	Target = NormalizeValidateTarget(Target);
+	if (Target.IsEmpty())
+	{
+		Target = ApplyResult.Target;
+	}
+
+	TSharedRef<FJsonObject> EvidenceDocument = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> EvidenceBody = MakeShared<FJsonObject>();
+	FAssetDocumentCapabilityContext CapabilityContext;
+	CapabilityContext.Asset = AppliedAsset;
+	CapabilityContext.AssetClass = AppliedAsset->GetClass();
+	CapabilityContext.TargetAssetPath = Target;
+	CapabilityContext.SourceDocumentPath = SidecarFilePath;
+
+	const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(CapabilityContext, EvidenceBody);
+	if (!ExtractResult.bSuccess)
+	{
+		return false;
+	}
+	EvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
+
+	FAssetDocumentSyncState SyncState;
+	FString SyncError;
+	FAssetDocumentSyncStateStore::LoadFromDocumentJson(SourceDocument.ToSharedRef(), SyncState, SyncError);
+	SyncState.AssetObjectPath = AppliedAsset->GetPathName();
+	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+	bool bUpdatedAnyRegion = false;
+	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+	{
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(SourceDocument.ToSharedRef(), Policy);
+		if (SidecarHash.IsEmpty())
+		{
+			continue;
+		}
+
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(EvidenceDocument, Policy);
+		if (AssetEvidenceHash.IsEmpty())
+		{
+			continue;
+		}
+
+		FAssetDocumentRegionSyncState RegionState;
+		RegionState.SidecarHash = SidecarHash;
+		RegionState.AssetEvidenceHash = AssetEvidenceHash;
+		RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+		FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+		bUpdatedAnyRegion = true;
+	}
+
+	if (!bUpdatedAnyRegion)
+	{
+		return false;
+	}
+
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(SourceDocument.ToSharedRef(), SyncState);
+	FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarFilePath);
+	return FAssetDocumentSidecar::WriteJsonFile(SidecarFilePath, SourceDocument, Error);
 }
 
 TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileResolution& Resolution)
@@ -994,6 +1093,19 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 	FAssetDocumentResult Result = Apply(ApplyRequest);
 	Result.SidecarFilePath = NormalizedFilePath;
+	if (Result.IsSuccess() && Request.bAllowSidecarRewrite)
+	{
+		UObject* AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.AssetPath);
+		if (!AppliedAsset)
+		{
+			AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.Target);
+		}
+		Result.bWroteSidecar = TryWriteApplyFileSyncState(NormalizedFilePath, AppliedAsset, Result);
+	}
+	else
+	{
+		Result.bWroteSidecar = false;
+	}
 
 	if (!Result.Payload.IsValid())
 	{

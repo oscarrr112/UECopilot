@@ -3,6 +3,7 @@
 #include "AssetDocumentEditorSync.h"
 
 #include "AssetDocumentSidecar.h"
+#include "AssetDocumentSyncStateStore.h"
 
 #include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
@@ -174,9 +175,29 @@ bool FAssetDocumentEditorSyncGuardTest::RunTest(const FString& Parameters)
 		FAssetDocumentEditorSync::FScopedSidecarWrite Guard(TestPath);
 		TestTrue(TEXT("Path is suppressed inside guard"), FAssetDocumentEditorSync::IsSidecarWriteSuppressed(TestPath));
 		TestTrue(TEXT("Empty query reports active sync inside guard"), FAssetDocumentEditorSync::IsSidecarWriteSuppressed(FString()));
+
+		TSharedPtr<FJsonObject> Document = MakeSidecarDocument(TEXT("/Game/AssetDocumentEditorSyncGuard"));
+		FAssetDocumentSyncState SyncState;
+		SyncState.AssetObjectPath = TEXT("/Game/AssetDocumentEditorSyncGuard.AssetDocumentEditorSyncGuard");
+		SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+		FAssetDocumentRegionSyncState RegionState;
+		RegionState.SidecarHash = TEXT("sidecar");
+		RegionState.AssetEvidenceHash = TEXT("asset");
+		RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+		FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, TEXT("Body.Blend"), RegionState);
+		FAssetDocumentSyncStateStore::WriteToDocumentJson(Document.ToSharedRef(), SyncState);
+
+		FString Error;
+		TestTrue(TEXT("Guarded _meta.sync sidecar write succeeds"), FAssetDocumentSidecar::WriteJsonFile(TestPath, Document, Error));
+		if (!Error.IsEmpty())
+		{
+			AddError(Error);
+		}
+		TestTrue(TEXT("Guard still suppresses path during _meta.sync write"), FAssetDocumentEditorSync::IsSidecarWriteSuppressed(TestPath));
 	}
 
 	TestTrue(TEXT("Path remains briefly suppressed for async watcher callbacks"), FAssetDocumentEditorSync::IsSidecarWriteSuppressed(TestPath));
+	IFileManager::Get().Delete(*TestPath);
 	return true;
 }
 
