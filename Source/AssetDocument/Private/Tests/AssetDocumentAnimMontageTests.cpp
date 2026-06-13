@@ -17,6 +17,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/UObjectIterator.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -836,8 +837,19 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	FAssetDocumentRegionPolicy CompositeSectionsPolicy;
 	TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
 
+	TArray<FString> SidecarPathsToCleanup;
+	ON_SCOPE_EXIT
+	{
+		for (const FString& Path : SidecarPathsToCleanup)
+		{
+			IFileManager::Get().Delete(*Path);
+			IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Path), false, false);
+		}
+	};
+
 	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ApplyFileSync"));
 	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+	SidecarPathsToCleanup.Add(SidecarPath);
 	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	TSharedPtr<FJsonObject> SyncBlend = Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
 	SyncBlend->SetNumberField(TEXT("BlendInTime"), 0.125);
@@ -884,6 +896,7 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 
 	const FString NoRewriteTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileNoRewrite"));
 	const FString NoRewriteSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(NoRewriteTarget);
+	SidecarPathsToCleanup.Add(NoRewriteSidecarPath);
 	TSharedPtr<FJsonObject> NoRewriteDocument = MakeStructuredMontageDocument(NoRewriteTarget, AnimSequence->GetPathName());
 	NoRewriteDocument->RemoveField(TEXT("_meta"));
 	if (!WriteSidecarJson(this, NoRewriteSidecarPath, NoRewriteDocument))
@@ -907,8 +920,74 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 		TestFalse(TEXT("ApplyFile does not write _meta.sync when rewrite is disabled"), HasSyncRegions(ReloadedNoRewriteDocument));
 	}
 
+	const FString HashMismatchTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileHashMismatch"));
+	const FString HashMismatchSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(HashMismatchTarget);
+	SidecarPathsToCleanup.Add(HashMismatchSidecarPath);
+	TSharedPtr<FJsonObject> HashMismatchDocument = MakeStructuredMontageDocument(HashMismatchTarget, AnimSequence->GetPathName());
+	HashMismatchDocument->RemoveField(TEXT("_meta"));
+	if (!WriteSidecarJson(this, HashMismatchSidecarPath, HashMismatchDocument))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest HashMismatchRequest;
+	HashMismatchRequest.FilePath = HashMismatchSidecarPath;
+	HashMismatchRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult HashMismatchResult = Service.ApplyFile(HashMismatchRequest);
+	TestTrue(TEXT("ApplyFile still succeeds when sync hash update is skipped for mismatched evidence"), HashMismatchResult.IsSuccess());
+	TestFalse(TEXT("ApplyFile does not report sidecar rewrite when sync hashes mismatch"), HashMismatchResult.bWroteSidecar);
+
+	TSharedPtr<FJsonObject> ReloadedHashMismatchDocument;
+	if (LoadSidecarJson(this, HashMismatchSidecarPath, ReloadedHashMismatchDocument))
+	{
+		TestFalse(TEXT("ApplyFile does not write _meta.sync when sync hashes mismatch"), HasSyncRegions(ReloadedHashMismatchDocument));
+	}
+
+	const FString MalformedSyncTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileMalformedSync"));
+	const FString MalformedSyncSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(MalformedSyncTarget);
+	SidecarPathsToCleanup.Add(MalformedSyncSidecarPath);
+	TSharedPtr<FJsonObject> MalformedSyncDocument = MakeStructuredMontageDocument(MalformedSyncTarget, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> MalformedMeta = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> MalformedSync = MakeShared<FJsonObject>();
+	MalformedSync->SetStringField(TEXT("schemaVersion"), TEXT("bad"));
+	MalformedMeta->SetObjectField(TEXT("sync"), MalformedSync);
+	MalformedSyncDocument->SetObjectField(TEXT("_meta"), MalformedMeta);
+	TSharedPtr<FJsonObject> MalformedSyncBlend = MalformedSyncDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
+	MalformedSyncBlend->SetNumberField(TEXT("BlendInTime"), 0.125);
+	MalformedSyncBlend->SetNumberField(TEXT("BlendOutTime"), 0.25);
+	if (!WriteSidecarJson(this, MalformedSyncSidecarPath, MalformedSyncDocument))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest MalformedSyncRequest;
+	MalformedSyncRequest.FilePath = MalformedSyncSidecarPath;
+	MalformedSyncRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult MalformedSyncResult = Service.ApplyFile(MalformedSyncRequest);
+	TestTrue(TEXT("ApplyFile still succeeds when malformed existing sync prevents sync rewrite"), MalformedSyncResult.IsSuccess());
+	TestFalse(TEXT("ApplyFile does not report sidecar rewrite when existing sync is malformed"), MalformedSyncResult.bWroteSidecar);
+
+	TSharedPtr<FJsonObject> ReloadedMalformedSyncDocument;
+	if (LoadSidecarJson(this, MalformedSyncSidecarPath, ReloadedMalformedSyncDocument))
+	{
+		const TSharedPtr<FJsonObject>* ReloadedMeta = nullptr;
+		const TSharedPtr<FJsonObject>* ReloadedSync = nullptr;
+		TestTrue(TEXT("Malformed sync sidecar keeps _meta"), ReloadedMalformedSyncDocument->TryGetObjectField(TEXT("_meta"), ReloadedMeta));
+		TestTrue(TEXT("Malformed sync sidecar keeps _meta.sync"), ReloadedMeta && ReloadedMeta->IsValid() && (*ReloadedMeta)->TryGetObjectField(TEXT("sync"), ReloadedSync));
+		if (ReloadedSync && ReloadedSync->IsValid())
+		{
+			FString SchemaVersion;
+			TestTrue(TEXT("Malformed sync schemaVersion remains string"), (*ReloadedSync)->TryGetStringField(TEXT("schemaVersion"), SchemaVersion));
+			TestEqual(TEXT("Malformed sync schemaVersion is not normalized"), SchemaVersion, FString(TEXT("bad")));
+			TestFalse(TEXT("Malformed sync is not overwritten with regions"), (*ReloadedSync)->HasField(TEXT("regions")));
+		}
+	}
+
 	const FString MismatchTarget = MakeUniqueMontageTarget(TEXT("AM_ApplyFileMismatch"));
 	const FString MismatchSidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(MismatchTarget);
+	SidecarPathsToCleanup.Add(MismatchSidecarPath);
 	TSharedPtr<FJsonObject> MismatchDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_WrongTarget")), AnimSequence->GetPathName());
 	MismatchDocument->RemoveField(TEXT("_meta"));
 	if (!WriteSidecarJson(this, MismatchSidecarPath, MismatchDocument))
@@ -930,9 +1009,6 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 		TestFalse(TEXT("Failed ApplyFile leaves _meta.sync absent"), HasSyncRegions(ReloadedMismatchDocument));
 	}
 
-	IFileManager::Get().Delete(*SidecarPath);
-	IFileManager::Get().Delete(*NoRewriteSidecarPath);
-	IFileManager::Get().Delete(*MismatchSidecarPath);
 	return true;
 }
 

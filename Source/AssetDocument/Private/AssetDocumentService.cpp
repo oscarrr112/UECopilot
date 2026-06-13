@@ -272,10 +272,13 @@ FAssetDocumentProfileResolution ResolveAssetDocumentProfile(const FAssetDocument
 bool TryWriteApplyFileSyncState(
 	const FString& SidecarFilePath,
 	UObject* AppliedAsset,
-	const FAssetDocumentResult& ApplyResult)
+	const FAssetDocumentResult& ApplyResult,
+	FString& OutSkipReason)
 {
+	OutSkipReason.Reset();
 	if (SidecarFilePath.IsEmpty() || !AppliedAsset)
 	{
+		OutSkipReason = TEXT("Missing sidecar path or applied asset");
 		return false;
 	}
 
@@ -283,6 +286,7 @@ bool TryWriteApplyFileSyncState(
 	FString Error;
 	if (!FAssetDocumentSidecar::LoadJsonFile(SidecarFilePath, SourceDocument, Error) || !SourceDocument.IsValid())
 	{
+		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to reload source sidecar") : Error;
 		return false;
 	}
 
@@ -290,18 +294,21 @@ bool TryWriteApplyFileSyncState(
 		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), AppliedAsset->GetClass());
 	if (!ProfileResolution.ExactProfile.IsValid())
 	{
+		OutSkipReason = FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *AppliedAsset->GetClass()->GetPathName());
 		return false;
 	}
 
 	const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
 	if (RegionPolicies.Num() == 0)
 	{
+		OutSkipReason = TEXT("Exact AssetDocument profile has no region policies");
 		return false;
 	}
 
 	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
 	if (!BodyAdapter)
 	{
+		OutSkipReason = TEXT("Exact AssetDocument profile has no Body adapter");
 		return false;
 	}
 
@@ -324,13 +331,18 @@ bool TryWriteApplyFileSyncState(
 	const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(CapabilityContext, EvidenceBody);
 	if (!ExtractResult.bSuccess)
 	{
+		OutSkipReason = ExtractResult.Message.IsEmpty() ? TEXT("Failed to extract post-apply asset evidence") : ExtractResult.Message;
 		return false;
 	}
 	EvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
 
 	FAssetDocumentSyncState SyncState;
 	FString SyncError;
-	FAssetDocumentSyncStateStore::LoadFromDocumentJson(SourceDocument.ToSharedRef(), SyncState, SyncError);
+	if (!FAssetDocumentSyncStateStore::LoadFromDocumentJson(SourceDocument.ToSharedRef(), SyncState, SyncError))
+	{
+		OutSkipReason = SyncError.IsEmpty() ? TEXT("Malformed existing sync state") : SyncError;
+		return false;
+	}
 	SyncState.AssetObjectPath = AppliedAsset->GetPathName();
 	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
 
@@ -346,7 +358,15 @@ bool TryWriteApplyFileSyncState(
 		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(EvidenceDocument, Policy);
 		if (AssetEvidenceHash.IsEmpty())
 		{
-			continue;
+			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash is empty for region '%s'"), *Policy.RegionId.ToString());
+			return false;
+		}
+
+		// A mismatched region means this apply did not produce a synced baseline for the source sidecar.
+		if (SidecarHash != AssetEvidenceHash)
+		{
+			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash differs for region '%s'"), *Policy.RegionId.ToString());
+			return false;
 		}
 
 		FAssetDocumentRegionSyncState RegionState;
@@ -359,12 +379,18 @@ bool TryWriteApplyFileSyncState(
 
 	if (!bUpdatedAnyRegion)
 	{
+		OutSkipReason = TEXT("No writable sync regions were found");
 		return false;
 	}
 
 	FAssetDocumentSyncStateStore::WriteToDocumentJson(SourceDocument.ToSharedRef(), SyncState);
 	FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarFilePath);
-	return FAssetDocumentSidecar::WriteJsonFile(SidecarFilePath, SourceDocument, Error);
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarFilePath, SourceDocument, Error);
+	if (!bWrote)
+	{
+		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to write sidecar sync state") : Error;
+	}
+	return bWrote;
 }
 
 TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileResolution& Resolution)
@@ -1093,6 +1119,7 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 	FAssetDocumentResult Result = Apply(ApplyRequest);
 	Result.SidecarFilePath = NormalizedFilePath;
+	FString SidecarSyncUpdateSkipReason;
 	if (Result.IsSuccess() && Request.bAllowSidecarRewrite)
 	{
 		UObject* AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.AssetPath);
@@ -1100,7 +1127,7 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 		{
 			AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.Target);
 		}
-		Result.bWroteSidecar = TryWriteApplyFileSyncState(NormalizedFilePath, AppliedAsset, Result);
+		Result.bWroteSidecar = TryWriteApplyFileSyncState(NormalizedFilePath, AppliedAsset, Result, SidecarSyncUpdateSkipReason);
 	}
 	else
 	{
@@ -1113,6 +1140,11 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 	}
 	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
 	Result.Payload->SetBoolField(TEXT("triggered_by_watcher"), Request.bTriggeredByWatcher);
+	if (Result.IsSuccess() && Request.bAllowSidecarRewrite && !Result.bWroteSidecar && !SidecarSyncUpdateSkipReason.IsEmpty())
+	{
+		Result.Payload->SetBoolField(TEXT("sidecar_sync_update_skipped"), true);
+		Result.Payload->SetStringField(TEXT("sidecar_sync_update_skip_reason"), SidecarSyncUpdateSkipReason);
+	}
 
 	return Result;
 }
