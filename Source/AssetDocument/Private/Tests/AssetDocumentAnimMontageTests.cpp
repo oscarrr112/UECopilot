@@ -2,6 +2,7 @@
 
 #include "AssetDocumentService.h"
 
+#include "AssetDocumentSidecarDelta.h"
 #include "AssetFactoryNamedAnimNotifyState.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 
@@ -519,6 +520,38 @@ FAssetDocumentResult DiffDocument(TSharedPtr<FJsonObject> Document)
 	return Service.Diff(Request);
 }
 
+bool ExpectExtractSyncRegion(
+	FAutomationTestBase* Test,
+	const TSharedRef<FJsonObject>& Document,
+	const TSharedPtr<FJsonObject>& Regions,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	if (!Test || !Regions.IsValid())
+	{
+		return false;
+	}
+
+	const FString RegionId = Policy.RegionId.ToString();
+	const TSharedPtr<FJsonObject>* RegionState = nullptr;
+	const bool bHasRegion = Test->TestTrue(
+		FString::Printf(TEXT("Extract sync includes %s"), *RegionId),
+		Regions->TryGetObjectField(RegionId, RegionState));
+	if (!bHasRegion || !RegionState || !RegionState->IsValid())
+	{
+		return false;
+	}
+
+	const FString SidecarHash = (*RegionState)->GetStringField(TEXT("sidecarHash"));
+	const FString AssetEvidenceHash = (*RegionState)->GetStringField(TEXT("assetEvidenceHash"));
+	const FString RegionHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document, Policy);
+
+	Test->TestFalse(FString::Printf(TEXT("%s sidecar hash is initialized"), *RegionId), SidecarHash.IsEmpty());
+	Test->TestEqual(FString::Printf(TEXT("%s sidecar hash matches extracted region"), *RegionId), SidecarHash, RegionHash);
+	Test->TestEqual(FString::Printf(TEXT("%s asset evidence starts from sidecar hash"), *RegionId), AssetEvidenceHash, SidecarHash);
+
+	return true;
+}
+
 bool ExpectInvalidValidate(
 	FAutomationTestBase* Test,
 	const FString& CaseName,
@@ -606,6 +639,33 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 	TestTrue(TEXT("Extract returns payload"), ExtractResult.Payload.IsValid());
 	if (ExtractResult.Payload.IsValid())
 	{
+		const TSharedPtr<FJsonObject>* Meta = nullptr;
+		TestTrue(TEXT("Extract includes _meta"), ExtractResult.Payload->TryGetObjectField(TEXT("_meta"), Meta));
+		const TSharedPtr<FJsonObject>* Sync = nullptr;
+		TestTrue(TEXT("Extract includes _meta.sync"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+		const TSharedPtr<FJsonObject>* SyncRegions = nullptr;
+		TestTrue(TEXT("Extract includes _meta.sync.regions"), Sync && Sync->IsValid() && (*Sync)->TryGetObjectField(TEXT("regions"), SyncRegions));
+		if (Sync && Sync->IsValid())
+		{
+			TestEqual(TEXT("Extract sync schema version"), static_cast<int32>((*Sync)->GetNumberField(TEXT("schemaVersion"))), 1);
+			TestEqual(TEXT("Extract sync asset object path"), (*Sync)->GetStringField(TEXT("assetObjectPath")), MakeObjectPathFromTarget(Target));
+			TestFalse(TEXT("Extract sync updatedAtUtc is initialized"), (*Sync)->GetStringField(TEXT("updatedAtUtc")).IsEmpty());
+		}
+
+		FAnimMontageAssetDocumentProfile Profile;
+		FAssetDocumentRegionPolicy BlendPolicy;
+		TestTrue(TEXT("AnimMontage profile has Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
+		FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
+		TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
+		FAssetDocumentRegionPolicy CompositeSectionsPolicy;
+		TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+		if (SyncRegions && SyncRegions->IsValid())
+		{
+			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, BlendPolicy);
+			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, SlotAnimTracksPolicy);
+			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, CompositeSectionsPolicy);
+		}
+
 		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
 		TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
 		if (ExtractedBody && ExtractedBody->IsValid())
@@ -647,6 +707,29 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 				TestEqual(TEXT("Extracted BlendInTime"), (*ExtractedBlend)->GetNumberField(TEXT("BlendInTime")), 0.1);
 				TestEqual(TEXT("Extracted BlendOutTime"), (*ExtractedBlend)->GetNumberField(TEXT("BlendOutTime")), 0.2);
 			}
+		}
+
+		if (ExtractedBody && ExtractedBody->IsValid())
+		{
+			const FString BlendHashBeforeSkipped = FAssetDocumentSidecarDelta::HashSidecarRegion(ExtractResult.Payload.ToSharedRef(), BlendPolicy);
+			(*ExtractedBody)->RemoveField(TEXT("_Skipped"));
+			TestEqual(TEXT("Body _Skipped does not affect region hash when removed"), FAssetDocumentSidecarDelta::HashSidecarRegion(ExtractResult.Payload.ToSharedRef(), BlendPolicy), BlendHashBeforeSkipped);
+			(*ExtractedBody)->SetObjectField(TEXT("_Skipped"), MakeShared<FJsonObject>());
+			TestEqual(TEXT("Body _Skipped does not affect region hash when added"), FAssetDocumentSidecarDelta::HashSidecarRegion(ExtractResult.Payload.ToSharedRef(), BlendPolicy), BlendHashBeforeSkipped);
+			(*ExtractedBody)->RemoveField(TEXT("_Skipped"));
+			TestEqual(TEXT("Body _Skipped does not affect region hash after add/remove"), FAssetDocumentSidecarDelta::HashSidecarRegion(ExtractResult.Payload.ToSharedRef(), BlendPolicy), BlendHashBeforeSkipped);
+
+			FAssetDocumentValidateRequest ValidateRequest;
+			ValidateRequest.Document = ExtractResult.Payload;
+			const FAssetDocumentResult ValidateResult = Service.Validate(ValidateRequest);
+			TestTrue(TEXT("Validate accepts document with _meta.sync"), ValidateResult.IsSuccess());
+			if (!ValidateResult.IsSuccess())
+			{
+				AddError(ValidateResult.Message);
+			}
+
+			ExtractResult.Payload->RemoveField(TEXT("_meta"));
+			TestEqual(TEXT("Top-level _meta does not affect region hash"), FAssetDocumentSidecarDelta::HashSidecarRegion(ExtractResult.Payload.ToSharedRef(), BlendPolicy), BlendHashBeforeSkipped);
 		}
 	}
 

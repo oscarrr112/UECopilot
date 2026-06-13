@@ -158,6 +158,41 @@ bool FAssetDocumentGenericInspectProfileTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGenericExtractDoesNotForceSyncRegionsTest,
+	"AssetFactory.AssetDocument.Profile.GenericExtractDoesNotForceSyncRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGenericExtractDoesNotForceSyncRegionsTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentService Service;
+	FAssetDocumentExtractRequest Request;
+	Request.AssetPath = TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial");
+	Request.bDiffOnly = true;
+	Request.bIncludeAllWritable = false;
+
+	const FAssetDocumentResult Result = Service.Extract(Request);
+	TestTrue(TEXT("Generic extract succeeds for engine material"), Result.IsSuccess());
+	TestTrue(TEXT("Generic extract returns payload"), Result.Payload.IsValid());
+	if (!Result.Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	if (Result.Payload->TryGetObjectField(TEXT("_meta"), Meta) && Meta && Meta->IsValid())
+	{
+		const TSharedPtr<FJsonObject>* Sync = nullptr;
+		if ((*Meta)->TryGetObjectField(TEXT("sync"), Sync) && Sync && Sync->IsValid())
+		{
+			const TSharedPtr<FJsonObject>* Regions = nullptr;
+			TestFalse(TEXT("Generic extract does not force sync regions"), (*Sync)->TryGetObjectField(TEXT("regions"), Regions) && Regions && Regions->IsValid() && (*Regions)->Values.Num() > 0);
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentGenericCreateTemplateTest,
 	"AssetFactory.AssetDocument.Profile.GenericTemplate",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

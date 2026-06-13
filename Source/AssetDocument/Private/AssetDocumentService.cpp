@@ -8,6 +8,8 @@
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
+#include "AssetDocumentSidecarDelta.h"
+#include "AssetDocumentSyncStateStore.h"
 
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
@@ -1183,6 +1185,26 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 			}
 
 			Document->SetObjectField(TEXT("Body"), Body);
+		}
+
+		const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
+		if (RegionPolicies.Num() > 0)
+		{
+			FAssetDocumentSyncState SyncState;
+			SyncState.AssetObjectPath = Asset->GetPathName();
+			SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+			for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+			{
+				const FString RegionHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document.ToSharedRef(), Policy);
+				FAssetDocumentRegionSyncState RegionState;
+				RegionState.SidecarHash = RegionHash;
+				RegionState.AssetEvidenceHash = RegionHash;
+				RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+				FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+			}
+
+			FAssetDocumentSyncStateStore::WriteToDocumentJson(Document.ToSharedRef(), SyncState);
 		}
 	}
 
