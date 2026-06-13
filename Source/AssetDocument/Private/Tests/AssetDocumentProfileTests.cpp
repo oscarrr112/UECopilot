@@ -185,12 +185,17 @@ bool FAssetDocumentGenericCreateTemplateRejectsInvalidTargetTest::RunTest(const 
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentExactProfileServiceTest,
-	"AssetFactory.AssetDocument.Profile.ExactProfileService",
+	"AssetFactory.AssetDocument.Profile.ExactProfile",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FAssetDocumentExactProfileServiceTest::RunTest(const FString& Parameters)
 {
-	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FTestAssetDocumentProfile>());
+	TSharedRef<FTestAssetDocumentProfile> TestProfile = MakeShared<FTestAssetDocumentProfile>();
+	FAssetDocumentService::GetProfileRegistry().Register(TestProfile);
+
+	TestEqual(TEXT("Default profile region policies are empty"), TestProfile->GetRegionPolicies().Num(), 0);
+	FAssetDocumentRegionPolicy MissingPolicy;
+	TestFalse(TEXT("Default profile lookup returns false"), TestProfile->GetRegionPolicy(TEXT("Body.TestBody"), MissingPolicy));
 
 	const FAssetDocumentService Service;
 	FAssetDocumentProfileRequest ProfileRequest;

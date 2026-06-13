@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "AssetDocumentPolicy.h"
 #include "AssetDocumentTypes.h"
 
 #include "CoreMinimal.h"
@@ -91,4 +92,20 @@ public:
 	virtual TSharedRef<FJsonObject> CreateTemplate(const FAssetDocumentTemplateContext& Context) const = 0;
 	virtual TArray<FName> GetBodyKeys() const = 0;
 	virtual const IAssetDocumentCapability* ResolveBodyAdapter(FName BodyKey) const = 0;
+	virtual TArray<FAssetDocumentRegionPolicy> GetRegionPolicies() const
+	{
+		return {};
+	}
+	virtual bool GetRegionPolicy(FName RegionId, FAssetDocumentRegionPolicy& OutPolicy) const
+	{
+		for (const FAssetDocumentRegionPolicy& Policy : GetRegionPolicies())
+		{
+			if (Policy.RegionId == RegionId)
+			{
+				OutPolicy = Policy;
+				return true;
+			}
+		}
+		return false;
+	}
 };

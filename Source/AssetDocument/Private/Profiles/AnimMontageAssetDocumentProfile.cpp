@@ -2,6 +2,8 @@
 
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 
+#include "AssetDocumentPolicyRegistry.h"
+
 #include "Animation/AnimMontage.h"
 #include "Dom/JsonValue.h"
 
@@ -10,6 +12,30 @@ namespace
 TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
 {
 	return TArray<TSharedPtr<FJsonValue>>();
+}
+
+bool MakeRegionPolicy(
+	FName PresetName,
+	FName RegionId,
+	EAssetDocumentRegionKind RegionKind,
+	TArray<FString> ManagedUePropertyPaths,
+	FAssetDocumentRegionPolicy& OutPolicy)
+{
+	FAssetDocumentRegionPolicyPreset Preset;
+	if (!FAssetDocumentPolicyRegistry::GetBuiltinPreset(PresetName, Preset))
+	{
+		return false;
+	}
+
+	FAssetDocumentRegionPolicyOverride Override;
+	Override.RegionId = RegionId;
+	Override.BodyPath = RegionId.ToString();
+	Override.RegionKind = RegionKind;
+	if (ManagedUePropertyPaths.Num() > 0)
+	{
+		Override.ManagedUePropertyPaths = MoveTemp(ManagedUePropertyPaths);
+	}
+	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
 }
 
@@ -70,4 +96,34 @@ const IAssetDocumentCapability* FAnimMontageAssetDocumentProfile::ResolveBodyAda
 	}
 
 	return nullptr;
+}
+
+TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPolicies() const
+{
+	TArray<FAssetDocumentRegionPolicy> Policies;
+	Policies.Reserve(5);
+
+	FAssetDocumentRegionPolicy Policy;
+	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blend"), EAssetDocumentRegionKind::Object, {}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.SlotAnimTracks"), EAssetDocumentRegionKind::Array, {TEXT("SlotAnimTracks")}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.CompositeSections"), EAssetDocumentRegionKind::Timeline, {TEXT("CompositeSections")}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Notifies"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+
+	return Policies;
 }

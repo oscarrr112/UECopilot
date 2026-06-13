@@ -3,6 +3,7 @@
 #include "AssetDocumentService.h"
 
 #include "AssetFactoryNamedAnimNotifyState.h"
+#include "Profiles/AnimMontageAssetDocumentProfile.h"
 
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequenceBase.h"
@@ -337,6 +338,19 @@ bool HasExpectedFragmentKinds(const TArray<TSharedPtr<FJsonValue>>& FragmentKind
 		&& JsonArrayContainsString(FragmentKinds, TEXT("StructValue"))
 		&& JsonArrayContainsString(FragmentKinds, TEXT("EmbeddedObject"))
 		&& JsonArrayContainsString(FragmentKinds, TEXT("DefinitionRef"));
+}
+
+bool FindRegionPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId, FAssetDocumentRegionPolicy& OutPolicy)
+{
+	for (const FAssetDocumentRegionPolicy& Policy : Policies)
+	{
+		if (Policy.RegionId == RegionId)
+		{
+			OutPolicy = Policy;
+			return true;
+		}
+	}
+	return false;
 }
 
 int32 CountNotifyEventsByName(const UAnimMontage* Montage, FName NotifyName)
@@ -1456,11 +1470,52 @@ bool FAssetDocumentAnimMontageDiffIgnoresSkippedMetadataTest::RunTest(const FStr
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageInspectProfileTest,
-	"AssetFactory.AssetDocument.AnimMontage.InspectProfile",
+	"AssetFactory.AssetDocument.AnimMontage.InspectProfileIncludesStructuredBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Parameters)
 {
+	const FAnimMontageAssetDocumentProfile Profile;
+	const TArray<FAssetDocumentRegionPolicy> Policies = Profile.GetRegionPolicies();
+	TestTrue(TEXT("AnimMontage profile declares at least five region policies"), Policies.Num() >= 5);
+
+	FAssetDocumentRegionPolicy BlendPolicy;
+	TestTrue(TEXT("AnimMontage profile declares Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
+	TestEqual(TEXT("Body.Blend path is dotted body path"), BlendPolicy.BodyPath, FString(TEXT("Body.Blend")));
+	TestEqual(TEXT("Body.Blend uses object region kind"), BlendPolicy.RegionKind, EAssetDocumentRegionKind::Object);
+	TestEqual(TEXT("Body.Blend uses CDO default source"), BlendPolicy.DefaultSource, EAssetDocumentDefaultSource::CDO);
+	TestEqual(TEXT("Body.Blend uses default-diff reducer"), BlendPolicy.ReducerMode, EAssetDocumentReducerMode::DefaultDiff);
+	TestEqual(TEXT("Body.Blend uses set-property apply mode"), BlendPolicy.ApplyMode, EAssetDocumentApplyMode::SetProperty);
+
+	FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
+	TestTrue(TEXT("AnimMontage profile declares Body.SlotAnimTracks policy"), FindRegionPolicy(Policies, TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
+	TestEqual(TEXT("Body.SlotAnimTracks uses array region kind"), SlotAnimTracksPolicy.RegionKind, EAssetDocumentRegionKind::Array);
+	TestEqual(TEXT("Body.SlotAnimTracks uses managed reducer"), SlotAnimTracksPolicy.ReducerMode, EAssetDocumentReducerMode::ManagedRegion);
+	TestEqual(TEXT("Body.SlotAnimTracks uses managed array apply mode"), SlotAnimTracksPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
+	TestTrue(TEXT("Body.SlotAnimTracks owns SlotAnimTracks property"), SlotAnimTracksPolicy.ManagedUePropertyPaths.Contains(TEXT("SlotAnimTracks")));
+
+	FAssetDocumentRegionPolicy CompositeSectionsPolicy;
+	TestTrue(TEXT("AnimMontage profile declares Body.CompositeSections policy"), FindRegionPolicy(Policies, TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+	TestEqual(TEXT("Body.CompositeSections uses timeline region kind"), CompositeSectionsPolicy.RegionKind, EAssetDocumentRegionKind::Timeline);
+	TestEqual(TEXT("Body.CompositeSections uses managed reducer"), CompositeSectionsPolicy.ReducerMode, EAssetDocumentReducerMode::ManagedRegion);
+	TestEqual(TEXT("Body.CompositeSections uses managed timeline apply mode"), CompositeSectionsPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
+	TestTrue(TEXT("Body.CompositeSections owns CompositeSections property"), CompositeSectionsPolicy.ManagedUePropertyPaths.Contains(TEXT("CompositeSections")));
+
+	FAssetDocumentRegionPolicy NotifiesPolicy;
+	TestTrue(TEXT("AnimMontage profile declares Body.Notifies policy"), Profile.GetRegionPolicy(TEXT("Body.Notifies"), NotifiesPolicy));
+	TestEqual(TEXT("Body.Notifies uses timeline region kind"), NotifiesPolicy.RegionKind, EAssetDocumentRegionKind::Timeline);
+	TestEqual(TEXT("Body.Notifies uses managed reducer"), NotifiesPolicy.ReducerMode, EAssetDocumentReducerMode::ManagedRegion);
+	TestEqual(TEXT("Body.Notifies uses managed timeline apply mode"), NotifiesPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
+	TestTrue(TEXT("Body.Notifies owns Notifies property"), NotifiesPolicy.ManagedUePropertyPaths.Contains(TEXT("Notifies")));
+
+	FAssetDocumentRegionPolicy NotifyStatesPolicy;
+	TestTrue(TEXT("AnimMontage profile declares Body.NotifyStates policy"), Profile.GetRegionPolicy(TEXT("Body.NotifyStates"), NotifyStatesPolicy));
+	TestEqual(TEXT("Body.NotifyStates keeps a distinct region id"), NotifyStatesPolicy.RegionId, FName(TEXT("Body.NotifyStates")));
+	TestEqual(TEXT("Body.NotifyStates uses timeline region kind"), NotifyStatesPolicy.RegionKind, EAssetDocumentRegionKind::Timeline);
+	TestEqual(TEXT("Body.NotifyStates uses managed reducer"), NotifyStatesPolicy.ReducerMode, EAssetDocumentReducerMode::ManagedRegion);
+	TestEqual(TEXT("Body.NotifyStates uses managed timeline apply mode"), NotifyStatesPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
+	TestTrue(TEXT("Body.NotifyStates owns Notifies property"), NotifyStatesPolicy.ManagedUePropertyPaths.Contains(TEXT("Notifies")));
+
 	const FAssetDocumentService Service;
 	FAssetDocumentProfileRequest Request;
 	Request.ClassOrAsset = TEXT("/Script/Engine.AnimMontage");
