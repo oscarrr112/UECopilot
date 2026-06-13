@@ -106,6 +106,30 @@ Body.Notifies:
 
 只有当 UE API 不是普通反射可写、某个 region apply 后必须调用专门修复逻辑，或者数据位于 editor-only / derived / cached structure 中时，才通过 `RegionPolicy` 挂 custom hook。Custom hook 是通用机制的逃生口，不是默认扩展方式。
 
+## Godot 对照结论
+
+这个方向与 Godot 的资源序列化组织方式一致。Godot 并不是为每一种 resource type 创建一个完整的 `XxxSemanticCapability`。它主要依赖对象属性系统提供通用语义：resource class 通过 `get_property_list()`、property usage、type、hint 等 metadata 描述可保存属性，通用 `.tres` / `.tscn` loader 和 saver 再按这些 property metadata 进行 parse、`set`、`get` 和 save。
+
+对应到 AssetDocument：
+
+```text
+Godot get_property_list / PropertyInfo / usage
+≈ UE reflection + AssetDoc profile/schema + RegionPolicy
+
+Godot ResourceFormatLoaderText / ResourceFormatSaverText
+≈ GenericSemanticCapability + 通用 reducer/apply engine
+
+Godot 特殊 scene tags: node / connection / editable
+≈ SpecializedSemanticExtension / custom hook
+
+Godot PROPERTY_USAGE_STORAGE
+≈ managed region / managed field scope
+```
+
+因此 `GenericSemanticCapability` 应像 Godot 的 property serialization layer：通过 UE reflection、property metadata、AssetDoc profile/schema 生成 `RegionPolicy`。`SpecializedSemanticExtension` 只补充通用 property policy 表达不了的结构语义，例如 timeline ordering、section relink、notify refresh 或 graph node rebuild hook。
+
+我们的系统比 Godot `.tres` 多出 delta reduction、sync state 和 conflict policy，因为 AssetDocument 不是单纯保存当前资源状态，而是保存相对默认或基线的有效差异，并支持 sidecar 与 Unreal asset 双向同步。这个差异不改变通用层组织原则：不要为每类 asset 创建完整 semantic capability，也不要为每种结构创建专用 reducer / adapter。
+
 ## 架构类图
 
 ```mermaid
