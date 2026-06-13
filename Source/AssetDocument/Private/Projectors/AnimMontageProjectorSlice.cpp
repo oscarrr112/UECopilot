@@ -55,6 +55,35 @@ FString MakeBodyFieldPath(const FString& FieldName)
 	return FString::Printf(TEXT("%s/%s"), BodyPath, *FieldName);
 }
 
+struct FStagedObjectReference
+{
+	bool bPresent = false;
+	UObject* Object = nullptr;
+};
+
+struct FStagedBlendUpdate
+{
+	bool bPresent = false;
+	bool bHasBlendInTime = false;
+	bool bHasBlendOutTime = false;
+	float BlendInTime = 0.0f;
+	float BlendOutTime = 0.0f;
+};
+
+struct FStagedMontageApply
+{
+	FStagedObjectReference Skeleton;
+	FStagedObjectReference PreviewMesh;
+	bool bHasSlotAnimTracks = false;
+	TArray<FSlotAnimationTrack> SlotAnimTracks;
+	float CompositeLength = 0.0f;
+	bool bHasCompositeSections = false;
+	TArray<FCompositeSection> CompositeSections;
+	bool bHasNotifies = false;
+	bool bHasNotifyStates = false;
+	FStagedBlendUpdate Blend;
+};
+
 FAnimMontageProjectorSliceResult RequireArrayField(const TSharedRef<FJsonObject>& Body, const FString& FieldName)
 {
 	if (const TSharedPtr<FJsonValue>* Value = Body->Values.Find(FieldName))
@@ -363,12 +392,11 @@ FAnimMontageProjectorSliceResult ValidateSlotAnimTracks(const TSharedRef<FJsonOb
 	return FAnimMontageProjectorSliceResult::Success();
 }
 
-FAnimMontageProjectorSliceResult ApplyObjectReference(
+FAnimMontageProjectorSliceResult StageObjectReference(
 	const TSharedRef<FJsonObject>& Body,
 	const FString& FieldName,
 	const UClass* ExpectedClass,
-	TFunctionRef<void(UObject*)> AssignObject,
-	TArray<FString>& ChangedPaths)
+	FStagedObjectReference& OutReference)
 {
 	const TSharedPtr<FJsonValue>* Value = Body->Values.Find(FieldName);
 	if (!Value)
@@ -376,6 +404,7 @@ FAnimMontageProjectorSliceResult ApplyObjectReference(
 		return FAnimMontageProjectorSliceResult::Success();
 	}
 
+	OutReference.bPresent = true;
 	UObject* ResolvedObject = nullptr;
 	if (Value->IsValid() && (*Value)->Type == EJson::Object)
 	{
@@ -391,12 +420,11 @@ FAnimMontageProjectorSliceResult ApplyObjectReference(
 		}
 	}
 
-	AssignObject(ResolvedObject);
-	ChangedPaths.AddUnique(MakeBodyFieldPath(FieldName));
+	OutReference.Object = ResolvedObject;
 	return FAnimMontageProjectorSliceResult::Success();
 }
 
-FAnimMontageProjectorSliceResult ApplySlotAnimTracks(UAnimMontage& Montage, const TSharedRef<FJsonObject>& Body, TArray<FString>& ChangedPaths)
+FAnimMontageProjectorSliceResult StageSlotAnimTracks(const TSharedRef<FJsonObject>& Body, FStagedMontageApply& OutStagedApply)
 {
 	const TArray<TSharedPtr<FJsonValue>>* SlotValues = nullptr;
 	if (!Body->TryGetArrayField(TEXT("SlotAnimTracks"), SlotValues))
@@ -404,6 +432,7 @@ FAnimMontageProjectorSliceResult ApplySlotAnimTracks(UAnimMontage& Montage, cons
 		return FAnimMontageProjectorSliceResult::Success();
 	}
 
+	OutStagedApply.bHasSlotAnimTracks = true;
 	TArray<FSlotAnimationTrack> NewSlotAnimTracks;
 	float CompositeLength = 0.0f;
 	FAssetDocumentRefMaterializer Materializer;
@@ -468,20 +497,19 @@ FAnimMontageProjectorSliceResult ApplySlotAnimTracks(UAnimMontage& Montage, cons
 			{
 				Segment.LoopingCount = static_cast<int32>(FMath::RoundToDouble(NumberValue));
 			}
-			CompositeLength = FMath::Max(CompositeLength, Segment.StartPos + ((Segment.AnimEndTime - Segment.AnimStartTime) * Segment.LoopingCount));
+			CompositeLength = FMath::Max(CompositeLength, Segment.GetEndPos());
 			SlotAnimTrack.AnimTrack.AnimSegments.Add(Segment);
 		}
 
 		NewSlotAnimTracks.Add(SlotAnimTrack);
 	}
 
-	Montage.SlotAnimTracks = MoveTemp(NewSlotAnimTracks);
-	Montage.SetCompositeLength(CompositeLength);
-	ChangedPaths.AddUnique(TEXT("/Body/SlotAnimTracks"));
+	OutStagedApply.SlotAnimTracks = MoveTemp(NewSlotAnimTracks);
+	OutStagedApply.CompositeLength = CompositeLength;
 	return FAnimMontageProjectorSliceResult::Success();
 }
 
-FAnimMontageProjectorSliceResult ApplyCompositeSections(UAnimMontage& Montage, const TSharedRef<FJsonObject>& Body, TArray<FString>& ChangedPaths)
+FAnimMontageProjectorSliceResult StageCompositeSections(const TSharedRef<FJsonObject>& Body, FStagedMontageApply& OutStagedApply)
 {
 	const TArray<TSharedPtr<FJsonValue>>* SectionValues = nullptr;
 	if (!Body->TryGetArrayField(TEXT("CompositeSections"), SectionValues))
@@ -489,6 +517,7 @@ FAnimMontageProjectorSliceResult ApplyCompositeSections(UAnimMontage& Montage, c
 		return FAnimMontageProjectorSliceResult::Success();
 	}
 
+	OutStagedApply.bHasCompositeSections = true;
 	TArray<FCompositeSection> NewSections;
 	for (const TSharedPtr<FJsonValue>& SectionValue : *SectionValues)
 	{
@@ -514,12 +543,11 @@ FAnimMontageProjectorSliceResult ApplyCompositeSections(UAnimMontage& Montage, c
 		NewSections.Add(Section);
 	}
 
-	Montage.CompositeSections = MoveTemp(NewSections);
-	ChangedPaths.AddUnique(TEXT("/Body/CompositeSections"));
+	OutStagedApply.CompositeSections = MoveTemp(NewSections);
 	return FAnimMontageProjectorSliceResult::Success();
 }
 
-FAnimMontageProjectorSliceResult ApplyBlend(UAnimMontage& Montage, const TSharedRef<FJsonObject>& Body, TArray<FString>& ChangedPaths)
+FAnimMontageProjectorSliceResult StageBlend(const TSharedRef<FJsonObject>& Body, FStagedMontageApply& OutStagedApply)
 {
 	const TSharedPtr<FJsonObject>* Blend = nullptr;
 	if (!Body->TryGetObjectField(TEXT("Blend"), Blend) || !Blend || !Blend->IsValid())
@@ -527,39 +555,18 @@ FAnimMontageProjectorSliceResult ApplyBlend(UAnimMontage& Montage, const TShared
 		return FAnimMontageProjectorSliceResult::Success();
 	}
 
+	OutStagedApply.Blend.bPresent = true;
 	double NumberValue = 0.0;
-	bool bChanged = false;
 	if ((*Blend)->TryGetNumberField(TEXT("BlendInTime"), NumberValue))
 	{
-		Montage.BlendIn.SetBlendTime(static_cast<float>(NumberValue));
-		bChanged = true;
+		OutStagedApply.Blend.BlendInTime = static_cast<float>(NumberValue);
+		OutStagedApply.Blend.bHasBlendInTime = true;
 	}
 	if ((*Blend)->TryGetNumberField(TEXT("BlendOutTime"), NumberValue))
 	{
-		Montage.BlendOut.SetBlendTime(static_cast<float>(NumberValue));
-		bChanged = true;
+		OutStagedApply.Blend.BlendOutTime = static_cast<float>(NumberValue);
+		OutStagedApply.Blend.bHasBlendOutTime = true;
 	}
-	if (bChanged)
-	{
-		ChangedPaths.AddUnique(TEXT("/Body/Blend"));
-	}
-	return FAnimMontageProjectorSliceResult::Success();
-}
-
-FAnimMontageProjectorSliceResult ApplyEmptyNotifyArrayOnly(const TSharedRef<FJsonObject>& Body, const FString& FieldName, TArray<FString>& ChangedPaths)
-{
-	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-	if (!Body->TryGetArrayField(FieldName, Values))
-	{
-		return FAnimMontageProjectorSliceResult::Success();
-	}
-
-	if (Values->Num() > 0)
-	{
-		return FAnimMontageProjectorSliceResult::Failure(FString::Printf(TEXT("%s currently supports only an empty array."), *MakeBodyFieldPath(FieldName)));
-	}
-
-	ChangedPaths.AddUnique(MakeBodyFieldPath(FieldName));
 	return FAnimMontageProjectorSliceResult::Success();
 }
 
@@ -865,40 +872,43 @@ FAnimMontageProjectorSliceResult FAnimMontageProjectorSlice::ApplyBody(UAnimMont
 
 	Result = FAnimMontageProjectorSliceResult::Success();
 
-	FAnimMontageProjectorSliceResult ApplyResult = ApplyObjectReference(
+	FStagedMontageApply StagedApply;
+	FAnimMontageProjectorSliceResult ApplyResult = StageObjectReference(
 		ProjectedBody,
 		TEXT("Skeleton"),
 		USkeleton::StaticClass(),
-		[&Montage](UObject* Object)
-		{
-			Montage.SetSkeleton(Cast<USkeleton>(Object));
-		},
-		Result.ChangedPaths);
+		StagedApply.Skeleton);
 	if (!ApplyResult.bSuccess)
 	{
 		return ApplyResult;
 	}
 
-	ApplyResult = ApplyObjectReference(
+	ApplyResult = StageObjectReference(
 		ProjectedBody,
 		TEXT("PreviewMesh"),
 		USkeletalMesh::StaticClass(),
-		[&Montage](UObject* Object)
-		{
-			Montage.SetPreviewMesh(Cast<USkeletalMesh>(Object), false);
-		},
-		Result.ChangedPaths);
+		StagedApply.PreviewMesh);
 	if (!ApplyResult.bSuccess)
 	{
 		return ApplyResult;
 	}
 
 	const TArray<TFunction<FAnimMontageProjectorSliceResult()>> Operations = {
-		[&]() { return ApplySlotAnimTracks(Montage, ProjectedBody, Result.ChangedPaths); },
-		[&]() { return ApplyCompositeSections(Montage, ProjectedBody, Result.ChangedPaths); },
-		[&]() { return ApplyEmptyNotifyArrayOnly(ProjectedBody, TEXT("Notifies"), Result.ChangedPaths); },
-		[&]() { return ApplyEmptyNotifyArrayOnly(ProjectedBody, TEXT("NotifyStates"), Result.ChangedPaths); },
-		[&]() { return ApplyBlend(Montage, ProjectedBody, Result.ChangedPaths); },
+		[&]() { return StageSlotAnimTracks(ProjectedBody, StagedApply); },
+		[&]() { return StageCompositeSections(ProjectedBody, StagedApply); },
+		[&]()
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+			StagedApply.bHasNotifies = ProjectedBody->TryGetArrayField(TEXT("Notifies"), Values);
+			return FAnimMontageProjectorSliceResult::Success();
+		},
+		[&]()
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+			StagedApply.bHasNotifyStates = ProjectedBody->TryGetArrayField(TEXT("NotifyStates"), Values);
+			return FAnimMontageProjectorSliceResult::Success();
+		},
+		[&]() { return StageBlend(ProjectedBody, StagedApply); },
 	};
 
 	for (const TFunction<FAnimMontageProjectorSliceResult()>& Operation : Operations)
@@ -907,6 +917,54 @@ FAnimMontageProjectorSliceResult FAnimMontageProjectorSlice::ApplyBody(UAnimMont
 		if (!ApplyResult.bSuccess)
 		{
 			return ApplyResult;
+		}
+	}
+
+	if (StagedApply.Skeleton.bPresent)
+	{
+		Montage.SetSkeleton(Cast<USkeleton>(StagedApply.Skeleton.Object));
+		Result.ChangedPaths.AddUnique(TEXT("/Body/Skeleton"));
+	}
+	if (StagedApply.PreviewMesh.bPresent)
+	{
+		Montage.SetPreviewMesh(Cast<USkeletalMesh>(StagedApply.PreviewMesh.Object), false);
+		Result.ChangedPaths.AddUnique(TEXT("/Body/PreviewMesh"));
+	}
+	if (StagedApply.bHasSlotAnimTracks)
+	{
+		Montage.SlotAnimTracks = MoveTemp(StagedApply.SlotAnimTracks);
+		Montage.SetCompositeLength(StagedApply.CompositeLength);
+		Result.ChangedPaths.AddUnique(TEXT("/Body/SlotAnimTracks"));
+	}
+	if (StagedApply.bHasCompositeSections)
+	{
+		Montage.CompositeSections = MoveTemp(StagedApply.CompositeSections);
+		Result.ChangedPaths.AddUnique(TEXT("/Body/CompositeSections"));
+	}
+	if (StagedApply.bHasNotifies)
+	{
+		Result.ChangedPaths.AddUnique(TEXT("/Body/Notifies"));
+	}
+	if (StagedApply.bHasNotifyStates)
+	{
+		Result.ChangedPaths.AddUnique(TEXT("/Body/NotifyStates"));
+	}
+	if (StagedApply.Blend.bPresent)
+	{
+		bool bChangedBlend = false;
+		if (StagedApply.Blend.bHasBlendInTime)
+		{
+			Montage.BlendIn.SetBlendTime(StagedApply.Blend.BlendInTime);
+			bChangedBlend = true;
+		}
+		if (StagedApply.Blend.bHasBlendOutTime)
+		{
+			Montage.BlendOut.SetBlendTime(StagedApply.Blend.BlendOutTime);
+			bChangedBlend = true;
+		}
+		if (bChangedBlend)
+		{
+			Result.ChangedPaths.AddUnique(TEXT("/Body/Blend"));
 		}
 	}
 

@@ -3,6 +3,7 @@
 #include "Projectors/AnimMontageProjectorSlice.h"
 
 #include "Animation/AnimMontage.h"
+#include "Animation/Skeleton.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
@@ -216,6 +217,35 @@ TSharedRef<FJsonObject> MakeSlotTracksBodyForSlice(const FString& SlotName)
 	SlotTracks.Add(MakeShared<FJsonValueObject>(SlotTrack));
 	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotTracks);
 	return Body;
+}
+
+TSharedRef<FJsonObject> MakeAssetRefBodyForSlice(const FString& AssetPath)
+{
+	TSharedRef<FJsonObject> Ref = MakeShared<FJsonObject>();
+	Ref->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	Ref->SetStringField(TEXT("Path"), AssetPath);
+	return Ref;
+}
+
+TSharedRef<FJsonObject> MakeSlotTracksBodyWithInvalidAnimReferenceForSlice()
+{
+	TSharedRef<FJsonObject> Body = MakeSlotTracksBodyForSlice(TEXT("UpperBody"));
+	TArray<TSharedPtr<FJsonValue>> SlotTracks = Body->GetArrayField(TEXT("SlotAnimTracks"));
+	TSharedPtr<FJsonObject> SlotTrack = SlotTracks[0]->AsObject();
+	TSharedPtr<FJsonObject> AnimTrack = SlotTrack->GetObjectField(TEXT("AnimTrack"));
+	TArray<TSharedPtr<FJsonValue>> AnimSegments = AnimTrack->GetArrayField(TEXT("AnimSegments"));
+	TSharedPtr<FJsonObject> Segment = AnimSegments[0]->AsObject();
+	Segment->SetObjectField(TEXT("AnimReference"), MakeAssetRefBodyForSlice(TEXT("/Game/AssetDocumentTests/MissingAnimSequence.MissingAnimSequence")));
+	return Body;
+}
+
+USkeleton* NewResolvableTransientSkeletonForSlice()
+{
+	UPackage* Package = CreatePackage(TEXT("/AssetDocumentTests/StagedSkeletonPackage"));
+	return NewObject<USkeleton>(
+		Package,
+		USkeleton::StaticClass(),
+		MakeUniqueObjectName(Package, USkeleton::StaticClass(), TEXT("StagedSkeleton")));
 }
 
 TSharedRef<FJsonObject> MakeFullUpdateBodyForSlice()
@@ -783,6 +813,7 @@ bool FAssetDocumentAnimMontageProjectorSliceUpdatesExistingMontageTest::RunTest(
 			TestTrue(TEXT("Segment StartPos updated"), FMath::IsNearlyEqual(Segment.StartPos, 0.5f, KINDA_SMALL_NUMBER));
 			TestTrue(TEXT("Segment AnimPlayRate updated"), FMath::IsNearlyEqual(Segment.AnimPlayRate, 1.5f, KINDA_SMALL_NUMBER));
 			TestEqual(TEXT("Segment LoopingCount updated"), Segment.LoopingCount, 2);
+			TestTrue(TEXT("CompositeLength uses segment end position"), FMath::IsNearlyEqual(Montage->GetPlayLength(), Segment.GetEndPos(), KINDA_SMALL_NUMBER));
 		}
 	}
 
@@ -794,6 +825,68 @@ bool FAssetDocumentAnimMontageProjectorSliceUpdatesExistingMontageTest::RunTest(
 	}
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceRejectsInvalidReferenceWithoutMutationTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.RejectsInvalidReferenceWithoutMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceRejectsInvalidReferenceWithoutMutationTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	USkeleton* NewSkeleton = NewResolvableTransientSkeletonForSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	TestNotNull(TEXT("Resolvable skeleton fixture is created"), NewSkeleton);
+	if (!Montage || !NewSkeleton)
+	{
+		return false;
+	}
+
+	const USkeleton* OriginalSkeleton = Montage->GetSkeleton();
+	const float OriginalBlendInTime = Montage->GetDefaultBlendInTime();
+	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
+	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
+	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
+	const FName OriginalSlotName = OriginalSlotCount > 0 ? Montage->SlotAnimTracks[0].SlotName : NAME_None;
+	const int32 OriginalSegmentCount = OriginalSlotCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() : 0;
+	const float OriginalSegmentStartPos = OriginalSegmentCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].StartPos : -1.0f;
+	const int32 OriginalSegmentLoopingCount = OriginalSegmentCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].LoopingCount : -1;
+
+	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
+	Body->SetObjectField(TEXT("Blend"), MakeBlendBodyForSlice(0.35, 0.45)->GetObjectField(TEXT("Blend")));
+	Body->SetObjectField(TEXT("Skeleton"), MakeAssetRefBodyForSlice(NewSkeleton->GetPathName()));
+	const TSharedRef<FJsonObject> SlotBody = MakeSlotTracksBodyWithInvalidAnimReferenceForSlice();
+	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotBody->GetArrayField(TEXT("SlotAnimTracks")));
+
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ApplyBody(*Montage, Body);
+
+	TestFalse(TEXT("Apply rejects invalid staged AnimReference"), Result.bSuccess);
+	TestTrue(TEXT("Apply reports AnimReference path"), Result.Message.Contains(TEXT("/Body/SlotAnimTracks/0/AnimTrack/AnimSegments/0/AnimReference")));
+	TestTrue(TEXT("Skeleton is unchanged after failed apply"), Montage->GetSkeleton() == OriginalSkeleton);
+	TestTrue(TEXT("BlendInTime is unchanged after failed apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("BlendOutTime is unchanged after failed apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER));
+	TestEqual(TEXT("CompositeSections count is unchanged after failed apply"), Montage->CompositeSections.Num(), OriginalSectionCount);
+	TestEqual(TEXT("SlotAnimTracks count is unchanged after failed apply"), Montage->SlotAnimTracks.Num(), OriginalSlotCount);
+	if (Montage->SlotAnimTracks.Num() > 0)
+	{
+		TestEqual(TEXT("Slot name is unchanged after failed apply"), Montage->SlotAnimTracks[0].SlotName, OriginalSlotName);
+		TestEqual(TEXT("Segment count is unchanged after failed apply"), Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num(), OriginalSegmentCount);
+		if (Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() > 0)
+		{
+			const FAnimSegment& Segment = Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0];
+			TestTrue(TEXT("Segment StartPos is unchanged after failed apply"), FMath::IsNearlyEqual(Segment.StartPos, OriginalSegmentStartPos, KINDA_SMALL_NUMBER));
+			TestEqual(TEXT("Segment LoopingCount is unchanged after failed apply"), Segment.LoopingCount, OriginalSegmentLoopingCount);
+		}
+	}
+
+	return !Result.bSuccess
+		&& Montage->GetSkeleton() == OriginalSkeleton
+		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER)
+		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER)
+		&& Montage->CompositeSections.Num() == OriginalSectionCount
+		&& Montage->SlotAnimTracks.Num() == OriginalSlotCount;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
