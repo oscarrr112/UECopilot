@@ -372,6 +372,19 @@ TSharedPtr<FJsonObject> FindJsonObjectByStringField(const TArray<TSharedPtr<FJso
 	return nullptr;
 }
 
+void TestNoAgentFacingOperationFields(FAutomationTestBase* Test, const FString& Context, const TSharedPtr<FJsonObject>& Object)
+{
+	if (!Test || !Object.IsValid())
+	{
+		return;
+	}
+
+	for (const TCHAR* FieldName : {TEXT("patch"), TEXT("op"), TEXT("Patch"), TEXT("Op"), TEXT("Operations")})
+	{
+		Test->TestFalse(FString::Printf(TEXT("%s does not expose %s field"), *Context, FieldName), Object->HasField(FieldName));
+	}
+}
+
 int32 CountNotifyEventsByName(const UAnimMontage* Montage, FName NotifyName)
 {
 	int32 Count = 0;
@@ -1583,8 +1596,7 @@ bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Paramet
 			TestEqual(TEXT("Body.Blend policy exports DefaultSource"), BlendPolicyJson->GetStringField(TEXT("DefaultSource")), FString(TEXT("CDO")));
 			TestEqual(TEXT("Body.Blend policy exports ReducerMode"), BlendPolicyJson->GetStringField(TEXT("ReducerMode")), FString(TEXT("DefaultDiff")));
 			TestEqual(TEXT("Body.Blend policy exports ApplyMode"), BlendPolicyJson->GetStringField(TEXT("ApplyMode")), FString(TEXT("SetProperty")));
-			TestFalse(TEXT("Body.Blend policy does not expose patch field"), BlendPolicyJson->HasField(TEXT("patch")));
-			TestFalse(TEXT("Body.Blend policy does not expose op field"), BlendPolicyJson->HasField(TEXT("op")));
+			TestNoAgentFacingOperationFields(this, TEXT("Body.Blend policy"), BlendPolicyJson);
 		}
 
 		const TSharedPtr<FJsonObject> SlotAnimTracksPolicyJson = FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.SlotAnimTracks"));
@@ -1864,8 +1876,7 @@ bool FAssetDocumentAnimMontageRegisteredProfileSchemaTest::RunTest(const FString
 				TestTrue(TEXT("Schema registered AnimMontage profile includes Body.NotifyStates policy"), NotifyStatesPolicyJson.IsValid());
 				if (NotifyStatesPolicyJson.IsValid())
 				{
-					TestFalse(TEXT("Schema registered policy does not expose patch field"), NotifyStatesPolicyJson->HasField(TEXT("patch")));
-					TestFalse(TEXT("Schema registered policy does not expose op field"), NotifyStatesPolicyJson->HasField(TEXT("op")));
+					TestNoAgentFacingOperationFields(this, TEXT("Schema registered policy"), NotifyStatesPolicyJson);
 				}
 			}
 			bFoundAnimMontageProfile = true;

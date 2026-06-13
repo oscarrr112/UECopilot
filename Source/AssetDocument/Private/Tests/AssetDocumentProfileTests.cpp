@@ -31,6 +31,19 @@ const TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJ
 	return nullptr;
 }
 
+void TestNoAgentFacingOperationFields(FAutomationTestBase* Test, const FString& Context, const TSharedPtr<FJsonObject>& Object)
+{
+	if (!Test || !Object.IsValid())
+	{
+		return;
+	}
+
+	for (const TCHAR* FieldName : {TEXT("patch"), TEXT("op"), TEXT("Patch"), TEXT("Op"), TEXT("Operations")})
+	{
+		Test->TestFalse(FString::Printf(TEXT("%s does not expose %s field"), *Context, FieldName), Object->HasField(FieldName));
+	}
+}
+
 class FTestAssetDocumentProfile final : public IAssetDocumentProfile
 {
 public:
@@ -333,8 +346,7 @@ bool FAssetDocumentGenericSchemaTest::RunTest(const FString& Parameters)
 			{
 				TestEqual(TEXT("DefaultDiff preset reducer is exported"), (*Defaults)->GetStringField(TEXT("ReducerMode")), FString(TEXT("DefaultDiff")));
 				TestEqual(TEXT("DefaultDiff preset apply mode is exported"), (*Defaults)->GetStringField(TEXT("ApplyMode")), FString(TEXT("SetProperty")));
-				TestFalse(TEXT("DefaultDiff preset does not expose patch field"), (*Defaults)->HasField(TEXT("patch")));
-				TestFalse(TEXT("DefaultDiff preset does not expose op field"), (*Defaults)->HasField(TEXT("op")));
+				TestNoAgentFacingOperationFields(this, TEXT("DefaultDiff preset"), *Defaults);
 			}
 		}
 

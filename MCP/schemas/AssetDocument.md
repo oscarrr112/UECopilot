@@ -86,6 +86,27 @@ Use the generic profile/template workflow for authoring:
 
 `extract_asset_document` is auxiliary. It is useful for inspecting an existing asset or creating a draft, but it is not required for authoring a new AssetDocument. Extracted `_Skipped` metadata is diagnostic/extract-only and must not be authored back into `Body`.
 
+## Profile Policy Metadata
+
+Profile and schema inspection expose policy metadata so tooling can understand the semantic ownership of structured `Body` regions without inventing an authoring language.
+
+- `inspect_asset_document_profile` returns `RegionPolicies`. For a generic reflected profile with no exact profile policy, this is a valid empty array. For an exact profile such as `/Script/Engine.AnimMontage`, each entry describes a structured region such as `Body.Blend`, `Body.SlotAnimTracks`, or `Body.Notifies`.
+- `get_asset_document_schema` returns top-level `RegionPolicyPresets` for built-in policy defaults such as `DefaultDiff`, `ManagedRegion`, and `ExtensionHook`.
+- `get_asset_document_schema` also includes `RegionPolicies` on entries in `registered_profiles`, so consumers can discover exact-profile policy summaries without calling profile inspection for every class first.
+
+Policy entries are metadata and semantic declarations only. They are not patch/op instructions, not an operations list, and not a patch/op DSL. Agents should still author normal AssetDocument `Properties`, `Definitions`, and `Body` fields, then use validate and diff before apply.
+
+Stable policy fields include:
+
+- `RegionId`: Stable dotted region id, such as `Body.Blend`.
+- `BodyPath`: Body-relative path owned by the policy.
+- `RegionKind`: Region shape, such as `Object`, `Array`, or `Timeline`.
+- `DefaultSource`: Source used for default comparison, such as `CDO`.
+- `ReducerMode`: Summary of how diff/default reduction is interpreted, such as `DefaultDiff` or `ManagedRegion`.
+- `ApplyMode`: Summary of how the region is applied, such as `SetProperty`, `RebuildArrayRegion`, or `ExtensionHook`.
+- `ManagedUePropertyPaths`: UE property paths managed by the region, when applicable.
+- `ExtensionHookName`: Named extension hook for hook-backed policies, when applicable.
+
 ## Body Naming Rule
 
 `Body` keys must use canonical Unreal/profile field names. Do not introduce abbreviations or short aliases.

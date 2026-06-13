@@ -179,6 +179,8 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
 			/untyped/i,
 			/no subtype/i,
 			/inspect_asset_document_target/,
+			/RegionPolicies/,
+			/RegionPolicyPresets/,
 			/extract_asset_document/,
 			/validate_asset_document/,
 			/diff_asset_document/,
