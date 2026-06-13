@@ -34,6 +34,24 @@ enum class EAssetDocumentApplyMode : uint8
 	ExtensionHook
 };
 
+struct ASSETDOCUMENT_API FAssetDocumentExplicitDeleteValues
+{
+	static constexpr const TCHAR* Null()
+	{
+		return TEXT("null");
+	}
+
+	static constexpr const TCHAR* EmptyObject()
+	{
+		return TEXT("empty_object");
+	}
+
+	static constexpr const TCHAR* EmptyArray()
+	{
+		return TEXT("empty_array");
+	}
+};
+
 struct ASSETDOCUMENT_API FAssetDocumentIdentityRule
 {
 	FString FieldPath;

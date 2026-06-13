@@ -8,10 +8,6 @@
 
 namespace
 {
-constexpr const TCHAR* ExplicitNullSentinel = TEXT("null");
-constexpr const TCHAR* ExplicitEmptyObjectSentinel = TEXT("empty_object");
-constexpr const TCHAR* ExplicitEmptyArraySentinel = TEXT("empty_array");
-
 bool ParseBodyPath(const FString& BodyPath, TArray<FString>& OutSegments, FString* OutError = nullptr)
 {
 	OutSegments.Reset();
@@ -189,17 +185,18 @@ bool FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(
 	const FAssetDocumentRegionPolicy& Policy)
 {
 	if (IsEmptyJsonArray(Value)
-		&& (Policy.ApplyMode == EAssetDocumentApplyMode::RebuildArrayRegion || Policy.ExplicitDeleteValues.Contains(ExplicitEmptyArraySentinel)))
+		&& (Policy.ApplyMode == EAssetDocumentApplyMode::RebuildArrayRegion
+			|| Policy.ExplicitDeleteValues.Contains(FAssetDocumentExplicitDeleteValues::EmptyArray())))
 	{
 		return true;
 	}
 
-	if (IsEmptyJsonObject(Value) && Policy.ExplicitDeleteValues.Contains(ExplicitEmptyObjectSentinel))
+	if (IsEmptyJsonObject(Value) && Policy.ExplicitDeleteValues.Contains(FAssetDocumentExplicitDeleteValues::EmptyObject()))
 	{
 		return true;
 	}
 
-	if (IsJsonNull(Value) && Policy.ExplicitDeleteValues.Contains(ExplicitNullSentinel))
+	if (IsJsonNull(Value) && Policy.ExplicitDeleteValues.Contains(FAssetDocumentExplicitDeleteValues::Null()))
 	{
 		return true;
 	}

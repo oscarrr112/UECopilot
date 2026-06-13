@@ -24,11 +24,6 @@ TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
-
-TSharedPtr<FJsonValue> MakeArrayValue(TArray<TSharedPtr<FJsonValue>> Values)
-{
-	return MakeShared<FJsonValueArray>(MoveTemp(Values));
-}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -136,6 +131,37 @@ bool FAssetDocumentSidecarDeltaSetCreatesIntermediateObjectTest::RunTest(const F
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarDeltaSetCreatesDeepIntermediateObjectsTest,
+	"AssetDocument.SidecarDelta.SetCreatesDeepIntermediateObjects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarDeltaSetCreatesDeepIntermediateObjectsTest::RunTest(const FString& Parameters)
+{
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Layer.Blend"));
+
+	FString Error;
+	TestTrue(
+		TEXT("SetRegionValue creates all missing deep intermediate objects"),
+		FAssetDocumentSidecarDelta::SetRegionValue(Document, Policy, MakeShared<FJsonValueString>(TEXT("Linear")), Error));
+	TestTrue(TEXT("Deep SetRegionValue leaves error empty on success"), Error.IsEmpty());
+
+	const FAssetDocumentSidecarRegionValue Region = FAssetDocumentSidecarDelta::FindRegionValue(Document, Policy);
+	TestEqual(TEXT("Created deep scalar region is present"), Region.State, EAssetDocumentSidecarRegionState::Present);
+	TestTrue(TEXT("Created deep scalar region keeps value"), Region.Value.IsValid() && Region.Value->AsString() == TEXT("Linear"));
+
+	const TSharedPtr<FJsonObject>* BodyObject = nullptr;
+	TestTrue(TEXT("Deep path creates Body object"), Document->TryGetObjectField(TEXT("Body"), BodyObject));
+	if (BodyObject && BodyObject->IsValid())
+	{
+		const TSharedPtr<FJsonObject>* LayerObject = nullptr;
+		TestTrue(TEXT("Deep path creates Layer object"), (*BodyObject)->TryGetObjectField(TEXT("Layer"), LayerObject));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentSidecarDeltaSetRejectsNonObjectIntermediateTest,
 	"AssetDocument.SidecarDelta.SetRejectsNonObjectIntermediate",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -153,6 +179,31 @@ bool FAssetDocumentSidecarDeltaSetRejectsNonObjectIntermediateTest::RunTest(cons
 		FAssetDocumentSidecarDelta::SetRegionValue(Document, Policy, MakeShared<FJsonValueString>(TEXT("Linear")), Error));
 	TestFalse(TEXT("SetRegionValue reports non-object path error"), Error.IsEmpty());
 	TestEqual(TEXT("SetRegionValue does not overwrite non-object intermediate"), Document->GetStringField(TEXT("Body")), FString(TEXT("not-an-object")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarDeltaSetRejectsDeepNonObjectIntermediateTest,
+	"AssetDocument.SidecarDelta.SetRejectsDeepNonObjectIntermediate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarDeltaSetRejectsDeepNonObjectIntermediateTest::RunTest(const FString& Parameters)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("Layer"), TEXT("not-an-object"));
+
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetObjectField(TEXT("Body"), Body);
+
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Layer.Blend"));
+
+	FString Error;
+	TestFalse(
+		TEXT("SetRegionValue rejects deep non-object intermediate path"),
+		FAssetDocumentSidecarDelta::SetRegionValue(Document, Policy, MakeShared<FJsonValueString>(TEXT("Linear")), Error));
+	TestFalse(TEXT("Deep SetRegionValue reports non-object path error"), Error.IsEmpty());
+	TestEqual(TEXT("Deep SetRegionValue does not overwrite existing non-object field"), Body->GetStringField(TEXT("Layer")), FString(TEXT("not-an-object")));
 
 	return true;
 }
@@ -191,16 +242,20 @@ bool FAssetDocumentSidecarDeltaEmptySentinelsRequirePolicyTest::RunTest(const FS
 {
 	TSharedPtr<FJsonValue> NullValue = MakeShared<FJsonValueNull>();
 	TSharedPtr<FJsonValue> EmptyObjectValue = MakeObjectValue(MakeShared<FJsonObject>());
+	TSharedPtr<FJsonValue> EmptyArrayValue = MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>());
 
 	FAssetDocumentRegionPolicy DefaultPolicy = MakePolicy(TEXT("Body.Blend"));
 	TestFalse(TEXT("Null is not explicit empty without policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(NullValue, DefaultPolicy));
 	TestFalse(TEXT("Empty object is not explicit empty without policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(EmptyObjectValue, DefaultPolicy));
+	TestFalse(TEXT("Empty array is not explicit empty for set-property without policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(EmptyArrayValue, DefaultPolicy));
 
 	FAssetDocumentRegionPolicy SentinelPolicy = DefaultPolicy;
-	SentinelPolicy.ExplicitDeleteValues.Add(TEXT("null"));
-	SentinelPolicy.ExplicitDeleteValues.Add(TEXT("empty_object"));
+	SentinelPolicy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
+	SentinelPolicy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::EmptyObject());
+	SentinelPolicy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::EmptyArray());
 	TestTrue(TEXT("Null is explicit empty with policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(NullValue, SentinelPolicy));
 	TestTrue(TEXT("Empty object is explicit empty with policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(EmptyObjectValue, SentinelPolicy));
+	TestTrue(TEXT("Empty array is explicit empty with policy sentinel"), FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(EmptyArrayValue, SentinelPolicy));
 
 	return true;
 }

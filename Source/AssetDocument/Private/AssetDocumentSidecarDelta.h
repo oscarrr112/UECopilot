@@ -25,6 +25,8 @@ class FAssetDocumentSidecarDelta
 public:
 	static FAssetDocumentSidecarRegionValue FindRegionValue(const TSharedRef<FJsonObject>& DocumentJson, const FAssetDocumentRegionPolicy& Policy);
 	static bool SetRegionValue(const TSharedRef<FJsonObject>& DocumentJson, const FAssetDocumentRegionPolicy& Policy, const TSharedPtr<FJsonValue>& Value, FString& OutError);
+
+	// Unset regions hash to an empty string; present and explicit-empty regions hash their canonical JSON value.
 	static FString HashSidecarRegion(const TSharedRef<FJsonObject>& DocumentJson, const FAssetDocumentRegionPolicy& Policy);
 	static bool IsExplicitEmptyRegion(const TSharedPtr<FJsonValue>& Value, const FAssetDocumentRegionPolicy& Policy);
 };
