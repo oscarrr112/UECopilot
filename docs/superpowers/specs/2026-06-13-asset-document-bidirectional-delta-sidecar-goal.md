@@ -47,6 +47,16 @@ AssetDoc 也不应该变成 Unreal asset 每个字段的完整序列化副本。
 
 这样仍然保持 region-level conflict model，但可以避免 sidecar 和 Unreal Editor 修改了同一资产的无关部分时产生不必要冲突。例如，sidecar 修改 `Body.Blend`，editor 修改 `Body.Notifies`，只要两个 region 拥有独立 sync state，就不应该互相冲突。
 
+当前 implementation task 已落地的 AnimMontage managed region 是：
+
+- `Body.Blend`
+- `Body.SlotAnimTracks`
+- `Body.CompositeSections`
+- `Body.Notifies`
+- `Body.NotifyStates`
+
+`Body.Curves` 和 `Body.RootMotion` 仍然属于目标方向，但本轮没有实现对应 extractor/reducer/apply policy 和 automation。后续 task 需要先明确 Unreal AnimMontage 中 curve/root motion 的真实字段、默认来源、比较规则和保留策略，再加入 managed region policy。
+
 ## 架构概览
 
 架构应保持 extraction、reduction、sidecar validation、synchronization 和 application 的职责分离。

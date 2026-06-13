@@ -71,7 +71,7 @@
 - `Source/AssetDocument/Private/AssetDocumentCanonicalJson.h`
 - `Source/AssetDocument/Private/AssetDocumentCanonicalJson.cpp`
   - canonical JSON writer
-  - SHA256 hash helper
+  - SHA1 hash helper with explicit `sha1:` prefix
   - `_Skipped` / extract-only metadata 忽略 helper
 - `Source/AssetDocument/Private/AssetDocumentSyncStateStore.h`
 - `Source/AssetDocument/Private/AssetDocumentSyncStateStore.cpp`
@@ -186,8 +186,8 @@ struct FAssetDocumentRegionPolicy
       "regions": {
         "Body.Blend": {
           "policyVersion": 1,
-          "sidecarHash": "sha256:...",
-          "assetEvidenceHash": "sha256:...",
+          "sidecarHash": "sha1:...",
+          "assetEvidenceHash": "sha1:...",
           "lastSyncedAtUtc": "2026-06-13T15:30:00Z"
         }
       }

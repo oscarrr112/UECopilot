@@ -31,7 +31,7 @@ struct ASSETDOCUMENT_API FAssetDocumentApplyFileRequest
 {
 	FString FilePath;
 	bool bSaveAsset = true;
-	// Reserved for future sidecar normalization after apply; current implementation only reads sidecars.
+	// Allows ApplyFile to rewrite the sidecar with refreshed _meta.sync state after a verified apply.
 	bool bAllowSidecarRewrite = true;
 	bool bTriggeredByWatcher = false;
 };
