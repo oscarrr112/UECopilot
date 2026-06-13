@@ -5,6 +5,8 @@
 
 class FJsonObject;
 class FJsonValue;
+class FProperty;
+class UStruct;
 
 using FAssetDocumentStructFieldOverride = TFunction<bool(const FString& FieldName, FProperty* Field, const void* ValuePtr, TSharedRef<FJsonObject> OutObject)>;
 

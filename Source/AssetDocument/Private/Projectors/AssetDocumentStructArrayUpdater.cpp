@@ -11,7 +11,7 @@ FAssetDocumentUpdateResult FAssetDocumentStructArrayUpdater::ReplaceStructArray(
 	UScriptStruct* StructType,
 	const FString& Path,
 	const FAssetDocumentStructFieldApplyOverride& FieldOverride,
-	TFunctionRef<void(void*)> AddStructValue) const
+	TFunctionRef<void(const void* StructValuePtr)> AddStructValue) const
 {
 	if (!StructType)
 	{
