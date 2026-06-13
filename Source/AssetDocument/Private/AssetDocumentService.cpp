@@ -4,6 +4,7 @@
 
 #include "AssetDocumentClassResolver.h"
 #include "AssetDocumentLifecycle.h"
+#include "AssetDocumentPolicyRegistry.h"
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
@@ -222,6 +223,26 @@ TArray<TSharedPtr<FJsonValue>> MakeFragmentKindArray()
 	});
 }
 
+TArray<TSharedPtr<FJsonValue>> MakeRegionPolicyArray(const TArray<FAssetDocumentRegionPolicy>& Policies)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FAssetDocumentRegionPolicy& Policy : Policies)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(FAssetDocumentPolicyRegistry::ExportPolicyToJson(Policy)));
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeRegionPolicyPresetArray()
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FAssetDocumentRegionPolicyPreset& Preset : FAssetDocumentPolicyRegistry::GetBuiltinPresets())
+	{
+		Result.Add(MakeShared<FJsonValueObject>(FAssetDocumentPolicyRegistry::ExportPresetToJson(Preset)));
+	}
+	return Result;
+}
+
 TSharedRef<FJsonObject> MakeGenericDocumentShape()
 {
 	TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
@@ -253,6 +274,7 @@ TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileRes
 	Payload->SetArrayField(TEXT("BodySections"), TArray<TSharedPtr<FJsonValue>>());
 	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
 	Payload->SetArrayField(TEXT("InternalAdapters"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("RegionPolicies"), TArray<TSharedPtr<FJsonValue>>());
 	return Payload;
 }
 
@@ -298,6 +320,7 @@ TSharedRef<FJsonObject> MakeExactProfilePayload(const FAssetDocumentProfileResol
 		AddInternalAdapterNames(Resolution.ExactProfile->ResolveBodyAdapter(BodyKey));
 	}
 	Payload->SetArrayField(TEXT("InternalAdapters"), InternalAdapters);
+	Payload->SetArrayField(TEXT("RegionPolicies"), MakeRegionPolicyArray(Resolution.ExactProfile->GetRegionPolicies()));
 	return Payload;
 }
 
@@ -321,6 +344,7 @@ TArray<TSharedPtr<FJsonValue>> MakeRegisteredProfileArray(const FAssetDocumentPr
 			BodySections.Add(MakeShared<FJsonValueString>(BodyKey.ToString()));
 		}
 		Entry->SetArrayField(TEXT("BodySections"), BodySections);
+		Entry->SetArrayField(TEXT("RegionPolicies"), MakeRegionPolicyArray(Profile->GetRegionPolicies()));
 		RegisteredProfiles.Add(MakeShared<FJsonValueObject>(Entry));
 	}
 	return RegisteredProfiles;
@@ -1097,6 +1121,7 @@ FAssetDocumentResult FAssetDocumentService::GetSchema() const
 	}));
 	Payload->SetArrayField(TEXT("fragment_kinds"), MakeFragmentKindArray());
 	Payload->SetObjectField(TEXT("field_naming"), FieldNaming);
+	Payload->SetArrayField(TEXT("RegionPolicyPresets"), MakeRegionPolicyPresetArray());
 	Payload->SetArrayField(TEXT("registered_profiles"), MakeRegisteredProfileArray(GetProfileRegistry()));
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument schema described"));

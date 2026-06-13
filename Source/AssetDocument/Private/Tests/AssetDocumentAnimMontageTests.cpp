@@ -353,6 +353,25 @@ bool FindRegionPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, FName 
 	return false;
 }
 
+TSharedPtr<FJsonObject> FindJsonObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString ActualValue;
+		if (Object->TryGetStringField(FieldName, ActualValue) && ActualValue == ExpectedValue)
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
 int32 CountNotifyEventsByName(const UAnimMontage* Montage, FName NotifyName)
 {
 	int32 Count = 0;
@@ -1551,6 +1570,42 @@ bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Paramet
 		TestTrue(TEXT("InternalAdapters includes AnimMontage notify placement adapter"), JsonArrayContainsString(*InternalAdapters, TEXT("AnimMontageNotifyPlacementAdapter")));
 	}
 
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+	TestTrue(TEXT("AnimMontage profile includes RegionPolicies"), Result.Payload->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+	if (RegionPolicies)
+	{
+		const TSharedPtr<FJsonObject> BlendPolicyJson = FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.Blend"));
+		TestTrue(TEXT("RegionPolicies includes Body.Blend"), BlendPolicyJson.IsValid());
+		if (BlendPolicyJson.IsValid())
+		{
+			TestEqual(TEXT("Body.Blend policy exports BodyPath"), BlendPolicyJson->GetStringField(TEXT("BodyPath")), FString(TEXT("Body.Blend")));
+			TestEqual(TEXT("Body.Blend policy exports RegionKind"), BlendPolicyJson->GetStringField(TEXT("RegionKind")), FString(TEXT("Object")));
+			TestEqual(TEXT("Body.Blend policy exports DefaultSource"), BlendPolicyJson->GetStringField(TEXT("DefaultSource")), FString(TEXT("CDO")));
+			TestEqual(TEXT("Body.Blend policy exports ReducerMode"), BlendPolicyJson->GetStringField(TEXT("ReducerMode")), FString(TEXT("DefaultDiff")));
+			TestEqual(TEXT("Body.Blend policy exports ApplyMode"), BlendPolicyJson->GetStringField(TEXT("ApplyMode")), FString(TEXT("SetProperty")));
+			TestFalse(TEXT("Body.Blend policy does not expose patch field"), BlendPolicyJson->HasField(TEXT("patch")));
+			TestFalse(TEXT("Body.Blend policy does not expose op field"), BlendPolicyJson->HasField(TEXT("op")));
+		}
+
+		const TSharedPtr<FJsonObject> SlotAnimTracksPolicyJson = FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.SlotAnimTracks"));
+		TestTrue(TEXT("RegionPolicies includes Body.SlotAnimTracks"), SlotAnimTracksPolicyJson.IsValid());
+		if (SlotAnimTracksPolicyJson.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ManagedPaths = nullptr;
+			TestTrue(TEXT("Body.SlotAnimTracks policy exports ManagedUePropertyPaths"), SlotAnimTracksPolicyJson->TryGetArrayField(TEXT("ManagedUePropertyPaths"), ManagedPaths));
+			TestTrue(TEXT("Body.SlotAnimTracks policy owns SlotAnimTracks"), ManagedPaths && JsonArrayContainsString(*ManagedPaths, TEXT("SlotAnimTracks")));
+		}
+
+		const TSharedPtr<FJsonObject> NotifiesPolicyJson = FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.Notifies"));
+		TestTrue(TEXT("RegionPolicies includes Body.Notifies"), NotifiesPolicyJson.IsValid());
+		if (NotifiesPolicyJson.IsValid())
+		{
+			TestEqual(TEXT("Body.Notifies policy exports RegionKind"), NotifiesPolicyJson->GetStringField(TEXT("RegionKind")), FString(TEXT("Timeline")));
+			TestEqual(TEXT("Body.Notifies policy exports ReducerMode"), NotifiesPolicyJson->GetStringField(TEXT("ReducerMode")), FString(TEXT("ManagedRegion")));
+			TestEqual(TEXT("Body.Notifies policy exports ApplyMode"), NotifiesPolicyJson->GetStringField(TEXT("ApplyMode")), FString(TEXT("RebuildArrayRegion")));
+		}
+	}
+
 	return true;
 }
 
@@ -1775,6 +1830,15 @@ bool FAssetDocumentAnimMontageRegisteredProfileSchemaTest::RunTest(const FString
 		TestFalse(TEXT("Schema does not include asset-specific AnimMontage diff tool"), JsonArrayContainsString(*AssetDocumentTools, TEXT("diff_anim_montage_document")));
 	}
 
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicyPresets = nullptr;
+	TestTrue(TEXT("Schema includes RegionPolicyPresets"), Result.Payload->TryGetArrayField(TEXT("RegionPolicyPresets"), RegionPolicyPresets));
+	if (RegionPolicyPresets)
+	{
+		TestTrue(TEXT("Schema includes DefaultDiff region policy preset"), FindJsonObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("DefaultDiff")).IsValid());
+		TestTrue(TEXT("Schema includes ManagedRegion region policy preset"), FindJsonObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("ManagedRegion")).IsValid());
+		TestTrue(TEXT("Schema includes ExtensionHook region policy preset"), FindJsonObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("ExtensionHook")).IsValid());
+	}
+
 	bool bFoundAnimMontageProfile = false;
 	for (const TSharedPtr<FJsonValue>& Entry : *RegisteredProfiles)
 	{
@@ -1788,6 +1852,22 @@ bool FAssetDocumentAnimMontageRegisteredProfileSchemaTest::RunTest(const FString
 		if (EntryObject->TryGetArrayField(TEXT("BodySections"), BodySections) && BodySections && HasExpectedBodySections(*BodySections))
 		{
 			TestFalse(TEXT("Schema registered profile omits extract-only skipped metadata"), JsonArrayContainsString(*BodySections, TEXT("_Skipped")));
+
+			const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+			TestTrue(TEXT("Schema registered AnimMontage profile includes RegionPolicies"), EntryObject->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+			if (RegionPolicies)
+			{
+				TestTrue(TEXT("Schema registered AnimMontage profile includes Body.Blend policy"), FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.Blend")).IsValid());
+				TestTrue(TEXT("Schema registered AnimMontage profile includes Body.Notifies policy"), FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.Notifies")).IsValid());
+
+				const TSharedPtr<FJsonObject> NotifyStatesPolicyJson = FindJsonObjectByStringField(*RegionPolicies, TEXT("RegionId"), TEXT("Body.NotifyStates"));
+				TestTrue(TEXT("Schema registered AnimMontage profile includes Body.NotifyStates policy"), NotifyStatesPolicyJson.IsValid());
+				if (NotifyStatesPolicyJson.IsValid())
+				{
+					TestFalse(TEXT("Schema registered policy does not expose patch field"), NotifyStatesPolicyJson->HasField(TEXT("patch")));
+					TestFalse(TEXT("Schema registered policy does not expose op field"), NotifyStatesPolicyJson->HasField(TEXT("op")));
+				}
+			}
 			bFoundAnimMontageProfile = true;
 			break;
 		}

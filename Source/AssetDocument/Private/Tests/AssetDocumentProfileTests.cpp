@@ -12,6 +12,25 @@
 
 namespace
 {
+const TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString ActualValue;
+		if (Object->TryGetStringField(FieldName, ActualValue) && ActualValue == ExpectedValue)
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
 class FTestAssetDocumentProfile final : public IAssetDocumentProfile
 {
 public:
@@ -113,6 +132,13 @@ bool FAssetDocumentGenericInspectProfileTest::RunTest(const FString& Parameters)
 	if (FragmentKinds)
 	{
 		TestEqual(TEXT("Generic profile exposes five fragment kinds"), FragmentKinds->Num(), 5);
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+	TestTrue(TEXT("Generic profile includes RegionPolicies"), Result.Payload->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+	if (RegionPolicies)
+	{
+		TestEqual(TEXT("Generic profile has no exact region policies"), RegionPolicies->Num(), 0);
 	}
 
 	return true;
@@ -255,6 +281,12 @@ bool FAssetDocumentExactProfileServiceTest::RunTest(const FString& Parameters)
 					FString ClassPath;
 					if (EntryObject->TryGetStringField(TEXT("Class"), ClassPath) && ClassPath == TEXT("/Script/AssetFactory.TestDataAsset"))
 					{
+						const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+						TestTrue(TEXT("Schema registered profile includes RegionPolicies"), EntryObject->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+						if (RegionPolicies)
+						{
+							TestEqual(TEXT("Schema exact TestDataAsset profile has empty region policies"), RegionPolicies->Num(), 0);
+						}
 						bFoundObjectProfile = true;
 						break;
 					}
@@ -286,6 +318,29 @@ bool FAssetDocumentGenericSchemaTest::RunTest(const FString& Parameters)
 	}
 
 	TestEqual(TEXT("Schema version is 1"), static_cast<int32>(Result.Payload->GetNumberField(TEXT("schema_version"))), 1);
+
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicyPresets = nullptr;
+	TestTrue(TEXT("Schema includes RegionPolicyPresets"), Result.Payload->TryGetArrayField(TEXT("RegionPolicyPresets"), RegionPolicyPresets));
+	if (RegionPolicyPresets)
+	{
+		const TSharedPtr<FJsonObject> DefaultDiffPreset = FindObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("DefaultDiff"));
+		TestTrue(TEXT("Schema includes DefaultDiff policy preset"), DefaultDiffPreset.IsValid());
+		if (DefaultDiffPreset.IsValid())
+		{
+			const TSharedPtr<FJsonObject>* Defaults = nullptr;
+			TestTrue(TEXT("DefaultDiff preset includes Defaults"), DefaultDiffPreset->TryGetObjectField(TEXT("Defaults"), Defaults));
+			if (Defaults && Defaults->IsValid())
+			{
+				TestEqual(TEXT("DefaultDiff preset reducer is exported"), (*Defaults)->GetStringField(TEXT("ReducerMode")), FString(TEXT("DefaultDiff")));
+				TestEqual(TEXT("DefaultDiff preset apply mode is exported"), (*Defaults)->GetStringField(TEXT("ApplyMode")), FString(TEXT("SetProperty")));
+				TestFalse(TEXT("DefaultDiff preset does not expose patch field"), (*Defaults)->HasField(TEXT("patch")));
+				TestFalse(TEXT("DefaultDiff preset does not expose op field"), (*Defaults)->HasField(TEXT("op")));
+			}
+		}
+
+		TestTrue(TEXT("Schema includes ManagedRegion policy preset"), FindObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("ManagedRegion")).IsValid());
+		TestTrue(TEXT("Schema includes ExtensionHook policy preset"), FindObjectByStringField(*RegionPolicyPresets, TEXT("PresetName"), TEXT("ExtensionHook")).IsValid());
+	}
 
 	const TSharedPtr<FJsonObject>* FieldNaming = nullptr;
 	TestTrue(TEXT("Schema includes field_naming"), Result.Payload->TryGetObjectField(TEXT("field_naming"), FieldNaming));
