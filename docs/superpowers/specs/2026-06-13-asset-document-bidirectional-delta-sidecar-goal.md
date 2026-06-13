@@ -68,13 +68,63 @@ SidecarSyncEngine 使用 SyncStateStore 支撑的 per-region sync state 协调�
 
 最重要的边界是：sidecar 仍然是作者编辑面。系统内部可以计算 delta、hash 或 rebuild instruction，但 agent 仍然编辑 AssetDoc 内容，而不是编辑操作语言。
 
+## RegionPolicy 驱动的 Reducer 和 Apply
+
+`DefaultReducer` 和 `AuthoritativeApplyAdapter` 不应该按每一种结构体或每一种资产类型扩张成大量专用类。否则 `NotifyTimelineReducer`、`SlotTrackReducer`、`MontageSectionReducer` 这类拆法会退化成“一种结构一个 reducer / adapter”，只是把 per-asset interpreter 换了一个名字。
+
+更合适的方向是：少量通用 reducer/apply engine，加数据化的 `RegionPolicy`，必要时再挂极少量 custom hook。
+
+`RegionPolicy` 由 `SemanticCapability` 提供，声明每个 managed region 的行为：
+
+```yaml
+Body.Notifies:
+  kind: array
+  identity: guid
+  defaultSource: empty
+  compare:
+    order: semantic
+    omitDefaults: true
+    numericTolerance: 0.001
+  reducer:
+    mode: GenericArrayDelta
+  apply:
+    mode: RebuildArrayRegion
+    targetProperty: Notifies
+    elementFactory: /Script/Engine.AnimNotifyEvent
+    afterApplyHook: RefreshAnimMontageNotifyData
+```
+
+`DefaultReducer` 应更像一个通用 delta engine。它读取 `RegionPolicy`，然后按 region kind、identity、default source 和 comparison rules 对齐 evidence 与 baseline，省略默认值，输出 sidecar delta。它不应该因为 region 名叫 `Body.Notifies` 就天然要求一个 `NotifyTimelineReducer` 类。
+
+`AuthoritativeApplyAdapter` 也应优先使用少量通用 apply mode，例如：
+
+- `SetScalarProperty`
+- `SetStructProperty`
+- `RebuildArrayRegion`
+- `RebuildMapRegion`
+- `RebuildGraphRegion`
+
+只有当 UE API 不是普通反射可写、某个 region apply 后必须调用专门修复逻辑，或者数据位于 editor-only / derived / cached structure 中时，才通过 `RegionPolicy` 挂 custom hook。Custom hook 是通用机制的逃生口，不是默认扩展方式。
+
 ## 架构类图
 
 ```mermaid
 classDiagram
+    class RegionPolicy {
+        +regionId
+        +kind
+        +identityRule
+        +defaultSource
+        +comparisonRule
+        +reducerMode
+        +applyMode
+        +hooks
+    }
+
     class SemanticCapability {
         +ListManagedRegions()
         +GetRegionSchema(regionId)
+        +GetRegionPolicy(regionId)
         +GetDefaultSource(regionId)
         +GetIdentityRule(regionId)
         +GetComparisonRule(regionId)
@@ -87,8 +137,8 @@ classDiagram
     }
 
     class DefaultReducer {
-        +Reduce(evidence, defaultSource)
-        +BuildSidecarDelta(regionEvidence)
+        +Reduce(regionEvidence, regionPolicy)
+        +BuildSidecarDelta(regionEvidence, regionPolicy)
     }
 
     class SidecarDeltaCapability {
@@ -114,11 +164,15 @@ classDiagram
 
     class AuthoritativeApplyAdapter {
         +BeginTransaction(context)
-        +ResetManagedRegion(regionId)
-        +ApplyRegionDelta(regionId, delta)
+        +ResetManagedRegion(regionId, regionPolicy)
+        +ApplyRegionDelta(regionId, delta, regionPolicy)
         +CommitTransaction(context)
     }
 
+    SemanticCapability --> RegionPolicy
+    RegionPolicy <.. DefaultReducer
+    RegionPolicy <.. SidecarDeltaCapability
+    RegionPolicy <.. AuthoritativeApplyAdapter
     SemanticCapability <.. EvidenceExtractor
     SemanticCapability <.. DefaultReducer
     SemanticCapability <.. SidecarDeltaCapability
@@ -165,7 +219,9 @@ Canonical hash 规则必须按 region 归属。例如，montage section order �
 - last sync revision 或 timestamp
 - last accepted direction
 
-状态可以存储在 sidecar metadata 中，也可以存储在 companion state file 中，但它必须和 sidecar 以及 asset identity 关联。第一版实现可以选择其中一种存储方式，但架构上必须显式存在这份状态。
+v1 默认将状态存储在 sidecar metadata 的 `_meta.sync` 区域中，不写入 `.uasset`。运行时可以把这些 state 加载到内存中作为本次 sync pass 的缓存，但内存缓存不是权威来源。Editor、MCP 或 agent 进程重启后，应重新从 sidecar metadata 读取 `SyncStateStore`。
+
+Companion state file，例如 `AM_Attack.assetdoc.state`，只作为未来可选方案，不作为 v1 默认策略。v1 不应为了同步 hash 或 last-sync state 修改 Unreal asset package metadata，也不应把 sync state 写入 `.uasset`。
 
 当某个 region 在任一方向成功同步后，`SidecarSyncEngine` 必须同时更新 sidecar hash 和 asset evidence hash。如果同步操作在两个表示都稳定之前失败，则必须保留之前的状态，让下一次同步可以重试或报告同一个冲突。
 
@@ -279,12 +335,12 @@ Transaction 应该是 short-lived 且 region-scoped。它不是 agent 的操作�
 目标架构是：
 
 - `EvidenceExtractor`：从 Unreal asset、reflected data、raw dump 或 text export 读取底层事实。它可以很脏、偏调试，但不应该决定作者编辑语义。它应尽可能输出 region evidence 和稳定 evidence hash。
-- `DefaultReducer`：将 extracted facts 与选定 default source 对比，例如 CDO values、empty templates、current asset baselines 或 profile-declared defaults。它只输出 effective sidecar deltas。
-- `SemanticCapability`：声明 sidecar-visible regions、stable keys、default sources、identity rules、comparison rules、constraints、synchronization scope，以及某个 region 在 v1 是否作为整体 rebuild。
+- `DefaultReducer`：作为通用 delta engine，将 extracted facts 与选定 default source 对比，例如 CDO values、empty templates、current asset baselines 或 profile-declared defaults。它根据 `RegionPolicy` 执行 scalar、struct、array、map 或 graph 等少量通用 reducer mode，只输出 effective sidecar deltas。
+- `SemanticCapability`：声明 sidecar-visible regions、stable keys、default sources、identity rules、comparison rules、constraints、synchronization scope，以及每个 region 的 `RegionPolicy`。特殊资产优先通过数据化 policy 表达语义，而不是为每个结构创建专用 reducer / adapter 类。
 - `SidecarDeltaCapability`：validate 和 normalize sidecar delta content。它理解 AssetDoc-native schema，但不暴露 agent-facing patch 或 command DSL。
-- `SyncStateStore`：按 managed region 持久化 last-sync sidecar hash 和 asset evidence hash。它让跨 editor restart 和跨 agent run 的 direction detection 与 conflict detection 可靠。
+- `SyncStateStore`：按 managed region 持久化 last-sync sidecar hash 和 asset evidence hash。v1 默认存储在 sidecar metadata 的 `_meta.sync` 中，运行时内存只做缓存，不写入 `.uasset`。它让跨 editor restart 和跨 agent run 的 direction detection 与 conflict detection 可靠。
 - `SidecarSyncEngine`：协调 asset-to-sidecar 和 sidecar-to-asset synchronization。它负责 direction detection、conflict marking、sync transactions、loop prevention，以及 `accept sidecar` / `accept asset` resolution。
-- `AuthoritativeApplyAdapter`：将 normalized sidecar deltas 写回 Unreal objects。它先 reset 或 rebuild managed fields 和 regions，再应用 sidecar values，因为 apply 不是 extraction 的反向执行。
+- `AuthoritativeApplyAdapter`：作为通用 apply engine，将 normalized sidecar deltas 写回 Unreal objects。它根据 `RegionPolicy` 执行 `SetScalarProperty`、`SetStructProperty`、`RebuildArrayRegion`、`RebuildMapRegion`、`RebuildGraphRegion` 等少量 apply mode，必要时调用 custom hook。它先 reset 或 rebuild managed fields 和 regions，再应用 sidecar values，因为 apply 不是 extraction 的反向执行。
 
 现有 full Body replacement 行为可以作为兼容层保留，但它不应成为长期作者编辑模型。
 
@@ -293,6 +349,7 @@ Transaction 应该是 short-lived 且 region-scoped。它不是 agent 的操作�
 - 不引入 agent-facing patch operation language 作为主要作者编辑面。
 - 不把 raw `.uasset`、raw JSON dump 或 text export 当作直接作者编辑格式。
 - 当共享 extractor、reducer、semantic capability 或 apply adapter 可以覆盖行为时，不增长一次性的 per-asset interpreter。
+- 不为每种结构体或每个 region 默认创建专用 reducer / adapter 类；优先用通用 engine + `RegionPolicy` + 少量 custom hook。
 - 第一版双向同步不要求 element-level merge。
 - 当简单方向选择已经足够时，不通过 array index、timestamp、class name 或其他不稳定的 element-level heuristic 猜测 region conflict。
 - 不让 synchronization transaction 变成 agent-authored operations 或长期 edit history。
