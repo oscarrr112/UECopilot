@@ -94,6 +94,64 @@ Body.Notifies:
     afterApplyHook: RefreshAnimMontageNotifyData
 ```
 
+`RegionPolicy` 可以直接声明，也可以由 `RegionPolicyTemplate` 加 profile overrides 展开得到。Template 不是 C++ template，也不是代码生成体系；它是 profile/schema 层的复用机制，用来避免每个 region 重复声明 reducer mode、apply mode、comparison rule 和 default handling。
+
+推荐分工是：
+
+```text
+UE reflection
+  提供原始 property 能力：字段、类型、读写、CDO/default。
+
+RegionPolicyTemplate
+  提供常见作者语义模板：scalar delta、struct delta、array-by-identity、map delta、graph region。
+
+AssetDoc profile/schema
+  选择模板并覆盖 region 名称、targetProperty、identity field、display schema、hook 等资产语义。
+
+SpecializedSemanticExtension
+  只补 reflection、template、profile 都表达不了的 engine-specific repair 或结构语义。
+```
+
+示例：
+
+```yaml
+templates:
+  reflectedScalar:
+    kind: scalar
+    reducer:
+      mode: GenericScalarDelta
+    apply:
+      mode: SetScalarProperty
+    compare:
+      omitDefaults: true
+
+  reflectedArrayByGuid:
+    kind: array
+    identity:
+      mode: field
+      field: Guid
+    reducer:
+      mode: GenericArrayDelta
+    apply:
+      mode: RebuildArrayRegion
+    compare:
+      omitDefaults: true
+      order: semantic
+
+regions:
+  Body.Blend.In:
+    template: reflectedScalar
+    targetProperty: BlendIn
+
+  Body.Notifies:
+    template: reflectedArrayByGuid
+    targetProperty: Notifies
+    elementType: /Script/Engine.AnimNotifyEvent
+    afterApplyHook: RefreshAnimMontageNotifyData
+```
+
+原则是：reflection for facts，template/profile for semantics，extension hook for engine-specific repairs。
+
 `DefaultReducer` 应更像一个通用 delta engine。它读取 `RegionPolicy`，然后按 region kind、identity、default source 和 comparison rules 对齐 evidence 与 baseline，省略默认值，输出 sidecar delta。它不应该因为 region 名叫 `Body.Notifies` 就天然要求一个 `NotifyTimelineReducer` 类。
 
 `AuthoritativeApplyAdapter` 也应优先使用少量通用 apply mode，例如：
@@ -134,6 +192,15 @@ Godot PROPERTY_USAGE_STORAGE
 
 ```mermaid
 classDiagram
+    class RegionPolicyTemplate {
+        +templateId
+        +kind
+        +defaultReducerMode
+        +defaultApplyMode
+        +defaultComparisonRule
+        +defaultHandling
+    }
+
     class RegionPolicy {
         +regionId
         +kind
@@ -193,6 +260,8 @@ classDiagram
         +CommitTransaction(context)
     }
 
+    RegionPolicyTemplate <.. RegionPolicy
+    SemanticCapability --> RegionPolicyTemplate
     SemanticCapability --> RegionPolicy
     RegionPolicy <.. DefaultReducer
     RegionPolicy <.. SidecarDeltaCapability
@@ -360,7 +429,7 @@ Transaction 应该是 short-lived 且 region-scoped。它不是 agent 的操作�
 
 - `EvidenceExtractor`：从 Unreal asset、reflected data、raw dump 或 text export 读取底层事实。它可以很脏、偏调试，但不应该决定作者编辑语义。它应尽可能输出 region evidence 和稳定 evidence hash。
 - `DefaultReducer`：作为通用 delta engine，将 extracted facts 与选定 default source 对比，例如 CDO values、empty templates、current asset baselines 或 profile-declared defaults。它根据 `RegionPolicy` 执行 scalar、struct、array、map 或 graph 等少量通用 reducer mode，只输出 effective sidecar deltas。
-- `SemanticCapability`：声明 sidecar-visible regions、stable keys、default sources、identity rules、comparison rules、constraints、synchronization scope，以及每个 region 的 `RegionPolicy`。特殊资产优先通过数据化 policy 表达语义，而不是为每个结构创建专用 reducer / adapter 类。
+- `SemanticCapability`：声明 sidecar-visible regions、stable keys、default sources、identity rules、comparison rules、constraints、synchronization scope，以及每个 region 的 `RegionPolicy`。`RegionPolicy` 可以由 `RegionPolicyTemplate` 和 profile overrides 展开得到。特殊资产优先通过数据化 policy/template 表达语义，而不是为每个结构创建专用 reducer / adapter 类。
 - `SidecarDeltaCapability`：validate 和 normalize sidecar delta content。它理解 AssetDoc-native schema，但不暴露 agent-facing patch 或 command DSL。
 - `SyncStateStore`：按 managed region 持久化 last-sync sidecar hash 和 asset evidence hash。v1 默认存储在 sidecar metadata 的 `_meta.sync` 中，运行时内存只做缓存，不写入 `.uasset`。它让跨 editor restart 和跨 agent run 的 direction detection 与 conflict detection 可靠。
 - `SidecarSyncEngine`：协调 asset-to-sidecar 和 sidecar-to-asset synchronization。它负责 direction detection、conflict marking、sync transactions、loop prevention，以及 `accept sidecar` / `accept asset` resolution。
@@ -374,6 +443,7 @@ Transaction 应该是 short-lived 且 region-scoped。它不是 agent 的操作�
 - 不把 raw `.uasset`、raw JSON dump 或 text export 当作直接作者编辑格式。
 - 当共享 extractor、reducer、semantic capability 或 apply adapter 可以覆盖行为时，不增长一次性的 per-asset interpreter。
 - 不为每种结构体或每个 region 默认创建专用 reducer / adapter 类；优先用通用 engine + `RegionPolicy` + 少量 custom hook。
+- 不把 `RegionPolicyTemplate` 设计成 C++ template 或代码生成体系；它是 profile/schema 层的 policy 复用机制。
 - 第一版双向同步不要求 element-level merge。
 - 当简单方向选择已经足够时，不通过 array index、timestamp、class name 或其他不稳定的 element-level heuristic 猜测 region conflict。
 - 不让 synchronization transaction 变成 agent-authored operations 或长期 edit history。
