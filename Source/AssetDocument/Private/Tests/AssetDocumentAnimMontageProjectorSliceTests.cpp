@@ -245,6 +245,62 @@ bool ContainsPath(const TArray<FString>& Paths, const FString& Path)
 	return Paths.Contains(Path);
 }
 
+bool AssertUnsupportedNotifyArrayDoesNotMutateMontage(
+	FAutomationTestBase& Test,
+	const FString& FieldName,
+	const FString& EntryName)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	Test.TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const float OriginalBlendInTime = Montage->GetDefaultBlendInTime();
+	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
+	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
+	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
+
+	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
+	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
+	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
+
+	TSharedRef<FJsonObject> NotifyEntry = MakeShared<FJsonObject>();
+	NotifyEntry->SetStringField(TEXT("NotifyName"), EntryName);
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	Entries.Add(MakeShared<FJsonValueObject>(NotifyEntry));
+	Body->SetArrayField(FieldName, Entries);
+
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ApplyBody(*Montage, Body);
+
+	Test.TestFalse(FString::Printf(TEXT("Projector apply rejects non-empty %s"), *FieldName), Result.bSuccess);
+	Test.TestTrue(
+		FString::Printf(TEXT("Apply result reports %s path"), *FieldName),
+		Result.Message.Contains(FString::Printf(TEXT("/Body/%s"), *FieldName)));
+	Test.TestTrue(
+		FString::Printf(TEXT("BlendInTime is unchanged after rejected %s apply"), *FieldName),
+		FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER));
+	Test.TestTrue(
+		FString::Printf(TEXT("BlendOutTime is unchanged after rejected %s apply"), *FieldName),
+		FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER));
+	Test.TestEqual(
+		FString::Printf(TEXT("CompositeSections count is unchanged after rejected %s apply"), *FieldName),
+		Montage->CompositeSections.Num(),
+		OriginalSectionCount);
+	Test.TestEqual(
+		FString::Printf(TEXT("SlotAnimTracks count is unchanged after rejected %s apply"), *FieldName),
+		Montage->SlotAnimTracks.Num(),
+		OriginalSlotCount);
+	return !Result.bSuccess
+		&& Result.Message.Contains(FString::Printf(TEXT("/Body/%s"), *FieldName))
+		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER)
+		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER)
+		&& Montage->CompositeSections.Num() == OriginalSectionCount
+		&& Montage->SlotAnimTracks.Num() == OriginalSlotCount;
+}
+
 bool JsonValuesEqualForSlice(
 	const TSharedPtr<FJsonValue>& Expected,
 	const TSharedPtr<FJsonValue>& Actual,
@@ -713,38 +769,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentAnimMontageProjectorSliceRejectsNotifyUpdateWithoutMutationTest::RunTest(const FString& Parameters)
 {
-	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
-	TestNotNull(TEXT("Montage fixture is created"), Montage);
-	if (!Montage)
-	{
-		return false;
-	}
-
-	const float OriginalBlendInTime = Montage->GetDefaultBlendInTime();
-	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
-	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
-	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
-
-	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
-	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
-	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
-
-	TSharedRef<FJsonObject> Notify = MakeShared<FJsonObject>();
-	Notify->SetStringField(TEXT("NotifyName"), TEXT("Unsupported"));
-	TArray<TSharedPtr<FJsonValue>> Notifies;
-	Notifies.Add(MakeShared<FJsonValueObject>(Notify));
-	Body->SetArrayField(TEXT("Notifies"), Notifies);
-
-	const FAnimMontageProjectorSlice Projector;
-	const FAnimMontageProjectorSliceResult Result = Projector.ApplyBody(*Montage, Body);
-
-	TestFalse(TEXT("Projector apply rejects non-empty Notifies"), Result.bSuccess);
-	TestTrue(TEXT("Apply result reports Notifies path"), Result.Message.Contains(TEXT("/Body/Notifies")));
-	TestTrue(TEXT("BlendInTime is unchanged after rejected apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER));
-	TestTrue(TEXT("BlendOutTime is unchanged after rejected apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER));
-	TestEqual(TEXT("CompositeSections count is unchanged after rejected apply"), Montage->CompositeSections.Num(), OriginalSectionCount);
-	TestEqual(TEXT("SlotAnimTracks count is unchanged after rejected apply"), Montage->SlotAnimTracks.Num(), OriginalSlotCount);
-	return true;
+	const bool bNotifiesCovered = AssertUnsupportedNotifyArrayDoesNotMutateMontage(*this, TEXT("Notifies"), TEXT("UnsupportedNotify"));
+	const bool bNotifyStatesCovered = AssertUnsupportedNotifyArrayDoesNotMutateMontage(*this, TEXT("NotifyStates"), TEXT("UnsupportedNotifyState"));
+	return bNotifiesCovered && bNotifyStatesCovered;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
