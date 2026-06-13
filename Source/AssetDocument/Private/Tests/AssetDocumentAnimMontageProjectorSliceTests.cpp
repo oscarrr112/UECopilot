@@ -38,7 +38,7 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 
 	FCompositeSection& Section = Montage->CompositeSections.AddDefaulted_GetRef();
 	Section.SectionName = FName(TEXT("Start"));
-	Section.StartTime = 0.0f;
+	Section.SetTime(0.0f);
 	Section.NextSectionName = NAME_None;
 
 	TSharedRef<FJsonObject> ProjectedBody = MakeShared<FJsonObject>();
