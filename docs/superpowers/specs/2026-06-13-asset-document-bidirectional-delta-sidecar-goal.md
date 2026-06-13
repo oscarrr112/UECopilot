@@ -1,42 +1,42 @@
-# AssetDocument Bidirectional Delta Sidecar Goal
+# AssetDocument 双向 Delta Sidecar 目标
 
-## Goal
+## 目标
 
-AssetDocument should evolve into a bidirectional delta sidecar system.
+AssetDocument 应演进为一个双向 delta sidecar 系统。
 
-The sidecar file is the maintained authoring surface. It records persistent asset differences from a default or baseline state, similar in spirit to text resource files such as Godot `.tres`. Agents edit the sidecar directly. Users may also edit the Unreal asset directly in the editor. The system keeps both representations synchronized.
+Sidecar 文件是长期维护的作者编辑面。它记录资产相对于默认状态或基线状态的持久化差异，整体思路接近 Godot `.tres` 这类文本资源文件。Agent 直接编辑 sidecar。用户也可以直接在 Unreal Editor 里编辑 Unreal asset。系统负责让这两种表示保持同步。
 
-## Core Model
+## 核心模型
 
-AssetDoc is not a one-shot operation log and should not expose an agent-facing patch or command DSL.
+AssetDoc 不是一次性的操作日志，也不应该向 agent 暴露 patch 或 command DSL。
 
-AssetDoc is also not intended to become a full serialized copy of every Unreal asset field. It should record effective, meaningful differences that need to persist.
+AssetDoc 也不应该变成 Unreal asset 每个字段的完整序列化副本。它应该记录需要持久化的、有效的、有意义的差异。
 
-The intended model is:
+目标模型是：
 
 ```text
-default or baseline asset state
+默认或基线资产状态
 + AssetDoc sidecar delta
-= desired Unreal asset state
+= 期望的 Unreal asset 状态
 ```
 
-When the Unreal asset changes, extractors and reducers update the sidecar so the sidecar reflects the current meaningful differences. When the sidecar changes, apply adapters update the Unreal asset so the asset reflects the sidecar.
+当 Unreal asset 发生变化时，extractor 和 reducer 更新 sidecar，让 sidecar 反映当前有意义的差异。当 sidecar 发生变化时，apply adapter 更新 Unreal asset，让 asset 反映 sidecar。
 
-## Field Absence Semantics
+## 字段缺失语义
 
-In this model, a missing field in the sidecar does not mean "leave the current Unreal asset value untouched."
+在这个模型里，sidecar 中缺失某个字段，并不表示“保持当前 Unreal asset 的值不变”。
 
-A missing field means the sidecar does not declare a persistent difference for that field or region. During sidecar-to-asset synchronization, the affected managed field or region should return to its default or baseline representation before sidecar values are applied.
+缺失字段表示 sidecar 没有为该字段或 region 声明持久化差异。在 sidecar-to-asset 同步时，受影响的 managed field 或 managed region 应先回到默认或基线表示，然后再应用 sidecar 中声明的值。
 
-This differs from sparse one-shot patch semantics. The sidecar is a source-of-truth delta, not an imperative partial update.
+这不同于 sparse one-shot patch 语义。Sidecar 是 source-of-truth delta，不是命令式的局部更新。
 
-This rule only applies inside regions declared as AssetDoc-managed. Unmanaged Unreal asset data is outside the synchronization scope and must be preserved by sidecar-to-asset application. A missing sidecar field must never be interpreted as permission to reset unrelated asset state.
+这条规则只作用于声明为 AssetDoc-managed 的 region。未被管理的 Unreal asset 数据不在同步范围内，sidecar-to-asset apply 必须保留它们。Sidecar 缺失某个字段，绝不能被解释为允许重置无关资产状态。
 
-## Managed Region Scope
+## Managed Region 范围
 
-`SemanticCapability` declares the managed region list for each supported asset shape. Every extractor, reducer, sync decision, and apply operation is scoped to those regions.
+`SemanticCapability` 为每一种受支持的资产形态声明 managed region 列表。每个 extractor、reducer、sync decision 和 apply operation 都必须限制在这些 region 内。
 
-For AnimMontage, version 1 should avoid one coarse `Body` region. A more useful region split is:
+对于 AnimMontage，v1 不应该只使用一个过粗的 `Body` region。更合适的 region 拆分是：
 
 - `Body.Blend`
 - `Body.SlotTracks`
@@ -45,14 +45,14 @@ For AnimMontage, version 1 should avoid one coarse `Body` region. A more useful 
 - `Body.Curves`
 - `Body.RootMotion`
 
-This keeps the conflict model region-level while avoiding unnecessary conflicts when the sidecar and Unreal editor changed unrelated parts of the same asset. For example, a sidecar edit to `Body.Blend` should not conflict with an editor edit to `Body.Notifies` if both regions have independent sync state.
+这样仍然保持 region-level conflict model，但可以避免 sidecar 和 Unreal Editor 修改了同一资产的无关部分时产生不必要冲突。例如，sidecar 修改 `Body.Blend`，editor 修改 `Body.Notifies`，只要两个 region 拥有独立 sync state，就不应该互相冲突。
 
-## Architecture Overview
+## 架构概览
 
-The architecture should keep extraction, reduction, sidecar validation, synchronization, and application as separate responsibilities.
+架构应保持 extraction、reduction、sidecar validation、synchronization 和 application 的职责分离。
 
 ```text
-Unreal asset, reflected data, raw dumps, text exports
+Unreal asset、reflected data、raw dump、text export
   -> EvidenceExtractor
   -> EvidenceBundle
   -> DefaultReducer
@@ -63,12 +63,12 @@ AssetDoc sidecar delta
   -> AuthoritativeApplyAdapter
   -> Unreal asset
 
-SidecarSyncEngine coordinates both directions with SyncStateStore-backed per-region sync state.
+SidecarSyncEngine 使用 SyncStateStore 支撑的 per-region sync state 协调双向同步。
 ```
 
-The important boundary is that the sidecar remains the authoring surface. The internal system may compute deltas, hashes, or rebuild instructions, but agents still edit AssetDoc content rather than an operation language.
+最重要的边界是：sidecar 仍然是作者编辑面。系统内部可以计算 delta、hash 或 rebuild instruction，但 agent 仍然编辑 AssetDoc 内容，而不是编辑操作语言。
 
-## Architecture Class Diagram
+## 架构类图
 
 ```mermaid
 classDiagram
@@ -131,98 +131,98 @@ classDiagram
     SidecarSyncEngine --> AuthoritativeApplyAdapter
 ```
 
-## Region-Level Synchronization
+## Region-Level 同步
 
-For version 1, complex structured regions should prefer region-level regeneration over element-level merging.
+v1 中，复杂结构化 region 应优先采用 region-level regeneration，而不是 element-level merge。
 
-Examples:
+示例：
 
-- If `Body.Notifies` changes in the Unreal asset, regenerate the sidecar's `Body.Notifies` region from extracted facts and reduced defaults.
-- If `Body.Notifies` changes in the sidecar, rebuild the Unreal asset's notifies region from the sidecar representation.
-- The same default approach applies to structured regions such as `CompositeSections`, `SlotAnimTracks`, `NotifyStates`, and similar future graph or timeline regions.
+- 如果 Unreal asset 中的 `Body.Notifies` 发生变化，则根据 extracted facts 和 reduced defaults 重新生成 sidecar 的 `Body.Notifies` region。
+- 如果 sidecar 中的 `Body.Notifies` 发生变化，则根据 sidecar 表示重建 Unreal asset 的 notifies region。
+- 同样的默认策略适用于 `CompositeSections`、`SlotAnimTracks`、`NotifyStates` 以及未来类似的 graph 或 timeline region。
 
-Identity remains useful for stable output, reduced textual churn, and future conflict detection, but it should not force version 1 into a complex element-level merge engine.
+Identity 对稳定输出、减少文本 churn 和未来 conflict detection 仍然有价值，但它不应该迫使 v1 实现复杂的 element-level merge engine。
 
 ## Canonical Hashing
 
-Conflict detection depends on canonical region hashes, not raw text comparison or raw UObject memory comparison.
+冲突检测依赖 canonical region hash，而不是 raw text comparison 或 raw UObject memory comparison。
 
-`SidecarDeltaCapability` is responsible for canonicalizing sidecar regions before hashing. Canonicalization should remove formatting differences, normalize ordering where ordering is not semantic, normalize omitted-default forms, and use stable field names from the AssetDoc schema.
+`SidecarDeltaCapability` 负责在 hash 前 canonicalize sidecar region。Canonicalization 应移除格式差异，在排序不具备语义时规范排序，规范 omitted-default 表示，并使用 AssetDoc schema 中的稳定字段名。
 
-`EvidenceExtractor` and `DefaultReducer` are responsible for producing canonical asset evidence hashes. These hashes should represent the meaningful extracted state for a managed region after applying the same semantic comparison rules declared by `SemanticCapability`.
+`EvidenceExtractor` 和 `DefaultReducer` 负责生成 canonical asset evidence hash。这些 hash 应在应用 `SemanticCapability` 声明的同一套 semantic comparison rules 后，表示 managed region 的有意义 extracted state。
 
-Canonical hash rules must be owned per region. For example, montage section order may be semantic, while object property key order in the sidecar is not.
+Canonical hash 规则必须按 region 归属。例如，montage section order 可能具备语义，而 sidecar 中 object property key order 不具备语义。
 
 ## Sync State Store
 
-`SidecarSyncEngine` cannot detect direction or conflicts from the current sidecar and current asset alone. It requires persistent last-sync state.
+`SidecarSyncEngine` 不能只靠当前 sidecar 和当前 asset 判断方向或冲突。它需要持久化的 last-sync state。
 
-`SyncStateStore` stores per managed region:
+`SyncStateStore` 为每个 managed region 存储：
 
 - region id
 - last synced sidecar hash
 - last synced asset evidence hash
-- last sync revision or timestamp
+- last sync revision 或 timestamp
 - last accepted direction
 
-The state may be stored in sidecar metadata or in a companion state file, but it must be associated with the sidecar and asset identity. The first implementation can choose one storage mechanism, but the architecture requires the state to be explicit.
+状态可以存储在 sidecar metadata 中，也可以存储在 companion state file 中，但它必须和 sidecar 以及 asset identity 关联。第一版实现可以选择其中一种存储方式，但架构上必须显式存在这份状态。
 
-When a region successfully syncs in either direction, `SidecarSyncEngine` updates the sidecar hash and asset evidence hash together. If a sync operation fails before both representations are stable, the previous state must remain intact so the next sync can retry or report the same conflict.
+当某个 region 在任一方向成功同步后，`SidecarSyncEngine` 必须同时更新 sidecar hash 和 asset evidence hash。如果同步操作在两个表示都稳定之前失败，则必须保留之前的状态，让下一次同步可以重试或报告同一个冲突。
 
-## Region-Level Conflict Resolution
+## Region-Level 冲突解决
 
-Conflict detection is owned by `SidecarSyncEngine`, not by individual element adapters.
+Conflict detection 由 `SidecarSyncEngine` 负责，而不是由单个 element adapter 负责。
 
-For each managed region, the sync engine tracks enough state to compare:
+对于每个 managed region，sync engine 需要跟踪足够的状态来比较：
 
-- the last synced sidecar region hash
-- the last synced asset evidence hash
-- the current sidecar region hash
-- the current asset evidence hash
+- last synced sidecar region hash
+- last synced asset evidence hash
+- current sidecar region hash
+- current asset evidence hash
 
-The direction rules are:
+方向规则是：
 
-- If only the sidecar region changed, synchronize sidecar to asset.
-- If only the asset evidence changed, synchronize asset to sidecar.
-- If neither changed, do nothing.
-- If both changed, mark the region as conflicted.
+- 只有 sidecar region 变化：同步 sidecar 到 asset。
+- 只有 asset evidence 变化：同步 asset 到 sidecar。
+- 两边都没有变化：不执行操作。
+- 两边都变化：将该 region 标记为 conflicted。
 
-Version 1 conflict resolution is intentionally directional:
+v1 的冲突解决刻意保持为方向选择：
 
-- `accept sidecar`: the sidecar wins. Apply the sidecar region to the Unreal asset, then update the region sync state.
-- `accept asset`: the Unreal asset wins. Regenerate the sidecar region from current asset evidence, then update the region sync state.
+- `accept sidecar`：sidecar 胜出。将 sidecar region apply 到 Unreal asset，然后更新该 region 的 sync state。
+- `accept asset`：Unreal asset 胜出。根据当前 asset evidence 重新生成 sidecar region，然后更新该 region 的 sync state。
 
-There is no element-level three-way merge in the first version. For example, if both `Body.Notifies` in the sidecar and the montage notifies in the Unreal asset changed since the last sync, version 1 does not try to merge individual notify rows. It asks for a region-level direction and then rebuilds that region from the chosen side.
+第一版不做 element-level three-way merge。例如，如果 sidecar 中的 `Body.Notifies` 和 Unreal asset 中的 montage notifies 都在上次同步后发生了变化，v1 不尝试合并单条 notify row。系统要求选择一个 region-level 方向，然后从被选择的一侧重建该 region。
 
-## Direction Detection Flow
+## 方向判断流程图
 
 ```mermaid
 flowchart TD
-    A["Change observed"] --> B["Load SemanticCapability"]
-    B --> C["List managed regions"]
-    C --> D["Load SyncStateStore"]
-    D --> E["Extract current asset evidence"]
-    E --> F["Canonicalize current sidecar regions"]
-    F --> G["Compute current asset and sidecar hashes"]
-    G --> H{"Compare region hashes with last-sync state"}
-    H --> I["Neither changed: no-op"]
-    H --> J["Only sidecar changed: apply sidecar to asset"]
-    H --> K["Only asset changed: regenerate sidecar region"]
-    H --> L["Both changed: mark conflict"]
-    L --> M{"User chooses direction"}
-    M --> N["Accept sidecar: apply sidecar region"]
-    M --> O["Accept asset: regenerate sidecar region"]
-    J --> P["Update SyncStateStore"]
+    A["观察到变化"] --> B["加载 SemanticCapability"]
+    B --> C["列出 managed regions"]
+    C --> D["加载 SyncStateStore"]
+    D --> E["提取当前 asset evidence"]
+    E --> F["Canonicalize 当前 sidecar regions"]
+    F --> G["计算当前 asset 和 sidecar hashes"]
+    G --> H{"与 last-sync state 比较 region hashes"}
+    H --> I["均未变化: no-op"]
+    H --> J["只有 sidecar 变化: apply sidecar to asset"]
+    H --> K["只有 asset 变化: regenerate sidecar region"]
+    H --> L["两边都变化: mark conflict"]
+    L --> M{"用户选择方向"}
+    M --> N["accept sidecar: apply sidecar region"]
+    M --> O["accept asset: regenerate sidecar region"]
+    J --> P["更新 SyncStateStore"]
     K --> P
     N --> P
     O --> P
 ```
 
-## Sidecar To Asset Sequence
+## Sidecar To Asset 时序图
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Agent or sidecar editor
+    participant Agent as Agent 或 sidecar editor
     participant Engine as SidecarSyncEngine
     participant Sidecar as SidecarDeltaCapability
     participant State as SyncStateStore
@@ -239,7 +239,7 @@ sequenceDiagram
     Extractor->>Asset: Read reflected/raw asset facts
     Extractor-->>Engine: Region evidence and asset hashes
     Engine->>Engine: Detect changed regions and conflicts
-    alt only sidecar changed for region
+    alt 只有 sidecar region 变化
         Engine->>Apply: Begin transaction with source sidecar
         Apply->>Asset: Reset or rebuild managed region
         Apply->>Asset: Apply canonical sidecar delta
@@ -247,52 +247,52 @@ sequenceDiagram
         Engine->>Extractor: Re-extract affected region
         Extractor-->>Engine: Verified post-apply asset hash
         Engine->>State: Update sidecar and asset hashes
-    else both sidecar and asset changed
+    else sidecar 和 asset 都变化
         Engine-->>Agent: Report region conflict
-        Agent->>Engine: accept sidecar or accept asset
+        Agent->>Engine: accept sidecar 或 accept asset
     end
 ```
 
-## Sync Transactions And Loop Prevention
+## Sync Transactions 与循环防护
 
-Bidirectional synchronization must distinguish user/editor changes from changes produced by the sync engine itself.
+双向同步必须区分用户或 editor 造成的变化，以及 sync engine 自己造成的变化。
 
-`SidecarSyncEngine` should create a sync transaction for every apply or regenerate operation. The transaction records:
+`SidecarSyncEngine` 应为每次 apply 或 regenerate 操作创建 sync transaction。Transaction 记录：
 
-- source direction, such as sidecar, asset, accept sidecar, or accept asset
+- source direction，例如 sidecar、asset、accept sidecar 或 accept asset
 - affected regions
 - expected post-operation sidecar hashes
 - expected post-operation asset evidence hashes
 
-If applying a sidecar change causes an Unreal asset save event, the next sync pass should compare the event against the active or recently completed transaction. If the resulting asset hash matches the expected post-apply hash, it is not a new user conflict; it is the expected result of the previous sync.
+如果 apply sidecar change 导致 Unreal asset save event，下一次 sync pass 应将这个 event 与 active 或 recently completed transaction 对比。如果 resulting asset hash 匹配 expected post-apply hash，它不是新的用户冲突，而是上一次同步的预期结果。
 
-Transactions should be short-lived and region-scoped. They are not an operation log for agents and should not become the authoring format.
+Transaction 应该是 short-lived 且 region-scoped。它不是 agent 的操作日志，也不应该变成作者编辑格式。
 
-## Identity Preference
+## Identity 优先级
 
-Use Unreal's native stable identity when it exists.
+优先使用 Unreal 原生稳定 identity。
 
-For AnimMontage, `FAnimNotifyEvent::Guid` is available under editor-only data and should be preferred for notify identity in editor-side synchronization. For structures without native GUIDs, use semantic identity such as `SectionName` or `SlotName` where valid. Only introduce AssetDoc-owned metadata or generated IDs when Unreal does not provide a reliable identity and semantic identity is insufficient.
+对于 AnimMontage，`FAnimNotifyEvent::Guid` 在 editor-only data 下可用，editor-side synchronization 中应优先用它作为 notify identity。对于没有原生 GUID 的结构，在有效时使用 `SectionName` 或 `SlotName` 这样的 semantic identity。只有当 Unreal 没有可靠 identity 且 semantic identity 不足时，才引入 AssetDoc-owned metadata 或 generated ID。
 
-## Responsibility Split
+## 职责拆分
 
-The target architecture is:
+目标架构是：
 
-- `EvidenceExtractor`: reads low-level facts from Unreal assets, reflected data, raw dumps, or text exports. It may be dirty and debug-oriented, but it should not decide authoring semantics. It should emit region evidence and stable evidence hashes where possible.
-- `DefaultReducer`: compares extracted facts against the selected default source, such as CDO values, empty templates, current asset baselines, or profile-declared defaults. It outputs only effective sidecar deltas.
-- `SemanticCapability`: declares sidecar-visible regions, stable keys, default sources, identity rules, comparison rules, constraints, synchronization scope, and whether a region is rebuilt as a whole in version 1.
-- `SidecarDeltaCapability`: validates and normalizes sidecar delta content. It understands the AssetDoc-native schema, but it does not expose an agent-facing patch or command DSL.
-- `SyncStateStore`: persists last-sync sidecar and asset evidence hashes per managed region. It makes direction detection and conflict detection reliable across editor restarts and separate agent runs.
-- `SidecarSyncEngine`: coordinates asset-to-sidecar and sidecar-to-asset synchronization. It owns direction detection, conflict marking, sync transactions, loop prevention, and `accept sidecar` / `accept asset` resolution.
-- `AuthoritativeApplyAdapter`: writes normalized sidecar deltas back to Unreal objects. It resets or rebuilds managed fields and regions before applying sidecar values, because applying is not the reverse of extraction.
+- `EvidenceExtractor`：从 Unreal asset、reflected data、raw dump 或 text export 读取底层事实。它可以很脏、偏调试，但不应该决定作者编辑语义。它应尽可能输出 region evidence 和稳定 evidence hash。
+- `DefaultReducer`：将 extracted facts 与选定 default source 对比，例如 CDO values、empty templates、current asset baselines 或 profile-declared defaults。它只输出 effective sidecar deltas。
+- `SemanticCapability`：声明 sidecar-visible regions、stable keys、default sources、identity rules、comparison rules、constraints、synchronization scope，以及某个 region 在 v1 是否作为整体 rebuild。
+- `SidecarDeltaCapability`：validate 和 normalize sidecar delta content。它理解 AssetDoc-native schema，但不暴露 agent-facing patch 或 command DSL。
+- `SyncStateStore`：按 managed region 持久化 last-sync sidecar hash 和 asset evidence hash。它让跨 editor restart 和跨 agent run 的 direction detection 与 conflict detection 可靠。
+- `SidecarSyncEngine`：协调 asset-to-sidecar 和 sidecar-to-asset synchronization。它负责 direction detection、conflict marking、sync transactions、loop prevention，以及 `accept sidecar` / `accept asset` resolution。
+- `AuthoritativeApplyAdapter`：将 normalized sidecar deltas 写回 Unreal objects。它先 reset 或 rebuild managed fields 和 regions，再应用 sidecar values，因为 apply 不是 extraction 的反向执行。
 
-Existing full Body replacement behavior can remain as a compatibility layer, but it should not be the long-term authoring model.
+现有 full Body replacement 行为可以作为兼容层保留，但它不应成为长期作者编辑模型。
 
-## Non-Goals
+## 非目标
 
-- Do not introduce an agent-facing patch operation language as the primary authoring surface.
-- Do not treat raw `.uasset`, raw JSON dumps, or text exports as direct authoring formats.
-- Do not grow one-off per-asset interpreters when a shared extractor, reducer, semantic capability, or apply adapter can cover the behavior.
-- Do not require element-level merge for the first version of bidirectional synchronization.
-- Do not guess region conflicts from array index, timestamp, class name, or other unstable element-level heuristics when a simple directional resolution is enough.
-- Do not let synchronization transactions become agent-authored operations or long-term edit history.
+- 不引入 agent-facing patch operation language 作为主要作者编辑面。
+- 不把 raw `.uasset`、raw JSON dump 或 text export 当作直接作者编辑格式。
+- 当共享 extractor、reducer、semantic capability 或 apply adapter 可以覆盖行为时，不增长一次性的 per-asset interpreter。
+- 第一版双向同步不要求 element-level merge。
+- 当简单方向选择已经足够时，不通过 array index、timestamp、class name 或其他不稳定的 element-level heuristic 猜测 region conflict。
+- 不让 synchronization transaction 变成 agent-authored operations 或长期 edit history。
