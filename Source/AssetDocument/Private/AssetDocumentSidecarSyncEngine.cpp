@@ -13,14 +13,9 @@ EAssetDocumentSyncDirection DecideInitialRegion(
 	const FString& CurrentSidecarHash,
 	const FString& CurrentAssetEvidenceHash)
 {
-	if (CurrentAssetEvidenceHash.IsEmpty())
+	if (CurrentSidecarHash.IsEmpty() || CurrentAssetEvidenceHash.IsEmpty())
 	{
 		return EAssetDocumentSyncDirection::NoChange;
-	}
-
-	if (CurrentSidecarHash.IsEmpty())
-	{
-		return EAssetDocumentSyncDirection::RegenerateSidecarRegion;
 	}
 
 	return EAssetDocumentSyncDirection::NeedsInitialBaseline;

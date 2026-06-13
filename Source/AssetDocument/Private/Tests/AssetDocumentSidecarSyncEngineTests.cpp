@@ -140,7 +140,10 @@ bool FAssetDocumentSidecarSyncInitialBaselineTest::RunTest(const FString& Parame
 		FString(),
 		TEXT("sha1:asset"),
 		nullptr);
-	TestEqual(TEXT("Empty sidecar with asset evidence regenerates sidecar"), EmptySidecarDecision.Direction, EAssetDocumentSyncDirection::RegenerateSidecarRegion);
+	TestEqual(TEXT("Empty sidecar without baseline is conservative no change"), EmptySidecarDecision.Direction, EAssetDocumentSyncDirection::NoChange);
+	const FAssetDocumentSyncResolutionAction EmptySidecarAction = FAssetDocumentSidecarSyncEngine::MakeAction(EmptySidecarDecision);
+	TestFalse(TEXT("Empty sidecar without baseline does not apply sidecar"), EmptySidecarAction.bShouldApplySidecarToAsset);
+	TestFalse(TEXT("Empty sidecar without baseline does not regenerate sidecar"), EmptySidecarAction.bShouldRegenerateSidecarRegion);
 
 	FAssetDocumentSyncState SyncState;
 	SyncState.Regions.Add(TEXT("Body.Blend"), MakeLastState(TEXT("sha1:blend-sidecar"), TEXT("sha1:blend-asset")));
