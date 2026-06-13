@@ -23,6 +23,8 @@ UAnimMontage* NewTransientMontageForProjectorSlice()
 
 	Montage->BlendIn.SetBlendTime(0.15f);
 	Montage->BlendOut.SetBlendTime(0.25f);
+	Montage->SlotAnimTracks.Reset();
+	Montage->CompositeSections.Reset();
 
 	FSlotAnimationTrack& SlotTrack = Montage->SlotAnimTracks.AddDefaulted_GetRef();
 	SlotTrack.SlotName = FName(TEXT("DefaultSlot"));
@@ -66,9 +68,11 @@ TSharedPtr<FJsonValue> CloneJsonValueForSlice(const TSharedPtr<FJsonValue>& Valu
 	case EJson::Object:
 	{
 		const TSharedPtr<FJsonObject> Object = Value->AsObject();
-		return Object.IsValid()
-			? MakeShared<FJsonValueObject>(CloneJsonObjectForSlice(Object.ToSharedRef()))
-			: MakeShared<FJsonValueNull>();
+		if (Object.IsValid())
+		{
+			return MakeShared<FJsonValueObject>(CloneJsonObjectForSlice(Object.ToSharedRef()));
+		}
+		return MakeShared<FJsonValueNull>();
 	}
 	case EJson::Array:
 	{
@@ -154,6 +158,91 @@ TSharedRef<FJsonObject> CloneNormalizedBodyForSliceComparison(const TSharedRef<F
 	Clone->RemoveField(TEXT("_Skipped"));
 	NormalizeNullableReferencesForSlice(Clone);
 	return Clone;
+}
+
+TSharedRef<FJsonObject> MakeBlendBodyForSlice(double BlendInTime, double BlendOutTime)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> Blend = MakeShared<FJsonObject>();
+	Blend->SetNumberField(TEXT("BlendInTime"), BlendInTime);
+	Blend->SetNumberField(TEXT("BlendOutTime"), BlendOutTime);
+	Body->SetObjectField(TEXT("Blend"), Blend);
+	return Body;
+}
+
+TSharedRef<FJsonObject> MakeSectionsBodyForSlice()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+
+	TSharedRef<FJsonObject> StartSection = MakeShared<FJsonObject>();
+	StartSection->SetStringField(TEXT("SectionName"), TEXT("Start"));
+	StartSection->SetNumberField(TEXT("LinkableTime"), 0.0);
+	StartSection->SetStringField(TEXT("NextSectionName"), TEXT("End"));
+
+	TSharedRef<FJsonObject> EndSection = MakeShared<FJsonObject>();
+	EndSection->SetStringField(TEXT("SectionName"), TEXT("End"));
+	EndSection->SetNumberField(TEXT("LinkableTime"), 1.25);
+
+	TArray<TSharedPtr<FJsonValue>> Sections;
+	Sections.Add(MakeShared<FJsonValueObject>(StartSection));
+	Sections.Add(MakeShared<FJsonValueObject>(EndSection));
+	Body->SetArrayField(TEXT("CompositeSections"), Sections);
+	return Body;
+}
+
+TSharedRef<FJsonObject> MakeSlotTracksBodyForSlice(const FString& SlotName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+
+	TSharedRef<FJsonObject> Segment = MakeShared<FJsonObject>();
+	Segment->SetField(TEXT("AnimReference"), MakeShared<FJsonValueNull>());
+	Segment->SetNumberField(TEXT("StartPos"), 0.5);
+	Segment->SetNumberField(TEXT("AnimStartTime"), 0.0);
+	Segment->SetNumberField(TEXT("AnimEndTime"), 2.0);
+	Segment->SetNumberField(TEXT("AnimPlayRate"), 1.5);
+	Segment->SetNumberField(TEXT("LoopingCount"), 2);
+
+	TArray<TSharedPtr<FJsonValue>> AnimSegments;
+	AnimSegments.Add(MakeShared<FJsonValueObject>(Segment));
+
+	TSharedRef<FJsonObject> AnimTrack = MakeShared<FJsonObject>();
+	AnimTrack->SetArrayField(TEXT("AnimSegments"), AnimSegments);
+
+	TSharedRef<FJsonObject> SlotTrack = MakeShared<FJsonObject>();
+	SlotTrack->SetStringField(TEXT("SlotName"), SlotName);
+	SlotTrack->SetObjectField(TEXT("AnimTrack"), AnimTrack);
+
+	TArray<TSharedPtr<FJsonValue>> SlotTracks;
+	SlotTracks.Add(MakeShared<FJsonValueObject>(SlotTrack));
+	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotTracks);
+	return Body;
+}
+
+TSharedRef<FJsonObject> MakeFullUpdateBodyForSlice()
+{
+	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
+	const TSharedRef<FJsonObject> SlotBody = MakeSlotTracksBodyForSlice(TEXT("UpperBody"));
+	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotBody->GetArrayField(TEXT("SlotAnimTracks")));
+	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
+	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
+	Body->SetArrayField(TEXT("Notifies"), TArray<TSharedPtr<FJsonValue>>());
+	Body->SetArrayField(TEXT("NotifyStates"), TArray<TSharedPtr<FJsonValue>>());
+	return Body;
+}
+
+TSharedRef<FJsonObject> MakeProductionCompatibleUpdateBodyForSlice()
+{
+	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
+	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
+	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
+	Body->SetArrayField(TEXT("Notifies"), TArray<TSharedPtr<FJsonValue>>());
+	Body->SetArrayField(TEXT("NotifyStates"), TArray<TSharedPtr<FJsonValue>>());
+	return Body;
+}
+
+bool ContainsPath(const TArray<FString>& Paths, const FString& Path)
+{
+	return Paths.Contains(Path);
 }
 
 bool JsonValuesEqualForSlice(
@@ -486,6 +575,226 @@ bool FAssetDocumentAnimMontageProjectorSliceMatchesProductionExtractionTest::Run
 	TestTrue(TEXT("Projector output matches production body for representative fixture"), bBodiesMatch);
 
 	return bBodiesMatch;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceRejectsInvalidArrayFieldsTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.Validate.RejectsInvalidArrayFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceRejectsInvalidArrayFieldsTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("SlotAnimTracks"), TEXT("not-array"));
+
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ValidateBody(*Montage, Body);
+	TestFalse(TEXT("Validation rejects non-array SlotAnimTracks"), Result.bSuccess);
+	TestTrue(TEXT("Validation reports SlotAnimTracks path"), Result.Message.Contains(TEXT("/Body/SlotAnimTracks")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceRejectsInvalidBlendTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.Validate.RejectsInvalidBlend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceRejectsInvalidBlendTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Body = MakeBlendBodyForSlice(-0.1, 0.2);
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ValidateBody(*Montage, Body);
+	TestFalse(TEXT("Validation rejects negative BlendInTime"), Result.bSuccess);
+	TestTrue(TEXT("Validation reports BlendInTime path"), Result.Message.Contains(TEXT("/Body/Blend/BlendInTime")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceRejectsInvalidSectionsTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.Validate.RejectsInvalidSections",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceRejectsInvalidSectionsTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> Section = MakeShared<FJsonObject>();
+	Section->SetStringField(TEXT("SectionName"), TEXT("Start"));
+	Section->SetStringField(TEXT("NextSectionName"), TEXT("Missing"));
+	TArray<TSharedPtr<FJsonValue>> Sections;
+	Sections.Add(MakeShared<FJsonValueObject>(Section));
+	Body->SetArrayField(TEXT("CompositeSections"), Sections);
+
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ValidateBody(*Montage, Body);
+	TestFalse(TEXT("Validation rejects missing NextSectionName target"), Result.bSuccess);
+	TestTrue(TEXT("Validation reports NextSectionName path"), Result.Message.Contains(TEXT("/Body/CompositeSections/0/NextSectionName")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceUpdatesExistingMontageTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.UpdatesExistingMontage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceUpdatesExistingMontageTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const FAnimMontageProjectorSlice Projector;
+	const TSharedRef<FJsonObject> Body = MakeFullUpdateBodyForSlice();
+	const FAnimMontageProjectorSliceResult Result = Projector.ApplyBody(*Montage, Body);
+	if (!TestTrue(TEXT("Projector apply succeeds"), Result.bSuccess))
+	{
+		TestTrue(TEXT("Apply result has message"), !Result.Message.IsEmpty());
+		return false;
+	}
+
+	TestTrue(TEXT("ChangedPaths includes Blend"), ContainsPath(Result.ChangedPaths, TEXT("/Body/Blend")));
+	TestTrue(TEXT("ChangedPaths includes CompositeSections"), ContainsPath(Result.ChangedPaths, TEXT("/Body/CompositeSections")));
+	TestTrue(TEXT("ChangedPaths includes SlotAnimTracks"), ContainsPath(Result.ChangedPaths, TEXT("/Body/SlotAnimTracks")));
+
+	TestTrue(TEXT("BlendInTime updated"), FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), 0.35f, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("BlendOutTime updated"), FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), 0.45f, KINDA_SMALL_NUMBER));
+	TestEqual(TEXT("SlotAnimTracks replaced"), Montage->SlotAnimTracks.Num(), 1);
+	if (Montage->SlotAnimTracks.Num() == 1)
+	{
+		TestEqual(TEXT("Slot name updated"), Montage->SlotAnimTracks[0].SlotName, FName(TEXT("UpperBody")));
+		TestEqual(TEXT("AnimSegments replaced"), Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num(), 1);
+		if (Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() == 1)
+		{
+			const FAnimSegment& Segment = Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0];
+			TestNull(TEXT("Null AnimReference is allowed"), Segment.GetAnimReference().Get());
+			TestTrue(TEXT("Segment StartPos updated"), FMath::IsNearlyEqual(Segment.StartPos, 0.5f, KINDA_SMALL_NUMBER));
+			TestTrue(TEXT("Segment AnimPlayRate updated"), FMath::IsNearlyEqual(Segment.AnimPlayRate, 1.5f, KINDA_SMALL_NUMBER));
+			TestEqual(TEXT("Segment LoopingCount updated"), Segment.LoopingCount, 2);
+		}
+	}
+
+	TestEqual(TEXT("CompositeSections replaced"), Montage->CompositeSections.Num(), 2);
+	if (Montage->CompositeSections.Num() == 2)
+	{
+		TestEqual(TEXT("First section next updated"), Montage->CompositeSections[0].NextSectionName, FName(TEXT("End")));
+		TestTrue(TEXT("Second section time updated"), FMath::IsNearlyEqual(Montage->CompositeSections[1].GetTime(), 1.25f, KINDA_SMALL_NUMBER));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceMatchesProductionApplyUpdateTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.MatchesProductionApplyUpdate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceMatchesProductionApplyUpdateTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* ProjectorMontage = NewTransientMontageForProjectorSlice();
+	UAnimMontage* ProductionMontage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Projector montage fixture is created"), ProjectorMontage);
+	TestNotNull(TEXT("Production montage fixture is created"), ProductionMontage);
+	if (!ProjectorMontage || !ProductionMontage)
+	{
+		return false;
+	}
+
+	const TSharedRef<FJsonObject> Body = MakeProductionCompatibleUpdateBodyForSlice();
+
+	FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult ProjectorResult = Projector.ApplyBody(*ProjectorMontage, Body);
+	if (!TestTrue(TEXT("Projector apply succeeds"), ProjectorResult.bSuccess))
+	{
+		TestEqual(TEXT("Projector apply message"), ProjectorResult.Message, FString());
+		return false;
+	}
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = ProductionMontage;
+	Context.AssetClass = UAnimMontage::StaticClass();
+	FAnimMontageAssetDocumentCapability ProductionCapability;
+	const FAssetDocumentCapabilityResult ProductionResult = ProductionCapability.Apply(
+		Context,
+		StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(CloneJsonObjectForSlice(Body))));
+	if (!TestTrue(TEXT("Production apply succeeds"), ProductionResult.bSuccess))
+	{
+		TestEqual(TEXT("Production apply message"), ProductionResult.Message, FString());
+		return false;
+	}
+
+	TSharedRef<FJsonObject> ProjectorBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> ProductionBody = MakeShared<FJsonObject>();
+	TestTrue(TEXT("Projector extract after apply succeeds"), Projector.ExtractBody(*ProjectorMontage, ProjectorBody).bSuccess);
+	TestTrue(TEXT("Production extract after apply succeeds"), Projector.ExtractBody(*ProductionMontage, ProductionBody).bSuccess);
+
+	const TSharedRef<FJsonObject> NormalizedProjector = CloneNormalizedBodyForSliceComparison(ProjectorBody);
+	const TSharedRef<FJsonObject> NormalizedProduction = CloneNormalizedBodyForSliceComparison(ProductionBody);
+	FString Difference;
+	const bool bBodiesMatch = JsonObjectsEqualForSlice(NormalizedProduction, NormalizedProjector, TEXT("/Body"), Difference);
+	TestEqual(TEXT("First JSON mismatch"), Difference, FString());
+	TestTrue(TEXT("Projector apply matches production apply"), bBodiesMatch);
+	return bBodiesMatch;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceDiffReportsUpdatePathsTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.DiffReportsUpdatePaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceDiffReportsUpdatePathsTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const FAnimMontageProjectorSlice Projector;
+	TArray<FString> ChangedPaths;
+	FAnimMontageProjectorSliceResult Result = Projector.DiffBody(*Montage, MakeBlendBodyForSlice(0.15, 0.25), ChangedPaths);
+	if (!TestTrue(TEXT("Same desired diff succeeds"), Result.bSuccess))
+	{
+		TestEqual(TEXT("Same desired diff message"), Result.Message, FString());
+		return false;
+	}
+	TestEqual(TEXT("Same desired returns no changed paths"), ChangedPaths.Num(), 0);
+
+	ChangedPaths.Reset();
+	Result = Projector.DiffBody(*Montage, MakeFullUpdateBodyForSlice(), ChangedPaths);
+	if (!TestTrue(TEXT("Changed desired diff succeeds"), Result.bSuccess))
+	{
+		TestEqual(TEXT("Changed desired diff message"), Result.Message, FString());
+		return false;
+	}
+	TestTrue(TEXT("Diff reports Blend"), ContainsPath(ChangedPaths, TEXT("/Body/Blend")));
+	TestTrue(TEXT("Diff reports CompositeSections"), ContainsPath(ChangedPaths, TEXT("/Body/CompositeSections")));
+	TestTrue(TEXT("Diff reports SlotAnimTracks"), ContainsPath(ChangedPaths, TEXT("/Body/SlotAnimTracks")));
+	TestFalse(TEXT("Diff omits absent Skeleton"), ContainsPath(ChangedPaths, TEXT("/Body/Skeleton")));
+	return true;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS
