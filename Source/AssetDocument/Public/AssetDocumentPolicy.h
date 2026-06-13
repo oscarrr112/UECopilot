@@ -4,9 +4,6 @@
 
 #include "CoreMinimal.h"
 
-class FJsonObject;
-class FJsonValue;
-
 enum class EAssetDocumentRegionKind : uint8
 {
 	Scalar,
@@ -82,10 +79,10 @@ struct ASSETDOCUMENT_API FAssetDocumentRegionPolicyOverride
 	TOptional<EAssetDocumentDefaultSource> DefaultSource;
 	TOptional<EAssetDocumentReducerMode> ReducerMode;
 	TOptional<EAssetDocumentApplyMode> ApplyMode;
-	TArray<FAssetDocumentIdentityRule> IdentityRules;
-	TArray<FAssetDocumentComparisonRule> ComparisonRules;
-	TArray<FString> ManagedUePropertyPaths;
-	TSet<FString> ExtractOnlyFields;
-	TSet<FString> ExplicitDeleteValues;
+	TOptional<TArray<FAssetDocumentIdentityRule>> IdentityRules;
+	TOptional<TArray<FAssetDocumentComparisonRule>> ComparisonRules;
+	TOptional<TArray<FString>> ManagedUePropertyPaths;
+	TOptional<TSet<FString>> ExtractOnlyFields;
+	TOptional<TSet<FString>> ExplicitDeleteValues;
 	TOptional<FName> ExtensionHookName;
 };

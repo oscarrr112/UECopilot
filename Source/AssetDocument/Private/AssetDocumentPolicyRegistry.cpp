@@ -22,7 +22,7 @@ const TCHAR* ToString(EAssetDocumentRegionKind Value)
 	case EAssetDocumentRegionKind::Graph:
 		return TEXT("Graph");
 	default:
-		return TEXT("Object");
+		return TEXT("Unknown");
 	}
 }
 
@@ -39,7 +39,7 @@ const TCHAR* ToString(EAssetDocumentDefaultSource Value)
 	case EAssetDocumentDefaultSource::ProfileDeclared:
 		return TEXT("ProfileDeclared");
 	default:
-		return TEXT("ProfileDeclared");
+		return TEXT("Unknown");
 	}
 }
 
@@ -52,7 +52,7 @@ const TCHAR* ToString(EAssetDocumentReducerMode Value)
 	case EAssetDocumentReducerMode::ManagedRegion:
 		return TEXT("ManagedRegion");
 	default:
-		return TEXT("DefaultDiff");
+		return TEXT("Unknown");
 	}
 }
 
@@ -67,8 +67,22 @@ const TCHAR* ToString(EAssetDocumentApplyMode Value)
 	case EAssetDocumentApplyMode::ExtensionHook:
 		return TEXT("ExtensionHook");
 	default:
-		return TEXT("SetProperty");
+		return TEXT("Unknown");
 	}
+}
+
+bool IsEmptyRule(const FAssetDocumentIdentityRule& Rule)
+{
+	return Rule.FieldPath.IsEmpty()
+		&& Rule.UePropertyPath.IsEmpty()
+		&& Rule.StableKeyField.IsEmpty();
+}
+
+bool IsEmptyRule(const FAssetDocumentComparisonRule& Rule)
+{
+	return Rule.FieldPath.IsEmpty()
+		&& Rule.ComparatorName.IsEmpty()
+		&& !Rule.bIgnoreOrder;
 }
 
 TArray<TSharedPtr<FJsonValue>> MakeStringArray(const TArray<FString>& Values)
@@ -131,6 +145,10 @@ TArray<TSharedPtr<FJsonValue>> MakeIdentityRuleArray(const TArray<FAssetDocument
 	Result.Reserve(Rules.Num());
 	for (const FAssetDocumentIdentityRule& Rule : Rules)
 	{
+		if (IsEmptyRule(Rule))
+		{
+			continue;
+		}
 		Result.Add(MakeShared<FJsonValueObject>(IdentityRuleToJson(Rule)));
 	}
 	return Result;
@@ -142,6 +160,10 @@ TArray<TSharedPtr<FJsonValue>> MakeComparisonRuleArray(const TArray<FAssetDocume
 	Result.Reserve(Rules.Num());
 	for (const FAssetDocumentComparisonRule& Rule : Rules)
 	{
+		if (IsEmptyRule(Rule))
+		{
+			continue;
+		}
 		Result.Add(MakeShared<FJsonValueObject>(ComparisonRuleToJson(Rule)));
 	}
 	return Result;
@@ -241,29 +263,34 @@ bool FAssetDocumentPolicyRegistry::ExpandPreset(
 	{
 		OutPolicy.ApplyMode = Override.ApplyMode.GetValue();
 	}
-	if (Override.IdentityRules.Num() > 0)
+	if (Override.IdentityRules.IsSet())
 	{
-		OutPolicy.IdentityRules = Override.IdentityRules;
+		OutPolicy.IdentityRules = Override.IdentityRules.GetValue();
 	}
-	if (Override.ComparisonRules.Num() > 0)
+	if (Override.ComparisonRules.IsSet())
 	{
-		OutPolicy.ComparisonRules = Override.ComparisonRules;
+		OutPolicy.ComparisonRules = Override.ComparisonRules.GetValue();
 	}
-	if (Override.ManagedUePropertyPaths.Num() > 0)
+	if (Override.ManagedUePropertyPaths.IsSet())
 	{
-		OutPolicy.ManagedUePropertyPaths = Override.ManagedUePropertyPaths;
+		OutPolicy.ManagedUePropertyPaths = Override.ManagedUePropertyPaths.GetValue();
 	}
-	if (Override.ExtractOnlyFields.Num() > 0)
+	if (Override.ExtractOnlyFields.IsSet())
 	{
-		OutPolicy.ExtractOnlyFields = Override.ExtractOnlyFields;
+		OutPolicy.ExtractOnlyFields = Override.ExtractOnlyFields.GetValue();
 	}
-	if (Override.ExplicitDeleteValues.Num() > 0)
+	if (Override.ExplicitDeleteValues.IsSet())
 	{
-		OutPolicy.ExplicitDeleteValues = Override.ExplicitDeleteValues;
+		OutPolicy.ExplicitDeleteValues = Override.ExplicitDeleteValues.GetValue();
 	}
 	if (Override.ExtensionHookName.IsSet())
 	{
 		OutPolicy.ExtensionHookName = Override.ExtensionHookName.GetValue();
+	}
+	if (OutPolicy.ApplyMode == EAssetDocumentApplyMode::ExtensionHook
+		&& (!OutPolicy.ExtensionHookName.IsSet() || OutPolicy.ExtensionHookName.GetValue().IsNone()))
+	{
+		return false;
 	}
 
 	return !OutPolicy.RegionId.IsNone() && !OutPolicy.BodyPath.IsEmpty();
@@ -287,11 +314,19 @@ TSharedRef<FJsonObject> FAssetDocumentPolicyRegistry::ExportPolicyToJson(const F
 
 	if (Policy.IdentityRules.Num() > 0)
 	{
-		Json->SetArrayField(TEXT("IdentityRules"), MakeIdentityRuleArray(Policy.IdentityRules));
+		TArray<TSharedPtr<FJsonValue>> IdentityRules = MakeIdentityRuleArray(Policy.IdentityRules);
+		if (IdentityRules.Num() > 0)
+		{
+			Json->SetArrayField(TEXT("IdentityRules"), MoveTemp(IdentityRules));
+		}
 	}
 	if (Policy.ComparisonRules.Num() > 0)
 	{
-		Json->SetArrayField(TEXT("ComparisonRules"), MakeComparisonRuleArray(Policy.ComparisonRules));
+		TArray<TSharedPtr<FJsonValue>> ComparisonRules = MakeComparisonRuleArray(Policy.ComparisonRules);
+		if (ComparisonRules.Num() > 0)
+		{
+			Json->SetArrayField(TEXT("ComparisonRules"), MoveTemp(ComparisonRules));
+		}
 	}
 	if (Policy.ManagedUePropertyPaths.Num() > 0)
 	{
