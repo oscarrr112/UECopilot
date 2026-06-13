@@ -6,22 +6,19 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
+#include "Profiles/AnimMontageAssetDocumentCapability.h"
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest,
-	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.ExtractsCurrentBodyShape",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTest(const FString& Parameters)
+namespace
+{
+UAnimMontage* NewTransientMontageForProjectorSlice()
 {
 	UAnimMontage* Montage = NewObject<UAnimMontage>(
 		GetTransientPackage(),
 		UAnimMontage::StaticClass(),
 		FName(TEXT("AssetDocumentProjectorSliceMontage")));
-	TestNotNull(TEXT("Montage fixture is created"), Montage);
 	if (!Montage)
 	{
-		return false;
+		return nullptr;
 	}
 
 	Montage->BlendIn.SetBlendTime(0.15f);
@@ -41,6 +38,291 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	Section.SectionName = FName(TEXT("Start"));
 	Section.SetTime(0.0f);
 	Section.NextSectionName = NAME_None;
+
+	return Montage;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValueForSlice(const TSharedPtr<FJsonValue>& Value);
+
+TSharedRef<FJsonObject> CloneJsonObjectForSlice(const TSharedRef<FJsonObject>& Object)
+{
+	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		Clone->SetField(Pair.Key, CloneJsonValueForSlice(Pair.Value));
+	}
+	return Clone;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValueForSlice(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		return Object.IsValid()
+			? MakeShared<FJsonValueObject>(CloneJsonObjectForSlice(Object.ToSharedRef()))
+			: MakeShared<FJsonValueNull>();
+	}
+	case EJson::Array:
+	{
+		TArray<TSharedPtr<FJsonValue>> ClonedArray;
+		for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
+		{
+			ClonedArray.Add(CloneJsonValueForSlice(Item));
+		}
+		return MakeShared<FJsonValueArray>(ClonedArray);
+	}
+	case EJson::String:
+		return MakeShared<FJsonValueString>(Value->AsString());
+	case EJson::Number:
+		return MakeShared<FJsonValueNumber>(Value->AsNumber());
+	case EJson::Boolean:
+		return MakeShared<FJsonValueBoolean>(Value->AsBool());
+	case EJson::Null:
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+void NormalizeMissingOrNullFieldToNull(const TSharedRef<FJsonObject>& Object, const FString& FieldName)
+{
+	const TSharedPtr<FJsonValue>* ExistingValue = Object->Values.Find(FieldName);
+	if (!ExistingValue || !ExistingValue->IsValid() || (*ExistingValue)->Type == EJson::Null)
+	{
+		Object->SetField(FieldName, MakeShared<FJsonValueNull>());
+	}
+}
+
+void NormalizeNullableReferencesForSlice(const TSharedRef<FJsonObject>& Body)
+{
+	NormalizeMissingOrNullFieldToNull(Body, TEXT("Skeleton"));
+	NormalizeMissingOrNullFieldToNull(Body, TEXT("PreviewMesh"));
+
+	const TArray<TSharedPtr<FJsonValue>>* SlotAnimTracks = nullptr;
+	if (!Body->TryGetArrayField(TEXT("SlotAnimTracks"), SlotAnimTracks))
+	{
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& SlotValue : *SlotAnimTracks)
+	{
+		if (!SlotValue.IsValid() || SlotValue->Type != EJson::Object)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonObject> SlotObject = SlotValue->AsObject();
+		const TSharedPtr<FJsonObject>* AnimTrackObject = nullptr;
+		if (!SlotObject.IsValid() || !SlotObject->TryGetObjectField(TEXT("AnimTrack"), AnimTrackObject) || !AnimTrackObject || !AnimTrackObject->IsValid())
+		{
+			continue;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* AnimSegments = nullptr;
+		if (!(*AnimTrackObject)->TryGetArrayField(TEXT("AnimSegments"), AnimSegments))
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& SegmentValue : *AnimSegments)
+		{
+			if (!SegmentValue.IsValid() || SegmentValue->Type != EJson::Object)
+			{
+				continue;
+			}
+
+			const TSharedPtr<FJsonObject> SegmentObject = SegmentValue->AsObject();
+			if (SegmentObject.IsValid())
+			{
+				NormalizeMissingOrNullFieldToNull(SegmentObject.ToSharedRef(), TEXT("AnimReference"));
+			}
+		}
+	}
+}
+
+TSharedRef<FJsonObject> CloneNormalizedBodyForSliceComparison(const TSharedRef<FJsonObject>& Body)
+{
+	TSharedRef<FJsonObject> Clone = CloneJsonObjectForSlice(Body);
+	Clone->RemoveField(TEXT("_ProjectionMetrics"));
+	Clone->RemoveField(TEXT("_Skipped"));
+	NormalizeNullableReferencesForSlice(Clone);
+	return Clone;
+}
+
+bool JsonValuesEqualForSlice(
+	const TSharedPtr<FJsonValue>& Expected,
+	const TSharedPtr<FJsonValue>& Actual,
+	const FString& Path,
+	FString& OutDifference);
+
+bool JsonObjectsEqualForSlice(
+	const TSharedRef<FJsonObject>& Expected,
+	const TSharedRef<FJsonObject>& Actual,
+	const FString& Path,
+	FString& OutDifference)
+{
+	if (Expected->Values.Num() != Actual->Values.Num())
+	{
+		OutDifference = FString::Printf(
+			TEXT("%s object field count differs: expected %d, actual %d"),
+			*Path,
+			Expected->Values.Num(),
+			Actual->Values.Num());
+		return false;
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Expected->Values)
+	{
+		const TSharedPtr<FJsonValue>* ActualValue = Actual->Values.Find(Pair.Key);
+		if (!ActualValue)
+		{
+			OutDifference = FString::Printf(TEXT("%s missing field '%s'"), *Path, *Pair.Key);
+			return false;
+		}
+
+		const FString ChildPath = Path / Pair.Key;
+		if (!JsonValuesEqualForSlice(Pair.Value, *ActualValue, ChildPath, OutDifference))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool JsonArraysEqualForSlice(
+	const TArray<TSharedPtr<FJsonValue>>& Expected,
+	const TArray<TSharedPtr<FJsonValue>>& Actual,
+	const FString& Path,
+	FString& OutDifference)
+{
+	if (Expected.Num() != Actual.Num())
+	{
+		OutDifference = FString::Printf(
+			TEXT("%s array length differs: expected %d, actual %d"),
+			*Path,
+			Expected.Num(),
+			Actual.Num());
+		return false;
+	}
+
+	for (int32 Index = 0; Index < Expected.Num(); ++Index)
+	{
+		if (!JsonValuesEqualForSlice(Expected[Index], Actual[Index], FString::Printf(TEXT("%s/%d"), *Path, Index), OutDifference))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool JsonValuesEqualForSlice(
+	const TSharedPtr<FJsonValue>& Expected,
+	const TSharedPtr<FJsonValue>& Actual,
+	const FString& Path,
+	FString& OutDifference)
+{
+	if (!Expected.IsValid() || !Actual.IsValid())
+	{
+		if (Expected.IsValid() == Actual.IsValid())
+		{
+			return true;
+		}
+
+		OutDifference = FString::Printf(TEXT("%s validity differs"), *Path);
+		return false;
+	}
+
+	if (Expected->Type != Actual->Type)
+	{
+		OutDifference = FString::Printf(
+			TEXT("%s type differs: expected %d, actual %d"),
+			*Path,
+			static_cast<int32>(Expected->Type),
+			static_cast<int32>(Actual->Type));
+		return false;
+	}
+
+	switch (Expected->Type)
+	{
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject> ExpectedObject = Expected->AsObject();
+		const TSharedPtr<FJsonObject> ActualObject = Actual->AsObject();
+		if (!ExpectedObject.IsValid() || !ActualObject.IsValid())
+		{
+			const bool bBothInvalid = !ExpectedObject.IsValid() && !ActualObject.IsValid();
+			if (!bBothInvalid)
+			{
+				OutDifference = FString::Printf(TEXT("%s object validity differs"), *Path);
+			}
+			return bBothInvalid;
+		}
+		return JsonObjectsEqualForSlice(ExpectedObject.ToSharedRef(), ActualObject.ToSharedRef(), Path, OutDifference);
+	}
+	case EJson::Array:
+		return JsonArraysEqualForSlice(Expected->AsArray(), Actual->AsArray(), Path, OutDifference);
+	case EJson::String:
+		if (Expected->AsString() != Actual->AsString())
+		{
+			OutDifference = FString::Printf(
+				TEXT("%s string differs: expected '%s', actual '%s'"),
+				*Path,
+				*Expected->AsString(),
+				*Actual->AsString());
+			return false;
+		}
+		return true;
+	case EJson::Number:
+		if (!FMath::IsNearlyEqual(Expected->AsNumber(), Actual->AsNumber(), KINDA_SMALL_NUMBER))
+		{
+			OutDifference = FString::Printf(
+				TEXT("%s number differs: expected %.17g, actual %.17g"),
+				*Path,
+				Expected->AsNumber(),
+				Actual->AsNumber());
+			return false;
+		}
+		return true;
+	case EJson::Boolean:
+		if (Expected->AsBool() != Actual->AsBool())
+		{
+			OutDifference = FString::Printf(
+				TEXT("%s bool differs: expected %s, actual %s"),
+				*Path,
+				Expected->AsBool() ? TEXT("true") : TEXT("false"),
+				Actual->AsBool() ? TEXT("true") : TEXT("false"));
+			return false;
+		}
+		return true;
+	case EJson::Null:
+	default:
+		return true;
+	}
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.ExtractsCurrentBodyShape",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
 
 	TSharedRef<FJsonObject> ProjectedBody = MakeShared<FJsonObject>();
 	const FAnimMontageProjectorSlice Projector;
@@ -157,6 +439,53 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	}
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceMatchesProductionExtractionTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.MatchesProductionExtraction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceMatchesProductionExtractionTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = Montage;
+	Context.AssetClass = UAnimMontage::StaticClass();
+
+	FAnimMontageAssetDocumentCapability ProductionCapability;
+	TSharedRef<FJsonObject> ProductionBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ProductionResult = ProductionCapability.Extract(Context, ProductionBody);
+	if (!TestTrue(TEXT("Production extraction succeeds"), ProductionResult.bSuccess))
+	{
+		TestEqual(TEXT("Production extraction message"), ProductionResult.Message, FString());
+		return false;
+	}
+
+	FAnimMontageProjectorSlice Projector;
+	TSharedRef<FJsonObject> ProjectedBody = MakeShared<FJsonObject>();
+	const FAnimMontageProjectorSliceResult ProjectorResult = Projector.ExtractBody(*Montage, ProjectedBody);
+	if (!TestTrue(TEXT("Projector extraction succeeds"), ProjectorResult.bSuccess))
+	{
+		TestEqual(TEXT("Projector extraction message"), ProjectorResult.Message, FString());
+		return false;
+	}
+
+	const TSharedRef<FJsonObject> NormalizedProduction = CloneNormalizedBodyForSliceComparison(ProductionBody);
+	const TSharedRef<FJsonObject> NormalizedProjected = CloneNormalizedBodyForSliceComparison(ProjectedBody);
+
+	FString Difference;
+	const bool bBodiesMatch = JsonObjectsEqualForSlice(NormalizedProduction, NormalizedProjected, TEXT("/Body"), Difference);
+	TestEqual(TEXT("First JSON mismatch"), Difference, FString());
+	TestTrue(TEXT("Projector output matches production body for representative fixture"), bBodiesMatch);
+
+	return bBodiesMatch;
 }
 
 #endif // WITH_DEV_AUTOMATION_TESTS
