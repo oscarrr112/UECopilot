@@ -228,6 +228,22 @@ FAnimMontageProjectorSliceResult ValidateBlend(const TSharedRef<FJsonObject>& Bo
 		NumberValue);
 }
 
+FAnimMontageProjectorSliceResult ValidateEmptyNotifyArrayOnly(const TSharedRef<FJsonObject>& Body, const FString& FieldName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	if (!Body->TryGetArrayField(FieldName, Values))
+	{
+		return FAnimMontageProjectorSliceResult::Success();
+	}
+
+	if (Values->Num() > 0)
+	{
+		return FAnimMontageProjectorSliceResult::Failure(FString::Printf(TEXT("%s currently supports only an empty array."), *MakeBodyFieldPath(FieldName)));
+	}
+
+	return FAnimMontageProjectorSliceResult::Success();
+}
+
 FAnimMontageProjectorSliceResult ValidateSlotAnimTracks(const TSharedRef<FJsonObject>& Body)
 {
 	const TArray<TSharedPtr<FJsonValue>>* SlotAnimTracks = nullptr;
@@ -807,6 +823,18 @@ FAnimMontageProjectorSliceResult FAnimMontageProjectorSlice::ValidateBody(const 
 	}
 
 	FAnimMontageProjectorSliceResult Result = RequireObjectField(ProjectedBody, TEXT("Blend"));
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateEmptyNotifyArrayOnly(ProjectedBody, TEXT("Notifies"));
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateEmptyNotifyArrayOnly(ProjectedBody, TEXT("NotifyStates"));
 	if (!Result.bSuccess)
 	{
 		return Result;

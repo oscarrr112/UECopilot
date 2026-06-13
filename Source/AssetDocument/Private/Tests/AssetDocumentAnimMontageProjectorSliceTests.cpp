@@ -707,6 +707,47 @@ bool FAssetDocumentAnimMontageProjectorSliceUpdatesExistingMontageTest::RunTest(
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageProjectorSliceRejectsNotifyUpdateWithoutMutationTest,
+	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.RejectsNotifyUpdateWithoutMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageProjectorSliceRejectsNotifyUpdateWithoutMutationTest::RunTest(const FString& Parameters)
+{
+	UAnimMontage* Montage = NewTransientMontageForProjectorSlice();
+	TestNotNull(TEXT("Montage fixture is created"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const float OriginalBlendInTime = Montage->GetDefaultBlendInTime();
+	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
+	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
+	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
+
+	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
+	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
+	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
+
+	TSharedRef<FJsonObject> Notify = MakeShared<FJsonObject>();
+	Notify->SetStringField(TEXT("NotifyName"), TEXT("Unsupported"));
+	TArray<TSharedPtr<FJsonValue>> Notifies;
+	Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+	Body->SetArrayField(TEXT("Notifies"), Notifies);
+
+	const FAnimMontageProjectorSlice Projector;
+	const FAnimMontageProjectorSliceResult Result = Projector.ApplyBody(*Montage, Body);
+
+	TestFalse(TEXT("Projector apply rejects non-empty Notifies"), Result.bSuccess);
+	TestTrue(TEXT("Apply result reports Notifies path"), Result.Message.Contains(TEXT("/Body/Notifies")));
+	TestTrue(TEXT("BlendInTime is unchanged after rejected apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("BlendOutTime is unchanged after rejected apply"), FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER));
+	TestEqual(TEXT("CompositeSections count is unchanged after rejected apply"), Montage->CompositeSections.Num(), OriginalSectionCount);
+	TestEqual(TEXT("SlotAnimTracks count is unchanged after rejected apply"), Montage->SlotAnimTracks.Num(), OriginalSlotCount);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageProjectorSliceMatchesProductionApplyUpdateTest,
 	"AssetFactory.AssetDocument.ProjectorSlice.AnimMontage.MatchesProductionApplyUpdate",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
