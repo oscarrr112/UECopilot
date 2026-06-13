@@ -261,10 +261,16 @@ bool AssertUnsupportedNotifyArrayDoesNotMutateMontage(
 	const float OriginalBlendOutTime = Montage->GetDefaultBlendOutTime();
 	const int32 OriginalSectionCount = Montage->CompositeSections.Num();
 	const int32 OriginalSlotCount = Montage->SlotAnimTracks.Num();
+	const FName OriginalSlotName = OriginalSlotCount > 0 ? Montage->SlotAnimTracks[0].SlotName : NAME_None;
+	const int32 OriginalSegmentCount = OriginalSlotCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() : 0;
+	const float OriginalSegmentStartPos = OriginalSegmentCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].StartPos : -1.0f;
+	const int32 OriginalSegmentLoopingCount = OriginalSegmentCount > 0 ? Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].LoopingCount : -1;
 
 	TSharedRef<FJsonObject> Body = MakeSectionsBodyForSlice();
 	const TSharedRef<FJsonObject> BlendBody = MakeBlendBodyForSlice(0.35, 0.45);
 	Body->SetObjectField(TEXT("Blend"), BlendBody->GetObjectField(TEXT("Blend")));
+	const TSharedRef<FJsonObject> SlotBody = MakeSlotTracksBodyForSlice(TEXT("UpperBody"));
+	Body->SetArrayField(TEXT("SlotAnimTracks"), SlotBody->GetArrayField(TEXT("SlotAnimTracks")));
 
 	TSharedRef<FJsonObject> NotifyEntry = MakeShared<FJsonObject>();
 	NotifyEntry->SetStringField(TEXT("NotifyName"), EntryName);
@@ -293,12 +299,40 @@ bool AssertUnsupportedNotifyArrayDoesNotMutateMontage(
 		FString::Printf(TEXT("SlotAnimTracks count is unchanged after rejected %s apply"), *FieldName),
 		Montage->SlotAnimTracks.Num(),
 		OriginalSlotCount);
+	if (Montage->SlotAnimTracks.Num() > 0)
+	{
+		Test.TestEqual(
+			FString::Printf(TEXT("SlotName is unchanged after rejected %s apply"), *FieldName),
+			Montage->SlotAnimTracks[0].SlotName,
+			OriginalSlotName);
+		Test.TestEqual(
+			FString::Printf(TEXT("AnimSegments count is unchanged after rejected %s apply"), *FieldName),
+			Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num(),
+			OriginalSegmentCount);
+		if (Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() > 0)
+		{
+			const FAnimSegment& Segment = Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0];
+			Test.TestTrue(
+				FString::Printf(TEXT("Segment StartPos is unchanged after rejected %s apply"), *FieldName),
+				FMath::IsNearlyEqual(Segment.StartPos, OriginalSegmentStartPos, KINDA_SMALL_NUMBER));
+			Test.TestEqual(
+				FString::Printf(TEXT("Segment LoopingCount is unchanged after rejected %s apply"), *FieldName),
+				Segment.LoopingCount,
+				OriginalSegmentLoopingCount);
+		}
+	}
 	return !Result.bSuccess
 		&& Result.Message.Contains(FString::Printf(TEXT("/Body/%s"), *FieldName))
 		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), OriginalBlendInTime, KINDA_SMALL_NUMBER)
 		&& FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), OriginalBlendOutTime, KINDA_SMALL_NUMBER)
 		&& Montage->CompositeSections.Num() == OriginalSectionCount
-		&& Montage->SlotAnimTracks.Num() == OriginalSlotCount;
+		&& Montage->SlotAnimTracks.Num() == OriginalSlotCount
+		&& (Montage->SlotAnimTracks.Num() == 0 || (
+			Montage->SlotAnimTracks[0].SlotName == OriginalSlotName
+			&& Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() == OriginalSegmentCount
+			&& (Montage->SlotAnimTracks[0].AnimTrack.AnimSegments.Num() == 0 || (
+				FMath::IsNearlyEqual(Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].StartPos, OriginalSegmentStartPos, KINDA_SMALL_NUMBER)
+				&& Montage->SlotAnimTracks[0].AnimTrack.AnimSegments[0].LoopingCount == OriginalSegmentLoopingCount))));
 }
 
 bool JsonValuesEqualForSlice(
