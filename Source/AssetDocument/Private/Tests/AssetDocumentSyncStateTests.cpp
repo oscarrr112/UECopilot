@@ -99,6 +99,10 @@ bool FAssetDocumentSyncStateRoundTripMetaTest::RunTest(const FString& Parameters
 	TestTrue(TEXT("Write creates _meta object"), Document->TryGetObjectField(TEXT("_meta"), Meta));
 	const TSharedPtr<FJsonObject>* Sync = nullptr;
 	TestTrue(TEXT("Write creates _meta.sync object"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+	if (Meta && Meta->IsValid())
+	{
+		TestEqual(TEXT("Write sets _meta.assetDocumentVersion"), static_cast<int32>((*Meta)->GetNumberField(TEXT("assetDocumentVersion"))), 1);
+	}
 	if (Sync && Sync->IsValid())
 	{
 		TestEqual(TEXT("Sync schemaVersion writes as number"), static_cast<int32>((*Sync)->GetNumberField(TEXT("schemaVersion"))), 1);

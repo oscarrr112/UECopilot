@@ -8,6 +8,7 @@ namespace
 {
 constexpr int32 DefaultSyncSchemaVersion = 1;
 constexpr int32 DefaultPolicyVersion = 1;
+constexpr int32 AssetDocumentMetaVersion = 1;
 
 bool TryReadOptionalString(const TSharedRef<FJsonObject>& Object, const FString& FieldName, FString& OutValue, FString& OutError)
 {
@@ -185,6 +186,8 @@ void FAssetDocumentSyncStateStore::WriteToDocumentJson(
 {
 	TSharedRef<FJsonObject> MetaObject = GetOrCreateObjectField(DocumentJson, TEXT("_meta"));
 	TSharedRef<FJsonObject> SyncObject = MakeShared<FJsonObject>();
+
+	MetaObject->SetNumberField(TEXT("assetDocumentVersion"), AssetDocumentMetaVersion);
 
 	SyncObject->SetNumberField(TEXT("schemaVersion"), State.SchemaVersion);
 	SyncObject->SetStringField(TEXT("assetObjectPath"), State.AssetObjectPath);
