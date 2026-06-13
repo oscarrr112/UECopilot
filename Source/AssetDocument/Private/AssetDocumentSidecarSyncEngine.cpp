@@ -4,22 +4,23 @@
 
 namespace
 {
-bool HasUsableLastSyncState(const FAssetDocumentRegionSyncState* LastSyncState)
+bool HasLastSyncState(const FAssetDocumentRegionSyncState* LastSyncState)
 {
-	return LastSyncState
-		&& !LastSyncState->SidecarHash.IsEmpty()
-		&& !LastSyncState->AssetEvidenceHash.IsEmpty();
+	return LastSyncState != nullptr;
 }
 
 EAssetDocumentSyncDirection DecideInitialRegion(
 	const FString& CurrentSidecarHash,
 	const FString& CurrentAssetEvidenceHash)
 {
+	if (CurrentAssetEvidenceHash.IsEmpty())
+	{
+		return EAssetDocumentSyncDirection::NoChange;
+	}
+
 	if (CurrentSidecarHash.IsEmpty())
 	{
-		return CurrentAssetEvidenceHash.IsEmpty()
-			? EAssetDocumentSyncDirection::NoChange
-			: EAssetDocumentSyncDirection::RegenerateSidecarRegion;
+		return EAssetDocumentSyncDirection::RegenerateSidecarRegion;
 	}
 
 	return EAssetDocumentSyncDirection::NeedsInitialBaseline;
@@ -42,7 +43,7 @@ FAssetDocumentRegionSyncDecision FAssetDocumentSidecarSyncEngine::DecideRegion(
 		Decision.LastAssetEvidenceHash = LastSyncState->AssetEvidenceHash;
 	}
 
-	if (!HasUsableLastSyncState(LastSyncState))
+	if (!HasLastSyncState(LastSyncState))
 	{
 		Decision.Direction = DecideInitialRegion(CurrentSidecarHash, CurrentAssetEvidenceHash);
 		return Decision;

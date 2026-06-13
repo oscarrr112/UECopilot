@@ -40,6 +40,16 @@ bool FAssetDocumentSidecarSyncNoChangeTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Decision preserves last sidecar hash"), Decision.LastSidecarHash, FString(TEXT("sha1:sidecar")));
 	TestEqual(TEXT("Decision preserves last asset evidence hash"), Decision.LastAssetEvidenceHash, FString(TEXT("sha1:asset")));
 
+	const FAssetDocumentRegionSyncState UnsetLastSidecarState = MakeLastState(FString(), TEXT("sha1:asset"));
+	const FAssetDocumentRegionSyncDecision UnsetRegionDecision = FAssetDocumentSidecarSyncEngine::DecideRegion(
+		TEXT("Body.Notifies"),
+		FString(),
+		TEXT("sha1:asset"),
+		&UnsetLastSidecarState);
+	TestEqual(TEXT("Existing baseline allows an empty sidecar hash to remain unchanged"), UnsetRegionDecision.Direction, EAssetDocumentSyncDirection::NoChange);
+	TestTrue(TEXT("Decision preserves empty last sidecar hash"), UnsetRegionDecision.LastSidecarHash.IsEmpty());
+	TestEqual(TEXT("Decision preserves last asset hash when sidecar is unset"), UnsetRegionDecision.LastAssetEvidenceHash, FString(TEXT("sha1:asset")));
+
 	return true;
 }
 
@@ -117,6 +127,13 @@ bool FAssetDocumentSidecarSyncInitialBaselineTest::RunTest(const FString& Parame
 		TEXT("sha1:asset"),
 		nullptr);
 	TestEqual(TEXT("Existing sidecar and calculable evidence need initial baseline"), ExistingSidecarDecision.Direction, EAssetDocumentSyncDirection::NeedsInitialBaseline);
+
+	const FAssetDocumentRegionSyncDecision MissingEvidenceDecision = FAssetDocumentSidecarSyncEngine::DecideRegion(
+		TEXT("Body.Blend"),
+		TEXT("sha1:sidecar"),
+		FString(),
+		nullptr);
+	TestEqual(TEXT("Existing sidecar without calculable evidence does not need initial baseline"), MissingEvidenceDecision.Direction, EAssetDocumentSyncDirection::NoChange);
 
 	const FAssetDocumentRegionSyncDecision EmptySidecarDecision = FAssetDocumentSidecarSyncEngine::DecideRegion(
 		TEXT("Body.Notifies"),
