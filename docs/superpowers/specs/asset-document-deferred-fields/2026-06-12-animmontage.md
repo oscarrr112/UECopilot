@@ -74,13 +74,17 @@ deferred 原因：
 AssetDocument path：
 
 ```text
+/Body/Sync
 /Body/Markers
 /Body/SyncMarkers
 ```
 
 UE 结构：
 
-- animation sync marker / marker track 相关结构。
+- `UAnimMontage::SyncGroup`
+- `UAnimMontage::SyncSlotIndex`
+- `FMarkerSyncData`
+- `FAnimSyncMarker`
 
 当前处理方式：
 
@@ -90,15 +94,15 @@ UE 结构：
 
 deferred 原因：
 
-- marker sync 通常影响 runtime animation synchronization；
-- 需要和 AnimSequence / AnimComposite 的 marker 表达统一；
-- 不应只在 Montage adapter 内孤立实现。
+- `SyncGroup` 和 `SyncSlotIndex` 是 montage 自身 authoring settings，适合作为后续 `Body.Sync` 低风险 region；
+- `MarkerData.AuthoredSyncMarkers` 会由 `UAnimMontage::CollectMarkers()` 基于 `SyncGroup`、`SyncSlotIndex` 和 referenced `UAnimSequence::AuthoredSyncMarkers` 收集，更像 derived montage marker evidence，不适合作为第一批直接 authoring data；
+- referenced sequence markers 应由对应 `AnimSequence` AssetDocument 管理。
 
 清理条件：
 
-- 先设计 animation marker 的通用 AssetDocument 表达；
-- 至少覆盖 AnimSequenceBase 与 AnimMontage 的共同路径；
-- 自动化测试能验证保存后 marker 数量、名称、时间稳定。
+- 先实现 `Body.Sync`，只覆盖 `SyncGroup` 和 `SyncSlotIndex`；
+- `MarkerData` 仅作为 extract evidence 或 diagnostic，除非后续明确要支持 montage-owned authored markers；
+- 自动化测试能验证保存、重开、extract 稳定，并且不会修改 referenced sequence markers。
 
 ### 2.3 RootMotionAdvancedSettings
 
@@ -121,15 +125,51 @@ UE 结构：
 
 deferred 原因：
 
-- 部分字段是普通 reflected properties，不需要急着进入 structured body；
-- root motion 的行为验证需要 runtime playback 或 animation eval 测试。
+- `bEnableRootMotionTranslation`、`bEnableRootMotionRotation` 和 `RootMotionRootLock` 仍在 montage 上持久化，但 UE 注释说明 root motion 已主要由 anim sequences 控制；
+- `Body.RootMotion` 应解释为 montage-side legacy settings，不表示完整 root motion 数据；
+- referenced sequence root motion settings 属于 `AnimSequence` sidecar，不应由 AnimMontage region 直接管理。
 
 清理条件：
 
-- 确认哪些字段必须用 structured block 而不是 `Properties`；
-- 建立最小 runtime/editor 验证，避免只测序列化不测行为。
+- 将 `Body.RootMotion` 限定为 `bEnableRootMotionTranslation`、`bEnableRootMotionRotation`、`RootMotionRootLock`；
+- 自动化测试至少验证字段保存、重开和 extract 稳定；
+- 文档明确 sequence-owned root motion 不在 AnimMontage sidecar 范围内。
 
-### 2.4 MetadataObjectAuthoring
+### 2.4 CurvesAndTimeStretch
+
+AssetDocument path：
+
+```text
+/Body/Curves
+/Body/TimeStretch
+```
+
+UE 结构：
+
+- inherited `UAnimSequenceBase::RawCurveData`
+- inherited animation data model curve data
+- `UAnimMontage::TimeStretchCurve`
+- `UAnimMontage::TimeStretchCurveName`
+
+当前处理方式：
+
+- document 中出现时 validate 失败；
+- apply 不写入；
+- extract 不输出语义化 block。
+
+deferred 原因：
+
+- `UAnimMontage` 通过 `UAnimSequenceBase` 继承了自己的 curve storage，runtime 会使用 `RawCurveData`；
+- referenced `SlotAnimTracks[].AnimTrack.AnimSegments[].AnimReference` 上的 curves 属于被引用 `AnimSequence` 或 `AnimSequenceBase`，不属于 Montage sidecar owned region；
+- `TimeStretchCurve` 的 `Markers` 和 `Sum_dT_i_by_C_i` 是 baked/cached output，应该由 UE 根据 source float curve 和 `TimeStretchCurveName` 生成，不应由 sidecar 手写。
+
+清理条件：
+
+- `Body.Curves` 明确只覆盖 montage-owned inherited curves；
+- `Body.TimeStretch` 明确只覆盖 time stretch settings 和 source curve reference，不维护 baked markers；
+- 自动化测试能证明修改 Montage 曲线不会修改 referenced sequence 曲线。
+
+### 2.5 MetadataObjectAuthoring
 
 AssetDocument path：
 
@@ -161,7 +201,7 @@ deferred 原因：
 - metadata class path + properties + array ordering 有稳定 schema；
 - extract/diff 能 round-trip。
 
-### 2.5 MontageEditorUILayout
+### 2.6 MontageEditorUILayout
 
 AssetDocument path：
 
