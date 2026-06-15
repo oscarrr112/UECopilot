@@ -12,6 +12,7 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimMetaData.h"
@@ -1396,6 +1397,13 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 		TestFalse(TEXT("Extracted TimeStretch omits baked Sum_dT_i_by_C_i"), (*ExtractedTimeStretch)->HasField(TEXT("Sum_dT_i_by_C_i")));
 	}
 
+	TArray<float> OriginalTimes;
+	TArray<float> OriginalValues;
+	if (MontageCurve)
+	{
+		MontageCurve->GetKeys(OriginalTimes, OriginalValues);
+	}
+
 	const FString AnimReferencePath = AnimSequence->GetPathName();
 	bool bAllCasesPassed = true;
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid curve name"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
@@ -1418,6 +1426,26 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 		SetCurvesAndTimeStretch(InvalidDocument);
 		InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject()->GetArrayField(TEXT("Keys"))[0]->AsObject()->SetStringField(TEXT("Value"), TEXT("fast"));
 	}, TEXT("/Body/Curves/0/Keys/0/Value"), TEXT("InvalidCurveKeyValue"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Duplicate curve name"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		TArray<TSharedPtr<FJsonValue>> Curves = InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"));
+		Curves.Add(MakeShared<FJsonValueObject>(MakeMontageTimeStretchCurve()));
+		InvalidDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Curves"), Curves);
+	}, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Unsupported curve flag"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		TSharedPtr<FJsonObject> Curve = InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject();
+		TArray<TSharedPtr<FJsonValue>> Flags;
+		Flags.Add(MakeShared<FJsonValueString>(TEXT("Disabled")));
+		Curve->SetArrayField(TEXT("Flags"), Flags);
+	}, TEXT("/Body/Curves/0/Flags/0"), TEXT("InvalidCurveFlags"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Missing time stretch curve in provided curves"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("TimeStretch"))->SetStringField(TEXT("TimeStretchCurveName"), TEXT("MissingCurve"));
+	}, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid time stretch sampling rate"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
 	{
 		SetCurvesAndTimeStretch(InvalidDocument);
@@ -1428,6 +1456,45 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 		SetCurvesAndTimeStretch(InvalidDocument);
 		InvalidDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("TimeStretch"))->SetNumberField(TEXT("CurveValueMinPrecision"), -0.1);
 	}, TEXT("/Body/TimeStretch/CurveValueMinPrecision"), TEXT("InvalidTimeStretchCurveValueMinPrecision"));
+
+	TSharedPtr<FJsonObject> DuplicateApplyDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetCurvesAndTimeStretch(DuplicateApplyDocument);
+	TArray<TSharedPtr<FJsonValue>> DuplicateCurves = DuplicateApplyDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"));
+	DuplicateCurves.Add(MakeShared<FJsonValueObject>(MakeMontageTimeStretchCurve()));
+	DuplicateApplyDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Curves"), DuplicateCurves);
+	const FAssetDocumentResult DuplicateApplyResult = ApplyDocument(DuplicateApplyDocument);
+	TestFalse(TEXT("Duplicate curve apply is rejected before production mutation"), DuplicateApplyResult.IsSuccess());
+	TestTrue(TEXT("Duplicate curve apply reports DuplicateCurveName"), HasDiagnostic(DuplicateApplyResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
+	const FFloatCurve* CurveAfterDuplicateApply = Montage->GetDataModel() ? Montage->GetDataModel()->FindFloatCurve(CurveId) : nullptr;
+	TestNotNull(TEXT("Original curve remains after duplicate curve apply failure"), CurveAfterDuplicateApply);
+	if (CurveAfterDuplicateApply)
+	{
+		TArray<float> TimesAfterDuplicate;
+		TArray<float> ValuesAfterDuplicate;
+		CurveAfterDuplicateApply->GetKeys(TimesAfterDuplicate, ValuesAfterDuplicate);
+		TestEqual(TEXT("Original curve key count remains after duplicate curve apply failure"), TimesAfterDuplicate.Num(), OriginalTimes.Num());
+		for (int32 KeyIndex = 0; KeyIndex < FMath::Min(TimesAfterDuplicate.Num(), OriginalTimes.Num()); ++KeyIndex)
+		{
+			TestTrue(TEXT("Original curve times remain after duplicate curve apply failure"), FMath::IsNearlyEqual(TimesAfterDuplicate[KeyIndex], OriginalTimes[KeyIndex]));
+			TestTrue(TEXT("Original curve values remain after duplicate curve apply failure"), ValuesAfterDuplicate.IsValidIndex(KeyIndex) && OriginalValues.IsValidIndex(KeyIndex) && FMath::IsNearlyEqual(ValuesAfterDuplicate[KeyIndex], OriginalValues[KeyIndex]));
+		}
+	}
+
+	TSharedPtr<FJsonObject> MissingCurveApplyDocument = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> MissingCurveTimeStretch = MakeShared<FJsonObject>();
+	MissingCurveTimeStretch->SetStringField(TEXT("TimeStretchCurveName"), TEXT("MissingCurve"));
+	MissingCurveApplyDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("TimeStretch"), MissingCurveTimeStretch);
+	const FAssetDocumentResult MissingCurveApplyResult = ApplyDocument(MissingCurveApplyDocument);
+	TestFalse(TEXT("Missing time stretch curve apply is rejected before production mutation"), MissingCurveApplyResult.IsSuccess());
+	TestTrue(TEXT("Missing time stretch curve apply reports MissingTimeStretchCurve"), HasDiagnostic(MissingCurveApplyResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
+	TestEqual(TEXT("TimeStretchCurveName remains after missing curve apply failure"), Montage->TimeStretchCurveName, CurveName);
+	TestNotNull(TEXT("Original curve remains after missing time stretch curve apply failure"), Montage->GetDataModel() ? Montage->GetDataModel()->FindFloatCurve(CurveId) : nullptr);
+
+	IAnimationDataController& Controller = Montage->GetController();
+	Controller.SetCurveFlags(CurveId, AACF_Disabled, false);
+	const FAssetDocumentResult UnsupportedFlagsExtractResult = Service.Extract(ExtractRequest);
+	TestFalse(TEXT("Extract rejects unsupported curve flags"), UnsupportedFlagsExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract reports UnsupportedCurveFlags"), HasDiagnostic(UnsupportedFlagsExtractResult, TEXT("/Body/Curves/0/Flags"), TEXT("UnsupportedCurveFlags")));
 
 	return bAllCasesPassed;
 }

@@ -1486,6 +1486,7 @@ FAssetDocumentCapabilityResult ParseCurves(const TSharedRef<FJsonObject>& BodyOb
 	OutParsed.bHasCurves = true;
 	OutParsed.Curves.Reset();
 	OutParsed.Curves.Reserve(CurvesArray->Num());
+	TSet<FName> CurveNames;
 
 	for (int32 CurveIndex = 0; CurveIndex < CurvesArray->Num(); ++CurveIndex)
 	{
@@ -1524,6 +1525,11 @@ FAssetDocumentCapabilityResult ParseCurves(const TSharedRef<FJsonObject>& BodyOb
 
 		FParsedFloatCurve ParsedCurve;
 		ParsedCurve.Name = FName(*CurveNameString);
+		if (CurveNames.Contains(ParsedCurve.Name))
+		{
+			return BodyFailure(TEXT("Curve Name must be unique within Body.Curves"), CurvePath / TEXT("Name"), TEXT("DuplicateCurveName"));
+		}
+		CurveNames.Add(ParsedCurve.Name);
 
 		Result = ParseCurveFlags(CurveObject.ToSharedRef(), CurvePath, ParsedCurve.Flags);
 		if (!Result.bSuccess)
@@ -1604,6 +1610,17 @@ FAssetDocumentCapabilityResult ParseTimeStretch(const TSharedRef<FJsonObject>& B
 	{
 		CurveNameString.TrimStartAndEndInline();
 		OutParsed.TimeStretchCurveName = FName(*CurveNameString);
+		if (!OutParsed.TimeStretchCurveName.IsNone() && OutParsed.bHasCurves)
+		{
+			const bool bCurveProvided = OutParsed.Curves.ContainsByPredicate([&OutParsed](const FParsedFloatCurve& Curve)
+			{
+				return Curve.Name == OutParsed.TimeStretchCurveName;
+			});
+			if (!bCurveProvided)
+			{
+				return BodyFailure(TEXT("TimeStretchCurveName must reference a montage-owned float curve"), TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve"));
+			}
+		}
 	}
 
 	const TSharedPtr<FJsonValue>* SamplingRateValue = TimeStretchObject->Values.Find(TEXT("SamplingRate"));
@@ -2137,6 +2154,17 @@ FAssetDocumentCapabilityResult ApplyMontageOwnedCurves(UAnimMontage& Montage, co
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+bool HasMontageFloatCurve(const UAnimMontage& Montage, FName CurveName)
+{
+	if (CurveName.IsNone())
+	{
+		return true;
+	}
+
+	const IAnimationDataModel* DataModel = Montage.GetDataModel();
+	return DataModel && DataModel->FindFloatCurve(FAnimationCurveIdentifier(CurveName, ERawCurveTrackTypes::RCT_Float)) != nullptr;
+}
+
 void BakeMontageTimeStretchCurve(UAnimMontage& Montage)
 {
 	Montage.TimeStretchCurve.Reset();
@@ -2158,18 +2186,22 @@ void BakeMontageTimeStretchCurve(UAnimMontage& Montage)
 	Montage.TimeStretchCurve.BakeFromFloatCurve(*TimeStretchFloatCurve, Montage.GetPlayLength());
 }
 
-TArray<TSharedPtr<FJsonValue>> ExtractCurveFlags(const FFloatCurve& Curve)
+FAssetDocumentCapabilityResult ExtractCurveFlags(
+	const FFloatCurve& Curve,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutFlags)
 {
-	TArray<TSharedPtr<FJsonValue>> Flags;
-	if (Curve.GetCurveTypeFlag(AACF_DefaultCurve) || Curve.GetCurveTypeFlags() == AACF_DefaultCurve)
+	OutFlags.Reset();
+	if (Curve.GetCurveTypeFlags() != AACF_DefaultCurve)
 	{
-		Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+		return BodyFailure(
+			FString::Printf(TEXT("Curve '%s' has unsupported flags 0x%x"), *Curve.GetName().ToString(), Curve.GetCurveTypeFlags()),
+			Path,
+			TEXT("UnsupportedCurveFlags"));
 	}
-	if (Flags.IsEmpty())
-	{
-		Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
-	}
-	return Flags;
+
+	OutFlags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+	return FAssetDocumentCapabilityResult::Success();
 }
 }
 
@@ -2449,6 +2481,10 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 			return CurveApplyResult;
 		}
 	}
+	if (ParsedBody.bHasTimeStretchCurveName && !HasMontageFloatCurve(*Montage, ParsedBody.TimeStretchCurveName))
+	{
+		return BodyFailure(TEXT("TimeStretchCurveName must reference a montage-owned float curve"), TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve"));
+	}
 	if (ParsedBody.bHasTimeStretchCurveName)
 	{
 		Montage->TimeStretchCurveName = ParsedBody.TimeStretchCurveName;
@@ -2691,7 +2727,16 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 		{
 			TSharedRef<FJsonObject> CurveObject = MakeShared<FJsonObject>();
 			CurveObject->SetStringField(TEXT("Name"), FloatCurve.GetName().ToString());
-			CurveObject->SetArrayField(TEXT("Flags"), ExtractCurveFlags(FloatCurve));
+			TArray<TSharedPtr<FJsonValue>> CurveFlags;
+			const FAssetDocumentCapabilityResult CurveFlagsResult = ExtractCurveFlags(
+				FloatCurve,
+				FString::Printf(TEXT("/Body/Curves/%d/Flags"), Curves.Num()),
+				CurveFlags);
+			if (!CurveFlagsResult.bSuccess)
+			{
+				return CurveFlagsResult;
+			}
+			CurveObject->SetArrayField(TEXT("Flags"), CurveFlags);
 
 			TArray<float> Times;
 			TArray<float> Values;
@@ -2714,7 +2759,9 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 	OutBodyJson->SetArrayField(TEXT("Curves"), Curves);
 
 	TSharedRef<FJsonObject> TimeStretch = MakeShared<FJsonObject>();
-	TimeStretch->SetStringField(TEXT("TimeStretchCurveName"), Montage->TimeStretchCurveName.ToString());
+	TimeStretch->SetStringField(
+		TEXT("TimeStretchCurveName"),
+		HasMontageFloatCurve(*Montage, Montage->TimeStretchCurveName) ? Montage->TimeStretchCurveName.ToString() : FString());
 
 	float TimeStretchSamplingRate = 60.0f;
 	FAssetDocumentCapabilityResult TimeStretchResult = GetTimeStretchFloatProperty(

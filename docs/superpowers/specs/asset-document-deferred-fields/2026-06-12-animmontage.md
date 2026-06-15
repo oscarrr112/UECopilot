@@ -194,7 +194,7 @@ deferred 原因：
 - `Body.TimeStretch` 只维护 `TimeStretchCurveName`、`SamplingRate`、`CurveValueMinPrecision`；
 - baked `TimeStretchCurve.Markers` 和 `TimeStretchCurve.Sum_dT_i_by_C_i` 仍是 UE 生成的 cache/output，不由 sidecar author/extract。
 
-但这两个字段需要保留后续组合边界：
+`Body.Notifies` / `Body.NotifyStates` 需要保留后续组合边界：
 
 ```text
 AnimMontageCapability
