@@ -11,6 +11,7 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
+#include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Engine/SkeletalMesh.h"
@@ -262,6 +263,31 @@ TSharedPtr<FJsonObject> GetCompositeSection(TSharedPtr<FJsonObject> Document, in
 {
 	const TArray<TSharedPtr<FJsonValue>>& CompositeSections = Document->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("CompositeSections"));
 	return CompositeSections[Index]->AsObject();
+}
+
+void SetScalarRegions(TSharedPtr<FJsonObject> Document, const FString& PreviewBasePosePath)
+{
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+
+	TSharedPtr<FJsonObject> References = MakeShared<FJsonObject>();
+	References->SetObjectField(TEXT("Skeleton"), MakeAssetRef(TestSkeletonPath));
+	Body->SetObjectField(TEXT("References"), References);
+
+	TSharedPtr<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	Preview->SetObjectField(TEXT("PreviewBasePose"), MakeAssetRef(PreviewBasePosePath));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+
+	TSharedPtr<FJsonObject> Sync = MakeShared<FJsonObject>();
+	Sync->SetStringField(TEXT("SyncGroup"), TEXT("AssetDocSync"));
+	Sync->SetNumberField(TEXT("SyncSlotIndex"), 0);
+	Body->SetObjectField(TEXT("Sync"), Sync);
+
+	TSharedPtr<FJsonObject> RootMotion = MakeShared<FJsonObject>();
+	RootMotion->SetBoolField(TEXT("bEnableRootMotionTranslation"), true);
+	RootMotion->SetBoolField(TEXT("bEnableRootMotionRotation"), true);
+	RootMotion->SetStringField(TEXT("RootMotionRootLock"), TEXT("Zero"));
+	Body->SetObjectField(TEXT("RootMotion"), RootMotion);
 }
 
 TSharedPtr<FJsonObject> MakeNotifyPlacement(double Time, TSharedPtr<FJsonObject> Object)
@@ -945,6 +971,205 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 	}
 
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageApplyExtractScalarRegionsTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ScalarRegions.Core",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageApplyExtractScalarRegionsTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequenceBase = CreateAnimSequenceFixture();
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimSequenceBase);
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ScalarRegions"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(Document, AnimSequence->GetPathName());
+
+	const FAssetDocumentResult Result = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for scalar regions"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied scalar region AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TestNotNull(TEXT("Scalar regions set skeleton"), Montage->GetSkeleton());
+	TestNotNull(TEXT("Scalar regions set preview mesh"), Montage->GetPreviewMesh());
+	TestTrue(TEXT("Scalar regions set preview base pose"), Montage->PreviewBasePose.Get() == AnimSequence);
+	TestEqual(TEXT("Scalar regions set sync group"), Montage->SyncGroup, FName(TEXT("AssetDocSync")));
+	TestEqual(TEXT("Scalar regions set sync slot index"), Montage->SyncSlotIndex, 0);
+	TestTrue(TEXT("Scalar regions enable root motion translation"), Montage->bEnableRootMotionTranslation);
+	TestTrue(TEXT("Scalar regions enable root motion rotation"), Montage->bEnableRootMotionRotation);
+	TestEqual(TEXT("Scalar regions set root motion root lock"), Montage->RootMotionRootLock, ERootMotionRootLock::Zero);
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds for scalar regions"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns scalar region payload"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	if (!ExtractedBody || !ExtractedBody->IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* References = nullptr;
+	TestTrue(TEXT("Extract includes Body.References"), (*ExtractedBody)->TryGetObjectField(TEXT("References"), References));
+	if (References && References->IsValid())
+	{
+		TestTrue(TEXT("Extract includes Body.References.Skeleton"), (*References)->HasTypedField<EJson::Object>(TEXT("Skeleton")));
+	}
+
+	const TSharedPtr<FJsonObject>* Preview = nullptr;
+	TestTrue(TEXT("Extract includes Body.Preview"), (*ExtractedBody)->TryGetObjectField(TEXT("Preview"), Preview));
+	if (Preview && Preview->IsValid())
+	{
+		TestTrue(TEXT("Extract includes Body.Preview.PreviewMesh"), (*Preview)->HasTypedField<EJson::Object>(TEXT("PreviewMesh")));
+		TestTrue(TEXT("Extract includes Body.Preview.PreviewBasePose"), (*Preview)->HasTypedField<EJson::Object>(TEXT("PreviewBasePose")));
+	}
+
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	TestTrue(TEXT("Extract includes Body.Sync"), (*ExtractedBody)->TryGetObjectField(TEXT("Sync"), Sync));
+	if (Sync && Sync->IsValid())
+	{
+		TestEqual(TEXT("Extracted SyncGroup"), (*Sync)->GetStringField(TEXT("SyncGroup")), FString(TEXT("AssetDocSync")));
+		TestEqual(TEXT("Extracted SyncSlotIndex"), static_cast<int32>((*Sync)->GetNumberField(TEXT("SyncSlotIndex"))), 0);
+	}
+
+	const TSharedPtr<FJsonObject>* RootMotion = nullptr;
+	TestTrue(TEXT("Extract includes Body.RootMotion"), (*ExtractedBody)->TryGetObjectField(TEXT("RootMotion"), RootMotion));
+	if (RootMotion && RootMotion->IsValid())
+	{
+		TestTrue(TEXT("Extracted bEnableRootMotionTranslation"), (*RootMotion)->GetBoolField(TEXT("bEnableRootMotionTranslation")));
+		TestTrue(TEXT("Extracted bEnableRootMotionRotation"), (*RootMotion)->GetBoolField(TEXT("bEnableRootMotionRotation")));
+		TestEqual(TEXT("Extracted RootMotionRootLock"), (*RootMotion)->GetStringField(TEXT("RootMotionRootLock")), FString(TEXT("Zero")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageScalarRegionPrecedenceTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ScalarRegions.Precedence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageScalarRegionPrecedenceTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ScalarPrecedence"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(Document, AnimSequence->GetPathName());
+
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	Body->SetField(TEXT("Skeleton"), MakeShared<FJsonValueNull>());
+	Body->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
+
+	const FAssetDocumentResult Result = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds with legacy/nested scalar conflicts"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Precedence AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TestNotNull(TEXT("Nested References.Skeleton overrides legacy Skeleton"), Montage->GetSkeleton());
+	TestNotNull(TEXT("Nested Preview.PreviewMesh overrides legacy PreviewMesh"), Montage->GetPreviewMesh());
+
+	Montage->SyncGroup = FName(TEXT("ManualSync"));
+	TSharedPtr<FJsonObject> ClearSyncDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(ClearSyncDocument, AnimSequence->GetPathName());
+	ClearSyncDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetStringField(TEXT("SyncGroup"), TEXT(""));
+	const FAssetDocumentResult ClearSyncResult = ApplyDocument(ClearSyncDocument);
+	TestTrue(TEXT("Apply succeeds with empty SyncGroup clear"), ClearSyncResult.IsSuccess());
+	if (!ClearSyncResult.IsSuccess())
+	{
+		AddError(ClearSyncResult.Message);
+		return false;
+	}
+	TestEqual(TEXT("Empty SyncGroup clears to None"), Montage->SyncGroup, NAME_None);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageScalarRegionValidationTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ScalarRegions.Validation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageScalarRegionValidationTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString AnimReferencePath = AnimSequence->GetPathName();
+	bool bAllCasesPassed = true;
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("SyncSlotIndex negative"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetNumberField(TEXT("SyncSlotIndex"), -1);
+	}, TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("SyncSlotIndex out of range"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetNumberField(TEXT("SyncSlotIndex"), 1);
+	}, TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid root motion lock"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("RootMotion"))->SetStringField(TEXT("RootMotionRootLock"), TEXT("Bogus"));
+	}, TEXT("/Body/RootMotion/RootMotionRootLock"), TEXT("InvalidRootMotionRootLock"));
+
+	TSharedPtr<FJsonObject> WrongTypeDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_ScalarWrongType")), AnimReferencePath);
+	SetScalarRegions(WrongTypeDocument, TestSkeletonPath);
+	const FAssetDocumentResult WrongTypeResult = ApplyDocument(WrongTypeDocument);
+	bAllCasesPassed &= TestFalse(TEXT("Apply rejects wrong PreviewBasePose asset type"), WrongTypeResult.IsSuccess());
+	bAllCasesPassed &= TestTrue(
+		TEXT("Apply reports PreviewBasePose asset type diagnostic"),
+		HasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("assetref-base-class-mismatch"))
+			|| HasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("InvalidObjectReference")));
+
+	return bAllCasesPassed;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

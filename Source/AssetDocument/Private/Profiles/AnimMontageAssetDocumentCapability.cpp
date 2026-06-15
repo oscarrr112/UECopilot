@@ -6,6 +6,7 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
+#include "Animation/AnimSequence.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
@@ -274,6 +275,18 @@ struct FParsedAnimMontageBody
 	USkeleton* Skeleton = nullptr;
 	bool bHasPreviewMesh = false;
 	USkeletalMesh* PreviewMesh = nullptr;
+	bool bHasPreviewBasePose = false;
+	UAnimSequence* PreviewBasePose = nullptr;
+	bool bHasSyncGroup = false;
+	FName SyncGroup = NAME_None;
+	bool bHasSyncSlotIndex = false;
+	int32 SyncSlotIndex = 0;
+	bool bHasRootMotionTranslation = false;
+	bool bRootMotionTranslation = false;
+	bool bHasRootMotionRotation = false;
+	bool bRootMotionRotation = false;
+	bool bHasRootMotionRootLock = false;
+	ERootMotionRootLock::Type RootMotionRootLock = ERootMotionRootLock::RefPose;
 	bool bHasSlotAnimTracks = false;
 	TArray<FSlotAnimationTrack> SlotAnimTracks;
 	float CompositeLength = 0.0f;
@@ -418,13 +431,85 @@ FAssetDocumentCapabilityResult ReadOptionalNonNegativeNumber(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ParseObjectReference(
+FAssetDocumentCapabilityResult ReadOptionalString(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	const TCHAR* ErrorCode,
+	bool& bOutHasValue,
+	FString& OutValue)
+{
+	bOutHasValue = false;
+	OutValue.Reset();
+	if (const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName))
+	{
+		if (!Value->IsValid() || (*Value)->Type != EJson::String)
+		{
+			return BodyFailure(FString::Printf(TEXT("%s must be a string"), FieldName), Path, ErrorCode);
+		}
+
+		bOutHasValue = true;
+		OutValue = (*Value)->AsString();
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadOptionalBool(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	bool& bOutHasValue,
+	bool& OutValue)
+{
+	bOutHasValue = false;
+	OutValue = false;
+	if (const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName))
+	{
+		if (!Value->IsValid() || (*Value)->Type != EJson::Boolean)
+		{
+			return BodyFailure(FString::Printf(TEXT("%s must be a boolean"), FieldName), Path, TEXT("InvalidBooleanField"));
+		}
+
+		bOutHasValue = true;
+		OutValue = (*Value)->AsBool();
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadOptionalInteger(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	const TCHAR* ErrorCode,
+	bool& bOutHasValue,
+	int32& OutValue)
+{
+	double NumberValue = 0.0;
+	const FAssetDocumentCapabilityResult Result = ReadOptionalNumber(Object, FieldName, Path, bOutHasValue, NumberValue);
+	if (!Result.bSuccess)
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be an integer"), FieldName), Path, ErrorCode);
+	}
+	if (bOutHasValue)
+	{
+		const int32 IntegerValue = static_cast<int32>(NumberValue);
+		if (NumberValue < 0.0 || !FMath::IsNearlyEqual(NumberValue, static_cast<double>(IntegerValue)))
+		{
+			return BodyFailure(FString::Printf(TEXT("%s must be a non-negative integer"), FieldName), Path, ErrorCode);
+		}
+		OutValue = IntegerValue;
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseObjectReferenceFromObject(
 	const FAssetDocumentFragmentCompiler* Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	UAnimMontage* Montage,
-	const TSharedRef<FJsonObject>& BodyObject,
+	const TSharedRef<FJsonObject>& Object,
 	const TCHAR* FieldName,
 	UClass* ExpectedBaseClass,
+	const FString& Path,
 	bool bResolveFragments,
 	bool& bOutHasValue,
 	UObject*& OutObject)
@@ -432,7 +517,7 @@ FAssetDocumentCapabilityResult ParseObjectReference(
 	bOutHasValue = false;
 	OutObject = nullptr;
 
-	const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(FieldName);
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName);
 	if (!Value)
 	{
 		return FAssetDocumentCapabilityResult::Success();
@@ -445,7 +530,6 @@ FAssetDocumentCapabilityResult ParseObjectReference(
 	}
 
 	TSharedPtr<FJsonObject> FragmentObject;
-	const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
 	const FAssetDocumentCapabilityResult ObjectResult = RequireObjectValue(*Value, Path, FragmentObject);
 	if (!ObjectResult.bSuccess)
 	{
@@ -477,6 +561,55 @@ FAssetDocumentCapabilityResult ParseObjectReference(
 
 	OutObject = FragmentResult.Object;
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseObjectReference(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimMontage* Montage,
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TCHAR* FieldName,
+	UClass* ExpectedBaseClass,
+	bool bResolveFragments,
+	bool& bOutHasValue,
+	UObject*& OutObject)
+{
+	const FString Path = FString::Printf(TEXT("/Body/%s"), FieldName);
+	return ParseObjectReferenceFromObject(Compiler, Context, Montage, BodyObject, FieldName, ExpectedBaseClass, Path, bResolveFragments, bOutHasValue, OutObject);
+}
+
+bool TryParseRootMotionRootLock(const FString& Value, ERootMotionRootLock::Type& OutRootLock)
+{
+	if (Value == TEXT("RefPose"))
+	{
+		OutRootLock = ERootMotionRootLock::RefPose;
+		return true;
+	}
+	if (Value == TEXT("AnimFirstFrame"))
+	{
+		OutRootLock = ERootMotionRootLock::AnimFirstFrame;
+		return true;
+	}
+	if (Value == TEXT("Zero"))
+	{
+		OutRootLock = ERootMotionRootLock::Zero;
+		return true;
+	}
+	return false;
+}
+
+FString RootMotionRootLockToString(ERootMotionRootLock::Type RootLock)
+{
+	switch (RootLock)
+	{
+	case ERootMotionRootLock::AnimFirstFrame:
+		return TEXT("AnimFirstFrame");
+	case ERootMotionRootLock::Zero:
+		return TEXT("Zero");
+	case ERootMotionRootLock::RefPose:
+	default:
+		return TEXT("RefPose");
+	}
 }
 
 FAssetDocumentCapabilityResult ParseSlotAnimTracks(
@@ -805,6 +938,230 @@ FAssetDocumentCapabilityResult ParseBlend(const TSharedRef<FJsonObject>& BodyObj
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ParseReferences(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimMontage* Montage,
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool bResolveFragments,
+	FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* ReferencesValue = BodyObject->Values.Find(TEXT("References"));
+	if (!ReferencesValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> ReferencesObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*ReferencesValue, TEXT("/Body/References"), ReferencesObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UObject* SkeletonObject = nullptr;
+	bool bHasSkeleton = false;
+	Result = ParseObjectReferenceFromObject(
+		Compiler,
+		Context,
+		Montage,
+		ReferencesObject.ToSharedRef(),
+		TEXT("Skeleton"),
+		USkeleton::StaticClass(),
+		TEXT("/Body/References/Skeleton"),
+		bResolveFragments,
+		bHasSkeleton,
+		SkeletonObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (bHasSkeleton)
+	{
+		OutParsed.bHasSkeleton = true;
+		OutParsed.Skeleton = Cast<USkeleton>(SkeletonObject);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParsePreview(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimMontage* Montage,
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool bResolveFragments,
+	FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* PreviewValue = BodyObject->Values.Find(TEXT("Preview"));
+	if (!PreviewValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> PreviewObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*PreviewValue, TEXT("/Body/Preview"), PreviewObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UObject* PreviewMeshObject = nullptr;
+	bool bHasPreviewMesh = false;
+	Result = ParseObjectReferenceFromObject(
+		Compiler,
+		Context,
+		Montage,
+		PreviewObject.ToSharedRef(),
+		TEXT("PreviewMesh"),
+		USkeletalMesh::StaticClass(),
+		TEXT("/Body/Preview/PreviewMesh"),
+		bResolveFragments,
+		bHasPreviewMesh,
+		PreviewMeshObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (bHasPreviewMesh)
+	{
+		OutParsed.bHasPreviewMesh = true;
+		OutParsed.PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
+	}
+
+	UObject* PreviewBasePoseObject = nullptr;
+	Result = ParseObjectReferenceFromObject(
+		Compiler,
+		Context,
+		Montage,
+		PreviewObject.ToSharedRef(),
+		TEXT("PreviewBasePose"),
+		UAnimSequence::StaticClass(),
+		TEXT("/Body/Preview/PreviewBasePose"),
+		bResolveFragments,
+		OutParsed.bHasPreviewBasePose,
+		PreviewBasePoseObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutParsed.PreviewBasePose = Cast<UAnimSequence>(PreviewBasePoseObject);
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseSync(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const UAnimMontage* Montage,
+	FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* SyncValue = BodyObject->Values.Find(TEXT("Sync"));
+	if (!SyncValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> SyncObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*SyncValue, TEXT("/Body/Sync"), SyncObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	FString SyncGroup;
+	Result = ReadOptionalString(SyncObject.ToSharedRef(), TEXT("SyncGroup"), TEXT("/Body/Sync/SyncGroup"), TEXT("InvalidSyncGroup"), OutParsed.bHasSyncGroup, SyncGroup);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasSyncGroup)
+	{
+		OutParsed.SyncGroup = FName(*SyncGroup.TrimStartAndEnd());
+	}
+
+	Result = ReadOptionalInteger(SyncObject.ToSharedRef(), TEXT("SyncSlotIndex"), TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"), OutParsed.bHasSyncSlotIndex, OutParsed.SyncSlotIndex);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasSyncSlotIndex)
+	{
+		int32 SlotTrackCount = INDEX_NONE;
+		if (OutParsed.bHasSlotAnimTracks)
+		{
+			SlotTrackCount = OutParsed.SlotAnimTracks.Num();
+		}
+		else if (Montage)
+		{
+			SlotTrackCount = Montage->SlotAnimTracks.Num();
+		}
+
+		if (SlotTrackCount != INDEX_NONE && OutParsed.SyncSlotIndex >= SlotTrackCount)
+		{
+			return BodyFailure(TEXT("SyncSlotIndex must refer to an existing SlotAnimTracks entry"), TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseRootMotion(const TSharedRef<FJsonObject>& BodyObject, FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* RootMotionValue = BodyObject->Values.Find(TEXT("RootMotion"));
+	if (!RootMotionValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> RootMotionObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*RootMotionValue, TEXT("/Body/RootMotion"), RootMotionObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ReadOptionalBool(
+		RootMotionObject.ToSharedRef(),
+		TEXT("bEnableRootMotionTranslation"),
+		TEXT("/Body/RootMotion/bEnableRootMotionTranslation"),
+		OutParsed.bHasRootMotionTranslation,
+		OutParsed.bRootMotionTranslation);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ReadOptionalBool(
+		RootMotionObject.ToSharedRef(),
+		TEXT("bEnableRootMotionRotation"),
+		TEXT("/Body/RootMotion/bEnableRootMotionRotation"),
+		OutParsed.bHasRootMotionRotation,
+		OutParsed.bRootMotionRotation);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	FString RootLockString;
+	Result = ReadOptionalString(
+		RootMotionObject.ToSharedRef(),
+		TEXT("RootMotionRootLock"),
+		TEXT("/Body/RootMotion/RootMotionRootLock"),
+		TEXT("InvalidRootMotionRootLock"),
+		OutParsed.bHasRootMotionRootLock,
+		RootLockString);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasRootMotionRootLock && !TryParseRootMotionRootLock(RootLockString, OutParsed.RootMotionRootLock))
+	{
+		return BodyFailure(TEXT("RootMotionRootLock must be RefPose, AnimFirstFrame, or Zero"), TEXT("/Body/RootMotion/RootMotionRootLock"), TEXT("InvalidRootMotionRootLock"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ParseAnimMontageBody(
 	const FAssetDocumentFragmentCompiler* Compiler,
 	const FAssetDocumentCapabilityContext& Context,
@@ -835,6 +1192,18 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 	}
 	OutParsed.PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
 
+	Result = ParseReferences(Compiler, Context, Montage, BodyObject, bResolveFragments, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ParsePreview(Compiler, Context, Montage, BodyObject, bResolveFragments, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	Result = ParseSlotAnimTracks(Compiler, Context, Montage, BodyObject, bResolveFragments, OutParsed);
 	if (!Result.bSuccess)
 	{
@@ -842,6 +1211,18 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 	}
 
 	Result = ParseCompositeSections(BodyObject, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ParseSync(BodyObject, Montage, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ParseRootMotion(BodyObject, OutParsed);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1042,6 +1423,10 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->SetPreviewMesh(ParsedBody.PreviewMesh, false);
 	}
+	if (ParsedBody.bHasPreviewBasePose)
+	{
+		Montage->PreviewBasePose = ParsedBody.PreviewBasePose;
+	}
 	if (ParsedBody.bHasSlotAnimTracks)
 	{
 		Montage->SlotAnimTracks = MoveTemp(ParsedBody.SlotAnimTracks);
@@ -1082,6 +1467,26 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->BlendOut.SetBlendTime(ParsedBody.BlendOutTime);
 	}
+	if (ParsedBody.bHasSyncGroup)
+	{
+		Montage->SyncGroup = ParsedBody.SyncGroup;
+	}
+	if (ParsedBody.bHasSyncSlotIndex)
+	{
+		Montage->SyncSlotIndex = ParsedBody.SyncSlotIndex;
+	}
+	if (ParsedBody.bHasRootMotionTranslation)
+	{
+		Montage->bEnableRootMotionTranslation = ParsedBody.bRootMotionTranslation;
+	}
+	if (ParsedBody.bHasRootMotionRotation)
+	{
+		Montage->bEnableRootMotionRotation = ParsedBody.bRootMotionRotation;
+	}
+	if (ParsedBody.bHasRootMotionRootLock)
+	{
+		Montage->RootMotionRootLock = ParsedBody.RootMotionRootLock;
+	}
 
 	Montage->MarkPackageDirty();
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage Body applied"));
@@ -1119,6 +1524,59 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 		}
 		OutBodyJson->SetObjectField(TEXT("PreviewMesh"), PreviewMeshRef);
 	}
+
+	if (USkeleton* Skeleton = Montage->GetSkeleton())
+	{
+		TSharedRef<FJsonObject> References = MakeShared<FJsonObject>();
+		TSharedRef<FJsonObject> SkeletonRef = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimMontage*>(Montage), Skeleton, TEXT("/Body/References/Skeleton"), SkeletonRef);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		References->SetObjectField(TEXT("Skeleton"), SkeletonRef);
+		OutBodyJson->SetObjectField(TEXT("References"), References);
+	}
+
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	bool bHasPreview = false;
+	if (USkeletalMesh* PreviewMesh = Montage->GetPreviewMesh())
+	{
+		TSharedRef<FJsonObject> PreviewMeshRef = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimMontage*>(Montage), PreviewMesh, TEXT("/Body/Preview/PreviewMesh"), PreviewMeshRef);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Preview->SetObjectField(TEXT("PreviewMesh"), PreviewMeshRef);
+		bHasPreview = true;
+	}
+	if (UAnimSequence* PreviewBasePose = Montage->PreviewBasePose)
+	{
+		TSharedRef<FJsonObject> PreviewBasePoseRef = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimMontage*>(Montage), PreviewBasePose, TEXT("/Body/Preview/PreviewBasePose"), PreviewBasePoseRef);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Preview->SetObjectField(TEXT("PreviewBasePose"), PreviewBasePoseRef);
+		bHasPreview = true;
+	}
+	if (bHasPreview)
+	{
+		OutBodyJson->SetObjectField(TEXT("Preview"), Preview);
+	}
+
+	TSharedRef<FJsonObject> Sync = MakeShared<FJsonObject>();
+	Sync->SetStringField(TEXT("SyncGroup"), Montage->SyncGroup.ToString());
+	Sync->SetNumberField(TEXT("SyncSlotIndex"), Montage->SyncSlotIndex);
+	OutBodyJson->SetObjectField(TEXT("Sync"), Sync);
+
+	TSharedRef<FJsonObject> RootMotion = MakeShared<FJsonObject>();
+	RootMotion->SetBoolField(TEXT("bEnableRootMotionTranslation"), Montage->bEnableRootMotionTranslation);
+	RootMotion->SetBoolField(TEXT("bEnableRootMotionRotation"), Montage->bEnableRootMotionRotation);
+	RootMotion->SetStringField(TEXT("RootMotionRootLock"), RootMotionRootLockToString(Montage->RootMotionRootLock));
+	OutBodyJson->SetObjectField(TEXT("RootMotion"), RootMotion);
 
 	TArray<TSharedPtr<FJsonValue>> SlotAnimTracks;
 	for (const FSlotAnimationTrack& SlotAnimTrack : Montage->SlotAnimTracks)

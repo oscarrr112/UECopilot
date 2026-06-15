@@ -88,21 +88,21 @@ UE 结构：
 
 当前处理方式：
 
-- inspect 可报告“未支持”；
-- document 中出现时 validate 失败；
-- extract skipped。
+- `Body.Sync` 本轮已支持窄范围 authoring scalar：
+  - `SyncGroup`
+  - `SyncSlotIndex`
+- validate/apply/extract 均覆盖 `Body.Sync`；
+- `MarkerData.AuthoredSyncMarkers`、`Body.Markers`、`Body.SyncMarkers` 仍不作为 authoring region 输出。
 
-deferred 原因：
+仍 deferred 的原因：
 
-- `SyncGroup` 和 `SyncSlotIndex` 是 montage 自身 authoring settings，适合作为后续 `Body.Sync` 低风险 region；
 - `MarkerData.AuthoredSyncMarkers` 会由 `UAnimMontage::CollectMarkers()` 基于 `SyncGroup`、`SyncSlotIndex` 和 referenced `UAnimSequence::AuthoredSyncMarkers` 收集，更像 derived montage marker evidence，不适合作为第一批直接 authoring data；
 - referenced sequence markers 应由对应 `AnimSequence` AssetDocument 管理。
 
-清理条件：
+后续清理条件：
 
-- 先实现 `Body.Sync`，只覆盖 `SyncGroup` 和 `SyncSlotIndex`；
 - `MarkerData` 仅作为 extract evidence 或 diagnostic，除非后续明确要支持 montage-owned authored markers；
-- 自动化测试能验证保存、重开、extract 稳定，并且不会修改 referenced sequence markers。
+- 如需 authoring markers，先定义 montage-owned marker 与 referenced sequence marker 的所有权边界。
 
 ### 2.3 RootMotionAdvancedSettings
 
@@ -119,20 +119,20 @@ UE 结构：
 
 当前处理方式：
 
-- 可反射字段继续走 `Properties`；
-- 语义化 `RootMotion` block 暂不支持；
-- extract 不输出语义化 block。
+- `Body.RootMotion` 本轮已支持 montage-side legacy scalar：
+  - `bEnableRootMotionTranslation`
+  - `bEnableRootMotionRotation`
+  - `RootMotionRootLock`
+- validate/apply/extract 均覆盖上述字段；
+- `Body.RootMotion` 仍不表示完整 root motion 数据。
 
-deferred 原因：
+仍 deferred 的原因：
 
-- `bEnableRootMotionTranslation`、`bEnableRootMotionRotation` 和 `RootMotionRootLock` 仍在 montage 上持久化，但 UE 注释说明 root motion 已主要由 anim sequences 控制；
 - `Body.RootMotion` 应解释为 montage-side legacy settings，不表示完整 root motion 数据；
 - referenced sequence root motion settings 属于 `AnimSequence` sidecar，不应由 AnimMontage region 直接管理。
 
-清理条件：
+后续清理条件：
 
-- 将 `Body.RootMotion` 限定为 `bEnableRootMotionTranslation`、`bEnableRootMotionRotation`、`RootMotionRootLock`；
-- 自动化测试至少验证字段保存、重开和 extract 稳定；
 - 文档明确 sequence-owned root motion 不在 AnimMontage sidecar 范围内。
 
 ### 2.4 CurvesAndTimeStretch
