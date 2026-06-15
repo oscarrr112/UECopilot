@@ -2,7 +2,9 @@
 
 #include "Profiles/AnimMontageAssetDocumentCapability.h"
 
+#include "AssetDocumentClassResolver.h"
 #include "AssetDocumentFragmentCompiler.h"
+#include "AssetDocumentPropertyAdapter.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
@@ -257,11 +259,12 @@ FAssetDocumentCapabilityResult CompileObjectFragment(
 	const TSharedRef<FJsonObject>& Fragment,
 	UClass* ExpectedBaseClass,
 	const FString& JsonPath,
-	FAssetDocumentFragmentResult& OutFragmentResult)
+	FAssetDocumentFragmentResult& OutFragmentResult,
+	UObject* FragmentOuter = nullptr)
 {
 	FAssetDocumentFragmentContext FragmentContext;
 	FragmentContext.OwnerAsset = Montage;
-	FragmentContext.Outer = Montage;
+	FragmentContext.Outer = FragmentOuter ? FragmentOuter : Montage;
 	FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
 	FragmentContext.Definitions = CapabilityContext.Definitions;
 	FragmentContext.JsonPath = JsonPath;
@@ -274,6 +277,7 @@ FAssetDocumentCapabilityResult CompileMetadataArray(
 	const FAssetDocumentFragmentCompiler& Compiler,
 	const FAssetDocumentCapabilityContext& CapabilityContext,
 	UAnimMontage* Montage,
+	UObject* FragmentOuter,
 	const TArray<TSharedPtr<FJsonValue>>& Values,
 	const FString& BasePath,
 	TArray<TObjectPtr<UAnimMetaData>>& OutMetadata)
@@ -299,7 +303,8 @@ FAssetDocumentCapabilityResult CompileMetadataArray(
 			FragmentObject.ToSharedRef(),
 			UAnimMetaData::StaticClass(),
 			Path,
-			FragmentResult);
+			FragmentResult,
+			FragmentOuter);
 		if (!CompileResult.bSuccess)
 		{
 			return CompileResult;
@@ -312,6 +317,35 @@ FAssetDocumentCapabilityResult CompileMetadataArray(
 		}
 
 		OutMetadata.Add(MetadataObject);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult MoveMetadataArrayToMontage(
+	TArray<TObjectPtr<UAnimMetaData>>& MetadataArray,
+	UAnimMontage* Montage,
+	const FString& BasePath)
+{
+	for (int32 Index = 0; Index < MetadataArray.Num(); ++Index)
+	{
+		UAnimMetaData* MetadataObject = MetadataArray[Index];
+		const FString Path = FString::Printf(TEXT("%s/%d"), *BasePath, Index);
+		if (!MetadataObject)
+		{
+			return BodyFailure(TEXT("Metadata fragment resolved to null"), Path, TEXT("InvalidMetadataObject"));
+		}
+
+		if (MetadataObject->GetOuter() == Montage)
+		{
+			continue;
+		}
+
+		const FName MetadataName = MakeUniqueObjectName(Montage, MetadataObject->GetClass(), TEXT("AssetDocumentManaged_Metadata_"));
+		if (!MetadataObject->Rename(*MetadataName.ToString(), Montage, REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			return BodyFailure(TEXT("Failed to attach metadata object to AnimMontage"), Path, TEXT("MetadataOuterMoveFailed"));
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -1358,7 +1392,7 @@ FAssetDocumentCapabilityResult ParseRootMotion(const TSharedRef<FJsonObject>& Bo
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ValidateMetadataArray(
+FAssetDocumentCapabilityResult ValidateMetadataArrayShape(
 	const TArray<TSharedPtr<FJsonValue>>& Values,
 	const FString& BasePath)
 {
@@ -1381,6 +1415,117 @@ FAssetDocumentCapabilityResult ValidateMetadataArray(
 		if (Kind != TEXT("EmbeddedObject") && Kind != TEXT("DefinitionRef"))
 		{
 			return BodyFailure(TEXT("Metadata fragment must be EmbeddedObject or DefinitionRef"), Path / TEXT("Kind"), TEXT("InvalidMetadataObjectFragment"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateMetadataObjectProducingFragment(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& ObjectFragment,
+	const FString& Path,
+	TSet<FString>& DefinitionStack)
+{
+	FString Kind;
+	if (!ObjectFragment->TryGetStringField(TEXT("Kind"), Kind) || Kind.TrimStartAndEnd().IsEmpty())
+	{
+		return BodyFailure(TEXT("Metadata fragment requires Kind"), Path, TEXT("missing-fragment-kind"));
+	}
+	Kind.TrimStartAndEndInline();
+
+	if (Kind == TEXT("EmbeddedObject"))
+	{
+		FString ClassName;
+		if (!ObjectFragment->TryGetStringField(TEXT("Class"), ClassName) || ClassName.TrimStartAndEnd().IsEmpty())
+		{
+			return BodyFailure(TEXT("EmbeddedObject field 'Class' is required."), Path, TEXT("missing-embeddedobject-class"));
+		}
+
+		UClass* ResolvedClass = nullptr;
+		FString Error;
+		if (!FAssetDocumentClassResolver::ResolveClass(ClassName, ResolvedClass, Error))
+		{
+			return BodyFailure(Error, Path, TEXT("object-class-resolve-failed"));
+		}
+
+		if (!ResolvedClass->IsChildOf(UAnimMetaData::StaticClass()))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Class '%s' is not a child of '%s'."), *ResolvedClass->GetName(), *UAnimMetaData::StaticClass()->GetName()),
+				Path,
+				TEXT("embeddedobject-base-class-mismatch"));
+		}
+
+		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+		if (ObjectFragment->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr && PropertiesPtr->IsValid())
+		{
+			const FAssetDocumentPropertyApplyResult PreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(ResolvedClass, *PropertiesPtr);
+			if (!PreflightResult.bSuccess)
+			{
+				FAssetDocumentCapabilityResult Failure = BodyFailure(PreflightResult.Message, Path, TEXT("embeddedobject-preflight-failed"));
+				Failure.Diagnostics.Append(PreflightResult.Diagnostics);
+				return Failure;
+			}
+		}
+
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (Kind == TEXT("DefinitionRef"))
+	{
+		FString Id;
+		if (!ObjectFragment->TryGetStringField(TEXT("Id"), Id) || Id.TrimStartAndEnd().IsEmpty())
+		{
+			return BodyFailure(TEXT("DefinitionRef field 'Id' is required."), Path, TEXT("missing-definitionref-id"));
+		}
+		Id.TrimStartAndEndInline();
+
+		if (!Context.Definitions || !Context.Definitions->IsValid())
+		{
+			return BodyFailure(TEXT("DefinitionRef requires Definitions."), Path, TEXT("definitionref-missing-definitions"));
+		}
+
+		if (DefinitionStack.Contains(Id))
+		{
+			return BodyFailure(FString::Printf(TEXT("DefinitionRef cycle detected at '%s'."), *Id), Path, TEXT("definitionref-cycle"));
+		}
+
+		const TSharedPtr<FJsonObject>* DefinitionJson = nullptr;
+		if (!(*Context.Definitions)->TryGetObjectField(Id, DefinitionJson) || !DefinitionJson || !DefinitionJson->IsValid())
+		{
+			return BodyFailure(FString::Printf(TEXT("Definition '%s' was not found."), *Id), Path, TEXT("definitionref-missing-id"));
+		}
+
+		DefinitionStack.Add(Id);
+		const FAssetDocumentCapabilityResult Result = ValidateMetadataObjectProducingFragment(Context, DefinitionJson->ToSharedRef(), Path, DefinitionStack);
+		DefinitionStack.Remove(Id);
+		return Result;
+	}
+
+	return BodyFailure(TEXT("Metadata fragment must be EmbeddedObject or DefinitionRef"), Path, TEXT("InvalidMetadataObjectFragment"));
+}
+
+FAssetDocumentCapabilityResult ValidateMetadataArray(
+	const FAssetDocumentCapabilityContext& Context,
+	const TArray<TSharedPtr<FJsonValue>>& Values,
+	const FString& BasePath)
+{
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		const FString Path = FString::Printf(TEXT("%s/%d"), *BasePath, Index);
+		TSharedPtr<FJsonObject> FragmentObject;
+		const FAssetDocumentCapabilityResult ObjectResult = RequireObjectValue(Values[Index], Path, FragmentObject);
+		if (!ObjectResult.bSuccess)
+		{
+			return ObjectResult;
+		}
+
+		TSet<FString> DefinitionStack;
+		const FAssetDocumentCapabilityResult Result = ValidateMetadataObjectProducingFragment(Context, FragmentObject.ToSharedRef(), Path, DefinitionStack);
+		if (!Result.bSuccess)
+		{
+			return Result;
 		}
 	}
 
@@ -1416,7 +1561,9 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 			return Result;
 		}
 
-		Result = ValidateMetadataArray(*MetadataArray, TEXT("/Body/Metadata"));
+		Result = bResolveFragments
+			? ValidateMetadataArrayShape(*MetadataArray, TEXT("/Body/Metadata"))
+			: ValidateMetadataArray(Context, *MetadataArray, TEXT("/Body/Metadata"));
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1464,7 +1611,9 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 				return Result;
 			}
 
-			Result = ValidateMetadataArray(*Values, SectionPath);
+			Result = bResolveFragments
+				? ValidateMetadataArrayShape(*Values, SectionPath)
+				: ValidateMetadataArray(Context, *Values, SectionPath);
 			if (!Result.bSuccess)
 			{
 				return Result;
@@ -1486,10 +1635,16 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 		return BodyFailure(TEXT("Metadata fragment resolution requires an AnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
+	UObject* MetadataStagingOuter = nullptr;
+	if (MetadataArray || SectionMetadataValue)
+	{
+		MetadataStagingOuter = NewObject<UAnimMontage>(GetTransientPackage(), UAnimMontage::StaticClass(), NAME_None, RF_Transient);
+	}
+
 	if (MetadataArray)
 	{
 		OutParsed.bHasMetadata = true;
-		FAssetDocumentCapabilityResult Result = CompileMetadataArray(*Compiler, Context, Montage, *MetadataArray, TEXT("/Body/Metadata"), OutParsed.Metadata);
+		FAssetDocumentCapabilityResult Result = CompileMetadataArray(*Compiler, Context, Montage, MetadataStagingOuter, *MetadataArray, TEXT("/Body/Metadata"), OutParsed.Metadata);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1506,6 +1661,7 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 				*Compiler,
 				Context,
 				Montage,
+				MetadataStagingOuter,
 				*Pair.Value,
 				FString::Printf(TEXT("/Body/SectionMetadata/%s"), *Pair.Key.ToString()),
 				CompiledMetadata);
@@ -1798,6 +1954,29 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 		return Result;
 	}
 
+	if (ParsedBody.bHasMetadata)
+	{
+		const FAssetDocumentCapabilityResult MoveResult = MoveMetadataArrayToMontage(ParsedBody.Metadata, Montage, TEXT("/Body/Metadata"));
+		if (!MoveResult.bSuccess)
+		{
+			return MoveResult;
+		}
+	}
+	if (ParsedBody.bHasSectionMetadata)
+	{
+		for (TPair<FName, TArray<TObjectPtr<UAnimMetaData>>>& Pair : ParsedBody.SectionMetadataByName)
+		{
+			const FAssetDocumentCapabilityResult MoveResult = MoveMetadataArrayToMontage(
+				Pair.Value,
+				Montage,
+				FString::Printf(TEXT("/Body/SectionMetadata/%s"), *Pair.Key.ToString()));
+			if (!MoveResult.bSuccess)
+			{
+				return MoveResult;
+			}
+		}
+	}
+
 	if (ParsedBody.bHasSkeleton)
 	{
 		Montage->SetSkeleton(ParsedBody.Skeleton);
@@ -1902,9 +2081,9 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		for (FCompositeSection& Section : Montage->CompositeSections)
 		{
+			Section.MetaData.Reset();
 			if (TArray<TObjectPtr<UAnimMetaData>>* SectionMetadata = ParsedBody.SectionMetadataByName.Find(Section.SectionName))
 			{
-				Section.MetaData.Reset();
 				Section.MetaData.Reserve(SectionMetadata->Num());
 				for (UAnimMetaData* MetadataObject : *SectionMetadata)
 				{

@@ -123,9 +123,12 @@ FString CreateAnimMetaDataClassFixture()
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
 		UBlueprintGeneratedClass::StaticClass());
+	Blueprint->bGenerateAbstractClass = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 
-	return Blueprint && Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetPathName() : FString();
+	return Blueprint && Blueprint->GeneratedClass && !Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract)
+		? Blueprint->GeneratedClass->GetPathName()
+		: FString();
 }
 
 TSharedPtr<FJsonObject> MakeAnimMetaDataRef(const FString& ClassPath)
@@ -227,6 +230,16 @@ TSharedPtr<FJsonObject> MakeStructuredMontageDocument(const FString& Target, con
 	Blend->SetNumberField(TEXT("BlendOutTime"), 0.2);
 	Body->SetObjectField(TEXT("Blend"), Blend);
 
+	return Document;
+}
+
+TSharedPtr<FJsonObject> MakeDefinitionRefDocument(const FString& Target, const FString& AnimReferencePath, const FString& DefinitionId, TSharedPtr<FJsonObject> Definition)
+{
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimReferencePath);
+	Document->GetObjectField(TEXT("Definitions"))->SetObjectField(DefinitionId, Definition);
+	TArray<TSharedPtr<FJsonValue>> MetadataValues;
+	MetadataValues.Add(MakeShared<FJsonValueObject>(MakeDefinitionRef(DefinitionId)));
+	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MetadataValues);
 	return Document;
 }
 
@@ -1382,6 +1395,122 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	TestEqual(TEXT("Start section metadata unchanged after failed metadata apply"), Montage->CompositeSections[0].GetMetaData().Num(), OriginalStartSectionMetadataCount);
 	TestEqual(TEXT("End section metadata unchanged after failed metadata apply"), Montage->CompositeSections[1].GetMetaData().Num(), OriginalEndSectionMetadataCount);
 	TestEqual(TEXT("Failed metadata apply does not create direct child objects under production montage"), CountDirectObjectsWithOuter(Montage), OriginalDirectObjectCount);
+
+	TSharedPtr<FJsonObject> MissingClassDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataMissingClass")), AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> MissingClassObject = MakeShared<FJsonObject>();
+	MissingClassObject->SetStringField(TEXT("Kind"), TEXT("EmbeddedObject"));
+	MissingClassObject->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	TArray<TSharedPtr<FJsonValue>> MissingClassMetadata;
+	MissingClassMetadata.Add(MakeShared<FJsonValueObject>(MissingClassObject));
+	MissingClassDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingClassMetadata);
+	const FAssetDocumentResult MissingClassResult = ValidateDocument(MissingClassDocument);
+	TestFalse(TEXT("Metadata EmbeddedObject missing Class is rejected"), MissingClassResult.IsSuccess());
+	TestTrue(TEXT("Metadata EmbeddedObject missing Class reports diagnostic"), HasDiagnostic(MissingClassResult, TEXT("/Body/Metadata/0"), TEXT("missing-embeddedobject-class")));
+
+	TSharedPtr<FJsonObject> MissingDefinitionIdDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataMissingDefinitionId")), AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> MissingDefinitionIdObject = MakeShared<FJsonObject>();
+	MissingDefinitionIdObject->SetStringField(TEXT("Kind"), TEXT("DefinitionRef"));
+	TArray<TSharedPtr<FJsonValue>> MissingDefinitionIdMetadata;
+	MissingDefinitionIdMetadata.Add(MakeShared<FJsonValueObject>(MissingDefinitionIdObject));
+	MissingDefinitionIdDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingDefinitionIdMetadata);
+	const FAssetDocumentResult MissingDefinitionIdResult = ValidateDocument(MissingDefinitionIdDocument);
+	TestFalse(TEXT("Metadata DefinitionRef missing Id is rejected"), MissingDefinitionIdResult.IsSuccess());
+	TestTrue(TEXT("Metadata DefinitionRef missing Id reports diagnostic"), HasDiagnostic(MissingDefinitionIdResult, TEXT("/Body/Metadata/0"), TEXT("missing-definitionref-id")));
+
+	TSharedPtr<FJsonObject> MissingDefinitionDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataMissingDefinition")), AnimSequence->GetPathName());
+	TArray<TSharedPtr<FJsonValue>> MissingDefinitionMetadata;
+	MissingDefinitionMetadata.Add(MakeShared<FJsonValueObject>(MakeDefinitionRef(TEXT("Missing"))));
+	MissingDefinitionDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingDefinitionMetadata);
+	const FAssetDocumentResult MissingDefinitionResult = ValidateDocument(MissingDefinitionDocument);
+	TestFalse(TEXT("Metadata DefinitionRef missing target is rejected"), MissingDefinitionResult.IsSuccess());
+	TestTrue(TEXT("Metadata DefinitionRef missing target reports diagnostic"), HasDiagnostic(MissingDefinitionResult, TEXT("/Body/Metadata/0"), TEXT("definitionref-missing-id")));
+
+	const FAssetDocumentResult WrongDefinitionBaseResult = ValidateDocument(MakeDefinitionRefDocument(
+		MakeUniqueMontageTarget(TEXT("AM_MetadataWrongDefinitionBase")),
+		AnimSequence->GetPathName(),
+		TEXT("WrongBase"),
+		MakeEmbeddedObjectRef(TestConcreteNotifyClassPath)));
+	TestFalse(TEXT("Metadata DefinitionRef to non-UAnimMetaData is rejected"), WrongDefinitionBaseResult.IsSuccess());
+	TestTrue(TEXT("Metadata DefinitionRef to non-UAnimMetaData reports diagnostic"), HasDiagnostic(WrongDefinitionBaseResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
+
+	const int32 BeforeCompileFailureAssetMetadataCount = Montage->GetMetaData().Num();
+	const int32 BeforeCompileFailureStartSectionMetadataCount = Montage->CompositeSections[0].GetMetaData().Num();
+	const int32 BeforeCompileFailureEndSectionMetadataCount = Montage->CompositeSections[1].GetMetaData().Num();
+	const int32 BeforeCompileFailureDirectObjectCount = CountDirectObjectsWithOuter(Montage);
+	TSharedPtr<FJsonObject> CompileFailureDocument = MakeMontageDocument(Target);
+	TArray<TSharedPtr<FJsonValue>> CompileFailureMetadata;
+	CompileFailureMetadata.Add(MakeShared<FJsonValueObject>(MakeAnimMetaDataRef(AnimMetaDataClassPath)));
+	TSharedPtr<FJsonObject> InvalidPropertyMetadata = MakeAnimMetaDataRef(AnimMetaDataClassPath);
+	TSharedPtr<FJsonObject> InvalidMetadataProperties = MakeShared<FJsonObject>();
+	InvalidMetadataProperties->SetBoolField(TEXT("DefinitelyMissingMetadataProperty"), true);
+	InvalidPropertyMetadata->SetObjectField(TEXT("Properties"), InvalidMetadataProperties);
+	CompileFailureMetadata.Add(MakeShared<FJsonValueObject>(InvalidPropertyMetadata));
+	CompileFailureDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), CompileFailureMetadata);
+	const FAssetDocumentResult CompileFailureResult = ApplyDocument(CompileFailureDocument);
+	TestFalse(TEXT("Metadata compile failure apply is rejected"), CompileFailureResult.IsSuccess());
+	TestTrue(TEXT("Metadata compile failure reports preflight diagnostic"), HasDiagnostic(CompileFailureResult, TEXT("/Body/Metadata/1"), TEXT("embeddedobject-preflight-failed")));
+	TestEqual(TEXT("Asset metadata unchanged after metadata compile failure"), Montage->GetMetaData().Num(), BeforeCompileFailureAssetMetadataCount);
+	TestEqual(TEXT("Start section metadata unchanged after metadata compile failure"), Montage->CompositeSections[0].GetMetaData().Num(), BeforeCompileFailureStartSectionMetadataCount);
+	TestEqual(TEXT("End section metadata unchanged after metadata compile failure"), Montage->CompositeSections[1].GetMetaData().Num(), BeforeCompileFailureEndSectionMetadataCount);
+	TestEqual(TEXT("Metadata compile failure does not create direct child objects under production montage"), CountDirectObjectsWithOuter(Montage), BeforeCompileFailureDirectObjectCount);
+
+	TSharedPtr<FJsonObject> BothSectionsDocument = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> BothSectionMetadata = MakeShared<FJsonObject>();
+	BothSectionMetadata->SetArrayField(TEXT("Start"), MetadataValues);
+	BothSectionMetadata->SetArrayField(TEXT("End"), MetadataValues);
+	BothSectionsDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("SectionMetadata"), BothSectionMetadata);
+	const FAssetDocumentResult BothSectionsResult = ApplyDocument(BothSectionsDocument);
+	TestTrue(TEXT("Apply can seed metadata on both sections"), BothSectionsResult.IsSuccess());
+	if (!BothSectionsResult.IsSuccess())
+	{
+		AddError(BothSectionsResult.Message);
+		return false;
+	}
+	TestEqual(TEXT("Seeded Start section metadata"), Montage->CompositeSections[0].GetMetaData().Num(), 1);
+	TestEqual(TEXT("Seeded End section metadata"), Montage->CompositeSections[1].GetMetaData().Num(), 1);
+
+	TSharedPtr<FJsonObject> StartOnlySectionDocument = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> StartOnlySectionMetadata = MakeShared<FJsonObject>();
+	StartOnlySectionMetadata->SetArrayField(TEXT("Start"), MetadataValues);
+	StartOnlySectionDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("SectionMetadata"), StartOnlySectionMetadata);
+	const FAssetDocumentResult StartOnlySectionResult = ApplyDocument(StartOnlySectionDocument);
+	TestTrue(TEXT("Apply can replace SectionMetadata with only Start listed"), StartOnlySectionResult.IsSuccess());
+	if (!StartOnlySectionResult.IsSuccess())
+	{
+		AddError(StartOnlySectionResult.Message);
+		return false;
+	}
+	TestEqual(TEXT("Start-only replacement keeps Start section metadata"), Montage->CompositeSections[0].GetMetaData().Num(), 1);
+	TestEqual(TEXT("Start-only replacement clears unlisted End section metadata"), Montage->CompositeSections[1].GetMetaData().Num(), 0);
+
+	FAssetDocumentExtractRequest StartOnlyExtractRequest;
+	StartOnlyExtractRequest.AssetPath = Target;
+	StartOnlyExtractRequest.bDiffOnly = false;
+	StartOnlyExtractRequest.bIncludeAllWritable = true;
+	const FAssetDocumentResult StartOnlyExtractResult = Service.Extract(StartOnlyExtractRequest);
+	TestTrue(TEXT("Extract succeeds after Start-only SectionMetadata replacement"), StartOnlyExtractResult.IsSuccess());
+	if (StartOnlyExtractResult.IsSuccess() && StartOnlyExtractResult.Payload.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* StartOnlyExtractedBody = nullptr;
+		const TSharedPtr<FJsonObject>* StartOnlyExtractedSectionMetadata = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* StartOnlyExtractedEndMetadata = nullptr;
+		TestTrue(TEXT("Extract includes Body after Start-only SectionMetadata replacement"), StartOnlyExtractResult.Payload->TryGetObjectField(TEXT("Body"), StartOnlyExtractedBody));
+		TestTrue(TEXT("Extract includes SectionMetadata after Start-only SectionMetadata replacement"), StartOnlyExtractedBody && (*StartOnlyExtractedBody)->TryGetObjectField(TEXT("SectionMetadata"), StartOnlyExtractedSectionMetadata));
+		TestTrue(TEXT("Extract includes empty End metadata after Start-only SectionMetadata replacement"), StartOnlyExtractedSectionMetadata && (*StartOnlyExtractedSectionMetadata)->TryGetArrayField(TEXT("End"), StartOnlyExtractedEndMetadata));
+		TestTrue(TEXT("Extracted End metadata is empty after Start-only replacement"), StartOnlyExtractedEndMetadata && StartOnlyExtractedEndMetadata->IsEmpty());
+	}
+
+	TSharedPtr<FJsonObject> ClearAllSectionDocument = MakeMontageDocument(Target);
+	ClearAllSectionDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("SectionMetadata"), MakeShared<FJsonObject>());
+	const FAssetDocumentResult ClearAllSectionResult = ApplyDocument(ClearAllSectionDocument);
+	TestTrue(TEXT("Empty SectionMetadata object clears all section metadata"), ClearAllSectionResult.IsSuccess());
+	if (!ClearAllSectionResult.IsSuccess())
+	{
+		AddError(ClearAllSectionResult.Message);
+		return false;
+	}
+	TestEqual(TEXT("Empty SectionMetadata clears Start section metadata"), Montage->CompositeSections[0].GetMetaData().Num(), 0);
+	TestEqual(TEXT("Empty SectionMetadata clears End section metadata"), Montage->CompositeSections[1].GetMetaData().Num(), 0);
 
 	TSharedPtr<FJsonObject> ReplacementDocument = MakeMontageDocument(Target);
 	TArray<TSharedPtr<FJsonValue>> ReplacementMetadata;

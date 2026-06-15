@@ -35,7 +35,7 @@
 
 已清理：
 
-- 2026-06-15：`Body.Metadata` / `Body.SectionMetadata` 已支持 `EmbeddedObject` / `DefinitionRef` authoring 与 extract。v1 语义是 region-level replacement；`Body.Metadata` 出现时替换整个 asset `MetaData` array，不做 element-level merge，也不保留同一 array 内非 AssetDocument-managed metadata。
+- 2026-06-15：`Body.Metadata` / `Body.SectionMetadata` 已支持 `EmbeddedObject` / `DefinitionRef` authoring 与 extract。v1 语义是 region-level replacement；`Body.Metadata` 出现时替换整个 asset `MetaData` array，不做 element-level merge，也不保留同一 array 内非 AssetDocument-managed metadata；`Body.SectionMetadata` 出现时替换整个 section metadata region，未列出的 section metadata 会被清空。
 
 ---
 
