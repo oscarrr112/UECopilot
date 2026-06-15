@@ -466,6 +466,45 @@ bool FindRegionPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, FName 
 	return false;
 }
 
+void TestRegionPolicyContract(
+	FAutomationTestBase* Test,
+	const FAnimMontageAssetDocumentProfile& Profile,
+	FName RegionId,
+	EAssetDocumentRegionKind RegionKind,
+	EAssetDocumentReducerMode ReducerMode,
+	EAssetDocumentApplyMode ApplyMode,
+	const TArray<FString>& ExpectedManagedPaths)
+{
+	FAssetDocumentRegionPolicy RegionPolicy;
+	const FString RegionIdString = RegionId.ToString();
+	if (!Test->TestTrue(
+		FString::Printf(TEXT("AnimMontage profile declares %s policy"), *RegionIdString),
+		Profile.GetRegionPolicy(RegionId, RegionPolicy)))
+	{
+		return;
+	}
+
+	Test->TestEqual(
+		FString::Printf(TEXT("%s uses expected region kind"), *RegionIdString),
+		RegionPolicy.RegionKind,
+		RegionKind);
+	Test->TestEqual(
+		FString::Printf(TEXT("%s uses expected reducer"), *RegionIdString),
+		RegionPolicy.ReducerMode,
+		ReducerMode);
+	Test->TestEqual(
+		FString::Printf(TEXT("%s uses expected apply mode"), *RegionIdString),
+		RegionPolicy.ApplyMode,
+		ApplyMode);
+
+	for (const FString& ExpectedManagedPath : ExpectedManagedPaths)
+	{
+		Test->TestTrue(
+			FString::Printf(TEXT("%s owns %s property"), *RegionIdString, *ExpectedManagedPath),
+			RegionPolicy.ManagedUePropertyPaths.Contains(ExpectedManagedPath));
+	}
+}
+
 TSharedPtr<FJsonObject> FindJsonObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
@@ -2325,24 +2364,74 @@ bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Paramet
 	TestEqual(TEXT("Body.NotifyStates uses managed timeline apply mode"), NotifyStatesPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
 	TestTrue(TEXT("Body.NotifyStates owns Notifies property"), NotifyStatesPolicy.ManagedUePropertyPaths.Contains(TEXT("Notifies")));
 
-	const TArray<FString> ExpectedNewRegionIds = {
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.References"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::DefaultDiff,
+		EAssetDocumentApplyMode::SetProperty,
+		{TEXT("Skeleton")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.Preview"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::DefaultDiff,
+		EAssetDocumentApplyMode::SetProperty,
+		{TEXT("PreviewMesh"), TEXT("PreviewBasePose")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.Sync"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::DefaultDiff,
+		EAssetDocumentApplyMode::SetProperty,
+		{TEXT("SyncGroup"), TEXT("SyncSlotIndex")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.RootMotion"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::DefaultDiff,
+		EAssetDocumentApplyMode::SetProperty,
+		{
+			TEXT("bEnableRootMotionTranslation"),
+			TEXT("bEnableRootMotionRotation"),
+			TEXT("RootMotionRootLock"),
+		});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.Metadata"),
+		EAssetDocumentRegionKind::Array,
+		EAssetDocumentReducerMode::ManagedRegion,
+		EAssetDocumentApplyMode::RebuildArrayRegion,
+		{TEXT("MetaData")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.SectionMetadata"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::ManagedRegion,
+		EAssetDocumentApplyMode::RebuildArrayRegion,
+		{TEXT("CompositeSections")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.TimeStretch"),
+		EAssetDocumentRegionKind::Object,
+		EAssetDocumentReducerMode::DefaultDiff,
+		EAssetDocumentApplyMode::SetProperty,
+		{TEXT("TimeStretchCurve"), TEXT("TimeStretchCurveName")});
+	TestRegionPolicyContract(
+		this,
+		Profile,
 		TEXT("Body.Curves"),
-	};
-
-	for (const FString& RegionId : ExpectedNewRegionIds)
-	{
-		FAssetDocumentRegionPolicy RegionPolicy;
-		TestTrue(
-			FString::Printf(TEXT("AnimMontage profile declares %s policy"), *RegionId),
-			Profile.GetRegionPolicy(FName(*RegionId), RegionPolicy));
-	}
+		EAssetDocumentRegionKind::Array,
+		EAssetDocumentReducerMode::ManagedRegion,
+		EAssetDocumentApplyMode::RebuildArrayRegion,
+		{TEXT("RawCurveData")});
 
 	const FAssetDocumentService Service;
 	FAssetDocumentProfileRequest Request;
@@ -2452,6 +2541,16 @@ bool FAssetDocumentAnimMontageCreateTemplateTest::RunTest(const FString& Paramet
 	{
 		TestTrue(TEXT("Body includes Skeleton"), (*Body)->HasField(TEXT("Skeleton")));
 		TestTrue(TEXT("Body includes PreviewMesh"), (*Body)->HasField(TEXT("PreviewMesh")));
+		TestTrue(TEXT("Body initializes Skeleton as null"), (*Body)->HasTypedField<EJson::Null>(TEXT("Skeleton")));
+		TestTrue(TEXT("Body initializes PreviewMesh as null"), (*Body)->HasTypedField<EJson::Null>(TEXT("PreviewMesh")));
+		TestTrue(TEXT("Body initializes References as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("References")));
+		TestTrue(TEXT("Body initializes Preview as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("Preview")));
+		TestTrue(TEXT("Body initializes Sync as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("Sync")));
+		TestTrue(TEXT("Body initializes RootMotion as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("RootMotion")));
+		TestTrue(TEXT("Body initializes Metadata as array"), (*Body)->HasTypedField<EJson::Array>(TEXT("Metadata")));
+		TestTrue(TEXT("Body initializes SectionMetadata as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("SectionMetadata")));
+		TestTrue(TEXT("Body initializes TimeStretch as object"), (*Body)->HasTypedField<EJson::Object>(TEXT("TimeStretch")));
+		TestTrue(TEXT("Body initializes Curves as array"), (*Body)->HasTypedField<EJson::Array>(TEXT("Curves")));
 		TestTrue(TEXT("Body includes SlotAnimTracks"), (*Body)->HasField(TEXT("SlotAnimTracks")));
 		TestTrue(TEXT("Body includes CompositeSections"), (*Body)->HasField(TEXT("CompositeSections")));
 		TestTrue(TEXT("Body includes Notifies"), (*Body)->HasField(TEXT("Notifies")));
@@ -2565,6 +2664,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const FString& Parameters)
 {
 	const TArray<FString> ArraySections = {
+		TEXT("Metadata"),
+		TEXT("Curves"),
 		TEXT("SlotAnimTracks"),
 		TEXT("CompositeSections"),
 		TEXT("Notifies"),
@@ -2581,6 +2682,26 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
 	}
 
+	const TArray<FString> ObjectSections = {
+		TEXT("References"),
+		TEXT("Preview"),
+		TEXT("Sync"),
+		TEXT("RootMotion"),
+		TEXT("SectionMetadata"),
+		TEXT("TimeStretch"),
+		TEXT("Blend"),
+	};
+
+	for (const FString& Section : ObjectSections)
+	{
+		TSharedPtr<FJsonObject> Document = MakeMontageDocument(FString::Printf(TEXT("/Game/AssetDocumentTests/AM_Invalid_%s"), *Section));
+		Document->GetObjectField(TEXT("Body"))->SetStringField(Section, TEXT("not an object"));
+
+		const FAssetDocumentResult Result = ValidateDocument(Document);
+		TestFalse(FString::Printf(TEXT("Validate rejects non-object %s"), *Section), Result.IsSuccess());
+		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
+	}
+
 	for (const FString& Section : {FString(TEXT("Skeleton")), FString(TEXT("PreviewMesh"))})
 	{
 		TSharedPtr<FJsonObject> Document = MakeMontageDocument(FString::Printf(TEXT("/Game/AssetDocumentTests/AM_Invalid_%s"), *Section));
@@ -2589,15 +2710,6 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 		const FAssetDocumentResult Result = ValidateDocument(Document);
 		TestFalse(FString::Printf(TEXT("Validate rejects string %s"), *Section), Result.IsSuccess());
 		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
-	}
-
-	{
-		TSharedPtr<FJsonObject> Document = MakeMontageDocument(TEXT("/Game/AssetDocumentTests/AM_InvalidBlend"));
-		Document->GetObjectField(TEXT("Body"))->SetStringField(TEXT("Blend"), TEXT("not an object"));
-
-		const FAssetDocumentResult Result = ValidateDocument(Document);
-		TestFalse(TEXT("Validate rejects non-object Blend"), Result.IsSuccess());
-		TestTrue(TEXT("Validate reports InvalidBodySectionType for Blend"), HasDiagnostic(Result, TEXT("/Body/Blend"), TEXT("InvalidBodySectionType")));
 	}
 
 	return true;
