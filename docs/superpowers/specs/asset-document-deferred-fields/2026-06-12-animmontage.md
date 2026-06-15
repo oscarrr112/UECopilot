@@ -33,6 +33,10 @@
 - deferred 原因；
 - 清理条件。
 
+已清理：
+
+- 2026-06-15：`Body.Metadata` / `Body.SectionMetadata` 已支持 `EmbeddedObject` / `DefinitionRef` authoring 与 extract。v1 语义是 region-level replacement；`Body.Metadata` 出现时替换整个 asset `MetaData` array，不做 element-level merge，也不保留同一 array 内非 AssetDocument-managed metadata。
+
 ---
 
 ## 2. Deferred Fields
@@ -169,39 +173,7 @@ deferred 原因：
 - `Body.TimeStretch` 明确只覆盖 time stretch settings 和 source curve reference，不维护 baked markers；
 - 自动化测试能证明修改 Montage 曲线不会修改 referenced sequence 曲线。
 
-### 2.5 MetadataObjectAuthoring
-
-AssetDocument path：
-
-```text
-/Body/Sections[*]/MetaData
-/Body/MetaData
-```
-
-UE 结构：
-
-- `UAnimMetaData`
-- section metadata arrays。
-
-当前处理方式：
-
-- validate：document 中出现时 unsupported；
-- apply：不创建；
-- extract：skipped。
-
-deferred 原因：
-
-- metadata 是 instanced UObject，但它的语义和 notify object 不同；
-- 需要确认 outer、duplication、editor display、asset save 稳定性；
-- 可以复用第一版为 notify object 引入的 `AssetDocumentFragmentCompiler` 和 `EmbeddedObjectFragmentAdapter`，但不与 notify authoring 绑在同一个 task。
-
-清理条件：
-
-- `EmbeddedObjectFragmentAdapter` 已经通过 notify / notify state 验证；
-- metadata class path + properties + array ordering 有稳定 schema；
-- extract/diff 能 round-trip。
-
-### 2.6 MontageEditorUILayout
+### 2.5 MontageEditorUILayout
 
 AssetDocument path：
 

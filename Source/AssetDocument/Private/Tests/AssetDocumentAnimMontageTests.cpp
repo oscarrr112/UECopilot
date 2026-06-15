@@ -12,13 +12,16 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
+#include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Engine/SkeletalMesh.h"
 #include "Generators/AnimSequenceGenerator.h"
 #include "Dom/JsonValue.h"
+#include "Engine/Blueprint.h"
 #include "HAL/FileManager.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -102,6 +105,32 @@ TSharedPtr<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath, TSharedP
 	TSharedPtr<FJsonObject> Fragment = MakeEmbeddedObjectRef(ClassPath);
 	Fragment->SetObjectField(TEXT("Properties"), Properties);
 	return Fragment;
+}
+
+FString CreateAnimMetaDataClassFixture()
+{
+	const FString AssetName = FString::Printf(TEXT("BP_AnimMetaData_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Game/AssetDocumentTests/%s"), *AssetName));
+	if (!Package)
+	{
+		return FString();
+	}
+
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		UAnimMetaData::StaticClass(),
+		Package,
+		*AssetName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+
+	return Blueprint && Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetPathName() : FString();
+}
+
+TSharedPtr<FJsonObject> MakeAnimMetaDataRef(const FString& ClassPath)
+{
+	return MakeEmbeddedObjectRef(ClassPath, MakeShared<FJsonObject>());
 }
 
 FString MakeUniqueTestAssetName(const TCHAR* Prefix)
@@ -1198,6 +1227,180 @@ bool FAssetDocumentAnimMontageExpandedBlendTest::RunTest(const FString& Paramete
 	}, TEXT("/Body/Blend/bEnableAutoBlendOut"), TEXT("InvalidBooleanField"));
 
 	return bAllCasesPassed;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageMetadataRegionsTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.MetadataRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_MetadataRegions"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	const FString AnimMetaDataClassPath = CreateAnimMetaDataClassFixture();
+	TestFalse(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassPath.IsEmpty());
+	if (AnimMetaDataClassPath.IsEmpty())
+	{
+		return false;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> MetadataValues;
+	MetadataValues.Add(MakeShared<FJsonValueObject>(MakeAnimMetaDataRef(AnimMetaDataClassPath)));
+	Body->SetArrayField(TEXT("Metadata"), MetadataValues);
+
+	TSharedPtr<FJsonObject> SectionMetadata = MakeShared<FJsonObject>();
+	SectionMetadata->SetArrayField(TEXT("Start"), MetadataValues);
+	TArray<TSharedPtr<FJsonValue>> EmptySectionMetadata;
+	SectionMetadata->SetArrayField(TEXT("End"), EmptySectionMetadata);
+	Body->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
+
+	const FAssetDocumentResult ApplyResult = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for metadata regions"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied metadata region AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Asset metadata region has one entry"), Montage->GetMetaData().Num(), 1);
+	if (Montage->GetMetaData().Num() == 1)
+	{
+		TestTrue(TEXT("Asset metadata entry is UAnimMetaData"), Montage->GetMetaData()[0]->IsA(UAnimMetaData::StaticClass()));
+		TestTrue(TEXT("Asset metadata outer is montage"), Montage->GetMetaData()[0]->GetOuter() == Montage);
+	}
+
+	TestTrue(TEXT("Montage has parsed CompositeSections"), Montage->CompositeSections.Num() >= 2);
+	if (Montage->CompositeSections.Num() >= 2)
+	{
+		TestEqual(TEXT("Start section metadata has one entry"), Montage->CompositeSections[0].GetMetaData().Num(), 1);
+		if (Montage->CompositeSections[0].GetMetaData().Num() == 1)
+		{
+			TestTrue(TEXT("Start section metadata entry is UAnimMetaData"), Montage->CompositeSections[0].GetMetaData()[0]->IsA(UAnimMetaData::StaticClass()));
+			TestTrue(TEXT("Start section metadata outer is montage"), Montage->CompositeSections[0].GetMetaData()[0]->GetOuter() == Montage);
+		}
+		TestEqual(TEXT("Empty section metadata clears End section"), Montage->CompositeSections[1].GetMetaData().Num(), 0);
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds for metadata regions"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns metadata region payload"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	if (!ExtractedBody || !ExtractedBody->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedMetadata = nullptr;
+	TestTrue(TEXT("Extract includes Body.Metadata"), (*ExtractedBody)->TryGetArrayField(TEXT("Metadata"), ExtractedMetadata));
+	TestTrue(TEXT("Extracted Body.Metadata has one entry"), ExtractedMetadata && ExtractedMetadata->Num() == 1);
+	if (ExtractedMetadata && ExtractedMetadata->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> ExtractedObject = (*ExtractedMetadata)[0]->AsObject();
+		TestTrue(TEXT("Extracted metadata entry is object"), ExtractedObject.IsValid());
+		if (ExtractedObject.IsValid())
+		{
+			TestEqual(TEXT("Extracted metadata kind"), ExtractedObject->GetStringField(TEXT("Kind")), FString(TEXT("EmbeddedObject")));
+			TestEqual(TEXT("Extracted metadata class"), ExtractedObject->GetStringField(TEXT("Class")), AnimMetaDataClassPath);
+		}
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedSectionMetadata = nullptr;
+	TestTrue(TEXT("Extract includes Body.SectionMetadata"), (*ExtractedBody)->TryGetObjectField(TEXT("SectionMetadata"), ExtractedSectionMetadata));
+	if (ExtractedSectionMetadata && ExtractedSectionMetadata->IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedStartMetadata = nullptr;
+		TestTrue(TEXT("Extract includes Start section metadata"), (*ExtractedSectionMetadata)->TryGetArrayField(TEXT("Start"), ExtractedStartMetadata));
+		TestTrue(TEXT("Extracted Start metadata has one entry"), ExtractedStartMetadata && ExtractedStartMetadata->Num() == 1);
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedEndMetadata = nullptr;
+		TestTrue(TEXT("Extract includes empty End section metadata"), (*ExtractedSectionMetadata)->TryGetArrayField(TEXT("End"), ExtractedEndMetadata));
+		TestTrue(TEXT("Extracted End metadata remains empty"), ExtractedEndMetadata && ExtractedEndMetadata->IsEmpty());
+	}
+
+	TSharedPtr<FJsonObject> UnknownSectionDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataUnknownSection")), AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> UnknownSectionBody = UnknownSectionDocument->GetObjectField(TEXT("Body"));
+	TSharedPtr<FJsonObject> UnknownSectionMetadata = MakeShared<FJsonObject>();
+	UnknownSectionMetadata->SetArrayField(TEXT("Missing"), MetadataValues);
+	UnknownSectionBody->SetObjectField(TEXT("SectionMetadata"), UnknownSectionMetadata);
+
+	const FAssetDocumentResult UnknownSectionResult = ValidateDocument(UnknownSectionDocument);
+	TestFalse(TEXT("Unknown section metadata target is rejected"), UnknownSectionResult.IsSuccess());
+	TestTrue(
+		TEXT("Unknown section metadata target reports UnknownSectionMetadataTarget"),
+		HasDiagnostic(UnknownSectionResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
+
+	TSharedPtr<FJsonObject> ReplacementDocument = MakeMontageDocument(Target);
+	TArray<TSharedPtr<FJsonValue>> ReplacementMetadata;
+	ReplacementMetadata.Add(MakeShared<FJsonValueObject>(MakeAnimMetaDataRef(AnimMetaDataClassPath)));
+	ReplacementDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), ReplacementMetadata);
+
+	const FAssetDocumentResult ReplacementResult = ApplyDocument(ReplacementDocument);
+	TestTrue(TEXT("Metadata replacement apply succeeds"), ReplacementResult.IsSuccess());
+	if (!ReplacementResult.IsSuccess())
+	{
+		AddError(ReplacementResult.Message);
+		return false;
+	}
+
+	UClass* AnimMetaDataClass = StaticLoadClass(UAnimMetaData::StaticClass(), nullptr, *AnimMetaDataClassPath);
+	TestNotNull(TEXT("Concrete AnimMetaData fixture class is loadable"), AnimMetaDataClass);
+	if (!AnimMetaDataClass)
+	{
+		return false;
+	}
+
+	UAnimMetaData* ManualMetadata = NewObject<UAnimMetaData>(Montage, AnimMetaDataClass, NAME_None, RF_Transactional);
+	TestNotNull(TEXT("Manual metadata fixture can be instantiated"), ManualMetadata);
+	if (!ManualMetadata)
+	{
+		return false;
+	}
+	Montage->AddMetaData(ManualMetadata);
+	TestEqual(TEXT("Manual metadata fixture is present before replacement"), Montage->GetMetaData().Num(), 2);
+
+	const FAssetDocumentResult ReplaceAgainResult = ApplyDocument(ReplacementDocument);
+	TestTrue(TEXT("Metadata replacement reapply succeeds"), ReplaceAgainResult.IsSuccess());
+	if (!ReplaceAgainResult.IsSuccess())
+	{
+		AddError(ReplaceAgainResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Metadata v1 replacement does not preserve unmanaged entries in the same array"), Montage->GetMetaData().Num(), 1);
+	if (Montage->GetMetaData().Num() == 1)
+	{
+		TestTrue(TEXT("Replacement metadata is a new managed entry"), Montage->GetMetaData()[0] != ManualMetadata);
+	}
+
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
