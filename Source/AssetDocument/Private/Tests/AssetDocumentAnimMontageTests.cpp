@@ -19,6 +19,7 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/SkeletalMesh.h"
 #include "Generators/AnimSequenceGenerator.h"
 #include "Dom/JsonValue.h"
@@ -29,7 +30,10 @@
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/ScopeExit.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "UObject/UObjectIterator.h"
+#include "UObject/SavePackage.h"
 
 FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
 	UObject* Asset,
@@ -128,6 +132,14 @@ FString CreateAnimMetaDataClassFixture()
 		UBlueprintGeneratedClass::StaticClass());
 	Blueprint->bGenerateAbstractClass = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FAssetRegistryModule::AssetCreated(Blueprint);
+	Package->MarkPackageDirty();
+
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs);
 
 	return Blueprint && Blueprint->GeneratedClass && !Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract)
 		? Blueprint->GeneratedClass->GetPathName()
@@ -159,6 +171,31 @@ TSharedPtr<FJsonObject> MakeMontageTimeStretchCurve()
 	AddKey(1.0, 0.0);
 	AddKey(0.0, 0.0);
 	AddKey(0.5, 1.0);
+	Curve->SetArrayField(TEXT("Keys"), Keys);
+
+	return Curve;
+}
+
+TSharedPtr<FJsonObject> MakeSortedMontageTimeStretchCurve()
+{
+	TSharedPtr<FJsonObject> Curve = MakeShared<FJsonObject>();
+	Curve->SetStringField(TEXT("Name"), TEXT("MontageTimeStretchCurve"));
+
+	TArray<TSharedPtr<FJsonValue>> Flags;
+	Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+	Curve->SetArrayField(TEXT("Flags"), Flags);
+
+	TArray<TSharedPtr<FJsonValue>> Keys;
+	auto AddKey = [&Keys](double Time, double Value)
+	{
+		TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+		Key->SetNumberField(TEXT("Time"), Time);
+		Key->SetNumberField(TEXT("Value"), Value);
+		Keys.Add(MakeShared<FJsonValueObject>(Key));
+	};
+	AddKey(0.0, 0.0);
+	AddKey(0.5, 1.0);
+	AddKey(1.0, 0.0);
 	Curve->SetArrayField(TEXT("Keys"), Keys);
 
 	return Curve;
@@ -453,6 +490,19 @@ bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, con
 	return bWrote;
 }
 
+FString JsonObjectToCompactString(const TSharedPtr<FJsonObject>& Object)
+{
+	if (!Object.IsValid())
+	{
+		return TEXT("<invalid>");
+	}
+
+	FString JsonText;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+	FJsonSerializer::Serialize(Object.ToSharedRef(), Writer);
+	return JsonText;
+}
+
 const TSharedPtr<FJsonObject>* FindSyncRegions(TSharedPtr<FJsonObject> Document)
 {
 	const TSharedPtr<FJsonObject>* Meta = nullptr;
@@ -497,9 +547,11 @@ void ExpectApplyFileSyncRegion(
 
 	const FString SidecarHash = (*RegionObject)->GetStringField(TEXT("sidecarHash"));
 	const FString AssetEvidenceHash = (*RegionObject)->GetStringField(TEXT("assetEvidenceHash"));
+	const FString LastSyncedAtUtc = (*RegionObject)->GetStringField(TEXT("lastSyncedAtUtc"));
 	const FString ExpectedSidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(AppliedSidecarDocument, Policy);
 	Test->TestFalse(FString::Printf(TEXT("%s sidecar hash is initialized after ApplyFile"), *Policy.RegionId.ToString()), SidecarHash.IsEmpty());
 	Test->TestFalse(FString::Printf(TEXT("%s asset evidence hash is initialized after ApplyFile"), *Policy.RegionId.ToString()), AssetEvidenceHash.IsEmpty());
+	Test->TestFalse(FString::Printf(TEXT("%s lastSyncedAtUtc is initialized after ApplyFile"), *Policy.RegionId.ToString()), LastSyncedAtUtc.IsEmpty());
 	Test->TestEqual(FString::Printf(TEXT("%s sidecar hash matches source sidecar"), *Policy.RegionId.ToString()), SidecarHash, ExpectedSidecarHash);
 	Test->TestEqual(FString::Printf(TEXT("%s asset evidence hash matches applied sidecar"), *Policy.RegionId.ToString()), AssetEvidenceHash, SidecarHash);
 }
@@ -585,6 +637,69 @@ bool FindRegionPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, FName 
 		}
 	}
 	return false;
+}
+
+const TArray<FName>& GetCompleteAnimMontageSyncRegionIds()
+{
+	static const TArray<FName> RegionIds = {
+		TEXT("Body.References"),
+		TEXT("Body.Preview"),
+		TEXT("Body.Sync"),
+		TEXT("Body.RootMotion"),
+		TEXT("Body.Metadata"),
+		TEXT("Body.SectionMetadata"),
+		TEXT("Body.TimeStretch"),
+		TEXT("Body.Curves"),
+		TEXT("Body.Blend"),
+		TEXT("Body.SlotAnimTracks"),
+		TEXT("Body.CompositeSections"),
+		TEXT("Body.Notifies"),
+		TEXT("Body.NotifyStates"),
+	};
+	return RegionIds;
+}
+
+const TArray<FName>& GetNewCompleteAnimMontageRegionIds()
+{
+	static const TArray<FName> RegionIds = {
+		TEXT("Body.References"),
+		TEXT("Body.Preview"),
+		TEXT("Body.Sync"),
+		TEXT("Body.RootMotion"),
+		TEXT("Body.Metadata"),
+		TEXT("Body.SectionMetadata"),
+		TEXT("Body.TimeStretch"),
+		TEXT("Body.Curves"),
+	};
+	return RegionIds;
+}
+
+FString RegionIdToDiffPath(FName RegionId)
+{
+	return FString(TEXT("/")) + RegionId.ToString().Replace(TEXT("."), TEXT("/"));
+}
+
+bool CollectRegionPolicies(
+	FAutomationTestBase* Test,
+	const FAnimMontageAssetDocumentProfile& Profile,
+	const TArray<FName>& RegionIds,
+	TArray<FAssetDocumentRegionPolicy>& OutPolicies)
+{
+	OutPolicies.Reset();
+	bool bAllFound = true;
+	for (FName RegionId : RegionIds)
+	{
+		FAssetDocumentRegionPolicy Policy;
+		const bool bFound = Test->TestTrue(
+			FString::Printf(TEXT("AnimMontage profile has %s policy"), *RegionId.ToString()),
+			Profile.GetRegionPolicy(RegionId, Policy));
+		if (bFound)
+		{
+			OutPolicies.Add(Policy);
+		}
+		bAllFound &= bFound;
+	}
+	return bAllFound;
 }
 
 void TestRegionPolicyContract(
@@ -833,9 +948,12 @@ bool ExpectExtractSyncRegion(
 
 	const FString SidecarHash = (*RegionState)->GetStringField(TEXT("sidecarHash"));
 	const FString AssetEvidenceHash = (*RegionState)->GetStringField(TEXT("assetEvidenceHash"));
+	const FString LastSyncedAtUtc = (*RegionState)->GetStringField(TEXT("lastSyncedAtUtc"));
 	const FString RegionHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document, Policy);
 
 	Test->TestFalse(FString::Printf(TEXT("%s sidecar hash is initialized"), *RegionId), SidecarHash.IsEmpty());
+	Test->TestFalse(FString::Printf(TEXT("%s asset evidence hash is initialized"), *RegionId), AssetEvidenceHash.IsEmpty());
+	Test->TestFalse(FString::Printf(TEXT("%s lastSyncedAtUtc is initialized"), *RegionId), LastSyncedAtUtc.IsEmpty());
 	Test->TestEqual(FString::Printf(TEXT("%s sidecar hash matches extracted region"), *RegionId), SidecarHash, RegionHash);
 	Test->TestEqual(FString::Printf(TEXT("%s asset evidence starts from sidecar hash"), *RegionId), AssetEvidenceHash, SidecarHash);
 
@@ -979,23 +1097,16 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 		}
 
 		FAnimMontageAssetDocumentProfile Profile;
+		TArray<FAssetDocumentRegionPolicy> CompleteRegionPolicies;
+		CollectRegionPolicies(this, Profile, GetCompleteAnimMontageSyncRegionIds(), CompleteRegionPolicies);
 		FAssetDocumentRegionPolicy BlendPolicy;
 		TestTrue(TEXT("AnimMontage profile has Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
-		FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
-		TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
-		FAssetDocumentRegionPolicy CompositeSectionsPolicy;
-		TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
-		FAssetDocumentRegionPolicy NotifiesPolicy;
-		TestTrue(TEXT("AnimMontage profile has Body.Notifies policy"), Profile.GetRegionPolicy(TEXT("Body.Notifies"), NotifiesPolicy));
-		FAssetDocumentRegionPolicy NotifyStatesPolicy;
-		TestTrue(TEXT("AnimMontage profile has Body.NotifyStates policy"), Profile.GetRegionPolicy(TEXT("Body.NotifyStates"), NotifyStatesPolicy));
 		if (SyncRegions && SyncRegions->IsValid())
 		{
-			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, BlendPolicy);
-			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, SlotAnimTracksPolicy);
-			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, CompositeSectionsPolicy);
-			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, NotifiesPolicy);
-			ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, NotifyStatesPolicy);
+			for (const FAssetDocumentRegionPolicy& Policy : CompleteRegionPolicies)
+			{
+				ExpectExtractSyncRegion(this, ExtractResult.Payload.ToSharedRef(), *SyncRegions, Policy);
+			}
 		}
 
 		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
@@ -2028,15 +2139,19 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	{
 		return false;
 	}
+	UAnimSequence* PreviewBasePose = Cast<UAnimSequence>(AnimSequence);
+	TestNotNull(TEXT("AnimSequence fixture can be used as PreviewBasePose"), PreviewBasePose);
+	if (!PreviewBasePose)
+	{
+		return false;
+	}
 
 	FAssetDocumentService Service;
 	FAnimMontageAssetDocumentProfile Profile;
-	FAssetDocumentRegionPolicy BlendPolicy;
-	TestTrue(TEXT("AnimMontage profile has Body.Blend policy"), Profile.GetRegionPolicy(TEXT("Body.Blend"), BlendPolicy));
-	FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
-	TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
-	FAssetDocumentRegionPolicy CompositeSectionsPolicy;
-	TestTrue(TEXT("AnimMontage profile has Body.CompositeSections policy"), Profile.GetRegionPolicy(TEXT("Body.CompositeSections"), CompositeSectionsPolicy));
+	TArray<FAssetDocumentRegionPolicy> CompleteRegionPolicies;
+	CollectRegionPolicies(this, Profile, GetCompleteAnimMontageSyncRegionIds(), CompleteRegionPolicies);
+	TArray<FAssetDocumentRegionPolicy> NewRegionPolicies;
+	CollectRegionPolicies(this, Profile, GetNewCompleteAnimMontageRegionIds(), NewRegionPolicies);
 
 	TArray<FString> SidecarPathsToCleanup;
 	ON_SCOPE_EXIT
@@ -2052,6 +2167,12 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
 	SidecarPathsToCleanup.Add(SidecarPath);
 	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(Document, PreviewBasePose->GetPathName());
+	SetCurvesAndTimeStretch(Document);
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	TArray<TSharedPtr<FJsonValue>> StableCurves;
+	StableCurves.Add(MakeShared<FJsonValueObject>(MakeSortedMontageTimeStretchCurve()));
+	Body->SetArrayField(TEXT("Curves"), StableCurves);
 	TSharedPtr<FJsonObject> SyncBlend = Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
 	SyncBlend->SetNumberField(TEXT("BlendInTime"), 0.125);
 	SyncBlend->SetNumberField(TEXT("BlendOutTime"), 0.25);
@@ -2059,6 +2180,33 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	SyncBlend->SetStringField(TEXT("BlendModeOut"), TEXT("Standard"));
 	SyncBlend->SetNumberField(TEXT("BlendOutTriggerTime"), -1.0);
 	SyncBlend->SetBoolField(TEXT("bEnableAutoBlendOut"), true);
+	Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetStringField(TEXT("SyncGroup"), TEXT("ApplyFileSync"));
+	TSharedPtr<FJsonObject> StableNotifyObject = MakeEmbeddedObjectRef(TestConcreteNotifyClassPath, MakeShared<FJsonObject>());
+	TArray<TSharedPtr<FJsonValue>> StableNotifies;
+	StableNotifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(0.10000000149011612, StableNotifyObject)));
+	Body->SetArrayField(TEXT("Notifies"), StableNotifies);
+
+	TArray<TSharedPtr<FJsonValue>> StableNotifyStates;
+	StableNotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+		0.11999999731779099,
+		0.050000004470348358,
+		MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+	Body->SetArrayField(TEXT("NotifyStates"), StableNotifyStates);
+	Body->GetObjectField(TEXT("TimeStretch"))->SetNumberField(TEXT("CurveValueMinPrecision"), 0.019999999552965164);
+
+	const FString AnimMetaDataClassPath = CreateAnimMetaDataClassFixture();
+	TestFalse(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassPath.IsEmpty());
+	if (AnimMetaDataClassPath.IsEmpty())
+	{
+		return false;
+	}
+	TArray<TSharedPtr<FJsonValue>> MetadataValues;
+	MetadataValues.Add(MakeShared<FJsonValueObject>(MakeEmbeddedObjectRef(AnimMetaDataClassPath)));
+	Body->SetArrayField(TEXT("Metadata"), MetadataValues);
+	TSharedPtr<FJsonObject> SectionMetadata = MakeShared<FJsonObject>();
+	SectionMetadata->SetArrayField(TEXT("Start"), MetadataValues);
+	SectionMetadata->SetArrayField(TEXT("End"), TArray<TSharedPtr<FJsonValue>>());
+	Body->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
 	Document->RemoveField(TEXT("_meta"));
 	if (!WriteSidecarJson(this, SidecarPath, Document))
 	{
@@ -2071,11 +2219,60 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 
 	const FAssetDocumentResult Result = Service.ApplyFile(Request);
 	TestTrue(TEXT("ApplyFile succeeds for structured AnimMontage sidecar"), Result.IsSuccess());
+	if (Result.IsSuccess() && !Result.bWroteSidecar && Result.Payload.IsValid())
+	{
+		FString SkipReason;
+		if (Result.Payload->TryGetStringField(TEXT("sidecar_sync_update_skip_reason"), SkipReason))
+		{
+			AddError(FString::Printf(TEXT("ApplyFile sync rewrite skipped: %s"), *SkipReason));
+			TSharedPtr<FJsonObject> SourceAfterApply;
+			FString SourceLoadError;
+			if (FAssetDocumentSidecar::LoadJsonFile(SidecarPath, SourceAfterApply, SourceLoadError) && SourceAfterApply.IsValid())
+			{
+				AddError(FString::Printf(TEXT("ApplyFile source body: %s"), *JsonObjectToCompactString(SourceAfterApply->GetObjectField(TEXT("Body")))));
+			}
+			FAssetDocumentExtractRequest DiagnosticExtractRequest;
+			DiagnosticExtractRequest.AssetPath = Target;
+			DiagnosticExtractRequest.bDiffOnly = false;
+			DiagnosticExtractRequest.bIncludeAllWritable = true;
+			const FAssetDocumentResult DiagnosticExtractResult = Service.Extract(DiagnosticExtractRequest);
+			if (DiagnosticExtractResult.Payload.IsValid())
+			{
+				AddError(FString::Printf(TEXT("ApplyFile evidence body: %s"), *JsonObjectToCompactString(DiagnosticExtractResult.Payload->GetObjectField(TEXT("Body")))));
+			}
+		}
+	}
 	TestTrue(TEXT("ApplyFile reports sidecar sync rewrite"), Result.bWroteSidecar);
 	if (!Result.IsSuccess())
 	{
 		AddError(Result.Message);
 		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("ApplyFile-created AnimMontage is loadable"), Montage);
+	if (Montage)
+	{
+		TestNotNull(TEXT("ApplyFile sets skeleton reference region"), Montage->GetSkeleton());
+		TestNotNull(TEXT("ApplyFile sets preview mesh region"), Montage->GetPreviewMesh());
+		TestTrue(TEXT("ApplyFile sets preview base pose"), Montage->PreviewBasePose.Get() == PreviewBasePose);
+		TestEqual(TEXT("ApplyFile sets sync group"), Montage->SyncGroup, FName(TEXT("ApplyFileSync")));
+		TestEqual(TEXT("ApplyFile sets sync slot index"), Montage->SyncSlotIndex, 0);
+		TestTrue(TEXT("ApplyFile enables root motion translation"), Montage->bEnableRootMotionTranslation);
+		TestTrue(TEXT("ApplyFile enables root motion rotation"), Montage->bEnableRootMotionRotation);
+		TestEqual(TEXT("ApplyFile sets root motion root lock"), Montage->RootMotionRootLock, ERootMotionRootLock::Zero);
+		TestEqual(TEXT("ApplyFile sets asset metadata"), Montage->GetMetaData().Num(), 1);
+		TestTrue(TEXT("ApplyFile keeps section metadata target available"), Montage->CompositeSections.Num() >= 1);
+		if (Montage->CompositeSections.Num() >= 1)
+		{
+			TestEqual(TEXT("ApplyFile sets Start section metadata"), Montage->CompositeSections[0].GetMetaData().Num(), 1);
+		}
+		TestEqual(TEXT("ApplyFile sets time stretch curve name"), Montage->TimeStretchCurveName, FName(TEXT("MontageTimeStretchCurve")));
+		if (const IAnimationDataModel* DataModel = Montage->GetDataModel())
+		{
+			const FFloatCurve* MontageCurve = DataModel->FindFloatCurve(FAnimationCurveIdentifier(FName(TEXT("MontageTimeStretchCurve")), ERawCurveTrackTypes::RCT_Float));
+			TestNotNull(TEXT("ApplyFile creates montage-owned float curve"), MontageCurve);
+		}
 	}
 
 	TSharedPtr<FJsonObject> ReloadedDocument;
@@ -2093,9 +2290,40 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 		}
 		if (SyncRegions)
 		{
-			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, BlendPolicy);
-			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, SlotAnimTracksPolicy);
-			ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, CompositeSectionsPolicy);
+			for (const FAssetDocumentRegionPolicy& Policy : CompleteRegionPolicies)
+			{
+				ExpectApplyFileSyncRegion(this, ReloadedDocument.ToSharedRef(), *SyncRegions, Policy);
+			}
+		}
+
+		FAssetDocumentExtractRequest ReExtractRequest;
+		ReExtractRequest.AssetPath = Target;
+		ReExtractRequest.bDiffOnly = false;
+		ReExtractRequest.bIncludeAllWritable = true;
+		const FAssetDocumentResult ReExtractResult = Service.Extract(ReExtractRequest);
+		TestTrue(TEXT("Re-extract succeeds after complete ApplyFile"), ReExtractResult.IsSuccess());
+		TestTrue(TEXT("Re-extract returns payload after complete ApplyFile"), ReExtractResult.Payload.IsValid());
+
+		if (ReExtractResult.Payload.IsValid())
+		{
+			const FAssetDocumentResult DiffResult = DiffDocument(ReExtractResult.Payload);
+			TestTrue(TEXT("Diff succeeds after complete ApplyFile re-extract"), DiffResult.IsSuccess());
+			TestTrue(TEXT("Diff returns payload after complete ApplyFile re-extract"), DiffResult.Payload.IsValid());
+			if (DiffResult.Payload.IsValid())
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+				TestTrue(TEXT("Complete ApplyFile diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+				if (Changed)
+				{
+					for (const FAssetDocumentRegionPolicy& Policy : NewRegionPolicies)
+					{
+						const FString RegionPath = RegionIdToDiffPath(Policy.RegionId);
+						TestFalse(
+							FString::Printf(TEXT("Re-extracted complete region %s has no changed diff entry"), *RegionPath),
+							JsonArrayContainsPathStatus(*Changed, RegionPath, TEXT("changed")));
+					}
+				}
+			}
 		}
 	}
 
@@ -2321,6 +2549,108 @@ bool FAssetDocumentSidecarSyncAcceptAssetRegeneratesManagedRegionTest::RunTest(c
 			BlendHash,
 			&BlendSyncState);
 		TestEqual(TEXT("Updated sync state makes Body.Blend NoChange"), Decision.Direction, EAssetDocumentSyncDirection::NoChange);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarSyncAcceptAssetRegeneratesSyncRegionTest,
+	"AssetFactory.AssetDocument.SidecarSync.AcceptAssetRegeneratesSyncRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarSyncAcceptAssetRegeneratesSyncRegionTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	UAnimSequence* PreviewBasePose = Cast<UAnimSequence>(AnimSequence);
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	TestNotNull(TEXT("AnimSequence fixture can be used as PreviewBasePose"), PreviewBasePose);
+	if (!AnimSequence || !PreviewBasePose)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_AcceptAssetSync"));
+	TSharedPtr<FJsonObject> InitialDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(InitialDocument, PreviewBasePose->GetPathName());
+	SetSingleManagedNotify(InitialDocument->GetObjectField(TEXT("Body")));
+
+	const FAssetDocumentResult CreateResult = ApplyDocument(InitialDocument);
+	TestTrue(TEXT("Initial AnimMontage apply with Sync succeeds"), CreateResult.IsSuccess());
+	if (!CreateResult.IsSuccess())
+	{
+		AddError(CreateResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Created Sync AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds before Sync accept asset"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns Sync baseline sidecar"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	FAnimMontageAssetDocumentProfile Profile;
+	FAssetDocumentRegionPolicy SyncPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.Sync policy"), Profile.GetRegionPolicy(TEXT("Body.Sync"), SyncPolicy));
+	FAssetDocumentRegionPolicy NotifiesPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.Notifies policy"), Profile.GetRegionPolicy(TEXT("Body.Notifies"), NotifiesPolicy));
+	FAssetDocumentRegionPolicy SlotAnimTracksPolicy;
+	TestTrue(TEXT("AnimMontage profile has Body.SlotAnimTracks policy"), Profile.GetRegionPolicy(TEXT("Body.SlotAnimTracks"), SlotAnimTracksPolicy));
+
+	TSharedPtr<FJsonObject> SidecarDocument = ExtractResult.Payload;
+	const FString NotifiesHashBefore = FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), NotifiesPolicy);
+	const FString SlotAnimTracksHashBefore = FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), SlotAnimTracksPolicy);
+
+	Montage->SyncGroup = FName(TEXT("EditorChanged"));
+
+	const FAssetDocumentResult RegenerateResult = RegenerateSidecarRegionsFromAsset(
+		Montage,
+		SidecarDocument.ToSharedRef(),
+		{TEXT("Body.Sync")},
+		FString());
+
+	TestTrue(TEXT("Accept asset regeneration succeeds for Body.Sync"), RegenerateResult.IsSuccess());
+	if (!RegenerateResult.IsSuccess())
+	{
+		AddError(RegenerateResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* RegeneratedSync = nullptr;
+	TestTrue(TEXT("Regenerated sidecar includes Body.Sync"), SidecarDocument->GetObjectField(TEXT("Body"))->TryGetObjectField(TEXT("Sync"), RegeneratedSync));
+	if (RegeneratedSync && RegeneratedSync->IsValid())
+	{
+		TestEqual(TEXT("Body.Sync.SyncGroup comes from changed asset"), (*RegeneratedSync)->GetStringField(TEXT("SyncGroup")), FString(TEXT("EditorChanged")));
+	}
+	TestEqual(TEXT("Non-target Body.Notifies region is preserved"), FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), NotifiesPolicy), NotifiesHashBefore);
+	TestEqual(TEXT("Non-target Body.SlotAnimTracks region is preserved"), FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), SlotAnimTracksPolicy), SlotAnimTracksHashBefore);
+
+	FAssetDocumentRegionSyncState SyncState;
+	if (ExpectSyncRegionMatchesSidecar(this, SidecarDocument.ToSharedRef(), SyncPolicy, SyncState))
+	{
+		const FString SyncHash = FAssetDocumentSidecarDelta::HashSidecarRegion(SidecarDocument.ToSharedRef(), SyncPolicy);
+		const FAssetDocumentRegionSyncDecision Decision = FAssetDocumentSidecarSyncEngine::DecideRegion(
+			TEXT("Body.Sync"),
+			SyncHash,
+			SyncHash,
+			&SyncState);
+		TestEqual(TEXT("Updated sync state makes Body.Sync NoChange"), Decision.Direction, EAssetDocumentSyncDirection::NoChange);
 	}
 
 	return true;

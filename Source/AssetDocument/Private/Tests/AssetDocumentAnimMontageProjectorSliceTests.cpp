@@ -541,23 +541,16 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	{
 		return false;
 	}
-	TestTrue(TEXT("ProjectedBody has Skeleton"), ProjectedBody->HasField(TEXT("Skeleton")));
-	TestTrue(TEXT("ProjectedBody has PreviewMesh"), ProjectedBody->HasField(TEXT("PreviewMesh")));
-
-	const TSharedPtr<FJsonValue>* SkeletonValue = ProjectedBody->Values.Find(TEXT("Skeleton"));
-	TestTrue(TEXT("Skeleton field exists"), SkeletonValue && SkeletonValue->IsValid());
-	if (SkeletonValue && SkeletonValue->IsValid())
-	{
-		TestTrue(TEXT("Transient fixture emits null Skeleton"), (*SkeletonValue)->Type == EJson::Null);
-	}
-
-	const TSharedPtr<FJsonValue>* PreviewMeshValue = ProjectedBody->Values.Find(TEXT("PreviewMesh"));
-	TestTrue(TEXT("PreviewMesh field exists"), PreviewMeshValue && PreviewMeshValue->IsValid());
-	if (PreviewMeshValue && PreviewMeshValue->IsValid())
-	{
-		TestTrue(TEXT("Transient fixture emits null PreviewMesh"), (*PreviewMeshValue)->Type == EJson::Null);
-	}
-
+	TestFalse(TEXT("Transient fixture omits legacy Skeleton"), ProjectedBody->HasField(TEXT("Skeleton")));
+	TestFalse(TEXT("Transient fixture omits legacy PreviewMesh"), ProjectedBody->HasField(TEXT("PreviewMesh")));
+	TestFalse(TEXT("Transient fixture omits empty References"), ProjectedBody->HasField(TEXT("References")));
+	TestFalse(TEXT("Transient fixture omits empty Preview"), ProjectedBody->HasField(TEXT("Preview")));
+	TestTrue(TEXT("ProjectedBody has Sync"), ProjectedBody->HasField(TEXT("Sync")));
+	TestTrue(TEXT("ProjectedBody has RootMotion"), ProjectedBody->HasField(TEXT("RootMotion")));
+	TestTrue(TEXT("ProjectedBody has Metadata"), ProjectedBody->HasField(TEXT("Metadata")));
+	TestTrue(TEXT("ProjectedBody has SectionMetadata"), ProjectedBody->HasField(TEXT("SectionMetadata")));
+	TestTrue(TEXT("ProjectedBody has Curves"), ProjectedBody->HasField(TEXT("Curves")));
+	TestTrue(TEXT("ProjectedBody has TimeStretch"), ProjectedBody->HasField(TEXT("TimeStretch")));
 	TestTrue(TEXT("ProjectedBody has SlotAnimTracks"), ProjectedBody->HasField(TEXT("SlotAnimTracks")));
 	TestTrue(TEXT("ProjectedBody has CompositeSections"), ProjectedBody->HasField(TEXT("CompositeSections")));
 	TestTrue(TEXT("ProjectedBody has Notifies"), ProjectedBody->HasField(TEXT("Notifies")));
@@ -593,13 +586,7 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 						TestEqual(TEXT("Segment AnimEndTime is projected"), SegmentObject->GetNumberField(TEXT("AnimEndTime")), 1.0);
 						TestEqual(TEXT("Segment AnimPlayRate is projected"), SegmentObject->GetNumberField(TEXT("AnimPlayRate")), 1.0);
 						TestEqual(TEXT("Segment LoopingCount is projected"), SegmentObject->GetNumberField(TEXT("LoopingCount")), 1.0);
-
-						const TSharedPtr<FJsonValue>* AnimReferenceValue = SegmentObject->Values.Find(TEXT("AnimReference"));
-						TestTrue(TEXT("AnimReference field exists"), AnimReferenceValue && AnimReferenceValue->IsValid());
-						if (AnimReferenceValue && AnimReferenceValue->IsValid())
-						{
-							TestTrue(TEXT("Transient fixture emits null AnimReference"), (*AnimReferenceValue)->Type == EJson::Null);
-						}
+						TestFalse(TEXT("Transient fixture omits null AnimReference"), SegmentObject->HasField(TEXT("AnimReference")));
 					}
 				}
 			}
@@ -630,12 +617,59 @@ bool FAssetDocumentAnimMontageProjectorSliceExtractsCurrentBodyShapeTest::RunTes
 	TestTrue(TEXT("NotifyStates is an array"), ProjectedBody->TryGetArrayField(TEXT("NotifyStates"), NotifyStates));
 	TestEqual(TEXT("No managed notify states are emitted"), NotifyStates ? NotifyStates->Num() : -1, 0);
 
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	TestTrue(TEXT("Sync object exists"), ProjectedBody->TryGetObjectField(TEXT("Sync"), Sync));
+	if (Sync && Sync->IsValid())
+	{
+		TestEqual(TEXT("SyncGroup is projected"), (*Sync)->GetStringField(TEXT("SyncGroup")), FString(TEXT("None")));
+		TestEqual(TEXT("SyncSlotIndex is projected"), (*Sync)->GetNumberField(TEXT("SyncSlotIndex")), 0.0);
+	}
+
+	const TSharedPtr<FJsonObject>* RootMotion = nullptr;
+	TestTrue(TEXT("RootMotion object exists"), ProjectedBody->TryGetObjectField(TEXT("RootMotion"), RootMotion));
+	if (RootMotion && RootMotion->IsValid())
+	{
+		TestFalse(TEXT("Root motion translation default is projected"), (*RootMotion)->GetBoolField(TEXT("bEnableRootMotionTranslation")));
+		TestFalse(TEXT("Root motion rotation default is projected"), (*RootMotion)->GetBoolField(TEXT("bEnableRootMotionRotation")));
+		TestEqual(TEXT("RootMotionRootLock is projected"), (*RootMotion)->GetStringField(TEXT("RootMotionRootLock")), FString(TEXT("RefPose")));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Metadata = nullptr;
+	TestTrue(TEXT("Metadata is an array"), ProjectedBody->TryGetArrayField(TEXT("Metadata"), Metadata));
+	TestEqual(TEXT("No metadata is emitted"), Metadata ? Metadata->Num() : -1, 0);
+
+	const TSharedPtr<FJsonObject>* SectionMetadata = nullptr;
+	TestTrue(TEXT("SectionMetadata object exists"), ProjectedBody->TryGetObjectField(TEXT("SectionMetadata"), SectionMetadata));
+	if (SectionMetadata && SectionMetadata->IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* StartMetadata = nullptr;
+		TestTrue(TEXT("Start section metadata is an array"), (*SectionMetadata)->TryGetArrayField(TEXT("Start"), StartMetadata));
+		TestEqual(TEXT("Start section has no metadata"), StartMetadata ? StartMetadata->Num() : -1, 0);
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Curves = nullptr;
+	TestTrue(TEXT("Curves is an array"), ProjectedBody->TryGetArrayField(TEXT("Curves"), Curves));
+	TestEqual(TEXT("No curves are emitted"), Curves ? Curves->Num() : -1, 0);
+
+	const TSharedPtr<FJsonObject>* TimeStretch = nullptr;
+	TestTrue(TEXT("TimeStretch object exists"), ProjectedBody->TryGetObjectField(TEXT("TimeStretch"), TimeStretch));
+	if (TimeStretch && TimeStretch->IsValid())
+	{
+		TestEqual(TEXT("TimeStretchCurveName default is projected"), (*TimeStretch)->GetStringField(TEXT("TimeStretchCurveName")), FString());
+		TestTrue(TEXT("TimeStretch SamplingRate is projected"), FMath::IsNearlyEqual((*TimeStretch)->GetNumberField(TEXT("SamplingRate")), 60.0, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("TimeStretch CurveValueMinPrecision is projected"), FMath::IsNearlyEqual((*TimeStretch)->GetNumberField(TEXT("CurveValueMinPrecision")), 0.01, KINDA_SMALL_NUMBER));
+	}
+
 	const TSharedPtr<FJsonObject>* Blend = nullptr;
 	TestTrue(TEXT("Blend object exists"), ProjectedBody->TryGetObjectField(TEXT("Blend"), Blend));
 	if (Blend && Blend->IsValid())
 	{
 		TestTrue(TEXT("BlendInTime is projected"), FMath::IsNearlyEqual((*Blend)->GetNumberField(TEXT("BlendInTime")), 0.15, KINDA_SMALL_NUMBER));
 		TestTrue(TEXT("BlendOutTime is projected"), FMath::IsNearlyEqual((*Blend)->GetNumberField(TEXT("BlendOutTime")), 0.25, KINDA_SMALL_NUMBER));
+		TestEqual(TEXT("BlendModeIn is projected"), (*Blend)->GetStringField(TEXT("BlendModeIn")), FString(TEXT("Standard")));
+		TestEqual(TEXT("BlendModeOut is projected"), (*Blend)->GetStringField(TEXT("BlendModeOut")), FString(TEXT("Standard")));
+		TestTrue(TEXT("BlendOutTriggerTime is projected"), FMath::IsNearlyEqual((*Blend)->GetNumberField(TEXT("BlendOutTriggerTime")), -1.0, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("bEnableAutoBlendOut is projected"), (*Blend)->GetBoolField(TEXT("bEnableAutoBlendOut")));
 	}
 
 	const TSharedPtr<FJsonObject>* Metrics = nullptr;

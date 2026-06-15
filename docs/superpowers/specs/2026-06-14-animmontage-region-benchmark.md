@@ -12,25 +12,37 @@
 
 当前 `FAnimMontageAssetDocumentCapability` 的 canonical body keys 是：
 
-- `Skeleton`
-- `PreviewMesh`
+- `References`
+- `Preview`
+- `Sync`
+- `RootMotion`
+- `Metadata`
+- `SectionMetadata`
+- `TimeStretch`
+- `Curves`
 - `SlotAnimTracks`
 - `CompositeSections`
 - `Notifies`
 - `NotifyStates`
 - `Blend`
 
-当前 `FAnimMontageAssetDocumentProfile::GetRegionPolicies()` 声明 5 个 managed region：
+当前 `FAnimMontageAssetDocumentProfile::GetRegionPolicies()` 声明以下 managed region：
 
 | Region | UE property scope | 当前状态 |
 | --- | --- | --- |
-| `Body.Blend` | `BlendIn`, `BlendOut` 的 blend time 子集 | 已实现 |
+| `Body.Blend` | `BlendIn`, `BlendOut`, `BlendModeIn`, `BlendModeOut`, `BlendOutTriggerTime`, `bEnableAutoBlendOut` 的稳定子集 | complete expanded region |
+| `Body.Sync` | `SyncGroup`, `SyncSlotIndex` | complete |
+| `Body.RootMotion` | `bEnableRootMotionTranslation`, `bEnableRootMotionRotation`, `RootMotionRootLock` | complete as montage legacy settings |
+| `Body.References` | `Skeleton` | complete |
+| `Body.Preview` | `PreviewMesh`, `PreviewBasePose` | complete |
+| `Body.Metadata` | asset-level `MetaData` | complete |
+| `Body.SectionMetadata` | `FCompositeSection.MetaData` | complete |
+| `Body.TimeStretch` | `TimeStretchCurveName` 和 `TimeStretchCurve` authored settings | complete with baked data excluded |
+| `Body.Curves` | montage-owned inherited float curves | complete for montage-owned float curves |
 | `Body.SlotAnimTracks` | `SlotAnimTracks` | 已实现 |
 | `Body.CompositeSections` | `CompositeSections` | 已实现 |
 | `Body.Notifies` | `Notifies` 中 AssetDocument-managed notify event | 已实现 |
 | `Body.NotifyStates` | `Notifies` 中 AssetDocument-managed notify state event | 已实现 |
-
-`Skeleton` 和 `PreviewMesh` 当前在 `Body` 中可读写，但没有独立 region policy。它们更接近基础引用字段；后续如果要纳入双向同步冲突模型，应作为轻量 reflected reference region 单独评估。
 
 ## UE 5.7 AnimMontage Authored Surface
 
@@ -38,28 +50,28 @@
 
 | UE 字段或概念 | 头文件位置 | 作者语义判断 | 当前 AssetDoc 覆盖 |
 | --- | --- | --- | --- |
-| `BlendModeIn` | `AnimMontage.h:630` | blend 输入模式 | 未覆盖 |
-| `BlendModeOut` | `AnimMontage.h:633` | blend 输出模式 | 未覆盖 |
-| `BlendIn` | `AnimMontage.h:637` | blend in 配置，当前只覆盖 time | 部分覆盖 |
-| `BlendOut` | `AnimMontage.h:646` | blend out 配置，当前只覆盖 time | 部分覆盖 |
-| `BlendOutTriggerTime` | `AnimMontage.h:657` | 自动 blend out 触发时间 | 未覆盖 |
-| `SyncGroup` | `AnimMontage.h:673` | marker sync group 名称 | 未覆盖 |
-| `SyncSlotIndex` | `AnimMontage.h:677` | 用于收集 marker 的 slot track index | 未覆盖 |
+| `BlendModeIn` | `AnimMontage.h:630` | blend 输入模式 | `Body.Blend` complete expanded region |
+| `BlendModeOut` | `AnimMontage.h:633` | blend 输出模式 | `Body.Blend` complete expanded region |
+| `BlendIn` | `AnimMontage.h:637` | blend in 配置，当前覆盖稳定 time 字段 | `Body.Blend` complete expanded region |
+| `BlendOut` | `AnimMontage.h:646` | blend out 配置，当前覆盖稳定 time 字段 | `Body.Blend` complete expanded region |
+| `BlendOutTriggerTime` | `AnimMontage.h:657` | 自动 blend out 触发时间 | `Body.Blend` complete expanded region |
+| `SyncGroup` | `AnimMontage.h:673` | marker sync group 名称 | `Body.Sync` complete |
+| `SyncSlotIndex` | `AnimMontage.h:677` | 用于收集 marker 的 slot track index | `Body.Sync` complete |
 | `MarkerData` | `AnimMontage.h:680` | 从 referenced sequence markers 收集的 marker cache/data | 不建议直接编辑 |
 | `CompositeSections` | `AnimMontage.h:684` | montage section timeline | 已覆盖 |
 | `SlotAnimTracks` | `AnimMontage.h:688` | slot track 与 segment authoring | 已覆盖 |
-| `bEnableRootMotionTranslation` | `AnimMontage.h:698` | legacy root motion translation 开关 | 未覆盖 |
-| `bEnableRootMotionRotation` | `AnimMontage.h:702` | legacy root motion rotation 开关 | 未覆盖 |
-| `bEnableAutoBlendOut` | `AnimMontage.h:706` | 播放到末尾时是否自动 blend out | 未覆盖 |
+| `bEnableRootMotionTranslation` | `AnimMontage.h:698` | legacy root motion translation 开关 | `Body.RootMotion` complete as montage legacy settings |
+| `bEnableRootMotionRotation` | `AnimMontage.h:702` | legacy root motion rotation 开关 | `Body.RootMotion` complete as montage legacy settings |
+| `bEnableAutoBlendOut` | `AnimMontage.h:706` | 播放到末尾时是否自动 blend out | `Body.Blend` complete expanded region |
 | `BlendProfileIn` | `AnimMontage.h:710` | blend profile 引用 | 未覆盖 |
 | `BlendProfileOut` | `AnimMontage.h:714` | blend profile 引用 | 未覆盖 |
-| `RootMotionRootLock` | `AnimMontage.h:718` | legacy root motion root lock | 未覆盖 |
-| `PreviewBasePose` | `AnimMontage.h:723` | editor-only additive preview base pose | 未覆盖 |
+| `RootMotionRootLock` | `AnimMontage.h:718` | legacy root motion root lock | `Body.RootMotion` complete as montage legacy settings |
+| `PreviewBasePose` | `AnimMontage.h:723` | editor-only additive preview base pose | `Body.Preview` complete |
 | `BranchingPointMarkers` | `AnimMontage.h:938` | notify branching point 派生 cache | 不作为 authoring region |
 | `BranchingPointStateNotifyIndices` | `AnimMontage.h:943` | branching state notify 派生索引 | 不作为 authoring region |
-| `TimeStretchCurve` | `AnimMontage.h:984` | montage time stretch 结构 | 未覆盖 |
-| `TimeStretchCurveName` | `AnimMontage.h:988` | time stretch 使用的 curve 名称 | 未覆盖 |
-| inherited `RawCurveData` / animation data model curves | `AnimSequenceBase.h` inherited surface | Montage 自己拥有的曲线通道，不等同于 referenced sequence curves | 未覆盖 |
+| `TimeStretchCurve` | `AnimMontage.h:984` | montage time stretch 结构 | `Body.TimeStretch` complete with baked data excluded |
+| `TimeStretchCurveName` | `AnimMontage.h:988` | time stretch 使用的 curve 名称 | `Body.TimeStretch` complete with baked data excluded |
+| inherited `RawCurveData` / animation data model curves | `AnimSequenceBase.h` inherited surface | Montage 自己拥有的曲线通道，不等同于 referenced sequence curves | `Body.Curves` complete for montage-owned float curves |
 
 ## Region 候选分类
 
@@ -67,21 +79,21 @@
 
 第一批适合用来做 benchmark implementation，因为字段少、默认值清晰、验证方式直接。
 
-| 推荐 region | 建议 Body key | 字段 | Apply 模式 | 备注 |
+| 推荐 region | 建议 Body key | 字段 | Apply 模式 | 状态 |
 | --- | --- | --- | --- | --- |
-| Blend 扩展 | `Body.Blend` | `BlendModeIn`, `BlendModeOut`, `BlendOutTriggerTime`, `bEnableAutoBlendOut`, `BlendProfileIn`, `BlendProfileOut`, `BlendIn`, `BlendOut` 的可稳定子集 | reflected scalar/reference + existing `FAlphaBlend` helper | 保持现有 `Body.Blend`，不要拆成多个顶层 region |
-| Sync 设置 | `Body.Sync` | `SyncGroup`, `SyncSlotIndex` | reflected scalar | 不直接管理 `MarkerData` |
-| Root motion legacy 设置 | `Body.RootMotion` | `bEnableRootMotionTranslation`, `bEnableRootMotionRotation`, `RootMotionRootLock` | reflected scalar/enum | 文档中明确这是 Montage legacy switches，不代表 sequence root motion 数据 |
+| Blend 扩展 | `Body.Blend` | `BlendModeIn`, `BlendModeOut`, `BlendOutTriggerTime`, `bEnableAutoBlendOut`, `BlendIn`, `BlendOut` 的可稳定子集 | reflected scalar/reference + existing `FAlphaBlend` helper | complete expanded region |
+| Sync 设置 | `Body.Sync` | `SyncGroup`, `SyncSlotIndex` | reflected scalar | complete |
+| Root motion legacy 设置 | `Body.RootMotion` | `bEnableRootMotionTranslation`, `bEnableRootMotionRotation`, `RootMotionRootLock` | reflected scalar/enum | complete as montage legacy settings |
+| Base refs | `Body.References` | `Skeleton` | reference fragment | complete |
+| Preview additive settings | `Body.Preview` | `PreviewMesh`, `PreviewBasePose` | reference fragment | complete |
 
 ### 第二批：中风险，需要单独验证
 
-| 候选 region | 建议 Body key | 字段 | 风险 |
+| 候选 region | 建议 Body key | 字段 | 状态 |
 | --- | --- | --- | --- |
-| Time stretch | `Body.TimeStretch` | `TimeStretchCurveName`, `TimeStretchCurve` 的 authored settings | `FTimeStretchCurve` 内部有 visible/cached marker 和 baked data，需要确认哪些字段可由 sidecar authoring，哪些应由 UE 重新 bake |
-| Montage-owned curves | `Body.Curves` | Montage 自己的 inherited `RawCurveData` / data model float curves | 不包括 `SlotAnimTracks[].AnimSegments[].AnimReference` 指向的 sequence curves；需要先确认编辑 API 和保存稳定性 |
-| Preview additive settings | `Body.Preview` 或 `Body.AdditivePreview` | `PreviewBasePose` | editor-only，价值较低，先确认是否需要 agent 编辑 |
-| Metadata | `Body.Metadata` / `Body.SectionMetadata` | asset-level metadata、`FCompositeSection.MetaData` | instanced object authoring，需要复用 fragment/object policy，复杂度高于标量 |
-| Base refs | `Body.References` 或保持现有 `Skeleton`/`PreviewMesh` | `Skeleton`, `PreviewMesh` | 当前已能读写，但没有 region policy；要不要纳入 conflict model 需要单独决定 |
+| Time stretch | `Body.TimeStretch` | `TimeStretchCurveName`, `TimeStretchCurve` 的 authored settings | complete with baked data excluded |
+| Montage-owned curves | `Body.Curves` | Montage 自己的 inherited `RawCurveData` / data model float curves | complete for montage-owned float curves |
+| Metadata | `Body.Metadata` / `Body.SectionMetadata` | asset-level metadata、`FCompositeSection.MetaData` | complete |
 
 ### 暂不作为 AnimMontage 直接 region
 
@@ -130,11 +142,11 @@
 | array/timeline rebuild | 2 到 4 个 task | 中高 |
 | derived/cache-backed data | 先 research，再决定是否进入 task | 高 |
 
-## 推荐实现顺序
+## 已完成实现顺序
 
 ### Task A：`Body.Blend` 扩展
 
-目标：在保留现有 `BlendInTime` / `BlendOutTime` 的基础上，加入低风险 blend option 字段。
+状态：complete expanded region。在保留现有 `BlendInTime` / `BlendOutTime` 的基础上，加入低风险 blend option 字段。
 
 候选字段：
 
@@ -142,8 +154,6 @@
 - `BlendModeOut`
 - `BlendOutTriggerTime`
 - `bEnableAutoBlendOut`
-- `BlendProfileIn`
-- `BlendProfileOut`
 
 验收：
 
@@ -154,7 +164,7 @@
 
 ### Task B：`Body.Sync`
 
-目标：支持 marker sync 的 authoring settings，但不直接 author `MarkerData`。
+状态：complete。支持 marker sync 的 authoring settings，但不直接 author `MarkerData`。
 
 候选字段：
 
@@ -170,7 +180,7 @@
 
 ### Task C：`Body.RootMotion`
 
-目标：支持 Montage legacy root motion switches，并明确它不是完整 root motion 数据。
+状态：complete as montage legacy settings。支持 Montage legacy root motion switches，并明确它不是完整 root motion 数据。
 
 候选字段：
 
@@ -187,7 +197,7 @@
 
 ### Task D：`Body.TimeStretch`
 
-目标：先研究并实现可稳定 author 的 time stretch 表达。
+状态：complete with baked data excluded。实现可稳定 author 的 time stretch 表达。
 
 候选字段：
 
@@ -195,7 +205,7 @@
 - `TimeStretchCurve.SamplingRate`
 - `TimeStretchCurve.CurveValueMinPrecision`
 
-需要先确认：
+已确认：
 
 - `Markers` 和 `Sum_dT_i_by_C_i` 是否应由 UE bake，而不是 sidecar 手写；
 - apply 后是否需要调用 `BakeTimeStretchCurve()` 或其他 editor hook；
@@ -203,7 +213,7 @@
 
 ### Task E：`Body.Curves`
 
-目标：支持 Montage 自己的 inherited animation data curves，不管理 referenced sequence curves。
+状态：complete for montage-owned float curves。支持 Montage 自己的 inherited animation data curves，不管理 referenced sequence curves。
 
 候选字段：
 
@@ -241,7 +251,8 @@ benchmark 应逐步给它增加：
 - 非默认 blend settings；
 - 非默认 sync settings；
 - 非默认 root motion legacy settings；
-- 后续 time stretch settings。
+- 非默认 time stretch settings；
+- montage-owned float curve。
 
 这样每个新增 region 都能在同一个真实 asset 上验证：
 
@@ -249,16 +260,17 @@ benchmark 应逐步给它增加：
 extract -> sidecar delta -> apply-file -> save -> re-extract -> diff empty
 ```
 
-## 推荐结论
+## 当前结论
 
-下一步不要先做笼统的 `Body.Curves`。更稳的 benchmark 路线是：
+当前 benchmark 路线已落地为：
 
-1. 扩展 `Body.Blend`，把低风险 blend option 补齐。
-2. 新增 `Body.Sync`，只管理 sync settings，不直接管理 marker cache。
-3. 新增 `Body.RootMotion`，仅覆盖 Montage legacy root motion settings。
-4. 单独研究 `Body.TimeStretch`，确认 baked/cached 字段边界后再实现。
-5. 单独研究 `Body.Curves`，只覆盖 montage-owned inherited curves。
-6. 把 referenced sequence curves 移到对应 `AnimSequence` benchmark。
+1. `Body.Blend` 已扩展为 complete expanded region。
+2. `Body.Sync` 已纳入 sync settings，不直接管理 marker cache。
+3. `Body.RootMotion` 已覆盖 Montage legacy root motion settings。
+4. `Body.References`、`Body.Preview`、`Body.Metadata`、`Body.SectionMetadata` 已纳入 sync/conflict model。
+5. `Body.TimeStretch` 已覆盖 authored settings，并排除 baked/cache data。
+6. `Body.Curves` 已覆盖 montage-owned float curves。
+7. referenced sequence curves 仍属于对应 `AnimSequence` AssetDocument，不塞进 AnimMontage sidecar。
 
 这条路线能最大化复用当前 capability/profile/test 架构，同时真实评估一个结构化 asset 增加 region 时的成本。
 
