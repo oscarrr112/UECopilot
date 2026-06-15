@@ -139,41 +139,7 @@ UE 结构：
 
 - 文档明确 sequence-owned root motion 不在 AnimMontage sidecar 范围内。
 
-### 2.4 CurvesAndTimeStretch
-
-AssetDocument path：
-
-```text
-/Body/Curves
-/Body/TimeStretch
-```
-
-UE 结构：
-
-- inherited `UAnimSequenceBase::RawCurveData`
-- inherited animation data model curve data
-- `UAnimMontage::TimeStretchCurve`
-- `UAnimMontage::TimeStretchCurveName`
-
-当前处理方式：
-
-- document 中出现时 validate 失败；
-- apply 不写入；
-- extract 不输出语义化 block。
-
-deferred 原因：
-
-- `UAnimMontage` 通过 `UAnimSequenceBase` 继承了自己的 curve storage，runtime 会使用 `RawCurveData`；
-- referenced `SlotAnimTracks[].AnimTrack.AnimSegments[].AnimReference` 上的 curves 属于被引用 `AnimSequence` 或 `AnimSequenceBase`，不属于 Montage sidecar owned region；
-- `TimeStretchCurve` 的 `Markers` 和 `Sum_dT_i_by_C_i` 是 baked/cached output，应该由 UE 根据 source float curve 和 `TimeStretchCurveName` 生成，不应由 sidecar 手写。
-
-清理条件：
-
-- `Body.Curves` 明确只覆盖 montage-owned inherited curves；
-- `Body.TimeStretch` 明确只覆盖 time stretch settings 和 source curve reference，不维护 baked markers；
-- 自动化测试能证明修改 Montage 曲线不会修改 referenced sequence 曲线。
-
-### 2.5 MontageEditorUILayout
+### 2.4 MontageEditorUILayout
 
 AssetDocument path：
 
@@ -209,6 +175,8 @@ deferred 原因：
 
 - `/Body/Notifies`
 - `/Body/NotifyStates`
+- `/Body/Curves`
+- `/Body/TimeStretch`
 
 边界：
 
@@ -218,6 +186,13 @@ deferred 原因：
 - 支持通过 `Object.Properties` 和通用 property setter 设置对象字段；
 - 不实现独立 `AnimNotify` / `AnimNotifyState` capability；
 - 不理解具体 AN/ANS class 的领域语义。
+
+`Body.Curves` / `Body.TimeStretch` 边界：
+
+- `Body.Curves` 是 montage-owned float curves 的 region-level replacement；
+- referenced `SlotAnimTracks[].AnimTrack.AnimSegments[].AnimReference` 上的 curves 属于被引用 `AnimSequence` / `AnimSequenceBase`，仍不由 AnimMontage sidecar 管理；
+- `Body.TimeStretch` 只维护 `TimeStretchCurveName`、`SamplingRate`、`CurveValueMinPrecision`；
+- baked `TimeStretchCurve.Markers` 和 `TimeStretchCurve.Sum_dT_i_by_C_i` 仍是 UE 生成的 cache/output，不由 sidecar author/extract。
 
 但这两个字段需要保留后续组合边界：
 

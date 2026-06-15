@@ -7,13 +7,20 @@
 #include "AssetDocumentPropertyAdapter.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
+#include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimData/IAnimationDataController.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/TimeStretchCurve.h"
+#include "Curves/RichCurve.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -351,6 +358,19 @@ FAssetDocumentCapabilityResult MoveMetadataArrayToMontage(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+struct FParsedFloatCurveKey
+{
+	float Time = 0.0f;
+	float Value = 0.0f;
+};
+
+struct FParsedFloatCurve
+{
+	FName Name = NAME_None;
+	int32 Flags = AACF_DefaultCurve;
+	TArray<FParsedFloatCurveKey> Keys;
+};
+
 struct FParsedAnimMontageBody
 {
 	bool bHasSkeleton = false;
@@ -391,6 +411,15 @@ struct FParsedAnimMontageBody
 	TArray<TObjectPtr<UAnimMetaData>> Metadata;
 	bool bHasSectionMetadata = false;
 	TMap<FName, TArray<TObjectPtr<UAnimMetaData>>> SectionMetadataByName;
+	bool bHasCurves = false;
+	TArray<FParsedFloatCurve> Curves;
+	bool bHasTimeStretch = false;
+	bool bHasTimeStretchCurveName = false;
+	FName TimeStretchCurveName = NAME_None;
+	bool bHasTimeStretchSamplingRate = false;
+	float TimeStretchSamplingRate = 60.0f;
+	bool bHasTimeStretchCurveValueMinPrecision = false;
+	float TimeStretchCurveValueMinPrecision = 0.01f;
 };
 
 FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObject>& BodyObject)
@@ -1392,6 +1421,226 @@ FAssetDocumentCapabilityResult ParseRootMotion(const TSharedRef<FJsonObject>& Bo
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ParseCurveFlags(
+	const TSharedRef<FJsonObject>& CurveObject,
+	const FString& CurvePath,
+	int32& OutFlags)
+{
+	OutFlags = AACF_DefaultCurve;
+
+	const TSharedPtr<FJsonValue>* FlagsValue = CurveObject->Values.Find(TEXT("Flags"));
+	if (!FlagsValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* FlagsArray = nullptr;
+	const FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*FlagsValue, CurvePath / TEXT("Flags"), FlagsArray);
+	if (!ArrayResult.bSuccess)
+	{
+		return BodyFailure(TEXT("Curve Flags must be an array"), CurvePath / TEXT("Flags"), TEXT("InvalidCurveFlags"));
+	}
+
+	OutFlags = 0;
+	for (int32 FlagIndex = 0; FlagIndex < FlagsArray->Num(); ++FlagIndex)
+	{
+		const FString FlagPath = FString::Printf(TEXT("%s/Flags/%d"), *CurvePath, FlagIndex);
+		const TSharedPtr<FJsonValue>& FlagValue = (*FlagsArray)[FlagIndex];
+		if (!FlagValue.IsValid() || FlagValue->Type != EJson::String)
+		{
+			return BodyFailure(TEXT("Curve Flags entries must be strings"), FlagPath, TEXT("InvalidCurveFlags"));
+		}
+
+		const FString FlagText = FlagValue->AsString();
+		if (FlagText == TEXT("Default"))
+		{
+			OutFlags |= AACF_DefaultCurve;
+			continue;
+		}
+
+		return BodyFailure(TEXT("Unsupported curve flag"), FlagPath, TEXT("InvalidCurveFlags"));
+	}
+
+	if (OutFlags == 0)
+	{
+		OutFlags = AACF_DefaultCurve;
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseCurves(const TSharedRef<FJsonObject>& BodyObject, FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* CurvesValue = BodyObject->Values.Find(TEXT("Curves"));
+	if (!CurvesValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* CurvesArray = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*CurvesValue, TEXT("/Body/Curves"), CurvesArray);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	OutParsed.bHasCurves = true;
+	OutParsed.Curves.Reset();
+	OutParsed.Curves.Reserve(CurvesArray->Num());
+
+	for (int32 CurveIndex = 0; CurveIndex < CurvesArray->Num(); ++CurveIndex)
+	{
+		const FString CurvePath = FString::Printf(TEXT("/Body/Curves/%d"), CurveIndex);
+		TSharedPtr<FJsonObject> CurveObject;
+		Result = RequireObjectValue((*CurvesArray)[CurveIndex], CurvePath, CurveObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		const TSharedPtr<FJsonValue>* NameValue = CurveObject->Values.Find(TEXT("Name"));
+		if (!NameValue || !NameValue->IsValid() || (*NameValue)->Type != EJson::String)
+		{
+			return BodyFailure(TEXT("Curve Name is required"), CurvePath / TEXT("Name"), TEXT("InvalidCurveName"));
+		}
+
+		FString CurveNameString = (*NameValue)->AsString();
+		CurveNameString.TrimStartAndEndInline();
+		if (CurveNameString.IsEmpty())
+		{
+			return BodyFailure(TEXT("Curve Name must be non-empty"), CurvePath / TEXT("Name"), TEXT("InvalidCurveName"));
+		}
+
+		const TSharedPtr<FJsonValue>* KeysValue = CurveObject->Values.Find(TEXT("Keys"));
+		if (!KeysValue || !KeysValue->IsValid() || (*KeysValue)->Type != EJson::Array)
+		{
+			return BodyFailure(TEXT("Curve Keys are required"), CurvePath / TEXT("Keys"), TEXT("InvalidCurveKeys"));
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>& KeysArray = (*KeysValue)->AsArray();
+		if (KeysArray.IsEmpty())
+		{
+			return BodyFailure(TEXT("Curve Keys must be non-empty"), CurvePath / TEXT("Keys"), TEXT("InvalidCurveKeys"));
+		}
+
+		FParsedFloatCurve ParsedCurve;
+		ParsedCurve.Name = FName(*CurveNameString);
+
+		Result = ParseCurveFlags(CurveObject.ToSharedRef(), CurvePath, ParsedCurve.Flags);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		ParsedCurve.Keys.Reserve(KeysArray.Num());
+		for (int32 KeyIndex = 0; KeyIndex < KeysArray.Num(); ++KeyIndex)
+		{
+			const FString KeyPath = FString::Printf(TEXT("%s/Keys/%d"), *CurvePath, KeyIndex);
+			TSharedPtr<FJsonObject> KeyObject;
+			Result = RequireObjectValue(KeysArray[KeyIndex], KeyPath, KeyObject);
+			if (!Result.bSuccess)
+			{
+				return BodyFailure(TEXT("Curve key must be an object"), KeyPath, TEXT("InvalidCurveKeys"));
+			}
+
+			const TSharedPtr<FJsonValue>* TimeValue = KeyObject->Values.Find(TEXT("Time"));
+			if (!TimeValue || !TimeValue->IsValid() || (*TimeValue)->Type != EJson::Number)
+			{
+				return BodyFailure(TEXT("Curve key Time must be numeric"), KeyPath / TEXT("Time"), TEXT("InvalidCurveKeyTime"));
+			}
+			const double Time = (*TimeValue)->AsNumber();
+			if (Time < 0.0)
+			{
+				return BodyFailure(TEXT("Curve key Time must be non-negative"), KeyPath / TEXT("Time"), TEXT("InvalidCurveKeyTime"));
+			}
+
+			const TSharedPtr<FJsonValue>* ValueValue = KeyObject->Values.Find(TEXT("Value"));
+			if (!ValueValue || !ValueValue->IsValid() || (*ValueValue)->Type != EJson::Number)
+			{
+				return BodyFailure(TEXT("Curve key Value must be numeric"), KeyPath / TEXT("Value"), TEXT("InvalidCurveKeyValue"));
+			}
+
+			FParsedFloatCurveKey ParsedKey;
+			ParsedKey.Time = static_cast<float>(Time);
+			ParsedKey.Value = static_cast<float>((*ValueValue)->AsNumber());
+			ParsedCurve.Keys.Add(ParsedKey);
+		}
+
+		OutParsed.Curves.Add(MoveTemp(ParsedCurve));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseTimeStretch(const TSharedRef<FJsonObject>& BodyObject, FParsedAnimMontageBody& OutParsed)
+{
+	const TSharedPtr<FJsonValue>* TimeStretchValue = BodyObject->Values.Find(TEXT("TimeStretch"));
+	if (!TimeStretchValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> TimeStretchObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*TimeStretchValue, TEXT("/Body/TimeStretch"), TimeStretchObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	OutParsed.bHasTimeStretch = true;
+
+	FString CurveNameString;
+	Result = ReadOptionalString(
+		TimeStretchObject.ToSharedRef(),
+		TEXT("TimeStretchCurveName"),
+		TEXT("/Body/TimeStretch/TimeStretchCurveName"),
+		TEXT("InvalidTimeStretchCurveName"),
+		OutParsed.bHasTimeStretchCurveName,
+		CurveNameString);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasTimeStretchCurveName)
+	{
+		CurveNameString.TrimStartAndEndInline();
+		OutParsed.TimeStretchCurveName = FName(*CurveNameString);
+	}
+
+	const TSharedPtr<FJsonValue>* SamplingRateValue = TimeStretchObject->Values.Find(TEXT("SamplingRate"));
+	if (SamplingRateValue)
+	{
+		if (!SamplingRateValue->IsValid() || (*SamplingRateValue)->Type != EJson::Number)
+		{
+			return BodyFailure(TEXT("SamplingRate must be numeric"), TEXT("/Body/TimeStretch/SamplingRate"), TEXT("InvalidTimeStretchSamplingRate"));
+		}
+		const double SamplingRate = (*SamplingRateValue)->AsNumber();
+		if (SamplingRate <= 0.0)
+		{
+			return BodyFailure(TEXT("SamplingRate must be greater than zero"), TEXT("/Body/TimeStretch/SamplingRate"), TEXT("InvalidTimeStretchSamplingRate"));
+		}
+		OutParsed.bHasTimeStretchSamplingRate = true;
+		OutParsed.TimeStretchSamplingRate = static_cast<float>(SamplingRate);
+	}
+
+	const TSharedPtr<FJsonValue>* PrecisionValue = TimeStretchObject->Values.Find(TEXT("CurveValueMinPrecision"));
+	if (PrecisionValue)
+	{
+		if (!PrecisionValue->IsValid() || (*PrecisionValue)->Type != EJson::Number)
+		{
+			return BodyFailure(TEXT("CurveValueMinPrecision must be numeric"), TEXT("/Body/TimeStretch/CurveValueMinPrecision"), TEXT("InvalidTimeStretchCurveValueMinPrecision"));
+		}
+		const double Precision = (*PrecisionValue)->AsNumber();
+		if (Precision < 0.0)
+		{
+			return BodyFailure(TEXT("CurveValueMinPrecision must be non-negative"), TEXT("/Body/TimeStretch/CurveValueMinPrecision"), TEXT("InvalidTimeStretchCurveValueMinPrecision"));
+		}
+		OutParsed.bHasTimeStretchCurveValueMinPrecision = true;
+		OutParsed.TimeStretchCurveValueMinPrecision = static_cast<float>(Precision);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ValidateMetadataArrayShape(
 	const TArray<TSharedPtr<FJsonValue>>& Values,
 	const FString& BasePath)
@@ -1763,6 +2012,18 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 		return Result;
 	}
 
+	Result = ParseCurves(BodyObject, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ParseTimeStretch(BodyObject, OutParsed);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	return ParseMetadataRegions(Compiler, Context, Montage, BodyObject, bResolveFragments, OutParsed);
 }
 
@@ -1798,6 +2059,117 @@ FAssetDocumentCapabilityResult ExtractMetadataObject(
 
 	const FAssetDocumentFragmentResult FragmentResult = Compiler.Extract(ExtractContext, OutFragment);
 	return FragmentResult.bSuccess ? FAssetDocumentCapabilityResult::Success() : FragmentFailure(FragmentResult);
+}
+
+FFloatProperty* FindTimeStretchFloatProperty(const FName PropertyName)
+{
+	UScriptStruct* TimeStretchStruct = FTimeStretchCurve::StaticStruct();
+	return TimeStretchStruct ? CastField<FFloatProperty>(TimeStretchStruct->FindPropertyByName(PropertyName)) : nullptr;
+}
+
+FAssetDocumentCapabilityResult SetTimeStretchFloatProperty(
+	FTimeStretchCurve& TimeStretchCurve,
+	const FName PropertyName,
+	float Value,
+	const FString& Path,
+	const TCHAR* ErrorCode)
+{
+	FFloatProperty* Property = FindTimeStretchFloatProperty(PropertyName);
+	if (!Property)
+	{
+		return BodyFailure(FString::Printf(TEXT("FTimeStretchCurve property '%s' was not found"), *PropertyName.ToString()), Path, ErrorCode);
+	}
+
+	Property->SetPropertyValue_InContainer(&TimeStretchCurve, Value);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult GetTimeStretchFloatProperty(
+	const FTimeStretchCurve& TimeStretchCurve,
+	const FName PropertyName,
+	float& OutValue,
+	const FString& Path,
+	const TCHAR* ErrorCode)
+{
+	FFloatProperty* Property = FindTimeStretchFloatProperty(PropertyName);
+	if (!Property)
+	{
+		return BodyFailure(FString::Printf(TEXT("FTimeStretchCurve property '%s' was not found"), *PropertyName.ToString()), Path, ErrorCode);
+	}
+
+	OutValue = Property->GetPropertyValue_InContainer(&TimeStretchCurve);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyMontageOwnedCurves(UAnimMontage& Montage, const TArray<FParsedFloatCurve>& Curves)
+{
+	IAnimationDataController& Controller = Montage.GetController();
+	IAnimationDataController::FScopedBracket Bracket(Controller, FText::FromString(TEXT("Apply AssetDocument Montage Curves")), false);
+
+	Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Float, false);
+	for (const FParsedFloatCurve& Curve : Curves)
+	{
+		const FAnimationCurveIdentifier CurveId(Curve.Name, ERawCurveTrackTypes::RCT_Float);
+		if (!Controller.AddCurve(CurveId, Curve.Flags, false))
+		{
+			return BodyFailure(FString::Printf(TEXT("Failed to add montage curve '%s'"), *Curve.Name.ToString()), TEXT("/Body/Curves"), TEXT("CurveApplyFailed"));
+		}
+
+		TArray<FParsedFloatCurveKey> SortedKeys = Curve.Keys;
+		SortedKeys.Sort([](const FParsedFloatCurveKey& Left, const FParsedFloatCurveKey& Right)
+		{
+			return Left.Time < Right.Time;
+		});
+
+		TArray<FRichCurveKey> RichKeys;
+		RichKeys.Reserve(SortedKeys.Num());
+		for (const FParsedFloatCurveKey& Key : SortedKeys)
+		{
+			RichKeys.Add(FRichCurveKey(Key.Time, Key.Value));
+		}
+
+		if (!Controller.SetCurveKeys(CurveId, RichKeys, false))
+		{
+			return BodyFailure(FString::Printf(TEXT("Failed to set montage curve keys for '%s'"), *Curve.Name.ToString()), TEXT("/Body/Curves"), TEXT("CurveApplyFailed"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+void BakeMontageTimeStretchCurve(UAnimMontage& Montage)
+{
+	Montage.TimeStretchCurve.Reset();
+
+	if (Montage.TimeStretchCurveName.IsNone())
+	{
+		return;
+	}
+
+	const IAnimationDataModel* DataModel = Montage.GetDataModel();
+	const FFloatCurve* TimeStretchFloatCurve = DataModel
+		? DataModel->FindFloatCurve(FAnimationCurveIdentifier(Montage.TimeStretchCurveName, ERawCurveTrackTypes::RCT_Float))
+		: nullptr;
+	if (!TimeStretchFloatCurve)
+	{
+		return;
+	}
+
+	Montage.TimeStretchCurve.BakeFromFloatCurve(*TimeStretchFloatCurve, Montage.GetPlayLength());
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractCurveFlags(const FFloatCurve& Curve)
+{
+	TArray<TSharedPtr<FJsonValue>> Flags;
+	if (Curve.GetCurveTypeFlag(AACF_DefaultCurve) || Curve.GetCurveTypeFlags() == AACF_DefaultCurve)
+	{
+		Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+	}
+	if (Flags.IsEmpty())
+	{
+		Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+	}
+	return Flags;
 }
 }
 
@@ -2069,6 +2441,48 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->RootMotionRootLock = ParsedBody.RootMotionRootLock;
 	}
+	if (ParsedBody.bHasCurves)
+	{
+		const FAssetDocumentCapabilityResult CurveApplyResult = ApplyMontageOwnedCurves(*Montage, ParsedBody.Curves);
+		if (!CurveApplyResult.bSuccess)
+		{
+			return CurveApplyResult;
+		}
+	}
+	if (ParsedBody.bHasTimeStretchCurveName)
+	{
+		Montage->TimeStretchCurveName = ParsedBody.TimeStretchCurveName;
+	}
+	if (ParsedBody.bHasTimeStretchSamplingRate)
+	{
+		const FAssetDocumentCapabilityResult TimeStretchResult = SetTimeStretchFloatProperty(
+			Montage->TimeStretchCurve,
+			TEXT("SamplingRate"),
+			ParsedBody.TimeStretchSamplingRate,
+			TEXT("/Body/TimeStretch/SamplingRate"),
+			TEXT("InvalidTimeStretchSamplingRate"));
+		if (!TimeStretchResult.bSuccess)
+		{
+			return TimeStretchResult;
+		}
+	}
+	if (ParsedBody.bHasTimeStretchCurveValueMinPrecision)
+	{
+		const FAssetDocumentCapabilityResult TimeStretchResult = SetTimeStretchFloatProperty(
+			Montage->TimeStretchCurve,
+			TEXT("CurveValueMinPrecision"),
+			ParsedBody.TimeStretchCurveValueMinPrecision,
+			TEXT("/Body/TimeStretch/CurveValueMinPrecision"),
+			TEXT("InvalidTimeStretchCurveValueMinPrecision"));
+		if (!TimeStretchResult.bSuccess)
+		{
+			return TimeStretchResult;
+		}
+	}
+	if (ParsedBody.bHasCurves || ParsedBody.bHasTimeStretch)
+	{
+		BakeMontageTimeStretchCurve(*Montage);
+	}
 	if (ParsedBody.bHasMetadata)
 	{
 		Montage->EmptyMetaData();
@@ -2267,6 +2681,67 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 		SectionMetadata->SetArrayField(Section.SectionName.ToString(), SectionMetadataValues);
 	}
 	OutBodyJson->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
+
+	TArray<TSharedPtr<FJsonValue>> Curves;
+	if (const IAnimationDataModel* DataModel = Montage->GetDataModel())
+	{
+		const TArray<FFloatCurve>& FloatCurves = DataModel->GetFloatCurves();
+		Curves.Reserve(FloatCurves.Num());
+		for (const FFloatCurve& FloatCurve : FloatCurves)
+		{
+			TSharedRef<FJsonObject> CurveObject = MakeShared<FJsonObject>();
+			CurveObject->SetStringField(TEXT("Name"), FloatCurve.GetName().ToString());
+			CurveObject->SetArrayField(TEXT("Flags"), ExtractCurveFlags(FloatCurve));
+
+			TArray<float> Times;
+			TArray<float> Values;
+			FloatCurve.GetKeys(Times, Values);
+
+			TArray<TSharedPtr<FJsonValue>> Keys;
+			const int32 KeyCount = FMath::Min(Times.Num(), Values.Num());
+			Keys.Reserve(KeyCount);
+			for (int32 KeyIndex = 0; KeyIndex < KeyCount; ++KeyIndex)
+			{
+				TSharedRef<FJsonObject> KeyObject = MakeShared<FJsonObject>();
+				KeyObject->SetNumberField(TEXT("Time"), Times[KeyIndex]);
+				KeyObject->SetNumberField(TEXT("Value"), Values[KeyIndex]);
+				Keys.Add(MakeShared<FJsonValueObject>(KeyObject));
+			}
+			CurveObject->SetArrayField(TEXT("Keys"), Keys);
+			Curves.Add(MakeShared<FJsonValueObject>(CurveObject));
+		}
+	}
+	OutBodyJson->SetArrayField(TEXT("Curves"), Curves);
+
+	TSharedRef<FJsonObject> TimeStretch = MakeShared<FJsonObject>();
+	TimeStretch->SetStringField(TEXT("TimeStretchCurveName"), Montage->TimeStretchCurveName.ToString());
+
+	float TimeStretchSamplingRate = 60.0f;
+	FAssetDocumentCapabilityResult TimeStretchResult = GetTimeStretchFloatProperty(
+		Montage->TimeStretchCurve,
+		TEXT("SamplingRate"),
+		TimeStretchSamplingRate,
+		TEXT("/Body/TimeStretch/SamplingRate"),
+		TEXT("InvalidTimeStretchSamplingRate"));
+	if (!TimeStretchResult.bSuccess)
+	{
+		return TimeStretchResult;
+	}
+	TimeStretch->SetNumberField(TEXT("SamplingRate"), TimeStretchSamplingRate);
+
+	float TimeStretchCurveValueMinPrecision = 0.01f;
+	TimeStretchResult = GetTimeStretchFloatProperty(
+		Montage->TimeStretchCurve,
+		TEXT("CurveValueMinPrecision"),
+		TimeStretchCurveValueMinPrecision,
+		TEXT("/Body/TimeStretch/CurveValueMinPrecision"),
+		TEXT("InvalidTimeStretchCurveValueMinPrecision"));
+	if (!TimeStretchResult.bSuccess)
+	{
+		return TimeStretchResult;
+	}
+	TimeStretch->SetNumberField(TEXT("CurveValueMinPrecision"), TimeStretchCurveValueMinPrecision);
+	OutBodyJson->SetObjectField(TEXT("TimeStretch"), TimeStretch);
 
 	FAnimMontageNotifyPlacementAdapter NotifyPlacementAdapter;
 	FAssetDocumentCapabilityResult NotifyExtractResult = NotifyPlacementAdapter.Extract(Compiler, Montage, OutBodyJson);

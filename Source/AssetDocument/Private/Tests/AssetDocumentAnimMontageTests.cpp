@@ -11,6 +11,8 @@
 #include "Profiles/AnimMontageAssetDocumentCapability.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
+#include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
@@ -134,6 +136,45 @@ FString CreateAnimMetaDataClassFixture()
 TSharedPtr<FJsonObject> MakeAnimMetaDataRef(const FString& ClassPath)
 {
 	return MakeEmbeddedObjectRef(ClassPath, MakeShared<FJsonObject>());
+}
+
+TSharedPtr<FJsonObject> MakeMontageTimeStretchCurve()
+{
+	TSharedPtr<FJsonObject> Curve = MakeShared<FJsonObject>();
+	Curve->SetStringField(TEXT("Name"), TEXT("MontageTimeStretchCurve"));
+
+	TArray<TSharedPtr<FJsonValue>> Flags;
+	Flags.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+	Curve->SetArrayField(TEXT("Flags"), Flags);
+
+	TArray<TSharedPtr<FJsonValue>> Keys;
+	auto AddKey = [&Keys](double Time, double Value)
+	{
+		TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+		Key->SetNumberField(TEXT("Time"), Time);
+		Key->SetNumberField(TEXT("Value"), Value);
+		Keys.Add(MakeShared<FJsonValueObject>(Key));
+	};
+	AddKey(1.0, 0.0);
+	AddKey(0.0, 0.0);
+	AddKey(0.5, 1.0);
+	Curve->SetArrayField(TEXT("Keys"), Keys);
+
+	return Curve;
+}
+
+void SetCurvesAndTimeStretch(TSharedPtr<FJsonObject> Document)
+{
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	TArray<TSharedPtr<FJsonValue>> Curves;
+	Curves.Add(MakeShared<FJsonValueObject>(MakeMontageTimeStretchCurve()));
+	Body->SetArrayField(TEXT("Curves"), Curves);
+
+	TSharedPtr<FJsonObject> TimeStretch = MakeShared<FJsonObject>();
+	TimeStretch->SetStringField(TEXT("TimeStretchCurveName"), TEXT("MontageTimeStretchCurve"));
+	TimeStretch->SetNumberField(TEXT("SamplingRate"), 30.0);
+	TimeStretch->SetNumberField(TEXT("CurveValueMinPrecision"), 0.02);
+	Body->SetObjectField(TEXT("TimeStretch"), TimeStretch);
 }
 
 FString MakeUniqueTestAssetName(const TCHAR* Prefix)
@@ -1238,6 +1279,155 @@ bool FAssetDocumentAnimMontageExpandedBlendTest::RunTest(const FString& Paramete
 	{
 		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"))->SetStringField(TEXT("bEnableAutoBlendOut"), TEXT("yes"));
 	}, TEXT("/Body/Blend/bEnableAutoBlendOut"), TEXT("InvalidBooleanField"));
+
+	return bAllCasesPassed;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageCurvesAndTimeStretchTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.CurvesAndTimeStretch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FName CurveName(TEXT("MontageTimeStretchCurve"));
+	const FAnimationCurveIdentifier CurveId(CurveName, ERawCurveTrackTypes::RCT_Float);
+	if (IAnimationDataModel* SequenceDataModel = AnimSequence->GetDataModel())
+	{
+		TestNull(TEXT("Fixture AnimSequence starts without montage curve"), SequenceDataModel->FindFloatCurve(CurveId));
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_CurvesAndTimeStretch"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetCurvesAndTimeStretch(Document);
+
+	const FAssetDocumentResult ApplyResult = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for curves and time stretch"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied curves/time stretch AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	const IAnimationDataModel* MontageDataModel = Montage->GetDataModel();
+	TestNotNull(TEXT("Montage data model is available"), MontageDataModel);
+	const FFloatCurve* MontageCurve = MontageDataModel ? MontageDataModel->FindFloatCurve(CurveId) : nullptr;
+	TestNotNull(TEXT("Montage data model has MontageTimeStretchCurve"), MontageCurve);
+	if (MontageCurve)
+	{
+		TArray<float> Times;
+		TArray<float> Values;
+		MontageCurve->GetKeys(Times, Values);
+		TestEqual(TEXT("Montage curve has three keys"), Times.Num(), 3);
+		if (Times.Num() == 3 && Values.Num() == 3)
+		{
+			TestTrue(TEXT("Montage curve key 0 is sorted"), FMath::IsNearlyEqual(Times[0], 0.0f) && FMath::IsNearlyEqual(Values[0], 0.0f));
+			TestTrue(TEXT("Montage curve key 1 is sorted"), FMath::IsNearlyEqual(Times[1], 0.5f) && FMath::IsNearlyEqual(Values[1], 1.0f));
+			TestTrue(TEXT("Montage curve key 2 is sorted"), FMath::IsNearlyEqual(Times[2], 1.0f) && FMath::IsNearlyEqual(Values[2], 0.0f));
+		}
+	}
+	TestEqual(TEXT("Time stretch curve name is assigned"), Montage->TimeStretchCurveName, CurveName);
+
+	if (IAnimationDataModel* SequenceDataModel = AnimSequence->GetDataModel())
+	{
+		TestNull(TEXT("Referenced AnimSequence does not receive montage-owned curve"), SequenceDataModel->FindFloatCurve(CurveId));
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds for curves and time stretch"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns curves/time stretch payload"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	if (!ExtractedBody || !ExtractedBody->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedCurves = nullptr;
+	TestTrue(TEXT("Extract includes Body.Curves"), (*ExtractedBody)->TryGetArrayField(TEXT("Curves"), ExtractedCurves));
+	TestTrue(TEXT("Extracted Body.Curves has one curve"), ExtractedCurves && ExtractedCurves->Num() == 1);
+	if (ExtractedCurves && ExtractedCurves->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> ExtractedCurve = (*ExtractedCurves)[0]->AsObject();
+		TestTrue(TEXT("Extracted curve is object"), ExtractedCurve.IsValid());
+		if (ExtractedCurve.IsValid())
+		{
+			TestEqual(TEXT("Extracted curve name"), ExtractedCurve->GetStringField(TEXT("Name")), FString(TEXT("MontageTimeStretchCurve")));
+			const TArray<TSharedPtr<FJsonValue>>* ExtractedKeys = nullptr;
+			TestTrue(TEXT("Extracted curve includes Keys"), ExtractedCurve->TryGetArrayField(TEXT("Keys"), ExtractedKeys));
+			TestTrue(TEXT("Extracted curve has three keys"), ExtractedKeys && ExtractedKeys->Num() == 3);
+		}
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedTimeStretch = nullptr;
+	TestTrue(TEXT("Extract includes Body.TimeStretch"), (*ExtractedBody)->TryGetObjectField(TEXT("TimeStretch"), ExtractedTimeStretch));
+	if (ExtractedTimeStretch && ExtractedTimeStretch->IsValid())
+	{
+		TestEqual(TEXT("Extracted TimeStretchCurveName"), (*ExtractedTimeStretch)->GetStringField(TEXT("TimeStretchCurveName")), FString(TEXT("MontageTimeStretchCurve")));
+		TestTrue(TEXT("Extracted SamplingRate"), FMath::IsNearlyEqual((*ExtractedTimeStretch)->GetNumberField(TEXT("SamplingRate")), 30.0, KINDA_SMALL_NUMBER));
+		TestTrue(TEXT("Extracted CurveValueMinPrecision"), FMath::IsNearlyEqual((*ExtractedTimeStretch)->GetNumberField(TEXT("CurveValueMinPrecision")), 0.02, KINDA_SMALL_NUMBER));
+		TestFalse(TEXT("Extracted TimeStretch omits baked Markers"), (*ExtractedTimeStretch)->HasField(TEXT("Markers")));
+		TestFalse(TEXT("Extracted TimeStretch omits baked Sum_dT_i_by_C_i"), (*ExtractedTimeStretch)->HasField(TEXT("Sum_dT_i_by_C_i")));
+	}
+
+	const FString AnimReferencePath = AnimSequence->GetPathName();
+	bool bAllCasesPassed = true;
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid curve name"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject()->SetStringField(TEXT("Name"), TEXT(""));
+	}, TEXT("/Body/Curves/0/Name"), TEXT("InvalidCurveName"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid curve keys"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject()->SetArrayField(TEXT("Keys"), TArray<TSharedPtr<FJsonValue>>());
+	}, TEXT("/Body/Curves/0/Keys"), TEXT("InvalidCurveKeys"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid curve key time"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject()->GetArrayField(TEXT("Keys"))[0]->AsObject()->SetNumberField(TEXT("Time"), -1.0);
+	}, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid curve key value"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Curves"))[0]->AsObject()->GetArrayField(TEXT("Keys"))[0]->AsObject()->SetStringField(TEXT("Value"), TEXT("fast"));
+	}, TEXT("/Body/Curves/0/Keys/0/Value"), TEXT("InvalidCurveKeyValue"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid time stretch sampling rate"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("TimeStretch"))->SetNumberField(TEXT("SamplingRate"), 0.0);
+	}, TEXT("/Body/TimeStretch/SamplingRate"), TEXT("InvalidTimeStretchSamplingRate"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid time stretch curve precision"), AnimReferencePath, [](TSharedPtr<FJsonObject> InvalidDocument)
+	{
+		SetCurvesAndTimeStretch(InvalidDocument);
+		InvalidDocument->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("TimeStretch"))->SetNumberField(TEXT("CurveValueMinPrecision"), -0.1);
+	}, TEXT("/Body/TimeStretch/CurveValueMinPrecision"), TEXT("InvalidTimeStretchCurveValueMinPrecision"));
 
 	return bAllCasesPassed;
 }
