@@ -1654,6 +1654,30 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 	TestEqual(TEXT("TimeStretchCurveName remains after missing curve apply failure"), Montage->TimeStretchCurveName, CurveName);
 	TestNotNull(TEXT("Original curve remains after missing time stretch curve apply failure"), Montage->GetDataModel() ? Montage->GetDataModel()->FindFloatCurve(CurveId) : nullptr);
 
+	const FName OriginalSyncGroup = Montage->SyncGroup;
+	const bool bOriginalRootMotionTranslation = Montage->bEnableRootMotionTranslation;
+	const bool bOriginalRootMotionRotation = Montage->bEnableRootMotionRotation;
+	const ERootMotionRootLock::Type OriginalRootMotionRootLock = Montage->RootMotionRootLock;
+	TSharedPtr<FJsonObject> MissingCurveWithEarlierRegionsDocument = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> EarlierSync = MakeShared<FJsonObject>();
+	EarlierSync->SetStringField(TEXT("SyncGroup"), TEXT("ShouldNotApply"));
+	MissingCurveWithEarlierRegionsDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("Sync"), EarlierSync);
+	TSharedPtr<FJsonObject> EarlierRootMotion = MakeShared<FJsonObject>();
+	EarlierRootMotion->SetBoolField(TEXT("bEnableRootMotionTranslation"), !bOriginalRootMotionTranslation);
+	EarlierRootMotion->SetBoolField(TEXT("bEnableRootMotionRotation"), !bOriginalRootMotionRotation);
+	EarlierRootMotion->SetStringField(TEXT("RootMotionRootLock"), TEXT("Zero"));
+	MissingCurveWithEarlierRegionsDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("RootMotion"), EarlierRootMotion);
+	TSharedPtr<FJsonObject> EarlierTimeStretch = MakeShared<FJsonObject>();
+	EarlierTimeStretch->SetStringField(TEXT("TimeStretchCurveName"), TEXT("MissingCurve"));
+	MissingCurveWithEarlierRegionsDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("TimeStretch"), EarlierTimeStretch);
+	const FAssetDocumentResult MissingCurveWithEarlierRegionsResult = ApplyDocument(MissingCurveWithEarlierRegionsDocument);
+	TestFalse(TEXT("Missing time stretch curve rejects before earlier region mutation"), MissingCurveWithEarlierRegionsResult.IsSuccess());
+	TestTrue(TEXT("Missing time stretch curve with earlier regions reports MissingTimeStretchCurve"), HasDiagnostic(MissingCurveWithEarlierRegionsResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
+	TestEqual(TEXT("SyncGroup remains after invalid time stretch preflight"), Montage->SyncGroup, OriginalSyncGroup);
+	TestEqual(TEXT("RootMotion translation remains after invalid time stretch preflight"), Montage->bEnableRootMotionTranslation, bOriginalRootMotionTranslation);
+	TestEqual(TEXT("RootMotion rotation remains after invalid time stretch preflight"), Montage->bEnableRootMotionRotation, bOriginalRootMotionRotation);
+	TestEqual(TEXT("RootMotion lock remains after invalid time stretch preflight"), Montage->RootMotionRootLock, OriginalRootMotionRootLock);
+
 	IAnimationDataController& Controller = Montage->GetController();
 	Controller.SetCurveFlags(CurveId, AACF_Disabled, false);
 	const FAssetDocumentResult UnsupportedFlagsExtractResult = Service.Extract(ExtractRequest);

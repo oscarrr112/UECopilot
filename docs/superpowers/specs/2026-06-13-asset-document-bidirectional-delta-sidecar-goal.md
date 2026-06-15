@@ -39,23 +39,38 @@ AssetDoc 也不应该变成 Unreal asset 每个字段的完整序列化副本。
 对于 AnimMontage，v1 不应该只使用一个过粗的 `Body` region。更合适的 region 拆分是：
 
 - `Body.Blend`
-- `Body.SlotTracks`
+- `Body.SlotAnimTracks`
 - `Body.CompositeSections`
 - `Body.Notifies`
-- `Body.Curves`
+- `Body.NotifyStates`
+- `Body.Sync`
 - `Body.RootMotion`
+- `Body.References`
+- `Body.Preview`
+- `Body.Metadata`
+- `Body.SectionMetadata`
+- `Body.TimeStretch`
+- `Body.Curves`
 
 这样仍然保持 region-level conflict model，但可以避免 sidecar 和 Unreal Editor 修改了同一资产的无关部分时产生不必要冲突。例如，sidecar 修改 `Body.Blend`，editor 修改 `Body.Notifies`，只要两个 region 拥有独立 sync state，就不应该互相冲突。
 
-当前 implementation task 已落地的 AnimMontage managed region 是：
+当前 implementation task 已完成的 AnimMontage managed region 是：
 
 - `Body.Blend`
 - `Body.SlotAnimTracks`
 - `Body.CompositeSections`
 - `Body.Notifies`
 - `Body.NotifyStates`
+- `Body.Sync`
+- `Body.RootMotion`
+- `Body.References`
+- `Body.Preview`
+- `Body.Metadata`
+- `Body.SectionMetadata`
+- `Body.TimeStretch`
+- `Body.Curves`
 
-`Body.Curves` 和 `Body.RootMotion` 仍然属于目标方向，但本轮没有实现对应 extractor/reducer/apply policy 和 automation。后续 task 需要先明确 Unreal AnimMontage 中 curve/root motion 的真实字段、默认来源、比较规则和保留策略，再加入 managed region policy。
+`Body.RootMotion` 当前只覆盖 AnimMontage 自身的 legacy root motion settings，不覆盖 referenced sequence 的 root motion 数据。`Body.Curves` 当前只覆盖 montage-owned float curves，不 author referenced sequence curves。`Body.TimeStretch` 只覆盖 `TimeStretchCurveName`、`SamplingRate` 和 `CurveValueMinPrecision` 等可编辑设置，baked `TimeStretchCurve.Markers` 和 `TimeStretchCurve.Sum_dT_i_by_C_i` 仍作为 derived/cache data 排除。
 
 ## 架构概览
 

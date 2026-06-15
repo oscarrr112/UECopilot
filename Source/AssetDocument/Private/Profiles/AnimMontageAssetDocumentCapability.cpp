@@ -762,8 +762,10 @@ FString MontageBlendModeToString(EMontageBlendMode BlendMode)
 	}
 }
 
-void RefreshMontageMarkerCache(UAnimMontage& Montage)
+void RepairDerivedMontageMarkerCacheAfterApply(UAnimMontage& Montage)
 {
+	// UAnimMontage::CollectMarkers() is not exported from UE 5.7's MinimalAPI class.
+	// Keep this as a post-apply repair for UE's derived marker cache; AssetDoc does not author MarkerData.
 	Montage.MarkerData.AuthoredSyncMarkers.Reset();
 	Montage.MarkerData.UniqueMarkerNames.Empty();
 
@@ -2165,6 +2167,32 @@ bool HasMontageFloatCurve(const UAnimMontage& Montage, FName CurveName)
 	return DataModel && DataModel->FindFloatCurve(FAnimationCurveIdentifier(CurveName, ERawCurveTrackTypes::RCT_Float)) != nullptr;
 }
 
+FAssetDocumentCapabilityResult ValidateTimeStretchCurveReferenceBeforeMutation(const UAnimMontage& Montage, const FParsedAnimMontageBody& ParsedBody)
+{
+	if (!ParsedBody.bHasTimeStretchCurveName || ParsedBody.TimeStretchCurveName.IsNone())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (ParsedBody.bHasCurves)
+	{
+		const bool bCurveProvided = ParsedBody.Curves.ContainsByPredicate([&ParsedBody](const FParsedFloatCurve& Curve)
+		{
+			return Curve.Name == ParsedBody.TimeStretchCurveName;
+		});
+		if (bCurveProvided)
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+	}
+	else if (HasMontageFloatCurve(Montage, ParsedBody.TimeStretchCurveName))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	return BodyFailure(TEXT("TimeStretchCurveName must reference a montage-owned float curve"), TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve"));
+}
+
 void BakeMontageTimeStretchCurve(UAnimMontage& Montage)
 {
 	Montage.TimeStretchCurve.Reset();
@@ -2358,6 +2386,12 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 		return Result;
 	}
 
+	const FAssetDocumentCapabilityResult TimeStretchPreflightResult = ValidateTimeStretchCurveReferenceBeforeMutation(*Montage, ParsedBody);
+	if (!TimeStretchPreflightResult.bSuccess)
+	{
+		return TimeStretchPreflightResult;
+	}
+
 	if (ParsedBody.bHasMetadata)
 	{
 		const FAssetDocumentCapabilityResult MoveResult = MoveMetadataArrayToMontage(ParsedBody.Metadata, Montage, TEXT("/Body/Metadata"));
@@ -2481,10 +2515,6 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 			return CurveApplyResult;
 		}
 	}
-	if (ParsedBody.bHasTimeStretchCurveName && !HasMontageFloatCurve(*Montage, ParsedBody.TimeStretchCurveName))
-	{
-		return BodyFailure(TEXT("TimeStretchCurveName must reference a montage-owned float curve"), TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve"));
-	}
 	if (ParsedBody.bHasTimeStretchCurveName)
 	{
 		Montage->TimeStretchCurveName = ParsedBody.TimeStretchCurveName;
@@ -2544,7 +2574,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	}
 	if (bShouldCollectMarkers)
 	{
-		RefreshMontageMarkerCache(*Montage);
+		RepairDerivedMontageMarkerCacheAfterApply(*Montage);
 	}
 
 	Montage->MarkPackageDirty();
