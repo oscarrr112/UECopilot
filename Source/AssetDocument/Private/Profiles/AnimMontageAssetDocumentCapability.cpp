@@ -297,6 +297,14 @@ struct FParsedAnimMontageBody
 	float BlendInTime = 0.0f;
 	bool bHasBlendOutTime = false;
 	float BlendOutTime = 0.0f;
+	bool bHasBlendModeIn = false;
+	EMontageBlendMode BlendModeIn = EMontageBlendMode::Standard;
+	bool bHasBlendModeOut = false;
+	EMontageBlendMode BlendModeOut = EMontageBlendMode::Standard;
+	bool bHasBlendOutTriggerTime = false;
+	float BlendOutTriggerTime = 0.0f;
+	bool bHasEnableAutoBlendOut = false;
+	bool bEnableAutoBlendOut = false;
 };
 
 FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObject>& BodyObject)
@@ -609,6 +617,33 @@ FString RootMotionRootLockToString(ERootMotionRootLock::Type RootLock)
 	case ERootMotionRootLock::RefPose:
 	default:
 		return TEXT("RefPose");
+	}
+}
+
+bool TryParseMontageBlendMode(const FString& Value, EMontageBlendMode& OutBlendMode)
+{
+	if (Value == TEXT("Standard"))
+	{
+		OutBlendMode = EMontageBlendMode::Standard;
+		return true;
+	}
+	if (Value == TEXT("Inertialization"))
+	{
+		OutBlendMode = EMontageBlendMode::Inertialization;
+		return true;
+	}
+	return false;
+}
+
+FString MontageBlendModeToString(EMontageBlendMode BlendMode)
+{
+	switch (BlendMode)
+	{
+	case EMontageBlendMode::Inertialization:
+		return TEXT("Inertialization");
+	case EMontageBlendMode::Standard:
+	default:
+		return TEXT("Standard");
 	}
 }
 
@@ -978,6 +1013,70 @@ FAssetDocumentCapabilityResult ParseBlend(const TSharedRef<FJsonObject>& BodyObj
 	{
 		OutParsed.bHasBlendOutTime = true;
 		OutParsed.BlendOutTime = static_cast<float>(BlendTime);
+	}
+
+	FString BlendModeString;
+	FAssetDocumentCapabilityResult Result = ReadOptionalString(
+		BlendObject.ToSharedRef(),
+		TEXT("BlendModeIn"),
+		TEXT("/Body/Blend/BlendModeIn"),
+		TEXT("InvalidBlendMode"),
+		OutParsed.bHasBlendModeIn,
+		BlendModeString);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasBlendModeIn && !TryParseMontageBlendMode(BlendModeString, OutParsed.BlendModeIn))
+	{
+		return BodyFailure(TEXT("BlendModeIn must be Standard or Inertialization"), TEXT("/Body/Blend/BlendModeIn"), TEXT("InvalidBlendMode"));
+	}
+
+	Result = ReadOptionalString(
+		BlendObject.ToSharedRef(),
+		TEXT("BlendModeOut"),
+		TEXT("/Body/Blend/BlendModeOut"),
+		TEXT("InvalidBlendMode"),
+		OutParsed.bHasBlendModeOut,
+		BlendModeString);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasBlendModeOut && !TryParseMontageBlendMode(BlendModeString, OutParsed.BlendModeOut))
+	{
+		return BodyFailure(TEXT("BlendModeOut must be Standard or Inertialization"), TEXT("/Body/Blend/BlendModeOut"), TEXT("InvalidBlendMode"));
+	}
+
+	double BlendOutTriggerTime = 0.0;
+	Result = ReadOptionalNumber(
+		BlendObject.ToSharedRef(),
+		TEXT("BlendOutTriggerTime"),
+		TEXT("/Body/Blend/BlendOutTriggerTime"),
+		OutParsed.bHasBlendOutTriggerTime,
+		BlendOutTriggerTime);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (OutParsed.bHasBlendOutTriggerTime)
+	{
+		if (BlendOutTriggerTime < 0.0 && BlendOutTriggerTime != -1.0)
+		{
+			return BodyFailure(TEXT("BlendOutTriggerTime must be -1.0 or non-negative"), TEXT("/Body/Blend/BlendOutTriggerTime"), TEXT("InvalidBlendOutTriggerTime"));
+		}
+		OutParsed.BlendOutTriggerTime = static_cast<float>(BlendOutTriggerTime);
+	}
+
+	Result = ReadOptionalBool(
+		BlendObject.ToSharedRef(),
+		TEXT("bEnableAutoBlendOut"),
+		TEXT("/Body/Blend/bEnableAutoBlendOut"),
+		OutParsed.bHasEnableAutoBlendOut,
+		OutParsed.bEnableAutoBlendOut);
+	if (!Result.bSuccess)
+	{
+		return Result;
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -1515,6 +1614,22 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->BlendOut.SetBlendTime(ParsedBody.BlendOutTime);
 	}
+	if (ParsedBody.bHasBlendModeIn)
+	{
+		Montage->BlendModeIn = ParsedBody.BlendModeIn;
+	}
+	if (ParsedBody.bHasBlendModeOut)
+	{
+		Montage->BlendModeOut = ParsedBody.BlendModeOut;
+	}
+	if (ParsedBody.bHasBlendOutTriggerTime)
+	{
+		Montage->BlendOutTriggerTime = ParsedBody.BlendOutTriggerTime;
+	}
+	if (ParsedBody.bHasEnableAutoBlendOut)
+	{
+		Montage->bEnableAutoBlendOut = ParsedBody.bEnableAutoBlendOut;
+	}
 	if (ParsedBody.bHasSyncGroup)
 	{
 		Montage->SyncGroup = ParsedBody.SyncGroup;
@@ -1668,6 +1783,10 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 	TSharedRef<FJsonObject> Blend = MakeShared<FJsonObject>();
 	Blend->SetNumberField(TEXT("BlendInTime"), Montage->GetDefaultBlendInTime());
 	Blend->SetNumberField(TEXT("BlendOutTime"), Montage->GetDefaultBlendOutTime());
+	Blend->SetStringField(TEXT("BlendModeIn"), MontageBlendModeToString(Montage->BlendModeIn));
+	Blend->SetStringField(TEXT("BlendModeOut"), MontageBlendModeToString(Montage->BlendModeOut));
+	Blend->SetNumberField(TEXT("BlendOutTriggerTime"), Montage->BlendOutTriggerTime);
+	Blend->SetBoolField(TEXT("bEnableAutoBlendOut"), Montage->bEnableAutoBlendOut);
 	OutBodyJson->SetObjectField(TEXT("Blend"), Blend);
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage Body extracted"));

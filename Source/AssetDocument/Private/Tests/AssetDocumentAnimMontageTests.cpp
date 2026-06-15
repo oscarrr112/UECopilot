@@ -1101,6 +1101,106 @@ bool FAssetDocumentAnimMontageApplyExtractScalarRegionsTest::RunTest(const FStri
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageExpandedBlendTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ExpandedBlend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageExpandedBlendTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequence = CreateAnimSequenceFixture();
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ExpandedBlend"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	TSharedPtr<FJsonObject> Blend = Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
+	Blend->SetNumberField(TEXT("BlendInTime"), 0.2);
+	Blend->SetNumberField(TEXT("BlendOutTime"), 0.3);
+	Blend->SetStringField(TEXT("BlendModeIn"), TEXT("Inertialization"));
+	Blend->SetStringField(TEXT("BlendModeOut"), TEXT("Standard"));
+	Blend->SetNumberField(TEXT("BlendOutTriggerTime"), 0.15);
+	Blend->SetBoolField(TEXT("bEnableAutoBlendOut"), false);
+
+	const FAssetDocumentResult ApplyResult = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for expanded Blend"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Applied expanded Blend AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Expanded Blend sets BlendInTime"), FMath::IsNearlyEqual(Montage->GetDefaultBlendInTime(), 0.2f, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("Expanded Blend sets BlendOutTime"), FMath::IsNearlyEqual(Montage->GetDefaultBlendOutTime(), 0.3f, KINDA_SMALL_NUMBER));
+	TestEqual(TEXT("Expanded Blend sets BlendModeIn"), Montage->BlendModeIn, EMontageBlendMode::Inertialization);
+	TestEqual(TEXT("Expanded Blend sets BlendModeOut"), Montage->BlendModeOut, EMontageBlendMode::Standard);
+	TestTrue(TEXT("Expanded Blend sets BlendOutTriggerTime"), FMath::IsNearlyEqual(Montage->BlendOutTriggerTime, 0.15f, KINDA_SMALL_NUMBER));
+	TestFalse(TEXT("Expanded Blend disables auto blend out"), Montage->bEnableAutoBlendOut);
+
+	FAssetDocumentService Service;
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds for expanded Blend"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns expanded Blend payload"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	if (!ExtractedBody || !ExtractedBody->IsValid())
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBlend = nullptr;
+	TestTrue(TEXT("Extract includes Body.Blend"), (*ExtractedBody)->TryGetObjectField(TEXT("Blend"), ExtractedBlend));
+	if (!ExtractedBlend || !ExtractedBlend->IsValid())
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("Extracted BlendInTime"), FMath::IsNearlyEqual((*ExtractedBlend)->GetNumberField(TEXT("BlendInTime")), 0.2, KINDA_SMALL_NUMBER));
+	TestTrue(TEXT("Extracted BlendOutTime"), FMath::IsNearlyEqual((*ExtractedBlend)->GetNumberField(TEXT("BlendOutTime")), 0.3, KINDA_SMALL_NUMBER));
+	TestEqual(TEXT("Extracted BlendModeIn"), (*ExtractedBlend)->GetStringField(TEXT("BlendModeIn")), FString(TEXT("Inertialization")));
+	TestEqual(TEXT("Extracted BlendModeOut"), (*ExtractedBlend)->GetStringField(TEXT("BlendModeOut")), FString(TEXT("Standard")));
+	TestTrue(TEXT("Extracted BlendOutTriggerTime"), FMath::IsNearlyEqual((*ExtractedBlend)->GetNumberField(TEXT("BlendOutTriggerTime")), 0.15, KINDA_SMALL_NUMBER));
+	TestFalse(TEXT("Extracted bEnableAutoBlendOut"), (*ExtractedBlend)->GetBoolField(TEXT("bEnableAutoBlendOut")));
+
+	const FString AnimReferencePath = AnimSequence->GetPathName();
+	bool bAllCasesPassed = true;
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid BlendModeIn"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"))->SetStringField(TEXT("BlendModeIn"), TEXT("Bad"));
+	}, TEXT("/Body/Blend/BlendModeIn"), TEXT("InvalidBlendMode"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid BlendOutTriggerTime"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"))->SetNumberField(TEXT("BlendOutTriggerTime"), -2.0);
+	}, TEXT("/Body/Blend/BlendOutTriggerTime"), TEXT("InvalidBlendOutTriggerTime"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Invalid bEnableAutoBlendOut"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"))->SetStringField(TEXT("bEnableAutoBlendOut"), TEXT("yes"));
+	}, TEXT("/Body/Blend/bEnableAutoBlendOut"), TEXT("InvalidBooleanField"));
+
+	return bAllCasesPassed;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimMontageScalarRegionPrecedenceTest,
 	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ScalarRegions.Precedence",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1340,6 +1440,10 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	TSharedPtr<FJsonObject> SyncBlend = Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Blend"));
 	SyncBlend->SetNumberField(TEXT("BlendInTime"), 0.125);
 	SyncBlend->SetNumberField(TEXT("BlendOutTime"), 0.25);
+	SyncBlend->SetStringField(TEXT("BlendModeIn"), TEXT("Standard"));
+	SyncBlend->SetStringField(TEXT("BlendModeOut"), TEXT("Standard"));
+	SyncBlend->SetNumberField(TEXT("BlendOutTriggerTime"), -1.0);
+	SyncBlend->SetBoolField(TEXT("bEnableAutoBlendOut"), true);
 	Document->RemoveField(TEXT("_meta"));
 	if (!WriteSidecarJson(this, SidecarPath, Document))
 	{
