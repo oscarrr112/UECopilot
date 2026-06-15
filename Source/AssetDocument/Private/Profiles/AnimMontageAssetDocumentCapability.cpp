@@ -1097,8 +1097,7 @@ FAssetDocumentCapabilityResult ParsePreview(
 
 FAssetDocumentCapabilityResult ParseSync(
 	const TSharedRef<FJsonObject>& BodyObject,
-	const UAnimMontage* Montage,
-	bool bValidateExistingSlotTracks,
+	int32 ExistingSlotTrackCount,
 	FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* SyncValue = BodyObject->Values.Find(TEXT("Sync"));
@@ -1137,9 +1136,9 @@ FAssetDocumentCapabilityResult ParseSync(
 		{
 			SlotTrackCount = OutParsed.SlotAnimTracks.Num();
 		}
-		else if (bValidateExistingSlotTracks && Montage)
+		else if (ExistingSlotTrackCount != INDEX_NONE)
 		{
-			SlotTrackCount = Montage->SlotAnimTracks.Num();
+			SlotTrackCount = ExistingSlotTrackCount;
 		}
 
 		if (SlotTrackCount != INDEX_NONE && OutParsed.SyncSlotIndex >= SlotTrackCount)
@@ -1214,7 +1213,7 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 	UAnimMontage* Montage,
 	const TSharedRef<FJsonObject>& BodyObject,
 	bool bResolveFragments,
-	bool bValidateExistingSlotTracks,
+	int32 ExistingSlotTrackCount,
 	FParsedAnimMontageBody& OutParsed)
 {
 	FAssetDocumentCapabilityResult Result = ValidateBodyObjectShape(BodyObject);
@@ -1263,7 +1262,7 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 		return Result;
 	}
 
-	Result = ParseSync(BodyObject, Montage, bValidateExistingSlotTracks, OutParsed);
+	Result = ParseSync(BodyObject, ExistingSlotTrackCount, OutParsed);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1430,7 +1429,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FA
 	PreflightContext.AssetClass = UAnimMontage::StaticClass();
 
 	FParsedAnimMontageBody ParsedBody;
-	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, false, ParsedBody);
+	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, Montage->SlotAnimTracks.Num(), ParsedBody);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
@@ -1456,7 +1455,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	Compiler.RegisterBuiltInAdapters();
 
 	FParsedAnimMontageBody ParsedBody;
-	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, true, ParsedBody);
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, Montage->SlotAnimTracks.Num(), ParsedBody);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1761,7 +1760,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBodyObject(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const
 {
 	FParsedAnimMontageBody ParsedBody;
-	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(nullptr, Context, nullptr, BodyObject, false, false, ParsedBody);
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(nullptr, Context, nullptr, BodyObject, false, INDEX_NONE, ParsedBody);
 	if (!Result.bSuccess)
 	{
 		return Result;

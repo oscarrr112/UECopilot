@@ -1172,6 +1172,24 @@ bool FAssetDocumentAnimMontageScalarRegionPrecedenceTest::RunTest(const FString&
 		return false;
 	}
 
+	TSharedPtr<FJsonObject> InvalidSparseSyncDocument = MakeSyncOnlyMontageDocument(Target, TEXT("InvalidSparseSync"), 99);
+	const FAssetDocumentCapabilityResult InvalidPreflightResult = Capability.Preflight(
+		PreflightContext,
+		MakeShared<FJsonValueObject>(InvalidSparseSyncDocument->GetObjectField(TEXT("Body"))));
+	TestFalse(TEXT("Sparse Sync-only preflight rejects out-of-range SyncSlotIndex"), InvalidPreflightResult.bSuccess);
+	bool bSawInvalidSyncSlotIndex = false;
+	for (const FAssetDocumentDiagnostic& Diagnostic : InvalidPreflightResult.Diagnostics)
+	{
+		bSawInvalidSyncSlotIndex |= Diagnostic.Path == TEXT("/Body/Sync/SyncSlotIndex") && Diagnostic.Code == TEXT("InvalidSyncSlotIndex");
+	}
+	TestTrue(TEXT("Sparse Sync-only preflight reports InvalidSyncSlotIndex"), bSawInvalidSyncSlotIndex);
+
+	Montage->RateScale = 1.0f;
+	InvalidSparseSyncDocument->GetObjectField(TEXT("Properties"))->SetNumberField(TEXT("RateScale"), 2.0);
+	const FAssetDocumentResult InvalidSparseApplyResult = ApplyDocument(InvalidSparseSyncDocument);
+	TestFalse(TEXT("Invalid sparse Sync apply fails before mutating reflected properties"), InvalidSparseApplyResult.IsSuccess());
+	TestEqual(TEXT("Invalid sparse Sync apply leaves RateScale unchanged"), Montage->RateScale, 1.0f);
+
 	const FAssetDocumentResult SparseSyncResult = ApplyDocument(SparseSyncDocument);
 	TestTrue(TEXT("Sparse Sync-only apply succeeds against existing SlotAnimTracks"), SparseSyncResult.IsSuccess());
 	if (!SparseSyncResult.IsSuccess())
