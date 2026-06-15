@@ -8,6 +8,7 @@
 #include "AssetDocumentSyncStateStore.h"
 #include "AssetFactoryNamedAnimNotifyState.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
+#include "Profiles/AnimMontageAssetDocumentCapability.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "Animation/AnimMontage.h"
@@ -288,6 +289,16 @@ void SetScalarRegions(TSharedPtr<FJsonObject> Document, const FString& PreviewBa
 	RootMotion->SetBoolField(TEXT("bEnableRootMotionRotation"), true);
 	RootMotion->SetStringField(TEXT("RootMotionRootLock"), TEXT("Zero"));
 	Body->SetObjectField(TEXT("RootMotion"), RootMotion);
+}
+
+TSharedPtr<FJsonObject> MakeSyncOnlyMontageDocument(const FString& Target, const FString& SyncGroup, double SyncSlotIndex)
+{
+	TSharedPtr<FJsonObject> Document = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> Sync = MakeShared<FJsonObject>();
+	Sync->SetStringField(TEXT("SyncGroup"), SyncGroup);
+	Sync->SetNumberField(TEXT("SyncSlotIndex"), SyncSlotIndex);
+	Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("Sync"), Sync);
+	return Document;
 }
 
 TSharedPtr<FJsonObject> MakeNotifyPlacement(double Time, TSharedPtr<FJsonObject> Object)
@@ -907,8 +918,21 @@ bool FAssetDocumentAnimMontageApplyStructureTest::RunTest(const FString& Paramet
 		TestTrue(TEXT("Extract includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
 		if (ExtractedBody && ExtractedBody->IsValid())
 		{
-			TestTrue(TEXT("Extract includes Skeleton"), (*ExtractedBody)->HasTypedField<EJson::Object>(TEXT("Skeleton")));
-			TestTrue(TEXT("Extract includes PreviewMesh"), (*ExtractedBody)->HasTypedField<EJson::Object>(TEXT("PreviewMesh")));
+			const TSharedPtr<FJsonObject>* ExtractedReferences = nullptr;
+			TestTrue(TEXT("Extract includes References"), (*ExtractedBody)->TryGetObjectField(TEXT("References"), ExtractedReferences));
+			if (ExtractedReferences && ExtractedReferences->IsValid())
+			{
+				TestTrue(TEXT("Extract includes References.Skeleton"), (*ExtractedReferences)->HasTypedField<EJson::Object>(TEXT("Skeleton")));
+			}
+
+			const TSharedPtr<FJsonObject>* ExtractedPreview = nullptr;
+			TestTrue(TEXT("Extract includes Preview"), (*ExtractedBody)->TryGetObjectField(TEXT("Preview"), ExtractedPreview));
+			if (ExtractedPreview && ExtractedPreview->IsValid())
+			{
+				TestTrue(TEXT("Extract includes Preview.PreviewMesh"), (*ExtractedPreview)->HasTypedField<EJson::Object>(TEXT("PreviewMesh")));
+			}
+			TestFalse(TEXT("Extract omits legacy Skeleton"), (*ExtractedBody)->HasField(TEXT("Skeleton")));
+			TestFalse(TEXT("Extract omits legacy PreviewMesh"), (*ExtractedBody)->HasField(TEXT("PreviewMesh")));
 
 			const TArray<TSharedPtr<FJsonValue>>* ExtractedSlotAnimTracks = nullptr;
 			TestTrue(TEXT("Extract includes SlotAnimTracks"), (*ExtractedBody)->TryGetArrayField(TEXT("SlotAnimTracks"), ExtractedSlotAnimTracks));
@@ -1038,6 +1062,9 @@ bool FAssetDocumentAnimMontageApplyExtractScalarRegionsTest::RunTest(const FStri
 		return false;
 	}
 
+	TestFalse(TEXT("Extract omits legacy Skeleton field"), (*ExtractedBody)->HasField(TEXT("Skeleton")));
+	TestFalse(TEXT("Extract omits legacy PreviewMesh field"), (*ExtractedBody)->HasField(TEXT("PreviewMesh")));
+
 	const TSharedPtr<FJsonObject>* References = nullptr;
 	TestTrue(TEXT("Extract includes Body.References"), (*ExtractedBody)->TryGetObjectField(TEXT("References"), References));
 	if (References && References->IsValid())
@@ -1125,6 +1152,35 @@ bool FAssetDocumentAnimMontageScalarRegionPrecedenceTest::RunTest(const FString&
 		return false;
 	}
 	TestEqual(TEXT("Empty SyncGroup clears to None"), Montage->SyncGroup, NAME_None);
+
+	TSharedPtr<FJsonObject> SparseSyncDocument = MakeSyncOnlyMontageDocument(Target, TEXT("SparseSync"), 0);
+	FAnimMontageAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext PreflightContext;
+	PreflightContext.Asset = Montage;
+	PreflightContext.AssetClass = UAnimMontage::StaticClass();
+	PreflightContext.TargetAssetPath = Target;
+	const TSharedPtr<FJsonObject>* SparseDefinitions = nullptr;
+	SparseSyncDocument->TryGetObjectField(TEXT("Definitions"), SparseDefinitions);
+	PreflightContext.Definitions = SparseDefinitions;
+	const FAssetDocumentCapabilityResult PreflightResult = Capability.Preflight(
+		PreflightContext,
+		MakeShared<FJsonValueObject>(SparseSyncDocument->GetObjectField(TEXT("Body"))));
+	TestTrue(TEXT("Sparse Sync-only preflight succeeds against existing SlotAnimTracks"), PreflightResult.bSuccess);
+	if (!PreflightResult.bSuccess)
+	{
+		AddError(PreflightResult.Message);
+		return false;
+	}
+
+	const FAssetDocumentResult SparseSyncResult = ApplyDocument(SparseSyncDocument);
+	TestTrue(TEXT("Sparse Sync-only apply succeeds against existing SlotAnimTracks"), SparseSyncResult.IsSuccess());
+	if (!SparseSyncResult.IsSuccess())
+	{
+		AddError(SparseSyncResult.Message);
+		return false;
+	}
+	TestEqual(TEXT("Sparse Sync-only apply sets SyncGroup"), Montage->SyncGroup, FName(TEXT("SparseSync")));
+	TestEqual(TEXT("Sparse Sync-only apply keeps valid SyncSlotIndex"), Montage->SyncSlotIndex, 0);
 	return true;
 }
 
@@ -1149,6 +1205,11 @@ bool FAssetDocumentAnimMontageScalarRegionValidationTest::RunTest(const FString&
 		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
 		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetNumberField(TEXT("SyncSlotIndex"), -1);
 	}, TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("SyncSlotIndex fractional"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
+		Document->GetObjectField(TEXT("Body"))->GetObjectField(TEXT("Sync"))->SetNumberField(TEXT("SyncSlotIndex"), 1.5);
+	}, TEXT("/Body/Sync/SyncSlotIndex"), TEXT("InvalidSyncSlotIndex"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("SyncSlotIndex out of range"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
 	{
 		SetScalarRegions(Document, GetFirstSegment(Document)->GetObjectField(TEXT("AnimReference"))->GetStringField(TEXT("Path")));
@@ -1170,6 +1231,55 @@ bool FAssetDocumentAnimMontageScalarRegionValidationTest::RunTest(const FString&
 			|| HasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("InvalidObjectReference")));
 
 	return bAllCasesPassed;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimMontageScalarRegionCollectMarkersTest,
+	"AssetFactory.AssetDocument.AnimMontage.ApplyExtract.ScalarRegions.CollectMarkers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimMontageScalarRegionCollectMarkersTest::RunTest(const FString& Parameters)
+{
+	UAnimSequenceBase* AnimSequenceBase = CreateAnimSequenceFixture();
+	UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimSequenceBase);
+	TestNotNull(TEXT("AnimSequence fixture is available"), AnimSequence);
+	if (!AnimSequence)
+	{
+		return false;
+	}
+
+	FAnimSyncMarker SourceMarker;
+	SourceMarker.MarkerName = FName(TEXT("AssetDocMarker"));
+	SourceMarker.Time = 0.10f;
+	AnimSequence->AuthoredSyncMarkers.Add(SourceMarker);
+	AnimSequence->RefreshSyncMarkerDataFromAuthored();
+
+	const FString Target = MakeUniqueMontageTarget(TEXT("AM_ScalarMarkers"));
+	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
+	SetScalarRegions(Document, AnimSequence->GetPathName());
+
+	const FAssetDocumentResult Result = ApplyDocument(Document);
+	TestTrue(TEXT("Apply succeeds for marker collection scalar regions"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target));
+	TestNotNull(TEXT("Marker collection AnimMontage is loadable"), Montage);
+	if (!Montage)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Apply refreshes montage marker cache"), Montage->MarkerData.AuthoredSyncMarkers.Num(), 1);
+	if (Montage->MarkerData.AuthoredSyncMarkers.Num() == 1)
+	{
+		TestEqual(TEXT("Collected marker name"), Montage->MarkerData.AuthoredSyncMarkers[0].MarkerName, FName(TEXT("AssetDocMarker")));
+	}
+
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

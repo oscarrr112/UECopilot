@@ -612,6 +612,51 @@ FString RootMotionRootLockToString(ERootMotionRootLock::Type RootLock)
 	}
 }
 
+void RefreshMontageMarkerCache(UAnimMontage& Montage)
+{
+	Montage.MarkerData.AuthoredSyncMarkers.Reset();
+	Montage.MarkerData.UniqueMarkerNames.Empty();
+
+	if (Montage.SyncGroup == NAME_None || !Montage.SlotAnimTracks.IsValidIndex(Montage.SyncSlotIndex))
+	{
+		return;
+	}
+
+	const FAnimTrack& AnimTrack = Montage.SlotAnimTracks[Montage.SyncSlotIndex].AnimTrack;
+	for (const FAnimSegment& Segment : AnimTrack.AnimSegments)
+	{
+		const UAnimSequence* Sequence = Cast<UAnimSequence>(Segment.GetAnimReference());
+		if (!Sequence || Sequence->AuthoredSyncMarkers.IsEmpty())
+		{
+			continue;
+		}
+
+		for (const FAnimSyncMarker& Marker : Sequence->AuthoredSyncMarkers)
+		{
+			if (Marker.Time < Segment.AnimStartTime || Marker.Time > Segment.AnimEndTime)
+			{
+				continue;
+			}
+
+			const float TotalSegmentLength = (Segment.AnimEndTime - Segment.AnimStartTime) * Segment.AnimPlayRate;
+			for (int32 LoopCount = 0; LoopCount < Segment.LoopingCount; ++LoopCount)
+			{
+				FAnimSyncMarker NewMarker;
+				NewMarker.Time = Segment.StartPos + (Marker.Time - Segment.AnimStartTime) * Segment.AnimPlayRate + TotalSegmentLength * LoopCount;
+				NewMarker.MarkerName = Marker.MarkerName;
+				Montage.MarkerData.AuthoredSyncMarkers.Add(NewMarker);
+			}
+		}
+	}
+
+	Montage.MarkerData.AuthoredSyncMarkers.Sort();
+	Montage.MarkerData.UniqueMarkerNames.Reserve(Montage.MarkerData.AuthoredSyncMarkers.Num());
+	for (const FAnimSyncMarker& Marker : Montage.MarkerData.AuthoredSyncMarkers)
+	{
+		Montage.MarkerData.UniqueMarkerNames.AddUnique(Marker.MarkerName);
+	}
+}
+
 FAssetDocumentCapabilityResult ParseSlotAnimTracks(
 	const FAssetDocumentFragmentCompiler* Compiler,
 	const FAssetDocumentCapabilityContext& Context,
@@ -1053,6 +1098,7 @@ FAssetDocumentCapabilityResult ParsePreview(
 FAssetDocumentCapabilityResult ParseSync(
 	const TSharedRef<FJsonObject>& BodyObject,
 	const UAnimMontage* Montage,
+	bool bValidateExistingSlotTracks,
 	FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* SyncValue = BodyObject->Values.Find(TEXT("Sync"));
@@ -1091,7 +1137,7 @@ FAssetDocumentCapabilityResult ParseSync(
 		{
 			SlotTrackCount = OutParsed.SlotAnimTracks.Num();
 		}
-		else if (Montage)
+		else if (bValidateExistingSlotTracks && Montage)
 		{
 			SlotTrackCount = Montage->SlotAnimTracks.Num();
 		}
@@ -1168,6 +1214,7 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 	UAnimMontage* Montage,
 	const TSharedRef<FJsonObject>& BodyObject,
 	bool bResolveFragments,
+	bool bValidateExistingSlotTracks,
 	FParsedAnimMontageBody& OutParsed)
 {
 	FAssetDocumentCapabilityResult Result = ValidateBodyObjectShape(BodyObject);
@@ -1216,7 +1263,7 @@ FAssetDocumentCapabilityResult ParseAnimMontageBody(
 		return Result;
 	}
 
-	Result = ParseSync(BodyObject, Montage, OutParsed);
+	Result = ParseSync(BodyObject, Montage, bValidateExistingSlotTracks, OutParsed);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1383,7 +1430,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FA
 	PreflightContext.AssetClass = UAnimMontage::StaticClass();
 
 	FParsedAnimMontageBody ParsedBody;
-	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, ParsedBody);
+	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, false, ParsedBody);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
@@ -1409,7 +1456,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	Compiler.RegisterBuiltInAdapters();
 
 	FParsedAnimMontageBody ParsedBody;
-	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, ParsedBody);
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(&Compiler, Context, Montage, BodyObject.ToSharedRef(), true, true, ParsedBody);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1427,10 +1474,12 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	{
 		Montage->PreviewBasePose = ParsedBody.PreviewBasePose;
 	}
+	bool bShouldCollectMarkers = false;
 	if (ParsedBody.bHasSlotAnimTracks)
 	{
 		Montage->SlotAnimTracks = MoveTemp(ParsedBody.SlotAnimTracks);
 		Montage->SetCompositeLength(ParsedBody.CompositeLength);
+		bShouldCollectMarkers = true;
 	}
 	if (ParsedBody.bHasCompositeSections)
 	{
@@ -1470,10 +1519,12 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	if (ParsedBody.bHasSyncGroup)
 	{
 		Montage->SyncGroup = ParsedBody.SyncGroup;
+		bShouldCollectMarkers = true;
 	}
 	if (ParsedBody.bHasSyncSlotIndex)
 	{
 		Montage->SyncSlotIndex = ParsedBody.SyncSlotIndex;
+		bShouldCollectMarkers = true;
 	}
 	if (ParsedBody.bHasRootMotionTranslation)
 	{
@@ -1486,6 +1537,10 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAsset
 	if (ParsedBody.bHasRootMotionRootLock)
 	{
 		Montage->RootMotionRootLock = ParsedBody.RootMotionRootLock;
+	}
+	if (bShouldCollectMarkers)
+	{
+		RefreshMontageMarkerCache(*Montage);
 	}
 
 	Montage->MarkPackageDirty();
@@ -1502,28 +1557,6 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 
 	FAssetDocumentFragmentCompiler Compiler;
 	Compiler.RegisterBuiltInAdapters();
-
-	if (USkeleton* Skeleton = Montage->GetSkeleton())
-	{
-		TSharedRef<FJsonObject> SkeletonRef = MakeShared<FJsonObject>();
-		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimMontage*>(Montage), Skeleton, TEXT("/Body/Skeleton"), SkeletonRef);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		OutBodyJson->SetObjectField(TEXT("Skeleton"), SkeletonRef);
-	}
-
-	if (USkeletalMesh* PreviewMesh = Montage->GetPreviewMesh())
-	{
-		TSharedRef<FJsonObject> PreviewMeshRef = MakeShared<FJsonObject>();
-		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimMontage*>(Montage), PreviewMesh, TEXT("/Body/PreviewMesh"), PreviewMeshRef);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		OutBodyJson->SetObjectField(TEXT("PreviewMesh"), PreviewMeshRef);
-	}
 
 	if (USkeleton* Skeleton = Montage->GetSkeleton())
 	{
@@ -1728,7 +1761,7 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const F
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::ValidateBodyObject(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject) const
 {
 	FParsedAnimMontageBody ParsedBody;
-	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(nullptr, Context, nullptr, BodyObject, false, ParsedBody);
+	const FAssetDocumentCapabilityResult Result = ParseAnimMontageBody(nullptr, Context, nullptr, BodyObject, false, false, ParsedBody);
 	if (!Result.bSuccess)
 	{
 		return Result;
