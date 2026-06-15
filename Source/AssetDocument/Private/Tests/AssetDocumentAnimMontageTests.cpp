@@ -429,6 +429,14 @@ bool HasExpectedBodySections(const TArray<TSharedPtr<FJsonValue>>& BodySections)
 {
 	return JsonArrayContainsString(BodySections, TEXT("Skeleton"))
 		&& JsonArrayContainsString(BodySections, TEXT("PreviewMesh"))
+		&& JsonArrayContainsString(BodySections, TEXT("References"))
+		&& JsonArrayContainsString(BodySections, TEXT("Preview"))
+		&& JsonArrayContainsString(BodySections, TEXT("Sync"))
+		&& JsonArrayContainsString(BodySections, TEXT("RootMotion"))
+		&& JsonArrayContainsString(BodySections, TEXT("Metadata"))
+		&& JsonArrayContainsString(BodySections, TEXT("SectionMetadata"))
+		&& JsonArrayContainsString(BodySections, TEXT("TimeStretch"))
+		&& JsonArrayContainsString(BodySections, TEXT("Curves"))
 		&& JsonArrayContainsString(BodySections, TEXT("SlotAnimTracks"))
 		&& JsonArrayContainsString(BodySections, TEXT("CompositeSections"))
 		&& JsonArrayContainsString(BodySections, TEXT("Notifies"))
@@ -2316,6 +2324,25 @@ bool FAssetDocumentAnimMontageInspectProfileTest::RunTest(const FString& Paramet
 	TestEqual(TEXT("Body.NotifyStates uses managed reducer"), NotifyStatesPolicy.ReducerMode, EAssetDocumentReducerMode::ManagedRegion);
 	TestEqual(TEXT("Body.NotifyStates uses managed timeline apply mode"), NotifyStatesPolicy.ApplyMode, EAssetDocumentApplyMode::RebuildArrayRegion);
 	TestTrue(TEXT("Body.NotifyStates owns Notifies property"), NotifyStatesPolicy.ManagedUePropertyPaths.Contains(TEXT("Notifies")));
+
+	const TArray<FString> ExpectedNewRegionIds = {
+		TEXT("Body.References"),
+		TEXT("Body.Preview"),
+		TEXT("Body.Sync"),
+		TEXT("Body.RootMotion"),
+		TEXT("Body.Metadata"),
+		TEXT("Body.SectionMetadata"),
+		TEXT("Body.TimeStretch"),
+		TEXT("Body.Curves"),
+	};
+
+	for (const FString& RegionId : ExpectedNewRegionIds)
+	{
+		FAssetDocumentRegionPolicy RegionPolicy;
+		TestTrue(
+			FString::Printf(TEXT("AnimMontage profile declares %s policy"), *RegionId),
+			Profile.GetRegionPolicy(FName(*RegionId), RegionPolicy));
+	}
 
 	const FAssetDocumentService Service;
 	FAssetDocumentProfileRequest Request;

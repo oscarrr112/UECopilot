@@ -351,6 +351,14 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 	const TArray<FAssetDocumentCapabilityResult> Results = {
 		RequireNullOrObject(TEXT("Skeleton")),
 		RequireNullOrObject(TEXT("PreviewMesh")),
+		RequireObject(TEXT("References")),
+		RequireObject(TEXT("Preview")),
+		RequireObject(TEXT("Sync")),
+		RequireObject(TEXT("RootMotion")),
+		RequireArray(TEXT("Metadata")),
+		RequireObject(TEXT("SectionMetadata")),
+		RequireObject(TEXT("TimeStretch")),
+		RequireArray(TEXT("Curves")),
 		RequireArray(TEXT("SlotAnimTracks")),
 		RequireArray(TEXT("CompositeSections")),
 		RequireArray(TEXT("Notifies")),
@@ -879,6 +887,14 @@ const TArray<FName>& FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys()
 	static const TArray<FName> Keys = {
 		TEXT("Skeleton"),
 		TEXT("PreviewMesh"),
+		TEXT("References"),
+		TEXT("Preview"),
+		TEXT("Sync"),
+		TEXT("RootMotion"),
+		TEXT("Metadata"),
+		TEXT("SectionMetadata"),
+		TEXT("TimeStretch"),
+		TEXT("Curves"),
 		TEXT("SlotAnimTracks"),
 		TEXT("CompositeSections"),
 		TEXT("Notifies"),
@@ -921,6 +937,14 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentCapability::GetSchemaHint() con
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
 	Schema->SetStringField(TEXT("Skeleton"), TEXT("null | AssetRef<USkeleton>"));
 	Schema->SetStringField(TEXT("PreviewMesh"), TEXT("null | AssetRef<USkeletalMesh>"));
+	Schema->SetStringField(TEXT("References"), TEXT("object"));
+	Schema->SetStringField(TEXT("Preview"), TEXT("object"));
+	Schema->SetStringField(TEXT("Sync"), TEXT("object"));
+	Schema->SetStringField(TEXT("RootMotion"), TEXT("object"));
+	Schema->SetStringField(TEXT("Metadata"), TEXT("array<EmbeddedObject|DefinitionRef>"));
+	Schema->SetStringField(TEXT("SectionMetadata"), TEXT("map<SectionName,array<EmbeddedObject|DefinitionRef>>"));
+	Schema->SetStringField(TEXT("TimeStretch"), TEXT("object"));
+	Schema->SetStringField(TEXT("Curves"), TEXT("array<FloatCurve>"));
 	Schema->SetStringField(TEXT("SlotAnimTracks"), TEXT("array<SlotAnimTrack>"));
 	Schema->SetStringField(TEXT("CompositeSections"), TEXT("array<CompositeSection>"));
 	Schema->SetStringField(TEXT("Notifies"), TEXT("array<AnimNotifyPlacement>"));

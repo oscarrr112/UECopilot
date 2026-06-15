@@ -58,6 +58,14 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentProfile::CreateTemplate(const F
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetField(TEXT("Skeleton"), MakeShared<FJsonValueNull>());
 	Body->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
+	Body->SetObjectField(TEXT("References"), MakeShared<FJsonObject>());
+	Body->SetObjectField(TEXT("Preview"), MakeShared<FJsonObject>());
+	Body->SetObjectField(TEXT("Sync"), MakeShared<FJsonObject>());
+	Body->SetObjectField(TEXT("RootMotion"), MakeShared<FJsonObject>());
+	Body->SetArrayField(TEXT("Metadata"), MakeEmptyArray());
+	Body->SetObjectField(TEXT("SectionMetadata"), MakeShared<FJsonObject>());
+	Body->SetObjectField(TEXT("TimeStretch"), MakeShared<FJsonObject>());
+	Body->SetArrayField(TEXT("Curves"), MakeEmptyArray());
 	Body->SetArrayField(TEXT("SlotAnimTracks"), MakeEmptyArray());
 	Body->SetArrayField(TEXT("CompositeSections"), MakeEmptyArray());
 	Body->SetArrayField(TEXT("Notifies"), MakeEmptyArray());
@@ -101,10 +109,82 @@ const IAssetDocumentCapability* FAnimMontageAssetDocumentProfile::ResolveBodyAda
 TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPolicies() const
 {
 	TArray<FAssetDocumentRegionPolicy> Policies;
-	Policies.Reserve(5);
+	Policies.Reserve(13);
 
 	FAssetDocumentRegionPolicy Policy;
 	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blend"), EAssetDocumentRegionKind::Object, {}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.References"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("Skeleton")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Preview"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("PreviewMesh"), TEXT("PreviewBasePose")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Sync"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("SyncGroup"), TEXT("SyncSlotIndex")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.RootMotion"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("bEnableRootMotionTranslation"), TEXT("bEnableRootMotionRotation"), TEXT("RootMotionRootLock")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("ManagedRegion"),
+		TEXT("Body.Metadata"),
+		EAssetDocumentRegionKind::Array,
+		{TEXT("MetaData")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("ManagedRegion"),
+		TEXT("Body.SectionMetadata"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("CompositeSections")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.TimeStretch"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("TimeStretchCurve"), TEXT("TimeStretchCurveName")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("ManagedRegion"),
+		TEXT("Body.Curves"),
+		EAssetDocumentRegionKind::Array,
+		{TEXT("RawCurveData")},
+		Policy))
 	{
 		Policies.Add(Policy);
 	}
