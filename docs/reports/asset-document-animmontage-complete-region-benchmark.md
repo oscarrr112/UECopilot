@@ -4,8 +4,8 @@
 
 - Worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec`
 - Branch: `feature/asset-document-structured-capabilities-spec`
-- Task 7 base: `7e7d0d62841ee5d7b0b95882d35f4b1dffd5d00a`
-- Commit range: `7e7d0d62841ee5d7b0b95882d35f4b1dffd5d00a..HEAD`
+- Full implementation range: `dbc7cf9..bdc7c2df802eeeb9bd18db32e5917c6529d9e07f`
+- Task 7 fix range: `7e7d0d62841ee5d7b0b95882d35f4b1dffd5d00a..bdc7c2df802eeeb9bd18db32e5917c6529d9e07f`
 
 ## Review Finding 修复
 
@@ -41,8 +41,10 @@
   - MCP result: exit 0，`pass: 39, fail: 0`
 - Smoke script:
   - Path: `docs/superpowers/verification/asset_document_delta_sidecar_smoke.py`
+  - Montage target asset path: `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`
+  - Generated animation source asset path: `/Game/Generated/Animation/AS_AssetDocSmoke`
   - Fresh command attempted: `UnrealEditor-Cmd.exe C:/AVH1/AVH1.uproject -Unattended -NullRHI -ExecutePythonScript=.../asset_document_delta_sidecar_smoke.py -LogCmds="LogPython verbose"`
-  - Result: BLOCKED. UE log shows HTTP server started on port `8559`, then Python timed out waiting for in-process `/assetdocument/apply`; no smoke pass marker was emitted.
+  - Result: BLOCKED. UE log shows HTTP server started on port `8559`, then Python timed out waiting for in-process `/assetdocument/apply`; no smoke pass marker was emitted. Fresh smoke is not counted as a passing verification in this report.
 - Cleanup checks:
   - `git diff --check`: exit 0，仅报告 CRLF normalization warnings。
   - `git status --short`: run before checkpoint commit; only本轮允许范围文件为 modified。
