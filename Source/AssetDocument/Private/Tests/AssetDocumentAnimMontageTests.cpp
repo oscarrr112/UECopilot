@@ -30,6 +30,7 @@
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/ScopeExit.h"
+#include "ObjectTools.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/UObjectIterator.h"
@@ -114,13 +115,54 @@ TSharedPtr<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath, TSharedP
 	return Fragment;
 }
 
-FString CreateAnimMetaDataClassFixture()
+struct FAnimMetaDataClassFixture
 {
+	FString ClassPath;
+	FString ObjectPath;
+	FString PackageFileName;
+
+	bool IsValid() const
+	{
+		return !ClassPath.IsEmpty();
+	}
+
+	void Cleanup() const
+	{
+		if (!ObjectPath.IsEmpty())
+		{
+			UObject* ExistingAsset = FindObject<UObject>(nullptr, *ObjectPath);
+			if (!ExistingAsset && !PackageFileName.IsEmpty() && IFileManager::Get().FileExists(*PackageFileName))
+			{
+				ExistingAsset = LoadObject<UObject>(nullptr, *ObjectPath);
+			}
+
+			if (ExistingAsset)
+			{
+				TArray<UObject*> ObjectsToDelete;
+				ObjectsToDelete.Add(ExistingAsset);
+				ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete);
+			}
+		}
+
+		if (!PackageFileName.IsEmpty() && IFileManager::Get().FileExists(*PackageFileName))
+		{
+			IFileManager::Get().Delete(*PackageFileName, false, true);
+		}
+	}
+};
+
+FAnimMetaDataClassFixture CreateAnimMetaDataClassFixture()
+{
+	FAnimMetaDataClassFixture Fixture;
 	const FString AssetName = FString::Printf(TEXT("BP_AnimMetaData_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
-	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Game/AssetDocumentTests/%s"), *AssetName));
+	const FString PackageName = FString::Printf(TEXT("/Game/AssetDocumentTests/%s"), *AssetName);
+	Fixture.ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
+	Fixture.PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+
+	UPackage* Package = CreatePackage(*PackageName);
 	if (!Package)
 	{
-		return FString();
+		return Fixture;
 	}
 
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
@@ -130,20 +172,31 @@ FString CreateAnimMetaDataClassFixture()
 		BPTYPE_Normal,
 		UBlueprint::StaticClass(),
 		UBlueprintGeneratedClass::StaticClass());
+	if (!Blueprint)
+	{
+		Fixture.Cleanup();
+		return Fixture;
+	}
+
 	Blueprint->bGenerateAbstractClass = false;
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 	FAssetRegistryModule::AssetCreated(Blueprint);
 	Package->MarkPackageDirty();
 
-	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 	SaveArgs.SaveFlags = SAVE_NoError;
-	UPackage::SavePackage(Package, Blueprint, *PackageFileName, SaveArgs);
+	if (!UPackage::SavePackage(Package, Blueprint, *Fixture.PackageFileName, SaveArgs))
+	{
+		Fixture.Cleanup();
+		return Fixture;
+	}
 
-	return Blueprint && Blueprint->GeneratedClass && !Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract)
-		? Blueprint->GeneratedClass->GetPathName()
-		: FString();
+	if (Blueprint->GeneratedClass && !Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		Fixture.ClassPath = Blueprint->GeneratedClass->GetPathName();
+	}
+	return Fixture;
 }
 
 TSharedPtr<FJsonObject> MakeAnimMetaDataRef(const FString& ClassPath)
@@ -1627,9 +1680,14 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	const FString Target = MakeUniqueMontageTarget(TEXT("AM_MetadataRegions"));
 	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
-	const FString AnimMetaDataClassPath = CreateAnimMetaDataClassFixture();
-	TestFalse(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassPath.IsEmpty());
-	if (AnimMetaDataClassPath.IsEmpty())
+	const FAnimMetaDataClassFixture AnimMetaDataClassFixture = CreateAnimMetaDataClassFixture();
+	ON_SCOPE_EXIT
+	{
+		AnimMetaDataClassFixture.Cleanup();
+	};
+	const FString AnimMetaDataClassPath = AnimMetaDataClassFixture.ClassPath;
+	TestTrue(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassFixture.IsValid());
+	if (!AnimMetaDataClassFixture.IsValid())
 	{
 		return false;
 	}
@@ -2194,9 +2252,14 @@ bool FAssetDocumentAnimMontageApplyFileSyncStateTest::RunTest(const FString& Par
 	Body->SetArrayField(TEXT("NotifyStates"), StableNotifyStates);
 	Body->GetObjectField(TEXT("TimeStretch"))->SetNumberField(TEXT("CurveValueMinPrecision"), 0.019999999552965164);
 
-	const FString AnimMetaDataClassPath = CreateAnimMetaDataClassFixture();
-	TestFalse(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassPath.IsEmpty());
-	if (AnimMetaDataClassPath.IsEmpty())
+	const FAnimMetaDataClassFixture AnimMetaDataClassFixture = CreateAnimMetaDataClassFixture();
+	ON_SCOPE_EXIT
+	{
+		AnimMetaDataClassFixture.Cleanup();
+	};
+	const FString AnimMetaDataClassPath = AnimMetaDataClassFixture.ClassPath;
+	TestTrue(TEXT("Concrete AnimMetaData fixture class path is available"), AnimMetaDataClassFixture.IsValid());
+	if (!AnimMetaDataClassFixture.IsValid())
 	{
 		return false;
 	}
