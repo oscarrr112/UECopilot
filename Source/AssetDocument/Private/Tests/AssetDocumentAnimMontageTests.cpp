@@ -1296,6 +1296,10 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 		}
 		TestEqual(TEXT("Empty section metadata clears End section"), Montage->CompositeSections[1].GetMetaData().Num(), 0);
 	}
+	if (Montage->CompositeSections.Num() < 2)
+	{
+		return false;
+	}
 
 	FAssetDocumentService Service;
 	FAssetDocumentExtractRequest ExtractRequest;
@@ -1356,6 +1360,28 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	TestTrue(
 		TEXT("Unknown section metadata target reports UnknownSectionMetadataTarget"),
 		HasDiagnostic(UnknownSectionResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
+
+	const int32 OriginalAssetMetadataCount = Montage->GetMetaData().Num();
+	const int32 OriginalStartSectionMetadataCount = Montage->CompositeSections[0].GetMetaData().Num();
+	const int32 OriginalEndSectionMetadataCount = Montage->CompositeSections[1].GetMetaData().Num();
+	const int32 OriginalDirectObjectCount = CountDirectObjectsWithOuter(Montage);
+
+	TSharedPtr<FJsonObject> InvalidApplyDocument = MakeMontageDocument(Target);
+	TSharedPtr<FJsonObject> InvalidApplyBody = InvalidApplyDocument->GetObjectField(TEXT("Body"));
+	InvalidApplyBody->SetArrayField(TEXT("Metadata"), MetadataValues);
+	TSharedPtr<FJsonObject> InvalidApplySectionMetadata = MakeShared<FJsonObject>();
+	InvalidApplySectionMetadata->SetArrayField(TEXT("Missing"), MetadataValues);
+	InvalidApplyBody->SetObjectField(TEXT("SectionMetadata"), InvalidApplySectionMetadata);
+
+	const FAssetDocumentResult InvalidApplyResult = ApplyDocument(InvalidApplyDocument);
+	TestFalse(TEXT("Unknown section metadata target apply is rejected"), InvalidApplyResult.IsSuccess());
+	TestTrue(
+		TEXT("Unknown section metadata target apply reports UnknownSectionMetadataTarget"),
+		HasDiagnostic(InvalidApplyResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
+	TestEqual(TEXT("Asset metadata unchanged after failed metadata apply"), Montage->GetMetaData().Num(), OriginalAssetMetadataCount);
+	TestEqual(TEXT("Start section metadata unchanged after failed metadata apply"), Montage->CompositeSections[0].GetMetaData().Num(), OriginalStartSectionMetadataCount);
+	TestEqual(TEXT("End section metadata unchanged after failed metadata apply"), Montage->CompositeSections[1].GetMetaData().Num(), OriginalEndSectionMetadataCount);
+	TestEqual(TEXT("Failed metadata apply does not create direct child objects under production montage"), CountDirectObjectsWithOuter(Montage), OriginalDirectObjectCount);
 
 	TSharedPtr<FJsonObject> ReplacementDocument = MakeMontageDocument(Target);
 	TArray<TSharedPtr<FJsonValue>> ReplacementMetadata;
