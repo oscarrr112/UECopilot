@@ -1,8 +1,11 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import asset_document_delta_sidecar_smoke as smoke
 
@@ -39,21 +42,33 @@ class SmokeClientTests(unittest.TestCase):
 
     def test_run_smoke_uses_external_http_routes_in_order(self):
         calls = []
+        extracted_document = smoke.montage_document(
+            montage_target="/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke",
+            anim_object_path="/Game/Generated/Animation/AS_AssetDocSmoke.AS_AssetDocSmoke",
+        )
 
         def fake_request(method, path, payload=None):
             calls.append((method, path, payload))
             if path == "/health":
                 return {"success": True, "status": "ok"}
             if path == "/generate":
+                asset = payload["Assets"][0]
+                self.assertEqual(asset["AssetType"], "AnimSequence")
+                self.assertEqual(asset["Name"], "AS_AssetDocSmoke")
+                self.assertEqual(asset["Path"], "/Game/Generated/Animation")
+                self.assertEqual(asset["Action"], "CreateOrUpdate")
                 return {"success": True, "SuccessCount": 1, "UpdatedCount": 0, "FailedCount": 0}
             if path == "/assetdocument/apply-file":
+                self.assertTrue(payload["file_path"].endswith("AM_DeltaSidecarSmoke.assetdoc.json"))
+                self.assertTrue(payload["save_asset"])
                 return {"success": True, "payload": {"Target": "/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke"}}
             if path == "/assetdocument/extract":
-                return {"success": True, "payload": smoke.montage_document(
-                    montage_target="/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke",
-                    anim_object_path="/Game/Generated/Animation/AS_AssetDocSmoke.AS_AssetDocSmoke",
-                )}
+                self.assertEqual(payload["asset_path"], "/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke")
+                self.assertFalse(payload["diff_only"])
+                self.assertTrue(payload["include_all_writable"])
+                return {"success": True, "payload": extracted_document}
             if path == "/assetdocument/diff":
+                self.assertIs(payload, extracted_document)
                 return {"success": True, "payload": {"changed": []}}
             raise AssertionError("unexpected route {0}".format(path))
 
