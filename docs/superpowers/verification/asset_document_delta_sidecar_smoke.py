@@ -59,7 +59,10 @@ class HttpClient:
             raise RuntimeError("{0} {1} failed with HTTP {2}: {3}".format(method, path, exc.code, detail))
         except urllib.error.URLError as exc:
             raise RuntimeError("{0} {1} failed: {2}".format(method, path, exc))
-        return json.loads(body) if body else {}
+        try:
+            return json.loads(body) if body else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("{0} {1} returned invalid JSON: {2}".format(method, path, exc))
 
 
 def anim_object_path(anim_package_path, anim_name):
@@ -190,6 +193,12 @@ def payload(result):
     return value
 
 
+def require_success(route, result):
+    if result.get("success") is not True:
+        raise RuntimeError("{0} reported failure: {1}".format(route, result))
+    return result
+
+
 def _assert_equal(label, actual, expected):
     if actual != expected:
         raise RuntimeError("{0}: expected {1!r}, got {2!r}".format(label, expected, actual))
@@ -270,44 +279,43 @@ def assert_no_changed_complete_regions(diff_payload):
 def run_smoke(options):
     client = HttpClient(options.base_url, options.request_timeout)
     wait_for_health(client, options.wait_timeout, options.poll_interval)
-    generate_anim_sequence(client, options.anim_package_path, options.anim_name)
+    require_success("/generate", generate_anim_sequence(client, options.anim_package_path, options.anim_name))
 
     generated_anim_path = anim_object_path(options.anim_package_path, options.anim_name)
     document = montage_document(options.montage_target, generated_anim_path)
     sidecar_path = write_sidecar(options.sidecar_file, document)
 
-    try:
+    require_success(
+        "/assetdocument/apply-file",
         client.request(
             "POST",
             "/assetdocument/apply-file",
             {"file_path": str(sidecar_path), "save_asset": options.save_asset},
+        ),
+    )
+    extracted = payload(
+        client.request(
+            "POST",
+            "/assetdocument/extract",
+            {
+                "asset_path": options.montage_target,
+                "diff_only": False,
+                "include_all_writable": True,
+            },
         )
-        extracted = payload(
-            client.request(
-                "POST",
-                "/assetdocument/extract",
-                {
-                    "asset_path": options.montage_target,
-                    "diff_only": False,
-                    "include_all_writable": True,
-                },
-            )
-        )
-        _assert_extracted_regions(extracted, document)
+    )
+    _assert_extracted_regions(extracted, document)
 
-        diff = payload(client.request("POST", "/assetdocument/diff", extracted))
-        assert_no_changed_complete_regions(diff)
+    diff = payload(client.request("POST", "/assetdocument/diff", extracted))
+    assert_no_changed_complete_regions(diff)
 
-        return {
-            "success": True,
-            "montage_target": options.montage_target,
-            "anim_object_path": generated_anim_path,
-            "sidecar_file": str(sidecar_path),
-            "base_url": options.base_url,
-        }
-    finally:
-        if not options.keep_sidecar:
-            sidecar_path.unlink(missing_ok=True)
+    return {
+        "success": True,
+        "montage_target": options.montage_target,
+        "anim_object_path": generated_anim_path,
+        "sidecar_file": str(sidecar_path),
+        "base_url": options.base_url,
+    }
 
 
 def _parse_args(argv):
