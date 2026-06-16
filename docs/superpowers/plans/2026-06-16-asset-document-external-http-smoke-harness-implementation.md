@@ -32,7 +32,7 @@ The smoke sidecar target and expected asset path are fixed by default:
 ```text
 Montage target: /Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke
 Generated animation: /Game/Generated/Animation/AS_AssetDocSmoke
-Default sidecar file: C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json
+Default sidecar file: C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json
 ```
 
 ## File Structure
@@ -209,7 +209,7 @@ DEFAULT_ANIM_NAME = os.environ.get("ASSETDOC_SMOKE_ANIM_NAME", "AS_AssetDocSmoke
 DEFAULT_ANIM_PACKAGE_PATH = os.environ.get("ASSETDOC_SMOKE_ANIM_PATH", "/Game/Generated/Animation")
 DEFAULT_SIDECAR_FILE = os.environ.get(
     "ASSETDOC_SMOKE_SIDECAR_FILE",
-    "C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json",
+    "C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json",
 )
 
 
@@ -615,7 +615,7 @@ In `docs/reports/asset-document-animmontage-complete-region-benchmark.md`, repla
 ```markdown
 - Previous in-process `-ExecutePythonScript` smoke was blocked because the script called the same Editor process over HTTP.
 - External smoke command: `powershell -NoProfile -ExecutionPolicy Bypass -File docs/superpowers/verification/run_asset_document_delta_sidecar_smoke.ps1 -Project C:/AVH1/AVH1.uproject -KeepSidecar`
-- Result: exit 0, created/updated `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`, wrote sidecar `C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json`, extract/diff passed for `Body.Sync`, `Body.RootMotion`, `Body.TimeStretch`, and `Body.Curves`.
+- Result: exit 0, created/updated `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`, wrote sidecar `C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json`, extract/diff passed for `Body.Sync`, `Body.RootMotion`, `Body.TimeStretch`, and `Body.Curves`.
 ```
 
 - [ ] **Step 5: Run final local verification**

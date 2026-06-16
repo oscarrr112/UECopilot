@@ -43,8 +43,13 @@
   - Path: `docs/superpowers/verification/asset_document_delta_sidecar_smoke.py`
   - Montage target asset path: `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`
   - Generated animation source asset path: `/Game/Generated/Animation/AS_AssetDocSmoke`
-  - Fresh command attempted: `UnrealEditor-Cmd.exe C:/AVH1/AVH1.uproject -Unattended -NullRHI -ExecutePythonScript=.../asset_document_delta_sidecar_smoke.py -LogCmds="LogPython verbose"`
-  - Result: BLOCKED. UE log shows HTTP server started on port `8559`, then Python timed out waiting for in-process `/assetdocument/apply`; no smoke pass marker was emitted. Fresh smoke is not counted as a passing verification in this report.
+  - Historical blocked command: `UnrealEditor-Cmd.exe C:/AVH1/AVH1.uproject -Unattended -NullRHI -ExecutePythonScript=.../asset_document_delta_sidecar_smoke.py -LogCmds="LogPython verbose"`
+  - Historical result: BLOCKED. UE log showed HTTP server started on port `8559`, then Python timed out waiting for in-process `/assetdocument/apply`; this old same-process attempt is not counted as passing verification.
+  - External HTTP command: `powershell -NoProfile -ExecutionPolicy Bypass -File docs/superpowers/verification/run_asset_document_delta_sidecar_smoke.ps1 -Project C:/AVH1/AVH1.uproject -KeepSidecar`
+  - External HTTP result: exit 0. Runner started Unreal Editor, waited for `/assetfactory/health`, and external Python completed `/generate` -> `/assetdocument/apply-file` -> `/assetdocument/extract` -> `/assetdocument/diff`.
+  - Created/updated asset: `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke` (`C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.uasset`).
+  - Preserved sidecar: `C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json`. The sidecar is intentionally under `Content` so `apply-file` can derive and validate the matching `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke` target.
+  - Fresh smoke checks: extract matched `Body.Sync`, `Body.RootMotion`, `Body.TimeStretch`, and `Body.Curves`; diff reported no changed entries for those complete regions.
 - Cleanup checks:
   - `git diff --check`: exit 0，仅报告 CRLF normalization warnings。
   - `git status --short`: run before checkpoint commit; only本轮允许范围文件为 modified。
@@ -82,4 +87,4 @@
 ## 剩余风险
 
 - 根目录没有 `package.json`，所以 repo root `npm test` 不是有效 MCP 测试入口；实际 MCP 测试入口为 `MCP/npm test`。
-- `asset_document_delta_sidecar_smoke.py` 通过 `-ExecutePythonScript` 在同一 editor-cmd 进程里调用本进程 HTTP endpoint 会超时；若需要 fresh smoke pass，建议用已启动并可轮询健康状态的 Editor 实例，从外部 Python/HTTP 客户端驱动 smoke，或把 smoke 改成不经本进程 HTTP 的 automation 测试。
+- 旧的 `-ExecutePythonScript` 同进程 HTTP smoke 仍不作为有效入口；当前可重复入口是外部 runner `docs/superpowers/verification/run_asset_document_delta_sidecar_smoke.ps1`。

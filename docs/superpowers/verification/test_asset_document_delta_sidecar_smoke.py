@@ -25,6 +25,10 @@ class _FakeResponse:
 
 
 class SmokeClientTests(unittest.TestCase):
+    def test_default_sidecar_file_matches_apply_file_contract(self):
+        self.assertIn("/Content/AssetDocumentSmoke/", smoke.DEFAULT_SIDECAR_FILE.replace("\\", "/"))
+        self.assertTrue(smoke.DEFAULT_SIDECAR_FILE.endswith("AM_DeltaSidecarSmoke.assetdoc.json"))
+
     def test_montage_document_contains_complete_regions(self):
         document = smoke.montage_document(
             montage_target="/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke",

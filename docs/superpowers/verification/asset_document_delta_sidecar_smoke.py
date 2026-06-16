@@ -16,7 +16,7 @@ DEFAULT_ANIM_NAME = os.environ.get("ASSETDOC_SMOKE_ANIM_NAME", "AS_AssetDocSmoke
 DEFAULT_ANIM_PACKAGE_PATH = os.environ.get("ASSETDOC_SMOKE_ANIM_PATH", "/Game/Generated/Animation")
 DEFAULT_SIDECAR_FILE = os.environ.get(
     "ASSETDOC_SMOKE_SIDECAR_FILE",
-    "C:/AVH1/Saved/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json",
+    "C:/AVH1/Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json",
 )
 
 

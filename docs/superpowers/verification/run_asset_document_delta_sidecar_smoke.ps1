@@ -4,6 +4,7 @@ param(
     [string]$PythonExe = "py",
     [int]$Port = 8559,
     [int]$WaitTimeoutSeconds = 120,
+    [string]$SidecarFile = "",
     [switch]$KeepEditor,
     [switch]$KeepSidecar
 )
@@ -120,6 +121,10 @@ if (-not (Test-Path -LiteralPath $SmokeScript)) {
 }
 
 $BaseUrl = "http://127.0.0.1:$Port/assetfactory"
+$ProjectDir = Split-Path -Parent $Project
+if (-not $SidecarFile) {
+    $SidecarFile = Join-Path $ProjectDir "Content/AssetDocumentSmoke/AM_DeltaSidecarSmoke.assetdoc.json"
+}
 $EditorProcess = $null
 
 try {
@@ -157,6 +162,7 @@ try {
     $PythonArgs += @(
         $SmokeScript,
         "--base-url", $BaseUrl,
+        "--sidecar-file", $SidecarFile,
         "--wait-timeout", "$WaitTimeoutSeconds",
         "--request-timeout", "60"
     )
