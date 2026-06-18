@@ -4,7 +4,10 @@
 
 - Worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec`
 - Branch: `feature/asset-document-structured-capabilities-spec`
-- Full implementation range: `dbc7cf9..bdc7c2df802eeeb9bd18db32e5917c6529d9e07f`
+- Reviewed implementation/evidence range: `c7e123bfc59212597c0be89094271cc4bb98a273..337a6b2f2c42b66e07ec54bfeb7ae817a49d0df1`
+- Complete-region implementation checkpoint: `bdc7c2df802eeeb9bd18db32e5917c6529d9e07f`
+- External smoke closure checkpoint: `337a6b2f2c42b66e07ec54bfeb7ae817a49d0df1`
+- Branch-level closure checkpoint: this report update commit
 - Task 7 fix range: `7e7d0d62841ee5d7b0b95882d35f4b1dffd5d00a..bdc7c2df802eeeb9bd18db32e5917c6529d9e07f`
 
 ## Review Finding 修复
@@ -39,6 +42,9 @@
   - Root result: exit 1，根目录没有 `package.json`，`ENOENT`
   - MCP command: `npm test` in `MCP/`
   - MCP result: exit 0，`pass: 39, fail: 0`
+- Smoke harness unit tests:
+  - Command: `py -3 docs/superpowers/verification/test_asset_document_delta_sidecar_smoke.py`
+  - Result: exit 0，`Ran 9 tests ... OK`
 - Smoke script:
   - Path: `docs/superpowers/verification/asset_document_delta_sidecar_smoke.py`
   - Montage target asset path: `/Game/AssetDocumentSmoke/AM_DeltaSidecarSmoke`
@@ -52,7 +58,11 @@
   - Fresh smoke checks: extract matched `Body.Sync`, `Body.RootMotion`, `Body.TimeStretch`, and `Body.Curves`; diff reported no changed entries for those complete regions.
 - Cleanup checks:
   - `git diff --check`: exit 0，仅报告 CRLF normalization warnings。
-  - `git status --short`: run before checkpoint commit; only本轮允许范围文件为 modified。
+  - `git status --short`: checkpoint commit 后为 clean。
+- Branch-level final review closure:
+  - Command: `git status --short; git branch --show-current; git rev-parse --short HEAD; git merge-base master HEAD`
+  - Result: branch `feature/asset-document-structured-capabilities-spec`，reviewed evidence HEAD `337a6b2`，merge-base `c7e123bfc59212597c0be89094271cc4bb98a273`。
+  - Docs consistency scan: no matches for unfinished placeholder markers or legacy `Saved`-location default sidecar path in the final AnimMontage report/spec/verification set.
 
 ## Complete AnimMontage Regions
 
