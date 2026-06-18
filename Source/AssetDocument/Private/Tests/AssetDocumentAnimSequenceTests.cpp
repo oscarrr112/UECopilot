@@ -23,6 +23,8 @@ namespace
 const TCHAR* TestSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
 const TCHAR* TestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
 const TCHAR* TestConcreteNotifyClassPath = TEXT("/Script/Engine.AnimNotify_PlaySound");
+const TCHAR* TestManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotify_");
+const TCHAR* TestManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotifyState_");
 
 TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
@@ -189,6 +191,24 @@ bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& 
 	{
 		return Diagnostic.Path == Path && Diagnostic.Code == Code;
 	});
+}
+
+int32 CountManagedNotifyObjectsWithOuter(const UObject* Outer)
+{
+	TArray<UObject*> ChildObjects;
+	GetObjectsWithOuter(Outer, ChildObjects, false);
+
+	int32 Count = 0;
+	for (const UObject* ChildObject : ChildObjects)
+	{
+		if (ChildObject
+			&& (ChildObject->GetName().StartsWith(TestManagedNotifyObjectPrefix)
+				|| ChildObject->GetName().StartsWith(TestManagedNotifyStateObjectPrefix)))
+		{
+			++Count;
+		}
+	}
+	return Count;
 }
 
 TSharedPtr<FJsonObject> FindCurveByName(const TArray<TSharedPtr<FJsonValue>>* Curves, const FString& Name)
@@ -1204,6 +1224,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	Sequence->RateScale = 2.0f;
 	const int32 NotifyCountBeforeInvalid = Sequence->Notifies.Num();
 	const int32 MarkerCountBeforeInvalid = Sequence->AuthoredSyncMarkers.Num();
+	const int32 ManagedNotifyObjectCountBeforeInvalid = CountManagedNotifyObjectsWithOuter(Sequence);
 	TSharedRef<FJsonObject> InvalidClassBody = MakePlaybackRateBody(3.0);
 	TSharedRef<FJsonObject> InvalidNotifyClass = MakeNotifyPlacement(TEXT("BadClass"), 0.25, TEXT("BadClass"), TEXT("Default"));
 	InvalidNotifyClass->SetObjectField(TEXT("Class"), MakeClassRef(TEXT("/Script/Engine.AnimNotifyState")));
@@ -1265,13 +1286,17 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TSharedRef<FJsonObject> InvalidProperties = MakeShared<FJsonObject>();
 	InvalidProperties->SetBoolField(TEXT("NoSuchNotifyProperty"), true);
 	InvalidNotifyFragment->SetObjectField(TEXT("Properties"), InvalidProperties);
-	CrossRegionPartialMutationBody->SetArrayField(TEXT("Notifies"), ObjectArray({ InvalidEmbeddedNotify }));
+	CrossRegionPartialMutationBody->SetArrayField(TEXT("Notifies"), ObjectArray({
+		MakeEmbeddedNotifyPlacement(TEXT("ValidEmbeddedBeforeFailure"), 0.20, TEXT("ValidEmbeddedBeforeFailure"), TEXT("Default")),
+		InvalidEmbeddedNotify,
+	}));
 	const FAssetDocumentCapabilityResult CrossRegionPartialMutationResult = Capability.Apply(Context, MakeBodyValue(CrossRegionPartialMutationBody));
 	TestFalse(TEXT("Apply rejects invalid embedded notify properties before any region mutates"), CrossRegionPartialMutationResult.bSuccess);
-	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/0/Notify"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
+	TestEqual(TEXT("Invalid embedded notify properties does not leak managed notify objects"), CountManagedNotifyObjectsWithOuter(Sequence), ManagedNotifyObjectCountBeforeInvalid);
 	Extracted = MakeShared<FJsonObject>();
 	const FAssetDocumentCapabilityResult ExtractAfterCrossRegionFailureResult = Capability.Extract(Context, Extracted);
 	TestTrue(TEXT("Extract succeeds after rejected cross-region apply"), ExtractAfterCrossRegionFailureResult.bSuccess);

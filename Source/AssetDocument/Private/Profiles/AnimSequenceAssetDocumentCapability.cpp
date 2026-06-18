@@ -1920,17 +1920,21 @@ FAssetDocumentCapabilityResult CompileAnimSequenceNotifyObject(
 	const FAssetDocumentFragmentCompiler& Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	UAnimSequence* Sequence,
+	UObject* ObjectOuter,
 	const TSharedPtr<FJsonObject>& Fragment,
 	UClass* ObjectClass,
 	UClass* ExpectedBaseClass,
 	const FString& Path,
-	bool bState,
 	UObject*& OutObject)
 {
 	OutObject = nullptr;
 	if (!Sequence)
 	{
 		return BodyFailure(TEXT("AnimSequence notify object compilation requires an asset"), Path, TEXT("UnsupportedAsset"));
+	}
+	if (!ObjectOuter)
+	{
+		return BodyFailure(TEXT("AnimSequence notify object compilation requires an outer"), Path, TEXT("UnsupportedAsset"));
 	}
 	if (!ObjectClass || !ObjectClass->IsChildOf(ExpectedBaseClass))
 	{
@@ -1949,7 +1953,7 @@ FAssetDocumentCapabilityResult CompileAnimSequenceNotifyObject(
 		{
 			FAssetDocumentFragmentContext FragmentContext;
 			FragmentContext.OwnerAsset = Sequence;
-			FragmentContext.Outer = Sequence;
+			FragmentContext.Outer = ObjectOuter;
 			FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
 			FragmentContext.Definitions = Context.Definitions;
 			FragmentContext.JsonPath = Path;
@@ -1964,18 +1968,36 @@ FAssetDocumentCapabilityResult CompileAnimSequenceNotifyObject(
 			{
 				return BodyFailure(TEXT("Notify object fragment did not produce the expected notify object"), Path, TEXT("InvalidNotifyObject"));
 			}
-			MarkManagedNotifyObject(OutObject, Sequence, bState);
 			return FAssetDocumentCapabilityResult::Success();
 		}
 	}
 
-	OutObject = NewObject<UObject>(Sequence, ObjectClass, NAME_None, RF_Transactional);
+	OutObject = NewObject<UObject>(ObjectOuter, ObjectClass, NAME_None, RF_Transactional);
 	if (!OutObject)
 	{
 		return BodyFailure(TEXT("Failed to create notify object"), Path, TEXT("InvalidNotifyObject"));
 	}
-	MarkManagedNotifyObject(OutObject, Sequence, bState);
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+void FinalizeStagedAnimSequenceNotifyObjects(UAnimSequence* Sequence, TArray<FAnimNotifyEvent>& Notifies, const UObject* StagingOuter)
+{
+	if (!Sequence || !StagingOuter)
+	{
+		return;
+	}
+
+	for (FAnimNotifyEvent& NotifyEvent : Notifies)
+	{
+		if (NotifyEvent.Notify && NotifyEvent.Notify->GetOuter() == StagingOuter)
+		{
+			MarkManagedNotifyObject(NotifyEvent.Notify, Sequence, false);
+		}
+		if (NotifyEvent.NotifyStateClass && NotifyEvent.NotifyStateClass->GetOuter() == StagingOuter)
+		{
+			MarkManagedNotifyObject(NotifyEvent.NotifyStateClass, Sequence, true);
+		}
+	}
 }
 
 FAssetDocumentCapabilityResult ExtractAnimSequenceEmbeddedNotifyObject(
@@ -2792,8 +2814,14 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	TArray<FAnimNotifyTrack> StagedTracks;
 	TArray<FAnimNotifyEvent> StagedNotifies;
 	TArray<FAnimSyncMarker> StagedMarkers;
+	UObject* NotifyObjectStagingOuter = nullptr;
 	if (bHasTimelineRegions)
 	{
+		if (ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates)
+		{
+			NotifyObjectStagingOuter = NewObject<UAnimSequence>(GetTransientPackage(), UAnimSequence::StaticClass(), NAME_None, RF_Transient);
+		}
+
 		TArray<FName> OriginalTrackNames;
 		OriginalTrackNames.Reserve(Sequence->AnimNotifyTracks.Num());
 		for (const FAnimNotifyTrack& Track : Sequence->AnimNotifyTracks)
@@ -2857,11 +2885,11 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 					Compiler,
 					Context,
 					Sequence,
+					NotifyObjectStagingOuter,
 					ParsedNotify.NotifyFragment,
 					ParsedNotify.NotifyClass,
 					UAnimNotify::StaticClass(),
 					BodyArrayFieldPath(TEXT("Notifies"), ParsedNotify.SourceIndex, ParsedNotify.NotifyFragment.IsValid() ? TEXT("Notify") : TEXT("Class")),
-					false,
 					NotifyObject);
 				if (!CompileNotifyResult.bSuccess)
 				{
@@ -2891,11 +2919,11 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 					Compiler,
 					Context,
 					Sequence,
+					NotifyObjectStagingOuter,
 					ParsedState.NotifyStateFragment,
 					ParsedState.NotifyStateClass,
 					UAnimNotifyState::StaticClass(),
 					BodyArrayFieldPath(TEXT("NotifyStates"), ParsedState.SourceIndex, ParsedState.NotifyStateFragment.IsValid() ? TEXT("NotifyState") : TEXT("Class")),
-					true,
 					NotifyStateObject);
 				if (!CompileNotifyStateResult.bSuccess)
 				{
@@ -2949,6 +2977,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	{
 		if (ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasNotifyTracks)
 		{
+			FinalizeStagedAnimSequenceNotifyObjects(Sequence, StagedNotifies, NotifyObjectStagingOuter);
 			Sequence->AnimNotifyTracks = MoveTemp(StagedTracks);
 			Sequence->Notifies = MoveTemp(StagedNotifies);
 			Sequence->SortNotifies();
