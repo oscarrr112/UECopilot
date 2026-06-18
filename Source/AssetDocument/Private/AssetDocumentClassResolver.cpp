@@ -73,8 +73,13 @@ bool FAssetDocumentClassResolver::ValidateResolvedClass(UClass* Class, FString& 
 		return false;
 	}
 
-	if (Class->IsChildOf(UBlueprint::StaticClass()) ||
-		Class->IsChildOf(UMaterial::StaticClass()))
+	if (Class->IsChildOf(UBlueprint::StaticClass()) && Class != UBlueprint::StaticClass())
+	{
+		OutError = FString::Printf(TEXT("Resolved class '%s' is a Blueprint-derived asset class that requires an exact AssetDocument profile"), *Class->GetName());
+		return false;
+	}
+
+	if (Class->IsChildOf(UMaterial::StaticClass()))
 	{
 		OutError = FString::Printf(TEXT("Resolved class '%s' is not supported by GenericAsset sidecar v1"), *Class->GetName());
 		return false;

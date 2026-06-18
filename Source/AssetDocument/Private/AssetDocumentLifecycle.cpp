@@ -3,7 +3,11 @@
 #include "AssetDocumentLifecycle.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Dom/JsonObject.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "HAL/FileManager.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "UObject/GarbageCollection.h"
 
@@ -31,7 +35,7 @@ bool FAssetDocumentLifecycle::TryParseAction(const FString& ActionName, EAssetDo
 	return false;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action, TSharedPtr<FJsonObject> Document)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -43,7 +47,13 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		ExistingAsset = LoadObject<UObject>(nullptr, *Result.ObjectPath);
 	}
 
-	if (ExistingAsset && !ExistingAsset->IsA(Class))
+	if (ExistingAsset && Class == UBlueprint::StaticClass() && ExistingAsset->GetClass() != UBlueprint::StaticClass())
+	{
+		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UBlueprint asset"), *Result.ObjectPath);
+		return Result;
+	}
+
+	if (ExistingAsset && Class != UBlueprint::StaticClass() && !ExistingAsset->IsA(Class))
 	{
 		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not a '%s'"), *Result.ObjectPath, *Class->GetName());
 		return Result;
@@ -79,6 +89,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	{
 		Result.Error = FString::Printf(TEXT("Failed to create package '%s'"), *Target);
 		return Result;
+	}
+
+	if (Class == UBlueprint::StaticClass())
+	{
+		return CreateBlueprintAsset(Target, Package, AssetName, Document);
 	}
 
 	UObject* NewAsset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
@@ -122,4 +137,93 @@ void FAssetDocumentLifecycle::CleanupCreatedAsset(const FAssetDocumentLifecycleR
 FString FAssetDocumentLifecycle::MakeObjectPath(const FString& Target)
 {
 	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+}
+
+bool FAssetDocumentLifecycle::TryResolveBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError)
+{
+	OutParentClass = nullptr;
+
+	FString ParentClassPath = TEXT("/Script/Engine.Actor");
+	if (Document.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* Body = nullptr;
+		if (!Document->TryGetObjectField(TEXT("Body"), Body) || !Body || !Body->IsValid())
+		{
+			OutError = TEXT("UBlueprint creation requires Body.ParentClass");
+			return false;
+		}
+
+		const TSharedPtr<FJsonObject>* ParentClass = nullptr;
+		if (!(*Body)->TryGetObjectField(TEXT("ParentClass"), ParentClass) || !ParentClass || !ParentClass->IsValid())
+		{
+			OutError = TEXT("UBlueprint creation requires Body.ParentClass");
+			return false;
+		}
+
+		FString Kind;
+		if (!(*ParentClass)->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+		{
+			OutError = TEXT("Body.ParentClass.Kind must be ClassRef");
+			return false;
+		}
+
+		if (!(*ParentClass)->TryGetStringField(TEXT("Class"), ParentClassPath) || ParentClassPath.IsEmpty())
+		{
+			OutError = TEXT("Body.ParentClass.Class is required");
+			return false;
+		}
+	}
+
+	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ParentClassPath);
+	if (!OutParentClass)
+	{
+		OutError = FString::Printf(TEXT("Failed to resolve Body.ParentClass.Class '%s'"), *ParentClassPath);
+		return false;
+	}
+
+	if (!OutParentClass->IsChildOf(UObject::StaticClass()))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UObject class"), *OutParentClass->GetName());
+		return false;
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName());
+		return false;
+	}
+
+	return true;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+
+	UClass* ParentClass = nullptr;
+	if (!TryResolveBlueprintParentClass(Document, ParentClass, Result.Error))
+	{
+		return Result;
+	}
+
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		ParentClass,
+		Package,
+		*AssetName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!Blueprint)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create UBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FAssetRegistryModule::AssetCreated(Blueprint);
+
+	Result.Asset = Blueprint;
+	Result.bCreated = true;
+	return Result;
 }

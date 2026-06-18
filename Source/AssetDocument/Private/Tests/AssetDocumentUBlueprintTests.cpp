@@ -7,7 +7,11 @@
 
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
+#include "GameFramework/Actor.h"
+#include "GameFramework/Pawn.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
 #include "UObject/UObjectGlobals.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -203,6 +207,85 @@ bool FAssetDocumentUBlueprintUnsupportedGraphProtectionTest::RunTest(const FStri
 		TestTrue(FString::Printf(TEXT("%s diagnostic is precise"), *Region), ResultHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Region), TEXT("UnsupportedUBlueprintRegion")));
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintCreateTest,
+	"AssetFactory.AssetDocument.UBlueprint.Create",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintCreateTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_Create_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	auto MakeCreateDocument = [](const FString& InTarget, const FString& ParentClassPath)
+	{
+		TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+		Document->SetNumberField(TEXT("SchemaVersion"), 1);
+		Document->SetStringField(TEXT("Target"), InTarget);
+		Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Blueprint"));
+		Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+		Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+		Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+		TSharedPtr<FJsonObject> ParentClass = MakeShared<FJsonObject>();
+		ParentClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+		ParentClass->SetStringField(TEXT("Class"), ParentClassPath);
+
+		TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+		Body->SetObjectField(TEXT("ParentClass"), ParentClass);
+		Body->SetArrayField(TEXT("ImplementedInterfaces"), {});
+		Body->SetArrayField(TEXT("Variables"), {});
+		Body->SetArrayField(TEXT("Components"), {});
+		Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+		Body->SetArrayField(TEXT("UbergraphPages"), {});
+		Body->SetArrayField(TEXT("FunctionGraphs"), {});
+		Body->SetArrayField(TEXT("MacroGraphs"), {});
+		Body->SetArrayField(TEXT("Timelines"), {});
+		Document->SetObjectField(TEXT("Body"), Body);
+		return Document;
+	};
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = MakeCreateDocument(Target, TEXT("/Script/Engine.Actor"));
+	Request.bSaveAsset = false;
+
+	const FAssetDocumentResult Result = Service.Apply(Request);
+	if (!Result.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Apply failed: %s"), *Result.Message));
+	}
+	TestTrue(TEXT("Blueprint apply succeeds"), Result.IsSuccess());
+
+	UObject* Created = LoadObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target)));
+	UBlueprint* Blueprint = Cast<UBlueprint>(Created);
+	TestNotNull(TEXT("Created asset is UBlueprint"), Blueprint);
+	if (Blueprint)
+	{
+		TestEqual(TEXT("Parent class is Actor"), Blueprint->ParentClass.Get(), AActor::StaticClass());
+	}
+
+	const FString PawnTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_CreatePawn_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentApplyRequest PawnRequest;
+	PawnRequest.Document = MakeCreateDocument(PawnTarget, TEXT("/Script/Engine.Pawn"));
+	PawnRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult PawnResult = Service.Apply(PawnRequest);
+	if (!PawnResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Pawn apply failed: %s"), *PawnResult.Message));
+	}
+	TestTrue(TEXT("Blueprint apply with Pawn parent succeeds"), PawnResult.IsSuccess());
+
+	UObject* CreatedPawnBlueprint = LoadObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *PawnTarget, *FPackageName::GetLongPackageAssetName(PawnTarget)));
+	UBlueprint* PawnBlueprint = Cast<UBlueprint>(CreatedPawnBlueprint);
+	TestNotNull(TEXT("Created Pawn-parent asset is UBlueprint"), PawnBlueprint);
+	if (PawnBlueprint)
+	{
+		TestEqual(TEXT("Parent class is Pawn"), PawnBlueprint->ParentClass.Get(), APawn::StaticClass());
+	}
 	return true;
 }
 

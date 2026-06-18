@@ -4,6 +4,8 @@
 
 #include "Dom/JsonValue.h"
 #include "Engine/Blueprint.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 
 namespace
 {
@@ -72,6 +74,67 @@ FAssetDocumentCapabilityResult RequireArrayOrNullValue(const TSharedPtr<FJsonVal
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ResolveParentClass(const TSharedPtr<FJsonValue>& Value, UClass*& OutParentClass)
+{
+	OutParentClass = nullptr;
+
+	if (!Value.IsValid() || Value->Type != EJson::Object)
+	{
+		return BodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
+	}
+
+	const TSharedPtr<FJsonObject> ParentClass = Value->AsObject();
+	if (!ParentClass.IsValid())
+	{
+		return BodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
+	}
+
+	FString Kind;
+	if (!ParentClass->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+	{
+		return BodyFailure(TEXT("Body.ParentClass.Kind must be ClassRef"), TEXT("/Body/ParentClass/Kind"), TEXT("InvalidParentClassKind"));
+	}
+
+	FString ClassPath;
+	if (!ParentClass->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
+	{
+		return BodyFailure(TEXT("Body.ParentClass.Class is required"), TEXT("/Body/ParentClass/Class"), TEXT("MissingParentClass"));
+	}
+
+	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+	if (!OutParentClass)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Failed to resolve Body.ParentClass.Class '%s'"), *ClassPath),
+			TEXT("/Body/ParentClass/Class"),
+			TEXT("UnresolvedParentClass"));
+	}
+
+	if (!OutParentClass->IsChildOf(UObject::StaticClass()))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UObject class"), *OutParentClass->GetName()),
+			TEXT("/Body/ParentClass/Class"),
+			TEXT("InvalidParentClass"));
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName()),
+			TEXT("/Body/ParentClass/Class"),
+			TEXT("AbstractParentClass"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateParentClass(const TSharedPtr<FJsonValue>& Value)
+{
+	UClass* ParentClass = nullptr;
+	return ResolveParentClass(Value, ParentClass);
 }
 }
 
@@ -149,7 +212,44 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Preflight(FAs
 
 FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
 {
-	return Validate(Context, BodyJson);
+	const FAssetDocumentCapabilityResult ValidateResult = Validate(Context, BodyJson);
+	if (!ValidateResult.bSuccess)
+	{
+		return ValidateResult;
+	}
+
+	UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
+	if (!Blueprint)
+	{
+		return BodyFailure(TEXT("UBlueprint body apply requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	TSharedPtr<FJsonObject> BodyObject;
+	const FAssetDocumentCapabilityResult ObjectResult = RequireObjectValue(BodyJson, TEXT("/Body"), BodyObject);
+	if (!ObjectResult.bSuccess)
+	{
+		return ObjectResult;
+	}
+
+	if (const TSharedPtr<FJsonValue>* ParentClassValue = BodyObject->Values.Find(TEXT("ParentClass")))
+	{
+		UClass* ParentClass = nullptr;
+		const FAssetDocumentCapabilityResult ParentClassResult = ResolveParentClass(*ParentClassValue, ParentClass);
+		if (!ParentClassResult.bSuccess)
+		{
+			return ParentClassResult;
+		}
+
+		if (Blueprint->ParentClass.Get() != ParentClass)
+		{
+			Blueprint->Modify();
+			Blueprint->ParentClass = ParentClass;
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied UBlueprint Body scaffold"));
 }
 
 FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const
@@ -208,6 +308,15 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 			if (!ProtectedResult.bSuccess)
 			{
 				return ProtectedResult;
+			}
+		}
+
+		if (Pair.Key == TEXT("ParentClass"))
+		{
+			const FAssetDocumentCapabilityResult ParentClassResult = ValidateParentClass(Pair.Value);
+			if (!ParentClassResult.bSuccess)
+			{
+				return ParentClassResult;
 			}
 		}
 	}
