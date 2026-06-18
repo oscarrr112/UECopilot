@@ -1150,6 +1150,16 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	}
 
 	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action, Request.Document);
+	if (!LifecycleResult.Error.IsEmpty())
+	{
+		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		return Result;
+	}
+
 	if (!LifecycleResult.Asset)
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);

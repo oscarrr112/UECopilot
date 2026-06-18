@@ -226,6 +226,8 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(cons
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 	if (Blueprint->Status == BS_Error)
 	{
+		Result.Asset = Blueprint;
+		Result.bCreated = true;
 		Result.Error = FString::Printf(TEXT("Failed to compile UBlueprint asset '%s'"), *Result.ObjectPath);
 		return Result;
 	}
