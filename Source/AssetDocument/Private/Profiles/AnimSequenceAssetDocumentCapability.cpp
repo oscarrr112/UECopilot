@@ -3,6 +3,7 @@
 #include "Profiles/AnimSequenceAssetDocumentCapability.h"
 
 #include "AssetDocumentFragmentCompiler.h"
+#include "AssetDocumentPropertyAdapter.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
@@ -19,6 +20,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectGlobals.h"
+
+#include <cmath>
 
 namespace
 {
@@ -1148,6 +1151,8 @@ struct FParsedAnimSequenceNotifyPlacement
 	float Time = 0.0f;
 	FName TrackName = TEXT("Default");
 	UClass* NotifyClass = nullptr;
+	TSharedPtr<FJsonObject> NotifyFragment;
+	int32 SourceIndex = INDEX_NONE;
 };
 
 struct FParsedAnimSequenceNotifyStatePlacement
@@ -1157,6 +1162,8 @@ struct FParsedAnimSequenceNotifyStatePlacement
 	float Duration = 0.0f;
 	FName TrackName = TEXT("Default");
 	UClass* NotifyStateClass = nullptr;
+	TSharedPtr<FJsonObject> NotifyStateFragment;
+	int32 SourceIndex = INDEX_NONE;
 };
 
 struct FParsedAnimSequenceSyncMarker
@@ -1194,12 +1201,9 @@ void MarkManagedNotifyObject(UObject* NotifyObject, UAnimSequence* Sequence, boo
 
 bool IsManagedAnimSequenceNotifyEvent(const FAnimNotifyEvent& Event, const UAnimSequence* Sequence)
 {
-	if (Event.Notify)
-	{
-		return HasManagedObjectName(Event.Notify, ManagedNotifyObjectPrefix) && (!Sequence || Event.Notify->GetOuter() == Sequence);
-	}
-
-	return !Event.NotifyStateClass && !Event.NotifyName.IsNone();
+	return Event.Notify
+		&& HasManagedObjectName(Event.Notify, ManagedNotifyObjectPrefix)
+		&& (!Sequence || Event.Notify->GetOuter() == Sequence);
 }
 
 bool IsManagedAnimSequenceNotifyStateEvent(const FAnimNotifyEvent& Event, const UAnimSequence* Sequence)
@@ -1251,15 +1255,24 @@ FAssetDocumentCapabilityResult ReadRequiredNumberField(
 		return BodyFailure(FString::Printf(TEXT("%s must be a number"), FieldName), Path, TEXT("InvalidNumericField"));
 	}
 	OutValue = (*Value)->AsNumber();
-	if (OutValue < -static_cast<double>(MAX_flt) || OutValue > static_cast<double>(MAX_flt))
+	if (!std::isfinite(OutValue) || OutValue < -static_cast<double>(MAX_flt) || OutValue > static_cast<double>(MAX_flt))
 	{
 		return BodyFailure(FString::Printf(TEXT("%s must fit in a float"), FieldName), Path, TEXT("InvalidNumericField"));
+	}
+	const float FloatValue = static_cast<float>(OutValue);
+	if (!FMath::IsFinite(FloatValue))
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must fit in a finite float"), FieldName), Path, TEXT("InvalidNumericField"));
 	}
 	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ValidateTimelineTime(const UAnimSequence* Sequence, double Time, const FString& Path, const FString& Code)
 {
+	if (!std::isfinite(Time) || Time > static_cast<double>(MAX_flt))
+	{
+		return BodyFailure(TEXT("Timeline time must be finite and fit in a float"), Path, Code);
+	}
 	if (Time < 0.0)
 	{
 		return BodyFailure(TEXT("Timeline time must be non-negative"), Path, Code);
@@ -1281,6 +1294,89 @@ FAssetDocumentCapabilityResult ValidateTimelineTime(const UAnimSequence* Sequenc
 		}
 	}
 
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ResolveNotifyObjectFragmentClass(
+	const TSharedRef<FJsonObject>& FragmentObject,
+	UClass* ExpectedBaseClass,
+	const FString& Path,
+	const FString& InvalidCode,
+	UClass*& OutClass)
+{
+	OutClass = nullptr;
+
+	FString Kind;
+	FAssetDocumentCapabilityResult Result = ReadRequiredStringField(FragmentObject, TEXT("Kind"), Path / TEXT("Kind"), Kind);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Kind != TEXT("EmbeddedObject") && Kind != TEXT("ClassRef"))
+	{
+		return BodyFailure(TEXT("Notify object fragment must be EmbeddedObject or ClassRef"), Path / TEXT("Kind"), InvalidCode);
+	}
+
+	FString ClassPath;
+	if (!FragmentObject->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.TrimStartAndEnd().IsEmpty())
+	{
+		if (!FragmentObject->TryGetStringField(TEXT("Path"), ClassPath) || ClassPath.TrimStartAndEnd().IsEmpty())
+		{
+			return BodyFailure(TEXT("Notify object fragment requires Class"), Path / TEXT("Class"), InvalidCode);
+		}
+	}
+
+	UClass* ResolvedClass = FindObject<UClass>(nullptr, *ClassPath);
+	if (!ResolvedClass)
+	{
+		ResolvedClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+	}
+	if (!ResolvedClass || !ResolvedClass->IsChildOf(ExpectedBaseClass))
+	{
+		return BodyFailure(TEXT("Notify object fragment did not resolve to the expected notify class"), Path, InvalidCode);
+	}
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return BodyFailure(TEXT("Notify class is abstract and cannot be instantiated"), Path, InvalidCode);
+	}
+
+	OutClass = ResolvedClass;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ResolveNotifyObjectFragmentField(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	UClass* ExpectedBaseClass,
+	const FString& Path,
+	const FString& InvalidCode,
+	bool& bOutHasFragment,
+	TSharedPtr<FJsonObject>& OutFragment,
+	UClass*& OutClass)
+{
+	bOutHasFragment = false;
+	OutFragment.Reset();
+	OutClass = nullptr;
+
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName);
+	if (!Value)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*Value, Path, OutFragment);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ResolveNotifyObjectFragmentClass(OutFragment.ToSharedRef(), ExpectedBaseClass, Path, InvalidCode, OutClass);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	bOutHasFragment = true;
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -1389,26 +1485,29 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		{
 			return Result;
 		}
-		Result = RejectUnknownArrayObjectFields(TrackObject.ToSharedRef(), TEXT("NotifyTracks"), Index, { TEXT("Name") });
+		Result = RejectUnknownArrayObjectFields(TrackObject.ToSharedRef(), TEXT("NotifyTracks"), Index, { TEXT("TrackName"), TEXT("Name") });
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
 
 		FString NameString;
-		Result = ReadRequiredStringField(TrackObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), NameString);
-		if (!Result.bSuccess)
+		if (!TrackObject->TryGetStringField(TEXT("TrackName"), NameString) || NameString.TrimStartAndEnd().IsEmpty())
 		{
-			return Result;
+			Result = ReadRequiredStringField(TrackObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), NameString);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 		}
 		const FName TrackName(*NameString);
 		if (TrackName.IsNone())
 		{
-			return BodyFailure(TEXT("Notify track name cannot be None"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), TEXT("InvalidNotifyTrackName"));
+			return BodyFailure(TEXT("Notify track name cannot be None"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("InvalidNotifyTrackName"));
 		}
 		if (SeenNames.Contains(TrackName))
 		{
-			return BodyFailure(TEXT("Duplicate notify track name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), TEXT("DuplicateNotifyTrackName"));
+			return BodyFailure(TEXT("Duplicate notify track name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("DuplicateNotifyTrackName"));
 		}
 		SeenNames.Add(TrackName);
 
@@ -1451,7 +1550,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 		{
 			return Result;
 		}
-		Result = RejectUnknownArrayObjectFields(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		Result = RejectUnknownArrayObjectFields(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Notify"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1483,11 +1582,24 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 			return Result;
 		}
 
+		bool bHasNotifyFragment = false;
+		TSharedPtr<FJsonObject> NotifyFragment;
+		UClass* NotifyFragmentClass = nullptr;
+		Result = ResolveNotifyObjectFragmentField(NotifyObject.ToSharedRef(), TEXT("Notify"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Notify")), TEXT("InvalidNotifyObject"), bHasNotifyFragment, NotifyFragment, NotifyFragmentClass);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (bHasClass && bHasNotifyFragment)
+		{
+			return BodyFailure(TEXT("Notify placement cannot declare both Class and Notify"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("AmbiguousNotifyObject"));
+		}
+
 		FString NotifyNameString;
 		const bool bHasNotifyName = NotifyObject->TryGetStringField(TEXT("NotifyName"), NotifyNameString) && !NotifyNameString.TrimStartAndEnd().IsEmpty();
-		if (!bHasClass && !bHasNotifyName)
+		if (!bHasClass && !bHasNotifyFragment)
 		{
-			return BodyFailure(TEXT("Notify placement requires NotifyName or Class"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("MissingNotifyIdentity"));
+			return BodyFailure(TEXT("Notify placement requires Notify or Class"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("MissingNotifyObject"));
 		}
 
 		FParsedAnimSequenceNotifyPlacement ParsedNotify;
@@ -1495,12 +1607,15 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 		ParsedNotify.NotifyName = bHasNotifyName ? FName(*NotifyNameString) : ParsedNotify.Name;
 		ParsedNotify.Time = static_cast<float>(Time);
 		ParsedNotify.TrackName = FName(*ReadPlacementTrackName(NotifyObject.ToSharedRef()));
-		ParsedNotify.NotifyClass = NotifyClass;
+		ParsedNotify.NotifyClass = bHasNotifyFragment ? NotifyFragmentClass : NotifyClass;
+		ParsedNotify.NotifyFragment = NotifyFragment;
+		ParsedNotify.SourceIndex = Index;
 
-		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%s|%s"),
+		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%s|%s|%s"),
 			*ParsedNotify.Name.ToString(),
 			ParsedNotify.Time,
 			*ParsedNotify.NotifyName.ToString(),
+			ParsedNotify.NotifyClass ? *ParsedNotify.NotifyClass->GetPathName() : TEXT("Named"),
 			*ParsedNotify.TrackName.ToString());
 		if (SeenKeys.Contains(SemanticKey))
 		{
@@ -1552,7 +1667,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 		{
 			return Result;
 		}
-		Result = RejectUnknownArrayObjectFields(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		Result = RejectUnknownArrayObjectFields(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("NotifyState"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1599,9 +1714,22 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 		{
 			return Result;
 		}
-		if (!bHasClass)
+
+		bool bHasNotifyStateFragment = false;
+		TSharedPtr<FJsonObject> NotifyStateFragment;
+		UClass* NotifyStateFragmentClass = nullptr;
+		Result = ResolveNotifyObjectFragmentField(StateObject.ToSharedRef(), TEXT("NotifyState"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("NotifyState")), TEXT("InvalidNotifyStateObject"), bHasNotifyStateFragment, NotifyStateFragment, NotifyStateFragmentClass);
+		if (!Result.bSuccess)
 		{
-			return BodyFailure(TEXT("Notify state placement requires Class"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Class")), TEXT("MissingNotifyStateClass"));
+			return Result;
+		}
+		if (bHasClass && bHasNotifyStateFragment)
+		{
+			return BodyFailure(TEXT("Notify state placement cannot declare both Class and NotifyState"), BodyArrayItemPath(TEXT("NotifyStates"), Index), TEXT("AmbiguousNotifyStateObject"));
+		}
+		if (!bHasClass && !bHasNotifyStateFragment)
+		{
+			return BodyFailure(TEXT("Notify state placement requires NotifyState or Class"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("NotifyState")), TEXT("MissingNotifyStateClass"));
 		}
 
 		FParsedAnimSequenceNotifyStatePlacement ParsedState;
@@ -1609,7 +1737,9 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 		ParsedState.Time = static_cast<float>(Time);
 		ParsedState.Duration = static_cast<float>(Duration);
 		ParsedState.TrackName = FName(*ReadPlacementTrackName(StateObject.ToSharedRef()));
-		ParsedState.NotifyStateClass = NotifyStateClass;
+		ParsedState.NotifyStateClass = bHasNotifyStateFragment ? NotifyStateFragmentClass : NotifyStateClass;
+		ParsedState.NotifyStateFragment = NotifyStateFragment;
+		ParsedState.SourceIndex = Index;
 
 		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%.6f|%s|%s"),
 			*ParsedState.Name.ToString(),
@@ -1715,6 +1845,36 @@ FAssetDocumentCapabilityResult ParseAnimSequenceSyncMarkers(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ValidateExplicitNotifyTrackReferences(
+	const TArray<FParsedAnimSequenceNotifyTrack>& Tracks,
+	const TArray<FParsedAnimSequenceNotifyPlacement>& Notifies,
+	const TArray<FParsedAnimSequenceNotifyStatePlacement>& NotifyStates)
+{
+	TSet<FName> DeclaredTracks;
+	for (const FParsedAnimSequenceNotifyTrack& Track : Tracks)
+	{
+		DeclaredTracks.Add(Track.Name);
+	}
+
+	for (const FParsedAnimSequenceNotifyPlacement& Notify : Notifies)
+	{
+		if (!DeclaredTracks.Contains(Notify.TrackName))
+		{
+			return BodyFailure(TEXT("Notify references a track not declared in Body.NotifyTracks"), BodyArrayFieldPath(TEXT("Notifies"), Notify.SourceIndex, TEXT("TrackName")), TEXT("UnknownNotifyTrack"));
+		}
+	}
+
+	for (const FParsedAnimSequenceNotifyStatePlacement& NotifyState : NotifyStates)
+	{
+		if (!DeclaredTracks.Contains(NotifyState.TrackName))
+		{
+			return BodyFailure(TEXT("NotifyState references a track not declared in Body.NotifyTracks"), BodyArrayFieldPath(TEXT("NotifyStates"), NotifyState.SourceIndex, TEXT("TrackName")), TEXT("UnknownNotifyTrack"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 int32 EnsureNotifyTrackIndex(TArray<FAnimNotifyTrack>& Tracks, const FName TrackName)
 {
 	const FName EffectiveTrackName = TrackName.IsNone() ? FName(TEXT("Default")) : TrackName;
@@ -1728,6 +1888,95 @@ int32 EnsureNotifyTrackIndex(TArray<FAnimNotifyTrack>& Tracks, const FName Track
 
 	Tracks.Add(FAnimNotifyTrack(EffectiveTrackName, FLinearColor::White));
 	return Tracks.Num() - 1;
+}
+
+FAssetDocumentCapabilityResult CompileAnimSequenceNotifyObject(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimSequence* Sequence,
+	const TSharedPtr<FJsonObject>& Fragment,
+	UClass* ObjectClass,
+	UClass* ExpectedBaseClass,
+	const FString& Path,
+	bool bState,
+	UObject*& OutObject)
+{
+	OutObject = nullptr;
+	if (!Sequence)
+	{
+		return BodyFailure(TEXT("AnimSequence notify object compilation requires an asset"), Path, TEXT("UnsupportedAsset"));
+	}
+	if (!ObjectClass || !ObjectClass->IsChildOf(ExpectedBaseClass))
+	{
+		return BodyFailure(TEXT("Notify object class did not resolve to the expected base class"), Path, TEXT("InvalidNotifyObject"));
+	}
+
+	if (Fragment.IsValid())
+	{
+		FString Kind;
+		FAssetDocumentCapabilityResult Result = ReadRequiredStringField(Fragment.ToSharedRef(), TEXT("Kind"), Path / TEXT("Kind"), Kind);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (Kind == TEXT("EmbeddedObject"))
+		{
+			FAssetDocumentFragmentContext FragmentContext;
+			FragmentContext.OwnerAsset = Sequence;
+			FragmentContext.Outer = Sequence;
+			FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
+			FragmentContext.Definitions = Context.Definitions;
+			FragmentContext.JsonPath = Path;
+
+			const FAssetDocumentFragmentResult FragmentResult = Compiler.Compile(Fragment.ToSharedRef(), FragmentContext);
+			if (!FragmentResult.bSuccess)
+			{
+				return FragmentFailure(FragmentResult);
+			}
+			OutObject = FragmentResult.Object;
+			if (!OutObject || !OutObject->IsA(ExpectedBaseClass))
+			{
+				return BodyFailure(TEXT("Notify object fragment did not produce the expected notify object"), Path, TEXT("InvalidNotifyObject"));
+			}
+			MarkManagedNotifyObject(OutObject, Sequence, bState);
+			return FAssetDocumentCapabilityResult::Success();
+		}
+	}
+
+	OutObject = NewObject<UObject>(Sequence, ObjectClass, NAME_None, RF_Transactional);
+	if (!OutObject)
+	{
+		return BodyFailure(TEXT("Failed to create notify object"), Path, TEXT("InvalidNotifyObject"));
+	}
+	MarkManagedNotifyObject(OutObject, Sequence, bState);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractAnimSequenceEmbeddedNotifyObject(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const UAnimSequence* Sequence,
+	UObject* NotifyObject,
+	const FString& JsonPath,
+	TSharedRef<FJsonObject>& OutFragment)
+{
+	FAssetDocumentFragmentExtractContext ExtractContext;
+	ExtractContext.OwnerAsset = const_cast<UAnimSequence*>(Sequence);
+	ExtractContext.ValueObject = NotifyObject;
+	ExtractContext.Kind = TEXT("EmbeddedObject");
+	ExtractContext.JsonPath = JsonPath;
+
+	const FAssetDocumentFragmentResult FragmentResult = Compiler.Extract(ExtractContext, OutFragment);
+	if (!FragmentResult.bSuccess)
+	{
+		return FragmentFailure(FragmentResult);
+	}
+
+	if (TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(NotifyObject, true))
+	{
+		OutFragment->SetObjectField(TEXT("Properties"), Properties);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 TSharedRef<FJsonObject> MakeClassRefObject(const UClass* Class)
@@ -1749,20 +1998,25 @@ TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifyTracks(const UAnimSequen
 	for (const FAnimNotifyTrack& Track : Sequence->AnimNotifyTracks)
 	{
 		TSharedRef<FJsonObject> TrackObject = MakeShared<FJsonObject>();
-		TrackObject->SetStringField(TEXT("Name"), Track.TrackName.ToString());
+		TrackObject->SetStringField(TEXT("TrackName"), Track.TrackName.ToString());
 		TrackValues.Add(MakeShared<FJsonValueObject>(TrackObject));
 	}
 	return TrackValues;
 }
 
-TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifies(const UAnimSequence* Sequence, bool bStates)
+FAssetDocumentCapabilityResult ExtractAnimSequenceNotifies(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const UAnimSequence* Sequence,
+	bool bStates,
+	TArray<TSharedPtr<FJsonValue>>& OutValues)
 {
-	TArray<TSharedPtr<FJsonValue>> Values;
+	OutValues.Reset();
 	if (!Sequence)
 	{
-		return Values;
+		return FAssetDocumentCapabilityResult::Success();
 	}
 
+	int32 ExtractedIndex = 0;
 	for (const FAnimNotifyEvent& Event : Sequence->Notifies)
 	{
 		const bool bEventIsState = Event.NotifyStateClass != nullptr;
@@ -1785,26 +2039,49 @@ TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifies(const UAnimSequence* 
 		const FString TrackName = Sequence->AnimNotifyTracks.IsValidIndex(Event.TrackIndex)
 			? Sequence->AnimNotifyTracks[Event.TrackIndex].TrackName.ToString()
 			: FString(TEXT("Default"));
-		Placement->SetStringField(TEXT("Track"), TrackName);
+		Placement->SetStringField(TEXT("TrackName"), TrackName);
 
 		if (bStates)
 		{
 			Placement->SetNumberField(TEXT("Duration"), Event.GetDuration());
-			Placement->SetObjectField(TEXT("Class"), MakeClassRefObject(Event.NotifyStateClass ? Event.NotifyStateClass->GetClass() : UAnimNotifyState::StaticClass()));
+			TSharedRef<FJsonObject> NotifyStateFragment = MakeShared<FJsonObject>();
+			const FAssetDocumentCapabilityResult Result = ExtractAnimSequenceEmbeddedNotifyObject(
+				Compiler,
+				Sequence,
+				Event.NotifyStateClass,
+				BodyArrayFieldPath(TEXT("NotifyStates"), ExtractedIndex, TEXT("NotifyState")),
+				NotifyStateFragment);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			Placement->SetObjectField(TEXT("NotifyState"), NotifyStateFragment);
 		}
 		else
 		{
 			Placement->SetStringField(TEXT("NotifyName"), Event.NotifyName.ToString());
 			if (Event.Notify)
 			{
-				Placement->SetObjectField(TEXT("Class"), MakeClassRefObject(Event.Notify->GetClass()));
+				TSharedRef<FJsonObject> NotifyFragment = MakeShared<FJsonObject>();
+				const FAssetDocumentCapabilityResult Result = ExtractAnimSequenceEmbeddedNotifyObject(
+					Compiler,
+					Sequence,
+					Event.Notify,
+					BodyArrayFieldPath(TEXT("Notifies"), ExtractedIndex, TEXT("Notify")),
+					NotifyFragment);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+				Placement->SetObjectField(TEXT("Notify"), NotifyFragment);
 			}
 		}
 
-		Values.Add(MakeShared<FJsonValueObject>(Placement));
+		OutValues.Add(MakeShared<FJsonValueObject>(Placement));
+		++ExtractedIndex;
 	}
 
-	Values.Sort([](const TSharedPtr<FJsonValue>& LeftValue, const TSharedPtr<FJsonValue>& RightValue)
+	OutValues.Sort([](const TSharedPtr<FJsonValue>& LeftValue, const TSharedPtr<FJsonValue>& RightValue)
 	{
 		const TSharedPtr<FJsonObject> Left = LeftValue->AsObject();
 		const TSharedPtr<FJsonObject> Right = RightValue->AsObject();
@@ -1816,7 +2093,7 @@ TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifies(const UAnimSequence* 
 		}
 		return Left->GetStringField(TEXT("Name")) < Right->GetStringField(TEXT("Name"));
 	});
-	return Values;
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceSyncMarkers(const UAnimSequence* Sequence)
@@ -2320,6 +2597,14 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		{
 			return Result;
 		}
+		if (OutParsed.bHasNotifyTracks)
+		{
+			Result = ValidateExplicitNotifyTrackReferences(OutParsed.NotifyTracks, OutParsed.Notifies, OutParsed.NotifyStates);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
 	}
 
 	const FAssetDocumentCapabilityResult SequenceValidationResult = ValidateParsedBodyAgainstSequence(Sequence, OutParsed);
@@ -2387,9 +2672,9 @@ TSharedRef<FJsonObject> FAnimSequenceAssetDocumentCapability::GetSchemaHint() co
 	Hint->SetStringField(TEXT("RootMotion"), TEXT("object: bEnableRootMotion, RootMotionRootLock, bForceRootLock, bUseNormalizedRootMotionScale"));
 	Hint->SetStringField(TEXT("Compression"), TEXT("object: CompressionErrorThresholdScale, BoneCompressionSettings, CurveCompressionSettings, bDoNotOverrideCompression"));
 	Hint->SetStringField(TEXT("Curves"), TEXT("array: sequence-owned float curves"));
-	Hint->SetStringField(TEXT("Notifies"), TEXT("array: point notify placements"));
-	Hint->SetStringField(TEXT("NotifyStates"), TEXT("array: ranged notify-state placements"));
-	Hint->SetStringField(TEXT("NotifyTracks"), TEXT("array: notify track names/order"));
+	Hint->SetStringField(TEXT("Notifies"), TEXT("array: point notify placements with Notify embedded object fragments"));
+	Hint->SetStringField(TEXT("NotifyStates"), TEXT("array: ranged notify-state placements with NotifyState embedded object fragments"));
+	Hint->SetStringField(TEXT("NotifyTracks"), TEXT("array: notify TrackName values/order"));
 	Hint->SetStringField(TEXT("SyncMarkers"), TEXT("array: authored sync marker timeline"));
 	Hint->SetStringField(TEXT("Metadata"), TEXT("array: UAnimMetaData embedded object fragments"));
 	Hint->SetStringField(TEXT("AssetUserData"), TEXT("array: UAssetUserData embedded object fragments"));
@@ -2488,6 +2773,13 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 
 	if (ParsedBody.bHasNotifyTracks || ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasSyncMarkers)
 	{
+		TArray<FName> OriginalTrackNames;
+		OriginalTrackNames.Reserve(Sequence->AnimNotifyTracks.Num());
+		for (const FAnimNotifyTrack& Track : Sequence->AnimNotifyTracks)
+		{
+			OriginalTrackNames.Add(Track.TrackName);
+		}
+
 		TArray<FAnimNotifyTrack> UpdatedTracks;
 		if (ParsedBody.bHasNotifyTracks)
 		{
@@ -2518,9 +2810,12 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 				continue;
 			}
 			FAnimNotifyEvent PreservedNotify = ExistingNotify;
-			if (UpdatedTracks.IsValidIndex(PreservedNotify.TrackIndex))
+			const FName OriginalTrackName = OriginalTrackNames.IsValidIndex(ExistingNotify.TrackIndex)
+				? OriginalTrackNames[ExistingNotify.TrackIndex]
+				: FName(TEXT("Default"));
+			if (!OriginalTrackName.IsNone())
 			{
-				EnsureNotifyTrackIndex(UpdatedTracks, UpdatedTracks[PreservedNotify.TrackIndex].TrackName);
+				PreservedNotify.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, OriginalTrackName);
 			}
 			else
 			{
@@ -2538,12 +2833,22 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, ParsedNotify.TrackName);
 				NotifyEvent.SetTime(ParsedNotify.Time);
 				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedNotify.Time));
-				if (ParsedNotify.NotifyClass)
+				UObject* NotifyObject = nullptr;
+				const FAssetDocumentCapabilityResult CompileNotifyResult = CompileAnimSequenceNotifyObject(
+					Compiler,
+					Context,
+					Sequence,
+					ParsedNotify.NotifyFragment,
+					ParsedNotify.NotifyClass,
+					UAnimNotify::StaticClass(),
+					BodyArrayFieldPath(TEXT("Notifies"), ParsedNotify.SourceIndex, ParsedNotify.NotifyFragment.IsValid() ? TEXT("Notify") : TEXT("Class")),
+					false,
+					NotifyObject);
+				if (!CompileNotifyResult.bSuccess)
 				{
-					UAnimNotify* NotifyObject = NewObject<UAnimNotify>(Sequence, ParsedNotify.NotifyClass, NAME_None, RF_Transactional);
-					MarkManagedNotifyObject(NotifyObject, Sequence, false);
-					NotifyEvent.Notify = NotifyObject;
+					return CompileNotifyResult;
 				}
+				NotifyEvent.Notify = Cast<UAnimNotify>(NotifyObject);
 #if WITH_EDITORONLY_DATA
 				NotifyEvent.Guid = FGuid::NewGuid();
 #endif
@@ -2562,9 +2867,22 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedState.Time));
 				NotifyEvent.SetDuration(ParsedState.Duration);
 				NotifyEvent.RefreshEndTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedState.Time + ParsedState.Duration));
-				UAnimNotifyState* NotifyStateObject = NewObject<UAnimNotifyState>(Sequence, ParsedState.NotifyStateClass, NAME_None, RF_Transactional);
-				MarkManagedNotifyObject(NotifyStateObject, Sequence, true);
-				NotifyEvent.NotifyStateClass = NotifyStateObject;
+				UObject* NotifyStateObject = nullptr;
+				const FAssetDocumentCapabilityResult CompileNotifyStateResult = CompileAnimSequenceNotifyObject(
+					Compiler,
+					Context,
+					Sequence,
+					ParsedState.NotifyStateFragment,
+					ParsedState.NotifyStateClass,
+					UAnimNotifyState::StaticClass(),
+					BodyArrayFieldPath(TEXT("NotifyStates"), ParsedState.SourceIndex, ParsedState.NotifyStateFragment.IsValid() ? TEXT("NotifyState") : TEXT("Class")),
+					true,
+					NotifyStateObject);
+				if (!CompileNotifyStateResult.bSuccess)
+				{
+					return CompileNotifyStateResult;
+				}
+				NotifyEvent.NotifyStateClass = Cast<UAnimNotifyState>(NotifyStateObject);
 #if WITH_EDITORONLY_DATA
 				NotifyEvent.Guid = FGuid::NewGuid();
 #endif
@@ -2810,8 +3128,20 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 
 	OutBodyJson->SetArrayField(TEXT("Curves"), ExtractAnimSequenceCurves(Sequence));
 	OutBodyJson->SetArrayField(TEXT("NotifyTracks"), ExtractAnimSequenceNotifyTracks(Sequence));
-	OutBodyJson->SetArrayField(TEXT("Notifies"), ExtractAnimSequenceNotifies(Sequence, false));
-	OutBodyJson->SetArrayField(TEXT("NotifyStates"), ExtractAnimSequenceNotifies(Sequence, true));
+	TArray<TSharedPtr<FJsonValue>> ExtractedNotifies;
+	FAssetDocumentCapabilityResult NotifyExtractResult = ExtractAnimSequenceNotifies(Compiler, Sequence, false, ExtractedNotifies);
+	if (!NotifyExtractResult.bSuccess)
+	{
+		return NotifyExtractResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("Notifies"), ExtractedNotifies);
+	TArray<TSharedPtr<FJsonValue>> ExtractedNotifyStates;
+	NotifyExtractResult = ExtractAnimSequenceNotifies(Compiler, Sequence, true, ExtractedNotifyStates);
+	if (!NotifyExtractResult.bSuccess)
+	{
+		return NotifyExtractResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("NotifyStates"), ExtractedNotifyStates);
 	OutBodyJson->SetArrayField(TEXT("SyncMarkers"), ExtractAnimSequenceSyncMarkers(Sequence));
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extracted"));

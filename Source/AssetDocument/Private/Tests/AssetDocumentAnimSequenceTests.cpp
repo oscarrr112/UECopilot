@@ -5,6 +5,7 @@
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 
 #include "Animation/AnimData/IAnimationDataController.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
@@ -13,12 +14,15 @@
 #include "Misc/AutomationTest.h"
 #include "Animation/Skeleton.h"
 
+#include <limits>
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace
 {
 const TCHAR* TestSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
 const TCHAR* TestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+const TCHAR* TestConcreteNotifyClassPath = TEXT("/Script/Engine.AnimNotify_PlaySound");
 
 TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
@@ -282,13 +286,37 @@ TSharedRef<FJsonObject> MakeClassRef(const FString& Path)
 	return ClassRef;
 }
 
+TSharedRef<FJsonObject> MakeFragmentClassRef(const FString& ClassPath)
+{
+	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
+	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Class"), ClassPath);
+	return ClassRef;
+}
+
+TSharedRef<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath)
+{
+	TSharedRef<FJsonObject> EmbeddedObject = MakeShared<FJsonObject>();
+	EmbeddedObject->SetStringField(TEXT("Kind"), TEXT("EmbeddedObject"));
+	EmbeddedObject->SetStringField(TEXT("Class"), ClassPath);
+	EmbeddedObject->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	return EmbeddedObject;
+}
+
 TSharedRef<FJsonObject> MakeNotifyPlacement(const FString& Name, double Time, const FString& NotifyName, const FString& Track)
 {
 	TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
 	Placement->SetStringField(TEXT("Name"), Name);
 	Placement->SetNumberField(TEXT("Time"), Time);
 	Placement->SetStringField(TEXT("NotifyName"), NotifyName);
-	Placement->SetStringField(TEXT("Track"), Track);
+	Placement->SetStringField(TEXT("TrackName"), Track);
+	return Placement;
+}
+
+TSharedRef<FJsonObject> MakeEmbeddedNotifyPlacement(const FString& Name, double Time, const FString& NotifyName, const FString& Track)
+{
+	TSharedRef<FJsonObject> Placement = MakeNotifyPlacement(Name, Time, NotifyName, Track);
+	Placement->SetObjectField(TEXT("Notify"), MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
 	return Placement;
 }
 
@@ -299,14 +327,25 @@ TSharedRef<FJsonObject> MakeNotifyStatePlacement(const FString& Name, double Tim
 	Placement->SetNumberField(TEXT("Time"), Time);
 	Placement->SetNumberField(TEXT("Duration"), Duration);
 	Placement->SetObjectField(TEXT("Class"), MakeClassRef(ClassPath));
-	Placement->SetStringField(TEXT("Track"), Track);
+	Placement->SetStringField(TEXT("TrackName"), Track);
+	return Placement;
+}
+
+TSharedRef<FJsonObject> MakeEmbeddedNotifyStatePlacement(const FString& Name, double Time, double Duration, const FString& ClassPath, const FString& Track)
+{
+	TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
+	Placement->SetStringField(TEXT("Name"), Name);
+	Placement->SetNumberField(TEXT("Time"), Time);
+	Placement->SetNumberField(TEXT("Duration"), Duration);
+	Placement->SetObjectField(TEXT("NotifyState"), MakeEmbeddedObjectRef(ClassPath));
+	Placement->SetStringField(TEXT("TrackName"), Track);
 	return Placement;
 }
 
 TSharedRef<FJsonObject> MakeNotifyTrack(const FString& Name)
 {
 	TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
-	Track->SetStringField(TEXT("Name"), Name);
+	Track->SetStringField(TEXT("TrackName"), Name);
 	return Track;
 }
 
@@ -336,16 +375,46 @@ TSharedRef<FJsonObject> MakeTimelineBody()
 		MakeNotifyTrack(TEXT("Upper")),
 	}));
 	Body->SetArrayField(TEXT("Notifies"), ObjectArray({
-		MakeNotifyPlacement(TEXT("Footstep"), 0.25, TEXT("Footstep"), TEXT("Default")),
+		MakeEmbeddedNotifyPlacement(TEXT("Footstep"), 0.25, TEXT("Footstep"), TEXT("Default")),
 	}));
 	Body->SetArrayField(TEXT("NotifyStates"), ObjectArray({
-		MakeNotifyStatePlacement(TEXT("Window"), 0.20, 0.30, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Upper")),
+		MakeEmbeddedNotifyStatePlacement(TEXT("Window"), 0.20, 0.30, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Upper")),
 	}));
 	Body->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
 		MakeSyncMarker(TEXT("RightFoot"), 0.60),
 		MakeSyncMarker(TEXT("LeftFoot"), 0.10),
 	}));
 	return Body;
+}
+
+void AddManualNamedNotify(UAnimSequence* Sequence, FName NotifyName, float Time, int32 TrackIndex)
+{
+	FAnimNotifyEvent NotifyEvent;
+	NotifyEvent.NotifyName = NotifyName;
+	NotifyEvent.TrackIndex = TrackIndex;
+	NotifyEvent.SetTime(Time);
+	if (Sequence)
+	{
+		NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(Time));
+		Sequence->Notifies.Add(NotifyEvent);
+	}
+}
+
+int32 CountPointNotifiesByName(const UAnimSequence* Sequence, FName NotifyName)
+{
+	int32 Count = 0;
+	if (!Sequence)
+	{
+		return Count;
+	}
+	for (const FAnimNotifyEvent& Event : Sequence->Notifies)
+	{
+		if (!Event.NotifyStateClass && Event.NotifyName == NotifyName)
+		{
+			++Count;
+		}
+	}
+	return Count;
 }
 }
 
@@ -588,6 +657,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 
 	const TArray<FString> NotImplementedRegions = {
 		TEXT("Metadata"),
+		TEXT("AssetUserData"),
 	};
 	for (const FString& RegionName : NotImplementedRegions)
 	{
@@ -959,6 +1029,11 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}
 
 	SetSequencePlayLength(Sequence, 1.0f);
+	Sequence->AnimNotifyTracks = {
+		FAnimNotifyTrack(FName(TEXT("Default")), FLinearColor::White),
+		FAnimNotifyTrack(FName(TEXT("Upper")), FLinearColor::White),
+	};
+	AddManualNamedNotify(Sequence, FName(TEXT("Manual.Footstep")), 0.05f, 1);
 	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
 
 	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(MakeTimelineBody()));
@@ -970,16 +1045,18 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}
 
 	TestEqual(TEXT("Apply updates scalar fields only after full timeline validation"), Sequence->RateScale, 1.25f);
-	TestEqual(TEXT("Apply writes one point notify and one notify state"), Sequence->Notifies.Num(), 2);
+	TestEqual(TEXT("Apply writes managed timeline events and preserves unmanaged named notify"), Sequence->Notifies.Num(), 3);
+	TestEqual(TEXT("Apply preserves unmanaged named point notify"), CountPointNotifiesByName(Sequence, FName(TEXT("Manual.Footstep"))), 1);
 	const FAnimNotifyEvent* PointNotify = Sequence->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
 	{
-		return Event.NotifyName == FName(TEXT("Footstep")) && !Event.Notify && !Event.NotifyStateClass;
+		return Event.NotifyName == FName(TEXT("Footstep")) && Event.Notify && !Event.NotifyStateClass;
 	});
-	TestNotNull(TEXT("Apply writes named point notify fallback"), PointNotify);
+	TestNotNull(TEXT("Apply writes embedded point notify object"), PointNotify);
 	if (PointNotify)
 	{
 		TestEqual(TEXT("Point notify time"), PointNotify->GetTime(), 0.25f);
 		TestEqual(TEXT("Point notify track index"), PointNotify->TrackIndex, 0);
+		TestTrue(TEXT("Point notify object uses requested class"), PointNotify->Notify->GetClass()->GetPathName() == FString(TestConcreteNotifyClassPath));
 	}
 
 	const FAnimNotifyEvent* NotifyState = Sequence->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
@@ -1028,14 +1105,21 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	{
 		const TSharedPtr<FJsonObject> ExtractedNotify = (*ExtractedNotifies)[0]->AsObject();
 		TestEqual(TEXT("Extract point notify Name"), ExtractedNotify->GetStringField(TEXT("Name")), FString(TEXT("Footstep")));
-		TestEqual(TEXT("Extract point notify Track"), ExtractedNotify->GetStringField(TEXT("Track")), FString(TEXT("Default")));
+		TestEqual(TEXT("Extract point notify TrackName"), ExtractedNotify->GetStringField(TEXT("TrackName")), FString(TEXT("Default")));
+		TestTrue(TEXT("Extract point notify uses canonical Notify fragment"), ExtractedNotify->HasTypedField<EJson::Object>(TEXT("Notify")));
+		TestFalse(TEXT("Extract point notify avoids legacy Class field"), ExtractedNotify->HasField(TEXT("Class")));
 	}
 	if (ExtractedNotifyStates && ExtractedNotifyStates->Num() == 1)
 	{
 		const TSharedPtr<FJsonObject> ExtractedState = (*ExtractedNotifyStates)[0]->AsObject();
 		TestEqual(TEXT("Extract notify state Name"), ExtractedState->GetStringField(TEXT("Name")), FString(TEXT("Window")));
-		TestEqual(TEXT("Extract notify state Track"), ExtractedState->GetStringField(TEXT("Track")), FString(TEXT("Upper")));
-		TestTrue(TEXT("Extract notify state Class"), ExtractedState->HasTypedField<EJson::Object>(TEXT("Class")));
+		TestEqual(TEXT("Extract notify state TrackName"), ExtractedState->GetStringField(TEXT("TrackName")), FString(TEXT("Upper")));
+		TestTrue(TEXT("Extract notify state uses canonical NotifyState fragment"), ExtractedState->HasTypedField<EJson::Object>(TEXT("NotifyState")));
+		TestFalse(TEXT("Extract notify state avoids legacy Class field"), ExtractedState->HasField(TEXT("Class")));
+	}
+	if (ExtractedTracks && ExtractedTracks->Num() == 2)
+	{
+		TestEqual(TEXT("Extract notify track uses canonical TrackName"), (*ExtractedTracks)[0]->AsObject()->GetStringField(TEXT("TrackName")), FString(TEXT("Default")));
 	}
 	if (ExtractedMarkers && ExtractedMarkers->Num() == 2)
 	{
@@ -1071,6 +1155,27 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	if (ChangedMarkerDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks SyncMarkers changed"), ChangedMarkerDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+
+	TSharedRef<FJsonObject> ReorderedTracksBody = MakeShared<FJsonObject>();
+	ReorderedTracksBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Upper")),
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	const FAssetDocumentCapabilityResult ReorderedTracksResult = Capability.Apply(Context, MakeBodyValue(ReorderedTracksBody));
+	TestTrue(TEXT("Apply succeeds when explicit NotifyTracks are reordered"), ReorderedTracksResult.bSuccess);
+	const FAnimNotifyEvent* ManualNotifyAfterReorder = Sequence->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
+	{
+		return Event.NotifyName == FName(TEXT("Manual.Footstep"));
+	});
+	TestNotNull(TEXT("Track remap preserves unmanaged named notify"), ManualNotifyAfterReorder);
+	if (ManualNotifyAfterReorder)
+	{
+		TestTrue(TEXT("Manual notify track index remains valid"), Sequence->AnimNotifyTracks.IsValidIndex(ManualNotifyAfterReorder->TrackIndex));
+		if (Sequence->AnimNotifyTracks.IsValidIndex(ManualNotifyAfterReorder->TrackIndex))
+		{
+			TestEqual(TEXT("Manual notify remains on Upper track by name"), Sequence->AnimNotifyTracks[ManualNotifyAfterReorder->TrackIndex].TrackName, FName(TEXT("Upper")));
+		}
 	}
 
 	Sequence->RateScale = 2.0f;
@@ -1125,6 +1230,36 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestTrue(TEXT("Negative duration diagnostic is precise"), HasDiagnostic(NegativeDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNotifyStateDuration")));
 	TestEqual(TEXT("Negative duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
+	TSharedRef<FJsonObject> UnknownTrackBody = MakePlaybackRateBody(5.25);
+	UnknownTrackBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	UnknownTrackBody->SetArrayField(TEXT("Notifies"), ObjectArray({
+		MakeEmbeddedNotifyPlacement(TEXT("TrackTypo"), 0.25, TEXT("TrackTypo"), TEXT("Typo")),
+	}));
+	const FAssetDocumentCapabilityResult UnknownTrackResult = Capability.Apply(Context, MakeBodyValue(UnknownTrackBody));
+	TestFalse(TEXT("Apply rejects notify track names not declared in explicit NotifyTracks"), UnknownTrackResult.bSuccess);
+	TestTrue(TEXT("Unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestEqual(TEXT("Unknown track does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> NonFiniteTimeBody = MakePlaybackRateBody(5.35);
+	TSharedRef<FJsonObject> NonFiniteNotify = MakeEmbeddedNotifyPlacement(TEXT("NonFinite"), 0.25, TEXT("NonFinite"), TEXT("Default"));
+	NonFiniteNotify->SetField(TEXT("Time"), MakeShared<FJsonValueNumber>(std::numeric_limits<double>::quiet_NaN()));
+	NonFiniteTimeBody->SetArrayField(TEXT("Notifies"), ObjectArray({ NonFiniteNotify }));
+	const FAssetDocumentCapabilityResult NonFiniteTimeResult = Capability.Apply(Context, MakeBodyValue(NonFiniteTimeBody));
+	TestFalse(TEXT("Apply rejects non-finite notify time"), NonFiniteTimeResult.bSuccess);
+	TestTrue(TEXT("Non-finite time diagnostic is precise"), HasDiagnostic(NonFiniteTimeResult, TEXT("/Body/Notifies/0/Time"), TEXT("InvalidNumericField")));
+	TestEqual(TEXT("Non-finite time does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> OverflowDurationBody = MakePlaybackRateBody(5.45);
+	TSharedRef<FJsonObject> OverflowState = MakeEmbeddedNotifyStatePlacement(TEXT("Overflow"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default"));
+	OverflowState->SetField(TEXT("Duration"), MakeShared<FJsonValueNumber>(static_cast<double>(MAX_dbl)));
+	OverflowDurationBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ OverflowState }));
+	const FAssetDocumentCapabilityResult OverflowDurationResult = Capability.Apply(Context, MakeBodyValue(OverflowDurationBody));
+	TestFalse(TEXT("Apply rejects overflow notify state duration"), OverflowDurationResult.bSuccess);
+	TestTrue(TEXT("Overflow duration diagnostic is precise"), HasDiagnostic(OverflowDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNumericField")));
+	TestEqual(TEXT("Overflow duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
 	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(5.5);
 	TSharedRef<FJsonObject> UnknownNotify = MakeNotifyPlacement(TEXT("Unknown"), 0.25, TEXT("Unknown"), TEXT("Default"));
 	UnknownNotify->SetStringField(TEXT("Unexpected"), TEXT("nope"));
@@ -1136,8 +1271,8 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 
 	TSharedRef<FJsonObject> DuplicateNotifyBody = MakePlaybackRateBody(6.0);
 	DuplicateNotifyBody->SetArrayField(TEXT("Notifies"), ObjectArray({
-		MakeNotifyPlacement(TEXT("Duplicate"), 0.25, TEXT("Duplicate"), TEXT("Default")),
-		MakeNotifyPlacement(TEXT("Duplicate"), 0.25, TEXT("Duplicate"), TEXT("Default")),
+		MakeEmbeddedNotifyPlacement(TEXT("Duplicate"), 0.25, TEXT("Duplicate"), TEXT("Default")),
+		MakeEmbeddedNotifyPlacement(TEXT("Duplicate"), 0.25, TEXT("Duplicate"), TEXT("Default")),
 	}));
 	const FAssetDocumentCapabilityResult DuplicateNotifyResult = Capability.Apply(Context, MakeBodyValue(DuplicateNotifyBody));
 	TestFalse(TEXT("Apply rejects duplicate notify semantic keys"), DuplicateNotifyResult.bSuccess);
