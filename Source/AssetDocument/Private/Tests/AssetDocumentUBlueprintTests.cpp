@@ -8,10 +8,14 @@
 #include "Dom/JsonValue.h"
 #include "EdGraphSchema_K2.h"
 #include "Components/SphereComponent.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Blueprint.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
@@ -94,7 +98,9 @@ TSharedPtr<FJsonObject> MakeUBlueprintDocument(
 	const FString& Target,
 	const FString& ParentClassPath,
 	const TOptional<TArray<TSharedPtr<FJsonValue>>>& Variables,
-	const TOptional<TArray<TSharedPtr<FJsonValue>>>& ImplementedInterfaces)
+	const TOptional<TArray<TSharedPtr<FJsonValue>>>& ImplementedInterfaces,
+	const TOptional<TArray<TSharedPtr<FJsonValue>>>& Components = TOptional<TArray<TSharedPtr<FJsonValue>>>(),
+	TSharedPtr<FJsonObject> ClassDefaults = nullptr)
 {
 	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
 	Document->SetNumberField(TEXT("SchemaVersion"), 1);
@@ -114,8 +120,8 @@ TSharedPtr<FJsonObject> MakeUBlueprintDocument(
 	{
 		Body->SetArrayField(TEXT("Variables"), Variables.GetValue());
 	}
-	Body->SetArrayField(TEXT("Components"), {});
-	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	Body->SetArrayField(TEXT("Components"), Components.IsSet() ? Components.GetValue() : TArray<TSharedPtr<FJsonValue>>{});
+	Body->SetObjectField(TEXT("ClassDefaults"), ClassDefaults.IsValid() ? ClassDefaults : MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), {});
 	Body->SetArrayField(TEXT("FunctionGraphs"), {});
 	Body->SetArrayField(TEXT("MacroGraphs"), {});
@@ -220,6 +226,14 @@ bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FSt
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
 		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
+bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == Code;
 	});
 }
 
@@ -1080,6 +1094,299 @@ bool FAssetDocumentUBlueprintInvalidAuthoritativeArraysTest::RunTest(const FStri
 	InterfaceNullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 	InterfaceNullBody->SetField(TEXT("ImplementedInterfaces"), MakeShared<FJsonValueNull>());
 	TestFalse(TEXT("ImplementedInterfaces null fails validation"), Capability.Validate(Context, MakeBodyValue(InterfaceNullBody)).bSuccess);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintInheritedSCSOverrideTest,
+	"AssetFactory.AssetDocument.UBlueprint.InheritedSCSOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintInheritedSCSOverrideTest::RunTest(const FString&)
+{
+	const FString ParentTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_InheritedParent_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ChildTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_InheritedChild_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest ParentRequest;
+	ParentRequest.Document = MakeUBlueprintDocument(
+		ParentTarget,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("ParentSensor"), 150.0)}));
+	ParentRequest.bSaveAsset = false;
+	const FAssetDocumentResult ParentResult = Service.Apply(ParentRequest);
+	if (!ParentResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Parent apply failed: %s"), *ParentResult.Message));
+	}
+	TestTrue(TEXT("Parent Blueprint with owned component applies"), ParentResult.IsSuccess());
+
+	UBlueprint* ParentBlueprint = LoadBlueprintForTarget(ParentTarget);
+	TestNotNull(TEXT("Parent Blueprint exists"), ParentBlueprint);
+	if (!ParentBlueprint || !ParentBlueprint->GeneratedClass)
+	{
+		return true;
+	}
+
+	USCS_Node* ParentSensorNode = FindSCSNodeByVariableName(ParentBlueprint, TEXT("ParentSensor"));
+	TestNotNull(TEXT("Parent SCS component exists"), ParentSensorNode);
+	if (!ParentSensorNode)
+	{
+		return true;
+	}
+
+	const FString ParentGeneratedClassPath = ParentBlueprint->GeneratedClass->GetPathName();
+	TSharedPtr<FJsonObject> InheritedComponent = MakeReferencedComponent(TEXT("Inherited"), TEXT("ParentSensor"), *ParentGeneratedClassPath);
+	InheritedComponent->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SphereComponent"));
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("SphereRadius"), 900.0);
+	InheritedComponent->SetObjectField(TEXT("Properties"), Properties);
+
+	FAssetDocumentApplyRequest ChildOverrideRequest;
+	ChildOverrideRequest.Document = MakeUBlueprintDocument(
+		ChildTarget,
+		ParentGeneratedClassPath,
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		MakeComponentArray({InheritedComponent}));
+	ChildOverrideRequest.bSaveAsset = false;
+	const FAssetDocumentResult OverrideResult = Service.Apply(ChildOverrideRequest);
+	if (!OverrideResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Inherited override apply failed: %s"), *OverrideResult.Message));
+	}
+	TestTrue(TEXT("Inherited SCS component override applies"), OverrideResult.IsSuccess());
+
+	UBlueprint* ChildBlueprint = LoadBlueprintForTarget(ChildTarget);
+	TestNotNull(TEXT("Child Blueprint exists"), ChildBlueprint);
+	if (ChildBlueprint)
+	{
+		const FComponentKey ParentSensorKey(ParentSensorNode);
+		UInheritableComponentHandler* Handler = ChildBlueprint->GetInheritableComponentHandler(false);
+		TestNotNull(TEXT("Child has inheritable component handler after override"), Handler);
+		UActorComponent* OverrideTemplate = Handler ? Handler->GetOverridenComponentTemplate(ParentSensorKey) : nullptr;
+		USphereComponent* SphereOverride = Cast<USphereComponent>(OverrideTemplate);
+		TestNotNull(TEXT("Inherited override template is a SphereComponent"), SphereOverride);
+		if (SphereOverride)
+		{
+			TestEqual(TEXT("Inherited SphereRadius override is applied"), SphereOverride->GetUnscaledSphereRadius(), 900.0f);
+		}
+	}
+
+	FAssetDocumentApplyRequest ChildResetRequest;
+	ChildResetRequest.Document = MakeUBlueprintDocument(
+		ChildTarget,
+		ParentGeneratedClassPath,
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	ChildResetRequest.bSaveAsset = false;
+	const FAssetDocumentResult ResetResult = Service.Apply(ChildResetRequest);
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Inherited override reset apply failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitting inherited component clears override"), ResetResult.IsSuccess());
+
+	ChildBlueprint = LoadBlueprintForTarget(ChildTarget);
+	if (ChildBlueprint)
+	{
+		const FComponentKey ParentSensorKey(ParentSensorNode);
+		UInheritableComponentHandler* Handler = ChildBlueprint->GetInheritableComponentHandler(false);
+		UActorComponent* OverrideTemplate = Handler ? Handler->GetOverridenComponentTemplate(ParentSensorKey) : nullptr;
+		TestNull(TEXT("Inherited override template is removed when omitted"), OverrideTemplate);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintNativeComponentOverrideTest,
+	"AssetFactory.AssetDocument.UBlueprint.NativeComponentOverride",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_NativeComponent_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	TSharedPtr<FJsonObject> NativeMovement = MakeReferencedComponent(TEXT("Native"), TEXT("CharacterMovement"), TEXT("/Script/Engine.Character"));
+	NativeMovement->SetStringField(TEXT("Class"), TEXT("/Script/Engine.CharacterMovementComponent"));
+	TSharedPtr<FJsonObject> MovementProperties = MakeShared<FJsonObject>();
+	MovementProperties->SetNumberField(TEXT("MaxWalkSpeed"), 700.0);
+	NativeMovement->SetObjectField(TEXT("Properties"), MovementProperties);
+
+	FAssetDocumentApplyRequest OverrideRequest;
+	OverrideRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Character"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		MakeComponentArray({NativeMovement}));
+	OverrideRequest.bSaveAsset = false;
+	const FAssetDocumentResult OverrideResult = Service.Apply(OverrideRequest);
+	if (!OverrideResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Native component override apply failed: %s"), *OverrideResult.Message));
+	}
+	TestTrue(TEXT("Native CharacterMovement override applies"), OverrideResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Native component Blueprint exists"), Blueprint);
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		ACharacter* CDO = Cast<ACharacter>(Blueprint->GeneratedClass->GetDefaultObject());
+		TestNotNull(TEXT("Generated CDO is Character"), CDO);
+		UCharacterMovementComponent* Movement = CDO ? CDO->GetCharacterMovement() : nullptr;
+		TestNotNull(TEXT("Generated CDO has CharacterMovement"), Movement);
+		if (Movement)
+		{
+			TestEqual(TEXT("Native MaxWalkSpeed override is applied"), Movement->MaxWalkSpeed, 700.0f);
+		}
+	}
+
+	const ACharacter* ParentCDO = GetDefault<ACharacter>();
+	const float ParentMaxWalkSpeed = ParentCDO && ParentCDO->GetCharacterMovement()
+		? ParentCDO->GetCharacterMovement()->MaxWalkSpeed
+		: 600.0f;
+
+	FAssetDocumentApplyRequest ResetRequest;
+	ResetRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Character"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	ResetRequest.bSaveAsset = false;
+	const FAssetDocumentResult ResetResult = Service.Apply(ResetRequest);
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Native component reset apply failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitting native component resets override"), ResetResult.IsSuccess());
+
+	Blueprint = LoadBlueprintForTarget(Target);
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		ACharacter* CDO = Cast<ACharacter>(Blueprint->GeneratedClass->GetDefaultObject());
+		UCharacterMovementComponent* Movement = CDO ? CDO->GetCharacterMovement() : nullptr;
+		TestNotNull(TEXT("Generated CDO still has CharacterMovement after reset"), Movement);
+		if (Movement)
+		{
+			TestEqual(TEXT("Native MaxWalkSpeed resets to parent CDO baseline"), Movement->MaxWalkSpeed, ParentMaxWalkSpeed);
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintInheritedNativeAttachRootUnsupportedTest,
+	"AssetFactory.AssetDocument.UBlueprint.InheritedNativeAttachRootUnsupported",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintInheritedNativeAttachRootUnsupportedTest::RunTest(const FString&)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UBlueprint::StaticClass();
+
+	TSharedPtr<FJsonObject> NativeWithAttach = MakeReferencedComponent(TEXT("Native"), TEXT("CharacterMovement"), TEXT("/Script/Engine.Character"));
+	NativeWithAttach->SetStringField(TEXT("Class"), TEXT("/Script/Engine.CharacterMovementComponent"));
+	NativeWithAttach->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("CapsuleComponent"), TEXT("/Script/Engine.Character")));
+
+	TSharedRef<FJsonObject> NativeBody = MakeShared<FJsonObject>();
+	NativeBody->SetObjectField(TEXT("ParentClass"), MakeClassRef(TEXT("/Script/Engine.Character")));
+	NativeBody->SetArrayField(TEXT("Components"), MakeComponentArray({NativeWithAttach}));
+	const FAssetDocumentCapabilityResult NativeResult = Capability.Validate(Context, MakeBodyValue(NativeBody));
+	TestFalse(TEXT("Native component AttachTo fails validation"), NativeResult.bSuccess);
+	TestTrue(TEXT("Native AttachTo uses unsupported attach/root diagnostic"), ResultHasDiagnosticCode(NativeResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
+
+	TSharedPtr<FJsonObject> InheritedWithRoot = MakeReferencedComponent(TEXT("Inherited"), TEXT("ParentSensor"), TEXT("/Game/AssetDocumentTests/BP_UnresolvedParent.BP_UnresolvedParent_C"));
+	InheritedWithRoot->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SphereComponent"));
+	InheritedWithRoot->SetBoolField(TEXT("Root"), true);
+
+	TSharedRef<FJsonObject> InheritedBody = MakeShared<FJsonObject>();
+	InheritedBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InheritedBody->SetArrayField(TEXT("Components"), MakeComponentArray({InheritedWithRoot}));
+	const FAssetDocumentCapabilityResult InheritedResult = Capability.Validate(Context, MakeBodyValue(InheritedBody));
+	TestFalse(TEXT("Inherited component Root fails validation"), InheritedResult.bSuccess);
+	TestTrue(TEXT("Inherited Root uses unsupported attach/root diagnostic"), ResultHasDiagnosticCode(InheritedResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintClassDefaultsAuthoritativeTest,
+	"AssetFactory.AssetDocument.UBlueprint.ClassDefaultsAuthoritative",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintClassDefaultsAuthoritativeTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ClassDefaults_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	TSharedPtr<FJsonObject> ClassDefaults = MakeShared<FJsonObject>();
+	ClassDefaults->SetNumberField(TEXT("InitialLifeSpan"), 12.5);
+
+	FAssetDocumentApplyRequest ApplyRequest;
+	ApplyRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		ClassDefaults);
+	ApplyRequest.bSaveAsset = false;
+	const FAssetDocumentResult ApplyResult = Service.Apply(ApplyRequest);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ClassDefaults apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("ClassDefaults apply succeeds"), ApplyResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("ClassDefaults Blueprint exists"), Blueprint);
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+		TestNotNull(TEXT("Generated CDO is Actor"), CDO);
+		if (CDO)
+		{
+			TestEqual(TEXT("InitialLifeSpan class default is applied"), CDO->InitialLifeSpan, 12.5f);
+		}
+	}
+
+	const float ParentInitialLifeSpan = GetDefault<AActor>()->InitialLifeSpan;
+	FAssetDocumentApplyRequest ResetRequest;
+	ResetRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		MakeShared<FJsonObject>());
+	ResetRequest.bSaveAsset = false;
+	const FAssetDocumentResult ResetResult = Service.Apply(ResetRequest);
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ClassDefaults reset failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitted ClassDefaults property resets to parent CDO"), ResetResult.IsSuccess());
+
+	Blueprint = LoadBlueprintForTarget(Target);
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		AActor* CDO = Cast<AActor>(Blueprint->GeneratedClass->GetDefaultObject());
+		TestNotNull(TEXT("Generated CDO still exists after reset"), CDO);
+		if (CDO)
+		{
+			TestEqual(TEXT("InitialLifeSpan resets to parent CDO baseline"), CDO->InitialLifeSpan, ParentInitialLifeSpan);
+		}
+	}
 
 	return true;
 }

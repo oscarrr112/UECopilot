@@ -54,8 +54,8 @@
 - AssetDocument path: `Body.Components[*].AttachTo`, `Body.Components[*].Root` where `Scope` is `Inherited` or `Native`
 - UE surface: `UInheritableComponentHandler`, native component archetypes, parent SCS templates
 - 当前处理方式:
-  - validate: 必须接受设计层语义，但 implementation task 可以在 API 未确认前拒绝 apply。
-  - apply: 初始 implementation 可先实现 property override，再进入 attach/root override task。
+  - validate/apply: Task 5 已明确拒绝 `Scope=Inherited` 或 `Scope=Native` 且带 `AttachTo` 或 `Root=true` 的 sidecar，诊断 code 为 `UnsupportedInheritedComponentAttachRoot`。
+  - apply: 当前只支持 inherited/native component property override；不能用 owned SCS duplicate 伪造 attach/root override。
   - extract/diff: 应标记为 region subfeature unsupported，不能忽略 existing override。
 - 延期原因: inherited/native attach/root override 可能需要 UE editor subobject APIs 或 handler repair hooks，不能用复制成 owned SCS node 的方式伪造。
 - 清理条件: 找到并验证 UE 5.7 中对 inherited/native component attach/root override 的正确编辑 API，并有 automation 覆盖 clear override。

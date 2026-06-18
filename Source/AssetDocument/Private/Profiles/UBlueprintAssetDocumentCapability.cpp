@@ -4,17 +4,22 @@
 
 #include "AssetDocumentPropertyAdapter.h"
 
+#include "Utils/PropertySetterUtils.h"
+
 #include "Dom/JsonValue.h"
 #include "EdGraphSchema_K2.h"
 #include "Components/ActorComponent.h"
 #include "Components/SceneComponent.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Blueprint.h"
+#include "Engine/InheritableComponentHandler.h"
 #include "Engine/SCS_Node.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -504,6 +509,16 @@ bool IsDefaultSceneRootKey(const FUBlueprintComponentKey& Key)
 	return IsSelfComponentKey(Key) && Key.Name == USceneComponent::GetDefaultSceneRootVariableName();
 }
 
+bool IsInheritedOrNativeComponentScope(const FString& Scope)
+{
+	return Scope == TEXT("Inherited") || Scope == TEXT("Native");
+}
+
+bool HasAuthoredProperties(const FUBlueprintComponentSpec& Spec)
+{
+	return Spec.Properties.IsValid() && Spec.Properties->Values.Num() > 0;
+}
+
 FAssetDocumentCapabilityResult ReadComponentKey(const TSharedPtr<FJsonObject>& Object, const FString& Path, FUBlueprintComponentKey& OutKey)
 {
 	OutKey = FUBlueprintComponentKey();
@@ -538,6 +553,75 @@ FAssetDocumentCapabilityResult ComponentPropertyFailure(const FAssetDocumentProp
 		return BodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
 	}
 	return BodyFailure(PropertyResult.Message, Path, TEXT("InvalidComponentProperties"));
+}
+
+FAssetDocumentPropertyApplyResult ApplyPropertiesDirectNoDuplicate(UObject* Object, TSharedPtr<FJsonObject> Properties)
+{
+	FAssetDocumentPropertyApplyResult Result;
+	if (!Object)
+	{
+		Result.Message = TEXT("Object is required");
+		return Result;
+	}
+	if (!Properties.IsValid() || Properties->Values.Num() == 0)
+	{
+		Result.bSuccess = true;
+		Result.Message = TEXT("No properties to apply");
+		return Result;
+	}
+
+	bool bAllSucceeded = true;
+	Object->Modify();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
+	{
+		FProperty* Property = FindFProperty<FProperty>(Object->GetClass(), *Pair.Key);
+		if (!Property)
+		{
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = FString::Printf(TEXT("Properties.%s"), *Pair.Key);
+			Diagnostic.Code = TEXT("UnknownProperty");
+			Diagnostic.Message = FString::Printf(TEXT("Property '%s' does not exist"), *Pair.Key);
+			Result.Diagnostics.Add(Diagnostic);
+			bAllSucceeded = false;
+			continue;
+		}
+
+		const FString NonWritableReason = FAssetDocumentPropertyAdapter::GetNonWritableReason(Property);
+		if (!NonWritableReason.IsEmpty())
+		{
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = FString::Printf(TEXT("Properties.%s"), *Pair.Key);
+			Diagnostic.Code = TEXT("NonWritable");
+			Diagnostic.Message = FString::Printf(TEXT("Property '%s' is not writable: %s"), *Pair.Key, *NonWritableReason);
+			Result.Diagnostics.Add(Diagnostic);
+			bAllSucceeded = false;
+			continue;
+		}
+
+		TSharedPtr<FJsonValue> ValueToApply = Pair.Value;
+		if (Pair.Value.IsValid() && Pair.Value->Type == EJson::Object)
+		{
+			TSharedPtr<FJsonObject> TypedObject = Pair.Value->AsObject();
+			if (TypedObject.IsValid() && TypedObject->HasField(TEXT("type")) && TypedObject->HasField(TEXT("value")))
+			{
+				ValueToApply = TypedObject->TryGetField(TEXT("value"));
+			}
+		}
+
+		if (!FPropertySetterUtils::SetPropertyFromJson(Object, Property, ValueToApply))
+		{
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = FString::Printf(TEXT("Properties.%s"), *Pair.Key);
+			Diagnostic.Code = TEXT("SetPropertyFailed");
+			Diagnostic.Message = FString::Printf(TEXT("Failed to set property '%s'"), *Pair.Key);
+			Result.Diagnostics.Add(Diagnostic);
+			bAllSucceeded = false;
+		}
+	}
+
+	Result.bSuccess = bAllSucceeded;
+	Result.Message = bAllSucceeded ? TEXT("Properties applied") : TEXT("Property apply failed");
+	return Result;
 }
 
 FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>& BodyObject, TArray<FUBlueprintComponentSpec>& OutComponents)
@@ -640,6 +724,13 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 		{
 			Spec.bRoot = bRoot;
 		}
+		if (IsInheritedOrNativeComponentScope(Spec.Scope) && (Spec.AttachTo.IsSet() || Spec.bRoot))
+		{
+			return BodyFailure(
+				TEXT("Inherited and Native component AttachTo/Root overrides are not supported yet"),
+				ComponentPath(Spec.Key) / (Spec.AttachTo.IsSet() ? TEXT("AttachTo") : TEXT("Root")),
+				TEXT("UnsupportedInheritedComponentAttachRoot"));
+		}
 		if (Spec.bRoot && !Spec.ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
 			return BodyFailure(TEXT("Root components must be USceneComponent subclasses"), Path / TEXT("Root"), TEXT("InvalidRootComponentClass"));
@@ -688,6 +779,14 @@ bool HasOwnedSCSComponent(const TArray<FUBlueprintComponentSpec>& Components)
 	});
 }
 
+bool HasInheritedOrNativeComponent(const TArray<FUBlueprintComponentSpec>& Components)
+{
+	return Components.ContainsByPredicate([](const FUBlueprintComponentSpec& Spec)
+	{
+		return IsInheritedOrNativeComponentScope(Spec.Scope);
+	});
+}
+
 void CollectOwnedSCSComponents(
 	const TArray<FUBlueprintComponentSpec>& Specs,
 	TArray<const FUBlueprintComponentSpec*>& OutOwnedSpecs,
@@ -701,6 +800,37 @@ void CollectOwnedSCSComponents(
 		{
 			OutOwnedSpecs.Add(&Spec);
 			OutOwnedByKey.Add(ComponentKeyToString(Spec.Key), &Spec);
+		}
+	}
+}
+
+void CollectInheritedComponents(
+	const TArray<FUBlueprintComponentSpec>& Specs,
+	TArray<const FUBlueprintComponentSpec*>& OutInheritedSpecs)
+{
+	OutInheritedSpecs.Reset();
+	for (const FUBlueprintComponentSpec& Spec : Specs)
+	{
+		if (Spec.Scope == TEXT("Inherited") && HasAuthoredProperties(Spec))
+		{
+			OutInheritedSpecs.Add(&Spec);
+		}
+	}
+}
+
+void CollectNativeComponents(
+	const TArray<FUBlueprintComponentSpec>& Specs,
+	TArray<const FUBlueprintComponentSpec*>& OutNativeSpecs,
+	TSet<FString>& OutNativeKeys)
+{
+	OutNativeSpecs.Reset();
+	OutNativeKeys.Reset();
+	for (const FUBlueprintComponentSpec& Spec : Specs)
+	{
+		if (Spec.Scope == TEXT("Native") && HasAuthoredProperties(Spec))
+		{
+			OutNativeSpecs.Add(&Spec);
+			OutNativeKeys.Add(ComponentKeyToString(Spec.Key));
 		}
 	}
 }
@@ -1201,6 +1331,485 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ResolveInheritedComponentKey(
+	UBlueprint* Blueprint,
+	const FUBlueprintComponentSpec& Spec,
+	FComponentKey& OutKey,
+	UActorComponent*& OutOriginalTemplate)
+{
+	OutKey = FComponentKey();
+	OutOriginalTemplate = nullptr;
+	if (!Blueprint)
+	{
+		return BodyFailure(TEXT("Blueprint is required to resolve inherited component key"), ComponentPath(Spec.Key), TEXT("MissingBlueprint"));
+	}
+	if (IsSelfComponentKey(Spec.Key))
+	{
+		return BodyFailure(TEXT("Inherited components require Key.OwnerClass to name the parent generated class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidInheritedComponentOwnerClass"));
+	}
+
+	UClass* OwnerClass = StaticLoadClass(UObject::StaticClass(), nullptr, *Spec.Key.OwnerClass);
+	UBlueprintGeneratedClass* OwnerGeneratedClass = Cast<UBlueprintGeneratedClass>(OwnerClass);
+	if (!OwnerGeneratedClass)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Inherited component OwnerClass '%s' must resolve to a Blueprint generated class"), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
+			TEXT("UnresolvedInheritedComponentOwnerClass"));
+	}
+	if (Blueprint->GeneratedClass && !Blueprint->GeneratedClass->IsChildOf(OwnerGeneratedClass))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Inherited component OwnerClass '%s' is not in the Blueprint parent chain"), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
+			TEXT("InvalidInheritedComponentOwnerClass"));
+	}
+	if (!OwnerGeneratedClass->SimpleConstructionScript)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Inherited component OwnerClass '%s' has no SimpleConstructionScript"), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
+			TEXT("MissingInheritedComponentSCS"));
+	}
+
+	USCS_Node* InheritedNode = OwnerGeneratedClass->SimpleConstructionScript->FindSCSNode(Spec.Key.Name);
+	if (!InheritedNode || !InheritedNode->ComponentTemplate)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Inherited component '%s' was not found on '%s'"), *Spec.Key.Name.ToString(), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key),
+			TEXT("MissingInheritedComponent"));
+	}
+	if (Spec.ComponentClass && !InheritedNode->ComponentTemplate->IsA(Spec.ComponentClass))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Inherited component '%s' class '%s' is not compatible with declared class '%s'"),
+				*Spec.Key.Name.ToString(),
+				*GetClassPath(InheritedNode->ComponentTemplate->GetClass()),
+				*GetClassPath(Spec.ComponentClass)),
+			ComponentPath(Spec.Key) / TEXT("Class"),
+			TEXT("ComponentClassMismatch"));
+	}
+
+	OutKey = FComponentKey(InheritedNode);
+	if (!OutKey.IsValid())
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Failed to construct inherited component key for '%s'"), *ComponentKeyToString(Spec.Key)),
+			ComponentPath(Spec.Key),
+			TEXT("InvalidInheritedComponentKey"));
+	}
+	OutOriginalTemplate = InheritedNode->ComponentTemplate;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+bool ComponentKeyMatchesAny(const FComponentKey& Key, const TArray<FComponentKey>& DesiredKeys)
+{
+	for (const FComponentKey& DesiredKey : DesiredKeys)
+	{
+		if (Key.Match(DesiredKey))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FAssetDocumentCapabilityResult ApplyInheritedComponentOverrides(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs, bool& bOutChanged)
+{
+	bOutChanged = false;
+	TArray<const FUBlueprintComponentSpec*> DesiredInheritedSpecs;
+	CollectInheritedComponents(Specs, DesiredInheritedSpecs);
+
+	TArray<FComponentKey> DesiredKeys;
+	struct FResolvedInheritedSpec
+	{
+		const FUBlueprintComponentSpec* Spec = nullptr;
+		FComponentKey Key;
+	};
+	TArray<FResolvedInheritedSpec> ResolvedSpecs;
+
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredInheritedSpecs)
+	{
+		FComponentKey ResolvedKey;
+		UActorComponent* OriginalTemplate = nullptr;
+		const FAssetDocumentCapabilityResult ResolveResult = ResolveInheritedComponentKey(Blueprint, *SpecPtr, ResolvedKey, OriginalTemplate);
+		if (!ResolveResult.bSuccess)
+		{
+			return ResolveResult;
+		}
+
+		DesiredKeys.Add(ResolvedKey);
+		FResolvedInheritedSpec Resolved;
+		Resolved.Spec = SpecPtr;
+		Resolved.Key = ResolvedKey;
+		ResolvedSpecs.Add(MoveTemp(Resolved));
+	}
+
+	UInheritableComponentHandler* ExistingHandler = Blueprint ? Blueprint->GetInheritableComponentHandler(false) : nullptr;
+	if (ExistingHandler)
+	{
+		TArray<FComponentKey> KeysToRemove;
+		for (auto RecordIt = ExistingHandler->CreateRecordIterator(); RecordIt; ++RecordIt)
+		{
+			const FComponentKey ExistingKey = RecordIt->ComponentKey;
+			if (ExistingKey.IsSCSKey() && !ComponentKeyMatchesAny(ExistingKey, DesiredKeys))
+			{
+				KeysToRemove.Add(ExistingKey);
+			}
+		}
+
+		for (const FComponentKey& KeyToRemove : KeysToRemove)
+		{
+			ExistingHandler->Modify();
+			ExistingHandler->RemoveOverridenComponentTemplate(KeyToRemove);
+			bOutChanged = true;
+		}
+	}
+
+	if (ResolvedSpecs.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	UInheritableComponentHandler* Handler = Blueprint->GetInheritableComponentHandler(true);
+	if (!Handler)
+	{
+		return BodyFailure(TEXT("Failed to create inheritable component handler"), TEXT("/Body/Components"), TEXT("MissingInheritableComponentHandler"));
+	}
+
+	for (const FResolvedInheritedSpec& Resolved : ResolvedSpecs)
+	{
+		const FUBlueprintComponentSpec& Spec = *Resolved.Spec;
+		Handler->Modify();
+		UActorComponent* OverrideTemplate = Handler->CreateOverridenComponentTemplate(Resolved.Key);
+		if (!OverrideTemplate)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Failed to create inherited component override template for '%s'"), *ComponentKeyToString(Spec.Key)),
+				ComponentPath(Spec.Key),
+				TEXT("CreateInheritedOverrideTemplateFailed"));
+		}
+
+		const FAssetDocumentPropertyApplyResult PropertyResult =
+			ApplyPropertiesDirectNoDuplicate(OverrideTemplate, Spec.Properties);
+		if (!PropertyResult.bSuccess)
+		{
+			return ComponentPropertyFailure(PropertyResult, ComponentPath(Spec.Key) / TEXT("Properties"));
+		}
+		bOutChanged = true;
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+bool IsSupportedClassDefaultProperty(FProperty* Property)
+{
+	return CastField<FBoolProperty>(Property)
+		|| CastField<FEnumProperty>(Property)
+		|| CastField<FByteProperty>(Property)
+		|| CastField<FNumericProperty>(Property)
+		|| CastField<FStrProperty>(Property)
+		|| CastField<FNameProperty>(Property)
+		|| CastField<FTextProperty>(Property)
+		|| CastField<FObjectPropertyBase>(Property)
+		|| CastField<FSoftObjectProperty>(Property)
+		|| CastField<FClassProperty>(Property)
+		|| CastField<FSoftClassProperty>(Property);
+}
+
+FAssetDocumentCapabilityResult ResetWritablePropertiesFromBaseline(UObject* Target, UObject* Baseline, const FString& Path)
+{
+	if (!Target || !Baseline)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	Target->Modify();
+	for (TFieldIterator<FProperty> PropertyIt(Target->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property))
+		{
+			continue;
+		}
+
+		FProperty* BaselineProperty = FindFProperty<FProperty>(Baseline->GetClass(), Property->GetFName());
+		if (!BaselineProperty || !BaselineProperty->SameType(Property))
+		{
+			continue;
+		}
+
+		void* TargetValuePtr = Property->ContainerPtrToValuePtr<void>(Target);
+		const void* BaselineValuePtr = BaselineProperty->ContainerPtrToValuePtr<void>(Baseline);
+		if (!Property->Identical(TargetValuePtr, BaselineValuePtr))
+		{
+			Property->CopyCompleteValue(TargetValuePtr, BaselineValuePtr);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+void CollectActorComponentDefaultSubobjects(UObject* Object, TArray<UActorComponent*>& OutComponents)
+{
+	OutComponents.Reset();
+	if (!Object)
+	{
+		return;
+	}
+
+	TArray<UObject*> DefaultSubobjects;
+	Object->GetDefaultSubobjects(DefaultSubobjects);
+	for (UObject* DefaultSubobject : DefaultSubobjects)
+	{
+		if (UActorComponent* Component = Cast<UActorComponent>(DefaultSubobject))
+		{
+			OutComponents.Add(Component);
+		}
+	}
+}
+
+UActorComponent* FindComponentByObjectName(UObject* Owner, FName ComponentName, UClass* ComponentClass, bool& bOutAmbiguous)
+{
+	bOutAmbiguous = false;
+	TArray<UActorComponent*> Components;
+	CollectActorComponentDefaultSubobjects(Owner, Components);
+
+	UActorComponent* Match = nullptr;
+	for (UActorComponent* Component : Components)
+	{
+		if (!Component || Component->GetFName() != ComponentName)
+		{
+			continue;
+		}
+		if (ComponentClass && !Component->IsA(ComponentClass))
+		{
+			continue;
+		}
+		if (Match)
+		{
+			bOutAmbiguous = true;
+			return nullptr;
+		}
+		Match = Component;
+	}
+	return Match;
+}
+
+UActorComponent* FindComponentByAliasProperty(UObject* Owner, FName AliasName, UClass* ComponentClass)
+{
+	if (!Owner)
+	{
+		return nullptr;
+	}
+
+	FObjectPropertyBase* Property = FindFProperty<FObjectPropertyBase>(Owner->GetClass(), AliasName);
+	if (!Property)
+	{
+		return nullptr;
+	}
+
+	UObject* Value = Property->GetObjectPropertyValue_InContainer(Owner);
+	UActorComponent* Component = Cast<UActorComponent>(Value);
+	if (!Component || (ComponentClass && !Component->IsA(ComponentClass)))
+	{
+		return nullptr;
+	}
+	return Component;
+}
+
+FAssetDocumentCapabilityResult ResolveNativeComponent(
+	UBlueprint* Blueprint,
+	const FUBlueprintComponentSpec& Spec,
+	UActorComponent*& OutGeneratedComponent,
+	UActorComponent*& OutBaselineComponent)
+{
+	OutGeneratedComponent = nullptr;
+	OutBaselineComponent = nullptr;
+	UBlueprintGeneratedClass* GeneratedClass = Blueprint ? Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass) : nullptr;
+	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	UClass* ParentClass = GeneratedClass ? GeneratedClass->GetSuperClass() : nullptr;
+	UObject* ParentCDO = ParentClass ? ParentClass->GetDefaultObject(false) : nullptr;
+	if (!GeneratedClass || !GeneratedCDO || !ParentCDO)
+	{
+		return BodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), ComponentPath(Spec.Key), TEXT("MissingGeneratedCDO"));
+	}
+	if (IsSelfComponentKey(Spec.Key))
+	{
+		return BodyFailure(TEXT("Native components require Key.OwnerClass to name the native owner class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidNativeComponentOwnerClass"));
+	}
+
+	UClass* OwnerClass = StaticLoadClass(UObject::StaticClass(), nullptr, *Spec.Key.OwnerClass);
+	if (!OwnerClass || !OwnerClass->IsChildOf(AActor::StaticClass()))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Native component OwnerClass '%s' must resolve to an Actor class"), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
+			TEXT("UnresolvedNativeComponentOwnerClass"));
+	}
+	if (!GeneratedClass->IsChildOf(OwnerClass))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Native component OwnerClass '%s' is not in the Blueprint parent chain"), *Spec.Key.OwnerClass),
+			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
+			TEXT("InvalidNativeComponentOwnerClass"));
+	}
+
+	OutGeneratedComponent = FindComponentByAliasProperty(GeneratedCDO, Spec.Key.Name, Spec.ComponentClass);
+	OutBaselineComponent = FindComponentByAliasProperty(ParentCDO, Spec.Key.Name, Spec.ComponentClass);
+	if (!OutGeneratedComponent)
+	{
+		bool bAmbiguous = false;
+		OutGeneratedComponent = FindComponentByObjectName(GeneratedCDO, Spec.Key.Name, Spec.ComponentClass, bAmbiguous);
+		if (bAmbiguous)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Native component key '%s' matched multiple generated CDO component templates"), *ComponentKeyToString(Spec.Key)),
+				ComponentPath(Spec.Key),
+				TEXT("AmbiguousNativeComponent"));
+		}
+		if (OutGeneratedComponent)
+		{
+			bool bBaselineAmbiguous = false;
+			OutBaselineComponent = FindComponentByObjectName(ParentCDO, OutGeneratedComponent->GetFName(), Spec.ComponentClass, bBaselineAmbiguous);
+			if (bBaselineAmbiguous)
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("Native component key '%s' matched multiple parent CDO component templates"), *ComponentKeyToString(Spec.Key)),
+					ComponentPath(Spec.Key),
+					TEXT("AmbiguousNativeComponent"));
+			}
+		}
+	}
+
+	if (!OutGeneratedComponent)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Native component '%s' was not found on generated CDO"), *ComponentKeyToString(Spec.Key)),
+			ComponentPath(Spec.Key),
+			TEXT("MissingNativeComponent"));
+	}
+	if (!OutBaselineComponent)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Native component '%s' baseline was not found on parent CDO"), *ComponentKeyToString(Spec.Key)),
+			ComponentPath(Spec.Key),
+			TEXT("MissingNativeComponentBaseline"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyNativeComponentOverrides(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs, bool& bOutChanged)
+{
+	bOutChanged = false;
+	TArray<const FUBlueprintComponentSpec*> DesiredNativeSpecs;
+	TSet<FString> DesiredNativeKeys;
+	CollectNativeComponents(Specs, DesiredNativeSpecs, DesiredNativeKeys);
+
+	UBlueprintGeneratedClass* GeneratedClass = Blueprint ? Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass) : nullptr;
+	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	UClass* ParentClass = GeneratedClass ? GeneratedClass->GetSuperClass() : nullptr;
+	UObject* ParentCDO = ParentClass ? ParentClass->GetDefaultObject(false) : nullptr;
+	if (!GeneratedCDO || !ParentCDO)
+	{
+		return DesiredNativeSpecs.Num() == 0
+			? FAssetDocumentCapabilityResult::Success()
+			: BodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), TEXT("/Body/Components"), TEXT("MissingGeneratedCDO"));
+	}
+
+	TArray<UActorComponent*> GeneratedComponents;
+	CollectActorComponentDefaultSubobjects(GeneratedCDO, GeneratedComponents);
+	for (UActorComponent* GeneratedComponent : GeneratedComponents)
+	{
+		if (!GeneratedComponent)
+		{
+			continue;
+		}
+
+		FUBlueprintComponentKey ObjectNameKey;
+		ObjectNameKey.Name = GeneratedComponent->GetFName();
+		ObjectNameKey.OwnerClass = ParentClass ? GetClassPath(ParentClass) : FString();
+		if (DesiredNativeKeys.Contains(ComponentKeyToString(ObjectNameKey)))
+		{
+			continue;
+		}
+
+		bool bAmbiguous = false;
+		UActorComponent* BaselineComponent = FindComponentByObjectName(ParentCDO, GeneratedComponent->GetFName(), GeneratedComponent->GetClass(), bAmbiguous);
+		if (BaselineComponent && !bAmbiguous)
+		{
+			const FAssetDocumentCapabilityResult ResetResult =
+				ResetWritablePropertiesFromBaseline(GeneratedComponent, BaselineComponent, ComponentPath(ObjectNameKey) / TEXT("Properties"));
+			if (!ResetResult.bSuccess)
+			{
+				return ResetResult;
+			}
+		}
+	}
+
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredNativeSpecs)
+	{
+		UActorComponent* GeneratedComponent = nullptr;
+		UActorComponent* BaselineComponent = nullptr;
+		const FAssetDocumentCapabilityResult ResolveResult = ResolveNativeComponent(Blueprint, *SpecPtr, GeneratedComponent, BaselineComponent);
+		if (!ResolveResult.bSuccess)
+		{
+			return ResolveResult;
+		}
+
+		const FAssetDocumentCapabilityResult ResetResult =
+			ResetWritablePropertiesFromBaseline(GeneratedComponent, BaselineComponent, ComponentPath(SpecPtr->Key) / TEXT("Properties"));
+		if (!ResetResult.bSuccess)
+		{
+			return ResetResult;
+		}
+
+		const FAssetDocumentPropertyApplyResult PropertyResult =
+			FAssetDocumentPropertyAdapter::ApplyProperties(GeneratedComponent, SpecPtr->Properties);
+		if (!PropertyResult.bSuccess)
+		{
+			return ComponentPropertyFailure(PropertyResult, ComponentPath(SpecPtr->Key) / TEXT("Properties"));
+		}
+		bOutChanged = true;
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightInheritedNativeComponents(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs)
+{
+	for (const FUBlueprintComponentSpec& Spec : Specs)
+	{
+		if (!HasAuthoredProperties(Spec))
+		{
+			continue;
+		}
+		if (Spec.Scope == TEXT("Inherited"))
+		{
+			FComponentKey ResolvedKey;
+			UActorComponent* OriginalTemplate = nullptr;
+			const FAssetDocumentCapabilityResult ResolveResult = ResolveInheritedComponentKey(Blueprint, Spec, ResolvedKey, OriginalTemplate);
+			if (!ResolveResult.bSuccess)
+			{
+				return ResolveResult;
+			}
+		}
+		else if (Spec.Scope == TEXT("Native"))
+		{
+			UActorComponent* GeneratedComponent = nullptr;
+			UActorComponent* BaselineComponent = nullptr;
+			const FAssetDocumentCapabilityResult ResolveResult = ResolveNativeComponent(Blueprint, Spec, GeneratedComponent, BaselineComponent);
+			if (!ResolveResult.bSuccess)
+			{
+				return ResolveResult;
+			}
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 TSharedRef<FJsonObject> PinTypeToJsonObject(const FEdGraphPinType& PinType)
 {
 	TSharedRef<FJsonObject> TypeObject = MakeShared<FJsonObject>();
@@ -1568,6 +2177,184 @@ FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint*
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ParseClassDefaults(
+	const TSharedPtr<FJsonObject>& BodyObject,
+	bool& bOutHasClassDefaults,
+	TSharedPtr<FJsonObject>& OutClassDefaults)
+{
+	bOutHasClassDefaults = false;
+	OutClassDefaults.Reset();
+
+	const TSharedPtr<FJsonValue>* ClassDefaultsValue = BodyObject->Values.Find(TEXT("ClassDefaults"));
+	if (!ClassDefaultsValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	bOutHasClassDefaults = true;
+	if (!ClassDefaultsValue->IsValid() || (*ClassDefaultsValue)->Type != EJson::Object)
+	{
+		return BodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
+	}
+
+	OutClassDefaults = (*ClassDefaultsValue)->AsObject();
+	if (!OutClassDefaults.IsValid())
+	{
+		return BodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ClassDefaultPropertyFailure(const FAssetDocumentPropertyApplyResult& PropertyResult)
+{
+	if (PropertyResult.Diagnostics.Num() > 0)
+	{
+		const FAssetDocumentDiagnostic& Diagnostic = PropertyResult.Diagnostics[0];
+		const FString DiagnosticPath = Diagnostic.Path.IsEmpty()
+			? FString(TEXT("/Body/ClassDefaults"))
+			: FString(TEXT("/Body/ClassDefaults/")) + Diagnostic.Path.Replace(TEXT("Properties."), TEXT(""));
+		return BodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
+	}
+	return BodyFailure(PropertyResult.Message, TEXT("/Body/ClassDefaults"), TEXT("InvalidClassDefaults"));
+}
+
+FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
+{
+	if (!ClassDefaults.IsValid() || ClassDefaults->Values.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
+	if (!GeneratedClass)
+	{
+		return BodyFailure(TEXT("Body.ClassDefaults requires a compiled Blueprint generated class"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedClass"));
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ClassDefaults->Values)
+	{
+		FProperty* Property = FindFProperty<FProperty>(GeneratedClass, *Pair.Key);
+		if (!Property)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Class default property '%s' does not exist"), *Pair.Key),
+				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
+				TEXT("UnknownProperty"));
+		}
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Class default property '%s' is not writable: %s"), *Pair.Key, *FAssetDocumentPropertyAdapter::GetNonWritableReason(Property)),
+				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
+				TEXT("NonWritable"));
+		}
+		if (!IsSupportedClassDefaultProperty(Property))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Class default property '%s' uses unsupported type '%s'"), *Pair.Key, *FAssetDocumentPropertyAdapter::GetTypeToken(Property)),
+				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
+				TEXT("UnsupportedClassDefaultValueType"));
+		}
+	}
+
+	const FAssetDocumentPropertyApplyResult PreflightResult =
+		FAssetDocumentPropertyAdapter::PreflightProperties(GeneratedClass, ClassDefaults);
+	if (!PreflightResult.bSuccess)
+	{
+		return ClassDefaultPropertyFailure(PreflightResult);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
+{
+	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
+	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	UClass* ParentClass = GeneratedClass ? GeneratedClass->GetSuperClass() : nullptr;
+	UObject* ParentCDO = ParentClass ? ParentClass->GetDefaultObject(false) : nullptr;
+	if (!GeneratedCDO || !ParentCDO)
+	{
+		return BodyFailure(TEXT("Body.ClassDefaults requires generated and parent CDOs"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedCDO"));
+	}
+
+	GeneratedCDO->Modify();
+	for (TFieldIterator<FProperty> PropertyIt(GeneratedClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property) || !IsSupportedClassDefaultProperty(Property))
+		{
+			continue;
+		}
+		if (ClassDefaults.IsValid() && ClassDefaults->HasField(Property->GetName()))
+		{
+			continue;
+		}
+
+		FProperty* ParentProperty = FindFProperty<FProperty>(ParentClass, Property->GetFName());
+		if (!ParentProperty || !ParentProperty->SameType(Property))
+		{
+			continue;
+		}
+
+		void* GeneratedValuePtr = Property->ContainerPtrToValuePtr<void>(GeneratedCDO);
+		const void* ParentValuePtr = ParentProperty->ContainerPtrToValuePtr<void>(ParentCDO);
+		if (!Property->Identical(GeneratedValuePtr, ParentValuePtr))
+		{
+			Property->CopyCompleteValue(GeneratedValuePtr, ParentValuePtr);
+		}
+	}
+
+	const FAssetDocumentPropertyApplyResult PropertyResult =
+		FAssetDocumentPropertyAdapter::ApplyProperties(GeneratedCDO, ClassDefaults);
+	if (!PropertyResult.bSuccess)
+	{
+		return ClassDefaultPropertyFailure(PropertyResult);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Object, UObject* Baseline)
+{
+	TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
+	if (!Object || !Baseline)
+	{
+		return PropertiesJson;
+	}
+
+	for (TFieldIterator<FProperty> PropertyIt(Object->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property) || !IsSupportedClassDefaultProperty(Property))
+		{
+			continue;
+		}
+
+		FProperty* BaselineProperty = FindFProperty<FProperty>(Baseline->GetClass(), Property->GetFName());
+		if (!BaselineProperty || !BaselineProperty->SameType(Property))
+		{
+			continue;
+		}
+
+		const void* CurrentValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
+		const void* BaselineValuePtr = BaselineProperty->ContainerPtrToValuePtr<void>(Baseline);
+		if (Property->Identical(CurrentValuePtr, BaselineValuePtr))
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonValue> JsonValue = FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, CurrentValuePtr);
+		if (JsonValue.IsValid())
+		{
+			PropertiesJson->SetField(Property->GetName(), JsonValue);
+		}
+	}
+
+	return PropertiesJson;
+}
+
 FAssetDocumentCapabilityResult RestoreAndReturnFailure(
 	UBlueprint* Blueprint,
 	UClass* PreviousParentClass,
@@ -1705,6 +2492,14 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		return ComponentParseResult;
 	}
 
+	bool bHasClassDefaultsRegion = false;
+	TSharedPtr<FJsonObject> ParsedClassDefaults;
+	const FAssetDocumentCapabilityResult ClassDefaultsParseResult = ParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ParsedClassDefaults);
+	if (!ClassDefaultsParseResult.bSuccess)
+	{
+		return ClassDefaultsParseResult;
+	}
+
 	const bool bHasVariablesRegion = BodyObject->HasField(TEXT("Variables"));
 	const bool bHasInterfacesRegion = BodyObject->HasField(TEXT("ImplementedInterfaces"));
 	const bool bHasComponentsRegion = BodyObject->HasField(TEXT("Components"));
@@ -1737,6 +2532,21 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		if (!ComponentPropertiesResult.bSuccess)
 		{
 			return ComponentPropertiesResult;
+		}
+
+		const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(Blueprint, ParsedComponents);
+		if (!InheritedNativePreflightResult.bSuccess)
+		{
+			return InheritedNativePreflightResult;
+		}
+	}
+
+	if (bHasClassDefaultsRegion)
+	{
+		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
+		if (!ClassDefaultsPreflightResult.bSuccess)
+		{
+			return ClassDefaultsPreflightResult;
 		}
 	}
 
@@ -1813,6 +2623,32 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		}
 	}
 
+	if (bHasComponentsRegion)
+	{
+		bool bInheritedChanged = false;
+		const FAssetDocumentCapabilityResult InheritedApplyResult = ApplyInheritedComponentOverrides(Blueprint, ParsedComponents, bInheritedChanged);
+		if (!InheritedApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, InheritedApplyResult);
+		}
+
+		bool bNativeChanged = false;
+		const FAssetDocumentCapabilityResult NativeApplyResult = ApplyNativeComponentOverrides(Blueprint, ParsedComponents, bNativeChanged);
+		if (!NativeApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, NativeApplyResult);
+		}
+	}
+
+	if (bHasClassDefaultsRegion)
+	{
+		const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = ApplyClassDefaults(Blueprint, ParsedClassDefaults);
+		if (!ClassDefaultsApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsApplyResult);
+		}
+	}
+
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied UBlueprint Body"));
 }
 
@@ -1880,8 +2716,44 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 			Components.Add(MakeShared<FJsonValueObject>(ComponentNodeToJsonObject(Blueprint, Node)));
 		}
 	}
+	if (Blueprint)
+	{
+		if (UInheritableComponentHandler* Handler = const_cast<UBlueprint*>(Blueprint)->GetInheritableComponentHandler(false))
+		{
+			for (auto RecordIt = Handler->CreateRecordIterator(); RecordIt; ++RecordIt)
+			{
+				const FComponentKey& Key = RecordIt->ComponentKey;
+				UActorComponent* Template = RecordIt->ComponentTemplate;
+				if (!Key.IsSCSKey() || !Template)
+				{
+					continue;
+				}
+
+				FUBlueprintComponentKey PublicKey;
+				PublicKey.Name = Key.GetSCSVariableName();
+				PublicKey.OwnerClass = GetClassPath(Key.GetComponentOwner());
+
+				TSharedPtr<FJsonObject> ComponentObject = MakeShared<FJsonObject>();
+				ComponentObject->SetObjectField(TEXT("Key"), ComponentKeyToJsonObject(PublicKey));
+				ComponentObject->SetStringField(TEXT("Scope"), TEXT("Inherited"));
+				ComponentObject->SetStringField(TEXT("Class"), GetClassPath(Template->GetClass()));
+				ComponentObject->SetBoolField(TEXT("Root"), false);
+				ComponentObject->SetObjectField(TEXT("Properties"), FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Template, true));
+				Components.Add(MakeShared<FJsonValueObject>(ComponentObject));
+			}
+		}
+	}
 	OutBodyJson->SetArrayField(TEXT("Components"), Components);
-	OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	if (Blueprint && Blueprint->GeneratedClass && Blueprint->GeneratedClass->GetSuperClass())
+	{
+		UObject* GeneratedCDO = Blueprint->GeneratedClass->GetDefaultObject(false);
+		UObject* ParentCDO = Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false);
+		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO));
+	}
+	else
+	{
+		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	}
 	OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
@@ -2105,6 +2977,51 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		}
 	}
 
+	if (DesiredBody->HasField(TEXT("ClassDefaults")))
+	{
+		bool bHasClassDefaultsRegion = false;
+		TSharedPtr<FJsonObject> DesiredClassDefaults;
+		const FAssetDocumentCapabilityResult ClassDefaultsParseResult = ParseClassDefaults(DesiredBody, bHasClassDefaultsRegion, DesiredClassDefaults);
+		if (!ClassDefaultsParseResult.bSuccess)
+		{
+			return ClassDefaultsParseResult;
+		}
+
+		UObject* GeneratedCDO = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
+		UObject* ParentCDO = Blueprint->GeneratedClass && Blueprint->GeneratedClass->GetSuperClass()
+			? Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false)
+			: nullptr;
+		TSharedPtr<FJsonObject> CurrentClassDefaults = ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO);
+		TSet<FString> SeenClassDefaultNames;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& CurrentPair : CurrentClassDefaults->Values)
+		{
+			SeenClassDefaultNames.Add(CurrentPair.Key);
+			const TSharedPtr<FJsonValue>* DesiredValue = DesiredClassDefaults->Values.Find(CurrentPair.Key);
+			const bool bChanged = !DesiredValue || JsonValuesDiffer(CurrentPair.Value, *DesiredValue);
+			AddBodyDiffEntry(
+				OutDiffEntries,
+				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *CurrentPair.Key),
+				bChanged ? TEXT("changed") : TEXT("unchanged"),
+				CurrentPair.Value,
+				DesiredValue ? *DesiredValue : TSharedPtr<FJsonValue>(MakeShared<FJsonValueNull>()),
+				DesiredValue ? (bChanged ? TEXT("changed") : FString()) : TEXT("extra"));
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& DesiredPair : DesiredClassDefaults->Values)
+		{
+			if (!SeenClassDefaultNames.Contains(DesiredPair.Key))
+			{
+				AddBodyDiffEntry(
+					OutDiffEntries,
+					FString::Printf(TEXT("/Body/ClassDefaults/%s"), *DesiredPair.Key),
+					TEXT("changed"),
+					MakeShared<FJsonValueNull>(),
+					DesiredPair.Value,
+					TEXT("missing"));
+			}
+		}
+	}
+
 	if (const TSharedPtr<FJsonValue>* DesiredParentClassValue = DesiredBody->Values.Find(TEXT("ParentClass")))
 	{
 		TSharedPtr<FJsonObject> DesiredParentObject = (*DesiredParentClassValue).IsValid() ? (*DesiredParentClassValue)->AsObject() : nullptr;
@@ -2192,6 +3109,14 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		return ComponentResult;
 	}
 
+	bool bHasClassDefaultsRegion = false;
+	TSharedPtr<FJsonObject> ClassDefaults;
+	const FAssetDocumentCapabilityResult ClassDefaultsResult = ParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ClassDefaults);
+	if (!ClassDefaultsResult.bSuccess)
+	{
+		return ClassDefaultsResult;
+	}
+
 	if (HasOwnedSCSComponent(ComponentSpecs))
 	{
 		UClass* ParentClass = nullptr;
@@ -2218,6 +3143,18 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	if (!ComponentPropertiesResult.bSuccess)
 	{
 		return ComponentPropertiesResult;
+	}
+
+	if (bHasClassDefaultsRegion)
+	{
+		if (UBlueprint* Blueprint = const_cast<UBlueprint*>(Cast<UBlueprint>(Context.Asset)))
+		{
+			const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ClassDefaults);
+			if (!ClassDefaultsPreflightResult.bSuccess)
+			{
+				return ClassDefaultsPreflightResult;
+			}
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated UBlueprint Body scaffold"));
