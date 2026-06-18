@@ -2270,6 +2270,55 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 		TestFalse(TEXT("Diff does not report failed Body._Skipped"), SkippedFailed && JsonArrayContainsPath(*SkippedFailed, TEXT("/Body/_Skipped")));
 	}
 
+	FAssetDocumentExtractRequest DiffOnlyExtractRequest;
+	DiffOnlyExtractRequest.AssetPath = Target;
+	DiffOnlyExtractRequest.bDiffOnly = true;
+	DiffOnlyExtractRequest.bIncludeAllWritable = false;
+	const FAssetDocumentResult DiffOnlyExtractResult = Service.Extract(DiffOnlyExtractRequest);
+	TestTrue(TEXT("Diff-only Extract succeeds after AnimSequence ApplyFile"), DiffOnlyExtractResult.IsSuccess());
+	TestTrue(TEXT("Diff-only Extract returns payload"), DiffOnlyExtractResult.Payload.IsValid());
+	if (!DiffOnlyExtractResult.IsSuccess() || !DiffOnlyExtractResult.Payload.IsValid())
+	{
+		AddError(DiffOnlyExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* DiffOnlyExtractedBody = nullptr;
+	TestTrue(TEXT("Diff-only Extract payload includes Body"), DiffOnlyExtractResult.Payload->TryGetObjectField(TEXT("Body"), DiffOnlyExtractedBody));
+	if (DiffOnlyExtractedBody && DiffOnlyExtractedBody->IsValid())
+	{
+		TSharedPtr<FJsonObject> DiffOnlyExtractedDocument = MakeShared<FJsonObject>();
+		DiffOnlyExtractedDocument->Values = DiffOnlyExtractResult.Payload->Values;
+		TSharedPtr<FJsonObject> DiffOnlyBodyWithSkipped = MakeShared<FJsonObject>();
+		DiffOnlyBodyWithSkipped->Values = (*DiffOnlyExtractedBody)->Values;
+		if (!DiffOnlyBodyWithSkipped->HasField(TEXT("_Skipped")))
+		{
+			TSharedPtr<FJsonObject> ExtractOnlySkipped = MakeShared<FJsonObject>();
+			ExtractOnlySkipped->SetStringField(TEXT("Reason"), TEXT("Synthetic extract-only diagnostic seeded on diff-only extract payload"));
+			DiffOnlyBodyWithSkipped->SetObjectField(TEXT("_Skipped"), ExtractOnlySkipped);
+		}
+		TestTrue(TEXT("Diff-only Extract payload carries extract-only Body._Skipped metadata for diff coverage"), DiffOnlyBodyWithSkipped->HasField(TEXT("_Skipped")));
+		DiffOnlyExtractedDocument->SetObjectField(TEXT("Body"), DiffOnlyBodyWithSkipped);
+
+		FAssetDocumentDiffRequest DiffOnlySkippedDiffRequest;
+		DiffOnlySkippedDiffRequest.Document = DiffOnlyExtractedDocument;
+		const FAssetDocumentResult DiffOnlySkippedDiffResult = Service.Diff(DiffOnlySkippedDiffRequest);
+		TestTrue(TEXT("Diff succeeds for diff-only Extract payload with Body._Skipped"), DiffOnlySkippedDiffResult.IsSuccess());
+		TestTrue(TEXT("Diff-only skipped diff returns payload"), DiffOnlySkippedDiffResult.Payload.IsValid());
+		if (DiffOnlySkippedDiffResult.Payload.IsValid())
+		{
+			const TArray<TSharedPtr<FJsonValue>>* DiffOnlySkippedChanged = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* DiffOnlySkippedUnchanged = nullptr;
+			const TArray<TSharedPtr<FJsonValue>>* DiffOnlySkippedFailed = nullptr;
+			TestTrue(TEXT("Diff-only skipped diff payload includes changed array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("changed"), DiffOnlySkippedChanged));
+			TestTrue(TEXT("Diff-only skipped diff payload includes unchanged array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("unchanged"), DiffOnlySkippedUnchanged));
+			TestTrue(TEXT("Diff-only skipped diff payload includes failed array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("failed"), DiffOnlySkippedFailed));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report changed Body._Skipped"), DiffOnlySkippedChanged && JsonArrayContainsPath(*DiffOnlySkippedChanged, TEXT("/Body/_Skipped")));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report unchanged Body._Skipped"), DiffOnlySkippedUnchanged && JsonArrayContainsPath(*DiffOnlySkippedUnchanged, TEXT("/Body/_Skipped")));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report failed Body._Skipped"), DiffOnlySkippedFailed && JsonArrayContainsPath(*DiffOnlySkippedFailed, TEXT("/Body/_Skipped")));
+		}
+	}
+
 	for (const FString& LegacyKey : { FString(TEXT("RawTracks")), FString(TEXT("Import")), FString(TEXT("CompressedData")) })
 	{
 		TSharedRef<FJsonObject> InvalidBody = MakeShared<FJsonObject>();
@@ -2281,6 +2330,9 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic points at the key"), *LegacyKey), HasResultDiagnostic(LegacyValidateResult, FString::Printf(TEXT("/Body/%s"), *LegacyKey), TEXT("UnsupportedAuthoredField")));
 		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic explains post-import supported sections"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("post-import")));
 		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic names supported regions"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("Curves")));
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic names Preview region"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("Preview")));
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic names Compression region"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("Compression")));
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic names NotifyTracks region"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("NotifyTracks")));
 	}
 
 	return true;

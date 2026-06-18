@@ -699,7 +699,7 @@ FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<
 			const FString Path = FString::Printf(TEXT("/Body/%s"), *UnsupportedKey);
 			return BodyFailure(
 				FString::Printf(
-					TEXT("Body.%s is not an AnimSequence AssetDocument authored field. AnimSequence AssetDocument is post-import only; use supported Body sections such as References, Playback, Curves, Notifies, NotifyStates, SyncMarkers, Metadata, or AssetUserData instead of legacy/raw/import/compressed names."),
+					TEXT("Body.%s is not an AnimSequence AssetDocument authored field. AnimSequence AssetDocument is post-import only; use supported Body sections such as References, Preview, Playback, Additive, RootMotion, Compression, Curves, Notifies, NotifyStates, NotifyTracks, SyncMarkers, Metadata, or AssetUserData instead of legacy/raw/import/compressed names."),
 					*UnsupportedKey),
 				Path,
 				TEXT("UnsupportedAuthoredField"));
