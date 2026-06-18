@@ -342,4 +342,100 @@ bool FAssetDocumentUBlueprintRequiresParentClassTest::RunTest(const FString&)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintVariablesAuthoritativeTest,
+	"AssetFactory.AssetDocument.UBlueprint.VariablesAuthoritative",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintVariablesAuthoritativeTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_Vars_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	auto MakeDocument = [&Target](bool bIncludeStamina)
+	{
+		TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+		Document->SetNumberField(TEXT("SchemaVersion"), 1);
+		Document->SetStringField(TEXT("Target"), Target);
+		Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Blueprint"));
+		Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+		Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+		Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+		TSharedPtr<FJsonObject> ParentClass = MakeShared<FJsonObject>();
+		ParentClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+		ParentClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Actor"));
+
+		TArray<TSharedPtr<FJsonValue>> Variables;
+		auto AddFloatVariable = [&Variables](const TCHAR* Name, const TCHAR* DefaultValue)
+		{
+			TSharedPtr<FJsonObject> Type = MakeShared<FJsonObject>();
+			Type->SetStringField(TEXT("PinCategory"), TEXT("real"));
+			Type->SetStringField(TEXT("PinSubCategory"), TEXT("float"));
+
+			TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
+			Variable->SetStringField(TEXT("Name"), Name);
+			Variable->SetObjectField(TEXT("Type"), Type);
+			Variable->SetStringField(TEXT("DefaultValue"), DefaultValue);
+			Variables.Add(MakeShared<FJsonValueObject>(Variable));
+		};
+
+		AddFloatVariable(TEXT("Health"), TEXT("100.0"));
+		if (bIncludeStamina)
+		{
+			AddFloatVariable(TEXT("Stamina"), TEXT("50.0"));
+		}
+
+		TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+		Body->SetObjectField(TEXT("ParentClass"), ParentClass);
+		Body->SetArrayField(TEXT("ImplementedInterfaces"), {});
+		Body->SetArrayField(TEXT("Variables"), Variables);
+		Body->SetArrayField(TEXT("Components"), {});
+		Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+		Body->SetArrayField(TEXT("UbergraphPages"), {});
+		Body->SetArrayField(TEXT("FunctionGraphs"), {});
+		Body->SetArrayField(TEXT("MacroGraphs"), {});
+		Body->SetArrayField(TEXT("Timelines"), {});
+		Document->SetObjectField(TEXT("Body"), Body);
+		return Document;
+	};
+
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest FirstRequest;
+	FirstRequest.Document = MakeDocument(true);
+	FirstRequest.bSaveAsset = false;
+	const FAssetDocumentResult FirstResult = Service.Apply(FirstRequest);
+	if (!FirstResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Initial apply failed: %s"), *FirstResult.Message));
+	}
+	TestTrue(TEXT("Initial variable apply succeeds"), FirstResult.IsSuccess());
+
+	FAssetDocumentApplyRequest SecondRequest;
+	SecondRequest.Document = MakeDocument(false);
+	SecondRequest.bSaveAsset = false;
+	const FAssetDocumentResult SecondResult = Service.Apply(SecondRequest);
+	if (!SecondResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Second apply failed: %s"), *SecondResult.Message));
+	}
+	TestTrue(TEXT("Second variable apply succeeds"), SecondResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target)));
+	TestNotNull(TEXT("Blueprint exists"), Blueprint);
+	if (Blueprint)
+	{
+		TestTrue(TEXT("Health remains"), Blueprint->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable)
+		{
+			return Variable.VarName == TEXT("Health");
+		}));
+		TestFalse(TEXT("Stamina was removed"), Blueprint->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable)
+		{
+			return Variable.VarName == TEXT("Stamina");
+		}));
+	}
+
+	return true;
+}
+
 #endif

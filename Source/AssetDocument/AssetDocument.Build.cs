@@ -23,6 +23,7 @@ public class AssetDocument : ModuleRules
 			"UnrealEd",
 			"AssetRegistry",
 			"AssetTools",
+			"BlueprintGraph",
 			"DirectoryWatcher",
 			"Projects"
 		});
