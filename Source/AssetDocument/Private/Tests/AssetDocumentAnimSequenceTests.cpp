@@ -1126,6 +1126,29 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 		TestEqual(TEXT("Extract orders sync markers by time"), (*ExtractedMarkers)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("LeftFoot")));
 	}
 
+	TSharedRef<FJsonObject> SameTimeMarkersBody = MakeShared<FJsonObject>();
+	SameTimeMarkersBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
+		MakeSyncMarker(TEXT("Zeta"), 0.40),
+		MakeSyncMarker(TEXT("Alpha"), 0.40),
+		MakeSyncMarker(TEXT("Middle"), 0.45),
+	}));
+	const FAssetDocumentCapabilityResult SameTimeMarkersApplyResult = Capability.Apply(Context, MakeBodyValue(SameTimeMarkersBody));
+	TestTrue(TEXT("Apply succeeds for same-time sync markers"), SameTimeMarkersApplyResult.bSuccess);
+	Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult SameTimeMarkersExtractResult = Capability.Extract(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds after same-time sync markers"), SameTimeMarkersExtractResult.bSuccess);
+	ExtractedMarkers = nullptr;
+	TestTrue(TEXT("Extract outputs same-time sync markers"), Extracted->TryGetArrayField(TEXT("SyncMarkers"), ExtractedMarkers));
+	TestTrue(TEXT("Extract outputs three same-time marker fixture entries"), ExtractedMarkers && ExtractedMarkers->Num() == 3);
+	if (ExtractedMarkers && ExtractedMarkers->Num() == 3)
+	{
+		TestEqual(TEXT("Same-time sync markers sort by name first"), (*ExtractedMarkers)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Alpha")));
+		TestEqual(TEXT("Same-time sync markers keep secondary order"), (*ExtractedMarkers)[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Zeta")));
+		TestEqual(TEXT("Later sync marker remains last"), (*ExtractedMarkers)[2]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Middle")));
+	}
+	const FAssetDocumentCapabilityResult RestoreTimelineResult = Capability.Apply(Context, MakeBodyValue(MakeTimelineBody()));
+	TestTrue(TEXT("Restore canonical timeline after same-time marker check"), RestoreTimelineResult.bSuccess);
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult UnchangedDiffResult = Capability.Diff(Context, MakeBodyValue(MakeTimelineBody()), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for unchanged timeline body"), UnchangedDiffResult.bSuccess);
@@ -1229,6 +1252,50 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects negative notify state duration"), NegativeDurationResult.bSuccess);
 	TestTrue(TEXT("Negative duration diagnostic is precise"), HasDiagnostic(NegativeDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNotifyStateDuration")));
 	TestEqual(TEXT("Negative duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> CrossRegionPartialMutationBody = MakePlaybackRateBody(7.0);
+	CrossRegionPartialMutationBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({
+		MakeFloatCurve(TEXT("AtomicCurve"), {
+			MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")),
+			MakeCurveKey(1.0, 1.0, TEXT("RCIM_Linear")),
+		}),
+	})->GetArrayField(TEXT("Curves")));
+	TSharedRef<FJsonObject> InvalidEmbeddedNotify = MakeEmbeddedNotifyPlacement(TEXT("InvalidEmbeddedProperties"), 0.25, TEXT("InvalidEmbeddedProperties"), TEXT("Default"));
+	TSharedPtr<FJsonObject> InvalidNotifyFragment = InvalidEmbeddedNotify->GetObjectField(TEXT("Notify"));
+	TSharedRef<FJsonObject> InvalidProperties = MakeShared<FJsonObject>();
+	InvalidProperties->SetBoolField(TEXT("NoSuchNotifyProperty"), true);
+	InvalidNotifyFragment->SetObjectField(TEXT("Properties"), InvalidProperties);
+	CrossRegionPartialMutationBody->SetArrayField(TEXT("Notifies"), ObjectArray({ InvalidEmbeddedNotify }));
+	const FAssetDocumentCapabilityResult CrossRegionPartialMutationResult = Capability.Apply(Context, MakeBodyValue(CrossRegionPartialMutationBody));
+	TestFalse(TEXT("Apply rejects invalid embedded notify properties before any region mutates"), CrossRegionPartialMutationResult.bSuccess);
+	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/0/Notify"), TEXT("embeddedobject-preflight-failed")));
+	TestEqual(TEXT("Invalid embedded notify properties does not mutate RateScale"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Invalid embedded notify properties does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
+	TestEqual(TEXT("Invalid embedded notify properties does not mutate markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
+	Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractAfterCrossRegionFailureResult = Capability.Extract(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds after rejected cross-region apply"), ExtractAfterCrossRegionFailureResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedCurvesAfterFailure = nullptr;
+	TestTrue(TEXT("Extract outputs Curves after rejected cross-region apply"), Extracted->TryGetArrayField(TEXT("Curves"), ExtractedCurvesAfterFailure));
+	TestFalse(TEXT("Rejected cross-region apply does not add curve"), FindCurveByName(ExtractedCurvesAfterFailure, TEXT("AtomicCurve")).IsValid());
+
+	TSharedRef<FJsonObject> AmbiguousNotifyTrackBody = MakePlaybackRateBody(5.1);
+	TSharedRef<FJsonObject> AmbiguousNotify = MakeEmbeddedNotifyPlacement(TEXT("AmbiguousTrack"), 0.25, TEXT("AmbiguousTrack"), TEXT("Default"));
+	AmbiguousNotify->SetStringField(TEXT("Track"), TEXT("Upper"));
+	AmbiguousNotifyTrackBody->SetArrayField(TEXT("Notifies"), ObjectArray({ AmbiguousNotify }));
+	const FAssetDocumentCapabilityResult AmbiguousNotifyTrackResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyTrackBody));
+	TestFalse(TEXT("Apply rejects notify with Track and TrackName"), AmbiguousNotifyTrackResult.bSuccess);
+	TestTrue(TEXT("Ambiguous notify track diagnostic is precise"), HasDiagnostic(AmbiguousNotifyTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestEqual(TEXT("Ambiguous notify track does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> AmbiguousNotifyTracksBody = MakePlaybackRateBody(5.2);
+	TSharedRef<FJsonObject> AmbiguousTrack = MakeNotifyTrack(TEXT("Default"));
+	AmbiguousTrack->SetStringField(TEXT("Name"), TEXT("Default"));
+	AmbiguousNotifyTracksBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({ AmbiguousTrack }));
+	const FAssetDocumentCapabilityResult AmbiguousNotifyTracksResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyTracksBody));
+	TestFalse(TEXT("Apply rejects NotifyTracks item with Name and TrackName"), AmbiguousNotifyTracksResult.bSuccess);
+	TestTrue(TEXT("Ambiguous NotifyTracks diagnostic is precise"), HasDiagnostic(AmbiguousNotifyTracksResult, TEXT("/Body/NotifyTracks/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestEqual(TEXT("Ambiguous NotifyTracks does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> UnknownTrackBody = MakePlaybackRateBody(5.25);
 	UnknownTrackBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({

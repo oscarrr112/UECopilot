@@ -1455,6 +1455,18 @@ FString ReadPlacementTrackName(const TSharedRef<FJsonObject>& Object)
 	return TEXT("Default");
 }
 
+FAssetDocumentCapabilityResult RejectAmbiguousTrackAlias(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* SectionName,
+	int32 Index)
+{
+	if (Object->Values.Contains(TEXT("Track")) && Object->Values.Contains(TEXT("TrackName")))
+	{
+		return BodyFailure(TEXT("Track and TrackName cannot both be authored"), BodyArrayFieldPath(SectionName, Index, TEXT("TrackName")), TEXT("AmbiguousTrackNameAlias"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 	const TSharedRef<FJsonObject>& BodyObject,
 	bool& bOutHasTracks,
@@ -1489,6 +1501,10 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		if (!Result.bSuccess)
 		{
 			return Result;
+		}
+		if (TrackObject->Values.Contains(TEXT("Name")) && TrackObject->Values.Contains(TEXT("TrackName")))
+		{
+			return BodyFailure(TEXT("NotifyTracks item cannot author both Name and TrackName"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("AmbiguousTrackNameAlias"));
 		}
 
 		FString NameString;
@@ -1551,6 +1567,11 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 			return Result;
 		}
 		Result = RejectUnknownArrayObjectFields(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Notify"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectAmbiguousTrackAlias(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1668,6 +1689,11 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 			return Result;
 		}
 		Result = RejectUnknownArrayObjectFields(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("NotifyState"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectAmbiguousTrackAlias(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -2762,16 +2788,11 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		return BodyFailure(TEXT("Body.References.Skeleton must match the current AnimSequence skeleton in Task 2"), TEXT("/Body/References/Skeleton"), TEXT("SkeletonMismatch"));
 	}
 
-	if (ParsedBody.bHasCurves)
-	{
-		const FAssetDocumentCapabilityResult CurvesResult = ApplyAnimSequenceCurves(Sequence, ParsedBody.Curves);
-		if (!CurvesResult.bSuccess)
-		{
-			return CurvesResult;
-		}
-	}
-
-	if (ParsedBody.bHasNotifyTracks || ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasSyncMarkers)
+	const bool bHasTimelineRegions = ParsedBody.bHasNotifyTracks || ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasSyncMarkers;
+	TArray<FAnimNotifyTrack> StagedTracks;
+	TArray<FAnimNotifyEvent> StagedNotifies;
+	TArray<FAnimSyncMarker> StagedMarkers;
+	if (bHasTimelineRegions)
 	{
 		TArray<FName> OriginalTrackNames;
 		OriginalTrackNames.Reserve(Sequence->AnimNotifyTracks.Num());
@@ -2780,25 +2801,23 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 			OriginalTrackNames.Add(Track.TrackName);
 		}
 
-		TArray<FAnimNotifyTrack> UpdatedTracks;
 		if (ParsedBody.bHasNotifyTracks)
 		{
 			for (const FParsedAnimSequenceNotifyTrack& Track : ParsedBody.NotifyTracks)
 			{
-				UpdatedTracks.Add(FAnimNotifyTrack(Track.Name, FLinearColor::White));
+				StagedTracks.Add(FAnimNotifyTrack(Track.Name, FLinearColor::White));
 			}
 		}
 		else
 		{
-			UpdatedTracks = Sequence->AnimNotifyTracks;
+			StagedTracks = Sequence->AnimNotifyTracks;
 		}
-		if (UpdatedTracks.IsEmpty())
+		if (StagedTracks.IsEmpty())
 		{
-			UpdatedTracks.Add(FAnimNotifyTrack(TEXT("Default"), FLinearColor::White));
+			StagedTracks.Add(FAnimNotifyTrack(TEXT("Default"), FLinearColor::White));
 		}
 
-		TArray<FAnimNotifyEvent> UpdatedNotifies;
-		UpdatedNotifies.Reserve(Sequence->Notifies.Num() + ParsedBody.Notifies.Num() + ParsedBody.NotifyStates.Num());
+		StagedNotifies.Reserve(Sequence->Notifies.Num() + ParsedBody.Notifies.Num() + ParsedBody.NotifyStates.Num());
 		for (const FAnimNotifyEvent& ExistingNotify : Sequence->Notifies)
 		{
 			if (ParsedBody.bHasNotifies && IsManagedAnimSequenceNotifyEvent(ExistingNotify, Sequence))
@@ -2815,13 +2834,13 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 				: FName(TEXT("Default"));
 			if (!OriginalTrackName.IsNone())
 			{
-				PreservedNotify.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, OriginalTrackName);
+				PreservedNotify.TrackIndex = EnsureNotifyTrackIndex(StagedTracks, OriginalTrackName);
 			}
 			else
 			{
 				PreservedNotify.TrackIndex = 0;
 			}
-			UpdatedNotifies.Add(PreservedNotify);
+			StagedNotifies.Add(PreservedNotify);
 		}
 
 		if (ParsedBody.bHasNotifies)
@@ -2830,7 +2849,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 			{
 				FAnimNotifyEvent NotifyEvent;
 				NotifyEvent.NotifyName = ParsedNotify.NotifyName;
-				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, ParsedNotify.TrackName);
+				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(StagedTracks, ParsedNotify.TrackName);
 				NotifyEvent.SetTime(ParsedNotify.Time);
 				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedNotify.Time));
 				UObject* NotifyObject = nullptr;
@@ -2852,7 +2871,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 #if WITH_EDITORONLY_DATA
 				NotifyEvent.Guid = FGuid::NewGuid();
 #endif
-				UpdatedNotifies.Add(NotifyEvent);
+				StagedNotifies.Add(NotifyEvent);
 			}
 		}
 
@@ -2862,7 +2881,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 			{
 				FAnimNotifyEvent NotifyEvent;
 				NotifyEvent.NotifyName = ParsedState.Name;
-				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, ParsedState.TrackName);
+				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(StagedTracks, ParsedState.TrackName);
 				NotifyEvent.SetTime(ParsedState.Time);
 				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedState.Time));
 				NotifyEvent.SetDuration(ParsedState.Duration);
@@ -2886,15 +2905,52 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 #if WITH_EDITORONLY_DATA
 				NotifyEvent.Guid = FGuid::NewGuid();
 #endif
-				UpdatedNotifies.Add(NotifyEvent);
+				StagedNotifies.Add(NotifyEvent);
 			}
 		}
 
+		StagedNotifies.Sort();
+
+		if (ParsedBody.bHasSyncMarkers)
+		{
+			StagedMarkers.Reserve(ParsedBody.SyncMarkers.Num());
+			for (const FParsedAnimSequenceSyncMarker& ParsedMarker : ParsedBody.SyncMarkers)
+			{
+				FAnimSyncMarker Marker;
+				Marker.MarkerName = ParsedMarker.Name;
+				Marker.Time = ParsedMarker.Time;
+#if WITH_EDITORONLY_DATA
+				Marker.TrackIndex = 0;
+				Marker.Guid = FGuid::NewGuid();
+#endif
+				StagedMarkers.Add(Marker);
+			}
+			StagedMarkers.Sort([](const FAnimSyncMarker& Left, const FAnimSyncMarker& Right)
+			{
+				if (!FMath::IsNearlyEqual(Left.Time, Right.Time))
+				{
+					return Left.Time < Right.Time;
+				}
+				return Left.MarkerName.LexicalLess(Right.MarkerName);
+			});
+		}
+	}
+
+	if (ParsedBody.bHasCurves)
+	{
+		const FAssetDocumentCapabilityResult CurvesResult = ApplyAnimSequenceCurves(Sequence, ParsedBody.Curves);
+		if (!CurvesResult.bSuccess)
+		{
+			return CurvesResult;
+		}
+	}
+
+	if (bHasTimelineRegions)
+	{
 		if (ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasNotifyTracks)
 		{
-			UpdatedNotifies.Sort();
-			Sequence->AnimNotifyTracks = MoveTemp(UpdatedTracks);
-			Sequence->Notifies = MoveTemp(UpdatedNotifies);
+			Sequence->AnimNotifyTracks = MoveTemp(StagedTracks);
+			Sequence->Notifies = MoveTemp(StagedNotifies);
 			Sequence->SortNotifies();
 			Sequence->InitializeNotifyTrack();
 			if (Sequence->GetPlayLength() > 0.0f)
@@ -2906,22 +2962,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 
 		if (ParsedBody.bHasSyncMarkers)
 		{
-			TArray<FAnimSyncMarker> UpdatedMarkers;
-			UpdatedMarkers.Reserve(ParsedBody.SyncMarkers.Num());
-			for (const FParsedAnimSequenceSyncMarker& ParsedMarker : ParsedBody.SyncMarkers)
-			{
-				FAnimSyncMarker Marker;
-				Marker.MarkerName = ParsedMarker.Name;
-				Marker.Time = ParsedMarker.Time;
-#if WITH_EDITORONLY_DATA
-				Marker.TrackIndex = 0;
-				Marker.Guid = FGuid::NewGuid();
-#endif
-				UpdatedMarkers.Add(Marker);
-			}
-			UpdatedMarkers.Sort();
-			Sequence->AuthoredSyncMarkers = MoveTemp(UpdatedMarkers);
-			Sequence->SortSyncMarkers();
+			Sequence->AuthoredSyncMarkers = MoveTemp(StagedMarkers);
 			Sequence->RefreshSyncMarkerDataFromAuthored();
 			Sequence->RefreshCacheData();
 		}
