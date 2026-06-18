@@ -697,7 +697,12 @@ FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<
 		if (BodyObject->HasField(UnsupportedKey))
 		{
 			const FString Path = FString::Printf(TEXT("/Body/%s"), *UnsupportedKey);
-			return BodyFailure(FString::Printf(TEXT("Body.%s is not an AnimSequence AssetDocument authored field"), *UnsupportedKey), Path, TEXT("UnsupportedAuthoredField"));
+			return BodyFailure(
+				FString::Printf(
+					TEXT("Body.%s is not an AnimSequence AssetDocument authored field. AnimSequence AssetDocument is post-import only; use supported Body sections such as References, Playback, Curves, Notifies, NotifyStates, SyncMarkers, Metadata, or AssetUserData instead of legacy/raw/import/compressed names."),
+					*UnsupportedKey),
+				Path,
+				TEXT("UnsupportedAuthoredField"));
 		}
 	}
 
@@ -2627,6 +2632,10 @@ FAssetDocumentCapabilityResult ExtractManagedMetadata(
 		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
 		++ExtractedIndex;
 	}
+	OutValues.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return JsonValueToComparableString(Left) < JsonValueToComparableString(Right);
+	});
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -2674,6 +2683,10 @@ FAssetDocumentCapabilityResult ExtractManagedAssetUserData(
 		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
 		++ExtractedIndex;
 	}
+	OutValues.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return JsonValueToComparableString(Left) < JsonValueToComparableString(Right);
+	});
 	return FAssetDocumentCapabilityResult::Success();
 }
 

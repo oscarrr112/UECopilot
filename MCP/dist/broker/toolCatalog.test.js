@@ -64,6 +64,10 @@ test("AssetDocument catalog exposes only generic AssetDocument tools", () => {
         "create_anim_montage_document",
         "diff_anim_montage_document",
         "apply_anim_montage_document",
+        "inspect_anim_sequence_document",
+        "create_anim_sequence_document",
+        "diff_anim_sequence_document",
+        "apply_anim_sequence_document",
     ]) {
         assert.ok(!toolNames.includes(forbidden), `${forbidden} should not be visible`);
     }

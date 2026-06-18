@@ -2,6 +2,7 @@
 
 #include "AssetDocumentModule.h"
 #include "AssetDocumentService.h"
+#include "AssetDocumentSidecar.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 
 #include "Animation/AnimData/IAnimationDataController.h"
@@ -297,6 +298,72 @@ bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& 
 	});
 }
 
+bool HasResultDiagnostic(const FAssetDocumentResult& Result, const FString& Path, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
+bool ResultMessageContains(const FAssetDocumentResult& Result, const FString& ExpectedText)
+{
+	if (Result.Message.Contains(ExpectedText))
+	{
+		return true;
+	}
+	for (const FAssetDocumentDiagnostic& Diagnostic : Result.Diagnostics)
+	{
+		if (Diagnostic.Message.Contains(ExpectedText))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath, const FString& ExpectedStatus)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString Path;
+		FString Status;
+		if (Object->TryGetStringField(TEXT("path"), Path)
+			&& Object->TryGetStringField(TEXT("status"), Status)
+			&& Path == ExpectedPath
+			&& Status == ExpectedStatus)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool JsonArrayContainsPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString Path;
+		if (Object->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 int32 CountManagedNotifyObjectsWithOuter(const UObject* Outer)
 {
 	TArray<UObject*> ChildObjects;
@@ -590,6 +657,120 @@ TSharedRef<FJsonObject> MakeTimelineBody()
 		MakeSyncMarker(TEXT("LeftFoot"), 0.10),
 	}));
 	return Body;
+}
+
+TSharedPtr<FJsonObject> MakeAnimSequenceDocument(const FString& Target, const TSharedRef<FJsonObject>& Body)
+{
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimSequence"));
+	Document->SetStringField(TEXT("Action"), TEXT("Update"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Body"), Body);
+	return Document;
+}
+
+TSharedRef<FJsonObject> MakeFullRoundtripBody()
+{
+	TSharedRef<FJsonObject> Body = MakeScalarRegionsBody(TestPreviewMeshPath);
+	Body->SetArrayField(TEXT("Curves"), ObjectArray({
+		MakeFloatCurve(TEXT("Speed"), {
+			MakeCurveKey(0.0, 0.0, TEXT("Linear")),
+			MakeCurveKey(0.5, 100.0, TEXT("Linear")),
+		}),
+		MakeFloatCurve(TEXT("Lean"), {
+			MakeCurveKey(0.0, 0.0, TEXT("Linear")),
+			MakeCurveKey(0.5, 1.0, TEXT("Linear")),
+		}),
+	}));
+
+	TSharedRef<FJsonObject> TimelineBody = MakeTimelineBody();
+	const TArray<FString> TimelineKeys = {
+		TEXT("NotifyTracks"),
+		TEXT("Notifies"),
+		TEXT("NotifyStates"),
+		TEXT("SyncMarkers"),
+	};
+	for (const FString& Key : TimelineKeys)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+		if (TimelineBody->TryGetArrayField(Key, Values) && Values)
+		{
+			Body->SetArrayField(Key, *Values);
+		}
+	}
+
+	Body->SetArrayField(TEXT("Metadata"), TArray<TSharedPtr<FJsonValue>>());
+	Body->SetArrayField(TEXT("AssetUserData"), TArray<TSharedPtr<FJsonValue>>());
+	return Body;
+}
+
+FString MakeObjectPathFromTarget(const FString& Target)
+{
+	const FString AssetName = FPackageName::GetLongPackageAssetName(Target);
+	return FString::Printf(TEXT("%s.%s"), *Target, *AssetName);
+}
+
+UAnimSequence* EnsurePersistentSequenceFixture(const FString& Target)
+{
+	const FString ObjectPath = MakeObjectPathFromTarget(Target);
+	UAnimSequence* Sequence = LoadObject<UAnimSequence>(nullptr, *ObjectPath);
+	UPackage* Package = Sequence ? Sequence->GetOutermost() : CreatePackage(*Target);
+	if (!Sequence && Package)
+	{
+		const FString AssetName = FPackageName::GetLongPackageAssetName(Target);
+		Sequence = NewObject<UAnimSequence>(Package, *AssetName, RF_Public | RF_Standalone | RF_Transactional);
+		FAssetRegistryModule::AssetCreated(Sequence);
+	}
+	if (!Sequence || !Package)
+	{
+		return nullptr;
+	}
+
+	Sequence->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
+	if (USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, TestSkeletonPath))
+	{
+		Sequence->SetSkeleton(Skeleton);
+	}
+	Sequence->SetPreviewMesh(nullptr, false);
+	Sequence->RateScale = 1.0f;
+	Sequence->AdditiveAnimType = AAT_None;
+	Sequence->RefPoseType = ABPT_None;
+	Sequence->RefFrameIndex = 0;
+	Sequence->RefPoseSeq = nullptr;
+	Sequence->bEnableRootMotion = false;
+	Sequence->RootMotionRootLock = ERootMotionRootLock::RefPose;
+	Sequence->bForceRootLock = false;
+	Sequence->bUseNormalizedRootMotionScale = false;
+	Sequence->CompressionErrorThresholdScale = 1.0f;
+	Sequence->bDoNotOverrideCompression = false;
+	Sequence->AnimNotifyTracks.Reset();
+	Sequence->Notifies.Reset();
+	Sequence->AuthoredSyncMarkers.Reset();
+	SetSequencePlayLength(Sequence, 1.0f);
+	Sequence->RefreshCacheData();
+
+	Package->MarkPackageDirty();
+	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension());
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, Sequence, *PackageFileName, SaveArgs);
+	return Sequence;
+}
+
+bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+{
+	FString Error;
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
+	Test->TestTrue(FString::Printf(TEXT("Writes sidecar JSON '%s'"), *SidecarPath), bWrote);
+	if (!bWrote)
+	{
+		Test->AddError(Error);
+	}
+	return bWrote;
 }
 
 void AddManualNamedNotify(UAnimSequence* Sequence, FName NotifyName, float Time, int32 TrackIndex)
@@ -1684,6 +1865,37 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	TestTrue(TEXT("Extracted AssetUserData includes first explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedUserData, TEXT("Name"), TEXT("AuthoredUserDataA")));
 	TestTrue(TEXT("Extracted AssetUserData includes second explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedUserData, TEXT("Name"), TEXT("AuthoredUserDataB")));
 
+	TSharedRef<FJsonObject> ReorderedNamedObjectFragmentBody = MakePlaybackRateBody(2.30);
+	ReorderedNamedObjectFragmentBody->SetArrayField(TEXT("Metadata"), ObjectArray({
+		MakeNamedObjectFragment(TEXT("AuthoredMetaB"), MetadataFixture.ClassPath),
+		MakeNamedObjectFragment(TEXT("AuthoredMetaA"), MetadataFixture.ClassPath),
+	}));
+	ReorderedNamedObjectFragmentBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({
+		MakeNamedObjectFragment(TEXT("AuthoredUserDataB"), TestAssetUserDataClassPath),
+		MakeNamedObjectFragment(TEXT("AuthoredUserDataA"), TestAssetUserDataClassPath),
+	}));
+	const FAssetDocumentCapabilityResult ReorderedNamedApplyResult = Capability.Apply(Context, MakeBodyValue(ReorderedNamedObjectFragmentBody));
+	TestTrue(TEXT("Apply succeeds for reordered named object fragments"), ReorderedNamedApplyResult.bSuccess);
+	TSharedRef<FJsonObject> ReorderedNamedExtracted = MakeShared<FJsonObject>();
+	TestTrue(TEXT("Extract succeeds after reordered named object fragments"), Capability.Extract(Context, ReorderedNamedExtracted).bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ReorderedMetadata = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* ReorderedUserData = nullptr;
+	TestTrue(TEXT("Reordered extract outputs Metadata array"), ReorderedNamedExtracted->TryGetArrayField(TEXT("Metadata"), ReorderedMetadata));
+	TestTrue(TEXT("Reordered extract outputs AssetUserData array"), ReorderedNamedExtracted->TryGetArrayField(TEXT("AssetUserData"), ReorderedUserData));
+	if (ReorderedMetadata && ReorderedMetadata->Num() == 2)
+	{
+		TestEqual(TEXT("Extract orders Metadata by canonical identity"), (*ReorderedMetadata)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("AuthoredMetaA")));
+		TestEqual(TEXT("Extract keeps second Metadata identity"), (*ReorderedMetadata)[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("AuthoredMetaB")));
+	}
+	if (ReorderedUserData && ReorderedUserData->Num() == 2)
+	{
+		TestEqual(TEXT("Extract orders AssetUserData by canonical identity"), (*ReorderedUserData)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("AuthoredUserDataA")));
+		TestEqual(TEXT("Extract keeps second AssetUserData identity"), (*ReorderedUserData)[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("AuthoredUserDataB")));
+	}
+
+	const FAssetDocumentCapabilityResult RestoreNamedApplyResult = Capability.Apply(Context, MakeBodyValue(NamedObjectFragmentBody));
+	TestTrue(TEXT("Restore canonical named object fragments before diff"), RestoreNamedApplyResult.bSuccess);
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	TSharedPtr<FJsonObject> MetadataDiff;
 	TSharedPtr<FJsonObject> UserDataDiff;
@@ -1912,6 +2124,164 @@ bool FAssetDocumentAnimSequenceObjectFragmentsTest::RunTest(const FString&)
 	TestTrue(TEXT("ObjectFragments metadata extracts explicit Name"), JsonArrayContainsObjectStringField(ExtractedMetadata, TEXT("Name"), TEXT("ObjectFragmentMeta")));
 	TestEqual(TEXT("ObjectFragments extracted AssetUserData has expected count"), JsonArrayNum(ExtractedUserData), 1);
 	TestTrue(TEXT("ObjectFragments AssetUserData extracts explicit Name"), JsonArrayContainsObjectStringField(ExtractedUserData, TEXT("Name"), TEXT("ObjectFragmentUserData")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequenceRoundtripTest,
+	"AssetFactory.AssetDocument.AnimSequence.Roundtrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
+{
+	FAssetDocumentModule::Get();
+	const FString Target = TEXT("/Game/AssetDocumentSmoke/AS_PostImportSidecarSmoke");
+	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+
+	UAnimSequence* Sequence = EnsurePersistentSequenceFixture(Target);
+	TestNotNull(TEXT("Persistent AnimSequence smoke fixture exists"), Sequence);
+	TestNotNull(TEXT("Persistent AnimSequence smoke fixture has skeleton"), Sequence ? Sequence->GetSkeleton() : nullptr);
+	if (!Sequence || !Sequence->GetSkeleton())
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeAnimSequenceDocument(Target, MakeFullRoundtripBody());
+	if (!WriteSidecarJson(this, SidecarPath, Document))
+	{
+		return false;
+	}
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult ValidateResult = Service.Validate(ValidateRequest);
+	TestTrue(TEXT("Validate succeeds for full AnimSequence sidecar"), ValidateResult.IsSuccess());
+	if (!ValidateResult.IsSuccess())
+	{
+		AddError(ValidateResult.Message);
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = true;
+	const FAssetDocumentResult ApplyFileResult = Service.ApplyFile(ApplyFileRequest);
+	TestTrue(TEXT("ApplyFile succeeds for AnimSequence sidecar"), ApplyFileResult.IsSuccess());
+	if (!ApplyFileResult.IsSuccess())
+	{
+		AddError(ApplyFileResult.Message);
+		return false;
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after AnimSequence ApplyFile"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns payload after AnimSequence ApplyFile"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	TestTrue(TEXT("Extract payload includes Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	const TArray<FString> ExpectedBodySections = {
+		TEXT("References"),
+		TEXT("Preview"),
+		TEXT("Playback"),
+		TEXT("Additive"),
+		TEXT("RootMotion"),
+		TEXT("Compression"),
+		TEXT("Curves"),
+		TEXT("Notifies"),
+		TEXT("NotifyStates"),
+		TEXT("NotifyTracks"),
+		TEXT("SyncMarkers"),
+		TEXT("Metadata"),
+		TEXT("AssetUserData"),
+	};
+	if (ExtractedBody && ExtractedBody->IsValid())
+	{
+		for (const FString& Section : ExpectedBodySections)
+		{
+			TestTrue(FString::Printf(TEXT("Extracted Body includes %s"), *Section), (*ExtractedBody)->HasField(Section));
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after AnimSequence ApplyFile"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Diff returns payload after AnimSequence ApplyFile"), DiffResult.Payload.IsValid());
+	if (!DiffResult.IsSuccess() || !DiffResult.Payload.IsValid())
+	{
+		AddError(DiffResult.Message);
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Unchanged = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+	TestTrue(TEXT("Diff payload includes changed array"), DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TestTrue(TEXT("Diff payload includes unchanged array"), DiffResult.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged));
+	TestTrue(TEXT("Diff payload includes failed array"), DiffResult.Payload->TryGetArrayField(TEXT("failed"), Failed));
+	TestTrue(TEXT("Diff has no failed entries after full roundtrip"), Failed && Failed->Num() == 0);
+	for (const FString& Section : ExpectedBodySections)
+	{
+		const FString Path = FString::Printf(TEXT("/Body/%s"), *Section);
+		TestFalse(FString::Printf(TEXT("Roundtrip diff does not mark %s changed"), *Path), Changed && JsonArrayContainsPathStatus(*Changed, Path, TEXT("changed")));
+		TestTrue(FString::Printf(TEXT("Roundtrip diff marks %s unchanged"), *Path), Unchanged && JsonArrayContainsPathStatus(*Unchanged, Path, TEXT("unchanged")));
+	}
+
+	TSharedPtr<FJsonObject> SkippedDocument = MakeAnimSequenceDocument(Target, MakeFullRoundtripBody());
+	SkippedDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("_Skipped"), MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest SkippedValidateRequest;
+	SkippedValidateRequest.Document = SkippedDocument;
+	const FAssetDocumentResult SkippedValidateResult = Service.Validate(SkippedValidateRequest);
+	TestFalse(TEXT("Validate rejects authored Body._Skipped"), SkippedValidateResult.IsSuccess());
+	TestTrue(TEXT("Validate reports Body._Skipped as extract-only"), HasResultDiagnostic(SkippedValidateResult, TEXT("/Body/_Skipped"), TEXT("ExtractOnlyBodyKey")));
+
+	FAssetDocumentApplyRequest SkippedApplyRequest;
+	SkippedApplyRequest.Document = SkippedDocument;
+	SkippedApplyRequest.bSaveAsset = false;
+	const FAssetDocumentResult SkippedApplyResult = Service.Apply(SkippedApplyRequest);
+	TestFalse(TEXT("Apply rejects authored Body._Skipped"), SkippedApplyResult.IsSuccess());
+	TestTrue(TEXT("Apply failure mentions Body._Skipped"), ResultMessageContains(SkippedApplyResult, TEXT("_Skipped")));
+
+	FAssetDocumentDiffRequest SkippedDiffRequest;
+	SkippedDiffRequest.Document = SkippedDocument;
+	const FAssetDocumentResult SkippedDiffResult = Service.Diff(SkippedDiffRequest);
+	TestTrue(TEXT("Diff ignores extract-only Body._Skipped metadata"), SkippedDiffResult.IsSuccess());
+	if (SkippedDiffResult.Payload.IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SkippedChanged = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* SkippedUnchanged = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* SkippedFailed = nullptr;
+		TestTrue(TEXT("Skipped diff payload includes changed array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("changed"), SkippedChanged));
+		TestTrue(TEXT("Skipped diff payload includes unchanged array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("unchanged"), SkippedUnchanged));
+		TestTrue(TEXT("Skipped diff payload includes failed array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("failed"), SkippedFailed));
+		TestFalse(TEXT("Diff does not report changed Body._Skipped"), SkippedChanged && JsonArrayContainsPath(*SkippedChanged, TEXT("/Body/_Skipped")));
+		TestFalse(TEXT("Diff does not report unchanged Body._Skipped"), SkippedUnchanged && JsonArrayContainsPath(*SkippedUnchanged, TEXT("/Body/_Skipped")));
+		TestFalse(TEXT("Diff does not report failed Body._Skipped"), SkippedFailed && JsonArrayContainsPath(*SkippedFailed, TEXT("/Body/_Skipped")));
+	}
+
+	for (const FString& LegacyKey : { FString(TEXT("RawTracks")), FString(TEXT("Import")), FString(TEXT("CompressedData")) })
+	{
+		TSharedRef<FJsonObject> InvalidBody = MakeShared<FJsonObject>();
+		InvalidBody->SetObjectField(LegacyKey, MakeShared<FJsonObject>());
+		FAssetDocumentValidateRequest LegacyValidateRequest;
+		LegacyValidateRequest.Document = MakeAnimSequenceDocument(Target, InvalidBody);
+		const FAssetDocumentResult LegacyValidateResult = Service.Validate(LegacyValidateRequest);
+		TestFalse(FString::Printf(TEXT("Validate rejects legacy Body.%s"), *LegacyKey), LegacyValidateResult.IsSuccess());
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic points at the key"), *LegacyKey), HasResultDiagnostic(LegacyValidateResult, FString::Printf(TEXT("/Body/%s"), *LegacyKey), TEXT("UnsupportedAuthoredField")));
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic explains post-import supported sections"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("post-import")));
+		TestTrue(FString::Printf(TEXT("Legacy Body.%s diagnostic names supported regions"), *LegacyKey), ResultMessageContains(LegacyValidateResult, TEXT("Curves")));
+	}
 
 	return true;
 }

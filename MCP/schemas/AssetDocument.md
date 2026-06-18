@@ -153,6 +153,8 @@ The profile owns these canonical `Body` keys:
 
 Excluded or diagnostic-only fields include `Import`, `RawTracks`, `CompressedData`, derived playback length/sample/frame-rate fields, referenced asset internals, thumbnails, and transient editor state. Authored `_Skipped` metadata is rejected; `_Skipped` is reserved for extracted diagnostics.
 
+For post-import smoke and sidecar workflows, use a real existing sequence such as `/Game/AssetDocumentSmoke/AS_PostImportSidecarSmoke` with sidecar `C:/AVH1/Content/AssetDocumentSmoke/AS_PostImportSidecarSmoke.assetdoc.json`. If old names such as `RawTracks`, `Import`, or `CompressedData` appear, replace them with supported post-import sections (`References`, `Playback`, `Curves`, `Notifies`, `NotifyStates`, `SyncMarkers`, `Metadata`, or `AssetUserData`) or leave the raw/import/compressed data out of the sidecar entirely.
+
 ## Legacy Reflected Apply Shape
 
 The current reflected apply, validate, diff, extract, and sidecar file routes still use the legacy GenericAsset sidecar shape:
