@@ -1,7 +1,7 @@
 // Copyright ProjectRPG. All Rights Reserved.
 
+#include "AssetDocumentModule.h"
 #include "AssetDocumentService.h"
-#include "AssetDocumentProfileRegistry.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 
 #include "Animation/AnimSequence.h"
@@ -49,6 +49,24 @@ bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const
 
 	return false;
 }
+
+const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId)
+{
+	for (const FAssetDocumentRegionPolicy& Policy : Policies)
+	{
+		if (Policy.RegionId == RegionId)
+		{
+			return &Policy;
+		}
+	}
+
+	return nullptr;
+}
+
+bool PolicyContainsManagedPath(const FAssetDocumentRegionPolicy* Policy, const FString& ExpectedPath)
+{
+	return Policy && Policy->ManagedUePropertyPaths.Contains(ExpectedPath);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -88,10 +106,35 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 	for (const FName& ExpectedKey : ExpectedKeys)
 	{
 		const FName RegionId(*FString::Printf(TEXT("Body.%s"), *ExpectedKey.ToString()));
-		TestTrue(FString::Printf(TEXT("Region policy %s exists"), *RegionId.ToString()), Policies.ContainsByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
-		{
-			return Policy.RegionId == RegionId;
-		}));
+		TestNotNull(FString::Printf(TEXT("Region policy %s exists"), *RegionId.ToString()), FindPolicyByRegionId(Policies, RegionId));
+	}
+
+	const FAssetDocumentRegionPolicy* PlaybackPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Playback"));
+	if (PlaybackPolicy)
+	{
+		TestTrue(TEXT("Body.Playback uses DefaultDiff reducer"), PlaybackPolicy->ReducerMode == EAssetDocumentReducerMode::DefaultDiff);
+		TestTrue(TEXT("Body.Playback uses SetProperty apply mode"), PlaybackPolicy->ApplyMode == EAssetDocumentApplyMode::SetProperty);
+		TestTrue(TEXT("Body.Playback owns RateScale"), PolicyContainsManagedPath(PlaybackPolicy, TEXT("RateScale")));
+	}
+
+	const FAssetDocumentRegionPolicy* CurvesPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Curves"));
+	if (CurvesPolicy)
+	{
+		TestTrue(TEXT("Body.Curves uses ManagedRegion reducer"), CurvesPolicy->ReducerMode == EAssetDocumentReducerMode::ManagedRegion);
+		TestTrue(TEXT("Body.Curves uses rebuild-array apply mode"), CurvesPolicy->ApplyMode == EAssetDocumentApplyMode::RebuildArrayRegion);
+		TestTrue(TEXT("Body.Curves owns RawCurveData"), PolicyContainsManagedPath(CurvesPolicy, TEXT("RawCurveData")));
+	}
+
+	const FAssetDocumentRegionPolicy* NotifiesPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Notifies"));
+	if (NotifiesPolicy)
+	{
+		TestTrue(TEXT("Body.Notifies intentionally owns Notifies"), PolicyContainsManagedPath(NotifiesPolicy, TEXT("Notifies")));
+	}
+
+	const FAssetDocumentRegionPolicy* NotifyStatesPolicy = FindPolicyByRegionId(Policies, TEXT("Body.NotifyStates"));
+	if (NotifyStatesPolicy)
+	{
+		TestTrue(TEXT("Body.NotifyStates intentionally owns Notifies"), PolicyContainsManagedPath(NotifyStatesPolicy, TEXT("Notifies")));
 	}
 
 	const IAssetDocumentCapability* BodyAdapter = Profile.ResolveBodyAdapter(TEXT("Body"));
@@ -108,6 +151,29 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 		SkippedBody->SetObjectField(TEXT("_Skipped"), MakeShared<FJsonObject>());
 		const FAssetDocumentCapabilityResult SkippedResult = BodyAdapter->Validate(Context, MakeShared<FJsonValueObject>(SkippedBody));
 		TestFalse(TEXT("Validate rejects authored _Skipped Body key"), SkippedResult.bSuccess);
+
+		TSharedRef<FJsonObject> ValidEmptyBody = MakeShared<FJsonObject>();
+		const TSharedRef<FJsonValue> ValidEmptyBodyJson = MakeShared<FJsonValueObject>(ValidEmptyBody);
+		const FAssetDocumentCapabilityResult ValidateResult = BodyAdapter->Validate(Context, ValidEmptyBodyJson);
+		TestTrue(TEXT("Validate accepts empty authored Body shape"), ValidateResult.bSuccess);
+
+		FAssetDocumentCapabilityContext PreflightContext;
+		const FAssetDocumentCapabilityResult PreflightResult = BodyAdapter->Preflight(PreflightContext, ValidEmptyBodyJson);
+		TestFalse(TEXT("Preflight rejects authored Body while apply is unsupported"), PreflightResult.bSuccess);
+		TestEqual(TEXT("Preflight reports unsupported operation"), PreflightResult.Diagnostics.Num() > 0 ? PreflightResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedOperation")));
+
+		FAssetDocumentCapabilityContext ExtractContext;
+		ExtractContext.Asset = NewObject<UAnimSequence>(GetTransientPackage());
+		ExtractContext.AssetClass = UAnimSequence::StaticClass();
+		TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(ExtractContext, ExtractedBody);
+		TestTrue(TEXT("Extract succeeds with diagnostic-only skipped metadata"), ExtractResult.bSuccess);
+		const TSharedPtr<FJsonObject>* SkippedObject = nullptr;
+		TestTrue(TEXT("Extract writes _Skipped diagnostic object"), ExtractedBody->TryGetObjectField(TEXT("_Skipped"), SkippedObject));
+		if (SkippedObject && SkippedObject->IsValid())
+		{
+			TestEqual(TEXT("_Skipped diagnostic code"), (*SkippedObject)->GetStringField(TEXT("Code")), FString(TEXT("AnimSequenceBodyExtractUnsupported")));
+		}
 	}
 
 	return true;
@@ -120,7 +186,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentAnimSequenceRegisteredProfileSchemaTest::RunTest(const FString&)
 {
-	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimSequenceAssetDocumentProfile>());
+	FAssetDocumentModule::Get();
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.GetSchema();
 	TestTrue(TEXT("Schema succeeds"), Result.IsSuccess());

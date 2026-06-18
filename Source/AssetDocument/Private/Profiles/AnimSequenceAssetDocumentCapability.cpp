@@ -125,7 +125,13 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Validate(co
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
 {
-	return Validate(Context, BodyJson);
+	const FAssetDocumentCapabilityResult ValidateResult = Validate(Context, BodyJson);
+	if (!ValidateResult.bSuccess)
+	{
+		return ValidateResult;
+	}
+
+	return UnsupportedTask1Operation(TEXT("preflight"));
 }
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&)
@@ -133,9 +139,18 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	return UnsupportedTask1Operation(TEXT("apply"));
 }
 
-FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext&, TSharedRef<FJsonObject>&) const
+FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const
 {
-	return UnsupportedTask1Operation(TEXT("extract"));
+	if (!Cast<UAnimSequence>(Context.Asset))
+	{
+		return BodyFailure(TEXT("AnimSequence body extract requires UAnimSequence asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetStringField(TEXT("Code"), TEXT("AnimSequenceBodyExtractUnsupported"));
+	Skipped->SetStringField(TEXT("Message"), TEXT("AnimSequence Body extraction is not implemented in Task 1; no managed Body regions were extracted"));
+	OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
+	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extraction skipped"));
 }
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Diff(const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&, TArray<TSharedPtr<FJsonValue>>&) const
