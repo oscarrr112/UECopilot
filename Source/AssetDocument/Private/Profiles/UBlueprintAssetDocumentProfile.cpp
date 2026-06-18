@@ -75,6 +75,7 @@ TSharedRef<FJsonObject> FUBlueprintAssetDocumentProfile::CreateTemplate(const FA
 	Template->SetStringField(TEXT("Target"), Context.Target);
 	Template->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Blueprint"));
 	Template->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Template->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
 	Template->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
 	Template->SetObjectField(TEXT("Body"), Body);
 	return Template;

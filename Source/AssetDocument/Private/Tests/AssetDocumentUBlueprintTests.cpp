@@ -107,6 +107,7 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	TestEqual(TEXT("Template Class is Blueprint"), Template->GetStringField(TEXT("Class")), FString(TEXT("/Script/Engine.Blueprint")));
 	TestEqual(TEXT("Template Target is preserved"), Template->GetStringField(TEXT("Target")), Context.Target);
 	TestTrue(TEXT("Template includes Action"), Template->HasTypedField<EJson::String>(TEXT("Action")));
+	TestTrue(TEXT("Template includes Definitions"), Template->HasTypedField<EJson::Object>(TEXT("Definitions")));
 	TestTrue(TEXT("Template includes Properties"), Template->HasTypedField<EJson::Object>(TEXT("Properties")));
 	TestFalse(TEXT("Template does not use legacy AssetType"), Template->HasField(TEXT("AssetType")));
 
