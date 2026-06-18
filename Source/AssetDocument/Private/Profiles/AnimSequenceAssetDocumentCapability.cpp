@@ -10,6 +10,8 @@
 #include "Animation/AnimData/CurveIdentifier.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
+#include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
 #include "Curves/RichCurve.h"
@@ -661,10 +663,6 @@ TArray<TSharedPtr<FJsonValue>> CurveFlagsToJsonArray(int32 Flags)
 FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<FJsonObject>& BodyObject)
 {
 	const TArray<FString> NotImplementedBodyKeys = {
-		TEXT("Notifies"),
-		TEXT("NotifyStates"),
-		TEXT("NotifyTracks"),
-		TEXT("SyncMarkers"),
 		TEXT("Metadata"),
 		TEXT("AssetUserData"),
 	};
@@ -1135,6 +1133,720 @@ TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceCurves(const UAnimSequence* Se
 	return CurveValues;
 }
 
+const TCHAR* ManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotify_");
+const TCHAR* ManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotifyState_");
+
+struct FParsedAnimSequenceNotifyTrack
+{
+	FName Name = NAME_None;
+};
+
+struct FParsedAnimSequenceNotifyPlacement
+{
+	FName Name = NAME_None;
+	FName NotifyName = NAME_None;
+	float Time = 0.0f;
+	FName TrackName = TEXT("Default");
+	UClass* NotifyClass = nullptr;
+};
+
+struct FParsedAnimSequenceNotifyStatePlacement
+{
+	FName Name = NAME_None;
+	float Time = 0.0f;
+	float Duration = 0.0f;
+	FName TrackName = TEXT("Default");
+	UClass* NotifyStateClass = nullptr;
+};
+
+struct FParsedAnimSequenceSyncMarker
+{
+	FName Name = NAME_None;
+	float Time = 0.0f;
+};
+
+FString BodyArrayItemPath(const TCHAR* SectionName, int32 Index)
+{
+	return FString::Printf(TEXT("/Body/%s/%d"), SectionName, Index);
+}
+
+FString BodyArrayFieldPath(const TCHAR* SectionName, int32 Index, const TCHAR* FieldName)
+{
+	return FString::Printf(TEXT("/Body/%s/%d/%s"), SectionName, Index, FieldName);
+}
+
+bool HasManagedObjectName(const UObject* Object, const TCHAR* Prefix)
+{
+	return Object && Object->GetName().StartsWith(Prefix);
+}
+
+void MarkManagedNotifyObject(UObject* NotifyObject, UAnimSequence* Sequence, bool bState)
+{
+	if (!NotifyObject || !Sequence)
+	{
+		return;
+	}
+
+	const TCHAR* Prefix = bState ? ManagedNotifyStateObjectPrefix : ManagedNotifyObjectPrefix;
+	const FName ManagedObjectName = MakeUniqueObjectName(Sequence, NotifyObject->GetClass(), Prefix);
+	NotifyObject->Rename(*ManagedObjectName.ToString(), Sequence, REN_DontCreateRedirectors | REN_NonTransactional);
+}
+
+bool IsManagedAnimSequenceNotifyEvent(const FAnimNotifyEvent& Event, const UAnimSequence* Sequence)
+{
+	if (Event.Notify)
+	{
+		return HasManagedObjectName(Event.Notify, ManagedNotifyObjectPrefix) && (!Sequence || Event.Notify->GetOuter() == Sequence);
+	}
+
+	return !Event.NotifyStateClass && !Event.NotifyName.IsNone();
+}
+
+bool IsManagedAnimSequenceNotifyStateEvent(const FAnimNotifyEvent& Event, const UAnimSequence* Sequence)
+{
+	return Event.NotifyStateClass
+		&& HasManagedObjectName(Event.NotifyStateClass, ManagedNotifyStateObjectPrefix)
+		&& (!Sequence || Event.NotifyStateClass->GetOuter() == Sequence);
+}
+
+FAssetDocumentCapabilityResult RejectUnknownArrayObjectFields(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* SectionName,
+	int32 Index,
+	const TArray<FString>& AllowedFields)
+{
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		if (!AllowedFields.Contains(Pair.Key))
+		{
+			const FString Path = BodyArrayFieldPath(SectionName, Index, *Pair.Key);
+			return BodyFailure(FString::Printf(TEXT("Body.%s.%s is not supported"), SectionName, *Pair.Key), Path, TEXT("UnsupportedAuthoredField"));
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadRequiredStringField(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	FString& OutValue)
+{
+	if (!Object->TryGetStringField(FieldName, OutValue) || OutValue.TrimStartAndEnd().IsEmpty())
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be a non-empty string"), FieldName), Path, TEXT("InvalidStringField"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadRequiredNumberField(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const FString& Path,
+	double& OutValue)
+{
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName);
+	if (!Value || !Value->IsValid() || (*Value)->Type != EJson::Number)
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be a number"), FieldName), Path, TEXT("InvalidNumericField"));
+	}
+	OutValue = (*Value)->AsNumber();
+	if (OutValue < -static_cast<double>(MAX_flt) || OutValue > static_cast<double>(MAX_flt))
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must fit in a float"), FieldName), Path, TEXT("InvalidNumericField"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateTimelineTime(const UAnimSequence* Sequence, double Time, const FString& Path, const FString& Code)
+{
+	if (Time < 0.0)
+	{
+		return BodyFailure(TEXT("Timeline time must be non-negative"), Path, Code);
+	}
+
+	if (Sequence)
+	{
+		double PlayLength = Sequence->GetPlayLength();
+		if (PlayLength <= 0.0)
+		{
+			if (const IAnimationDataModel* DataModel = Sequence->GetDataModel())
+			{
+				PlayLength = DataModel->GetPlayLength();
+			}
+		}
+		if (PlayLength > 0.0 && Time > PlayLength + UE_KINDA_SMALL_NUMBER)
+		{
+			return BodyFailure(TEXT("Timeline time must be within the AnimSequence play length"), Path, Code);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ResolveClassRefField(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	UClass* ExpectedBaseClass,
+	const FString& Path,
+	const FString& InvalidCode,
+	bool& bOutHasClass,
+	UClass*& OutClass)
+{
+	bOutHasClass = false;
+	OutClass = nullptr;
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName);
+	if (!Value)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> ClassObject;
+	FAssetDocumentCapabilityResult Result = RequireObjectValue(*Value, Path, ClassObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	FString Kind;
+	Result = ReadRequiredStringField(ClassObject.ToSharedRef(), TEXT("Kind"), Path / TEXT("Kind"), Kind);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Kind != TEXT("ClassRef"))
+	{
+		return BodyFailure(TEXT("Class must be a ClassRef fragment"), Path / TEXT("Kind"), InvalidCode);
+	}
+
+	FString ClassPath;
+	Result = ReadRequiredStringField(ClassObject.ToSharedRef(), TEXT("Path"), Path / TEXT("Path"), ClassPath);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UClass* ResolvedClass = FindObject<UClass>(nullptr, *ClassPath);
+	if (!ResolvedClass)
+	{
+		ResolvedClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+	}
+	if (!ResolvedClass || !ResolvedClass->IsChildOf(ExpectedBaseClass))
+	{
+		return BodyFailure(TEXT("ClassRef did not resolve to the expected notify class"), Path, InvalidCode);
+	}
+	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return BodyFailure(TEXT("Notify class is abstract and cannot be instantiated"), Path, InvalidCode);
+	}
+
+	bOutHasClass = true;
+	OutClass = ResolvedClass;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FString ReadPlacementTrackName(const TSharedRef<FJsonObject>& Object)
+{
+	FString TrackName;
+	if (Object->TryGetStringField(TEXT("Track"), TrackName) && !TrackName.TrimStartAndEnd().IsEmpty())
+	{
+		return TrackName;
+	}
+	if (Object->TryGetStringField(TEXT("TrackName"), TrackName) && !TrackName.TrimStartAndEnd().IsEmpty())
+	{
+		return TrackName;
+	}
+	return TEXT("Default");
+}
+
+FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool& bOutHasTracks,
+	TArray<FParsedAnimSequenceNotifyTrack>& OutTracks)
+{
+	bOutHasTracks = false;
+	OutTracks.Reset();
+	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(TEXT("NotifyTracks"));
+	if (!SectionValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	bOutHasTracks = true;
+	const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/NotifyTracks"), Tracks);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSet<FName> SeenNames;
+	for (int32 Index = 0; Index < Tracks->Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> TrackObject;
+		Result = RequireObjectValue((*Tracks)[Index], BodyArrayItemPath(TEXT("NotifyTracks"), Index), TrackObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectUnknownArrayObjectFields(TrackObject.ToSharedRef(), TEXT("NotifyTracks"), Index, { TEXT("Name") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FString NameString;
+		Result = ReadRequiredStringField(TrackObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), NameString);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		const FName TrackName(*NameString);
+		if (TrackName.IsNone())
+		{
+			return BodyFailure(TEXT("Notify track name cannot be None"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), TEXT("InvalidNotifyTrackName"));
+		}
+		if (SeenNames.Contains(TrackName))
+		{
+			return BodyFailure(TEXT("Duplicate notify track name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("Name")), TEXT("DuplicateNotifyTrackName"));
+		}
+		SeenNames.Add(TrackName);
+
+		FParsedAnimSequenceNotifyTrack ParsedTrack;
+		ParsedTrack.Name = TrackName;
+		OutTracks.Add(ParsedTrack);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const UAnimSequence* Sequence,
+	bool& bOutHasNotifies,
+	TArray<FParsedAnimSequenceNotifyPlacement>& OutNotifies)
+{
+	bOutHasNotifies = false;
+	OutNotifies.Reset();
+	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(TEXT("Notifies"));
+	if (!SectionValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	bOutHasNotifies = true;
+	const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/Notifies"), Notifies);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSet<FString> SeenKeys;
+	for (int32 Index = 0; Index < Notifies->Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> NotifyObject;
+		Result = RequireObjectValue((*Notifies)[Index], BodyArrayItemPath(TEXT("Notifies"), Index), NotifyObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectUnknownArrayObjectFields(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FString NameString;
+		Result = ReadRequiredStringField(NotifyObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Name")), NameString);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		double Time = 0.0;
+		Result = ReadRequiredNumberField(NotifyObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Time")), Time);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		bool bHasClass = false;
+		UClass* NotifyClass = nullptr;
+		Result = ResolveClassRefField(NotifyObject.ToSharedRef(), TEXT("Class"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Class")), TEXT("InvalidNotifyClass"), bHasClass, NotifyClass);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FString NotifyNameString;
+		const bool bHasNotifyName = NotifyObject->TryGetStringField(TEXT("NotifyName"), NotifyNameString) && !NotifyNameString.TrimStartAndEnd().IsEmpty();
+		if (!bHasClass && !bHasNotifyName)
+		{
+			return BodyFailure(TEXT("Notify placement requires NotifyName or Class"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("MissingNotifyIdentity"));
+		}
+
+		FParsedAnimSequenceNotifyPlacement ParsedNotify;
+		ParsedNotify.Name = FName(*NameString);
+		ParsedNotify.NotifyName = bHasNotifyName ? FName(*NotifyNameString) : ParsedNotify.Name;
+		ParsedNotify.Time = static_cast<float>(Time);
+		ParsedNotify.TrackName = FName(*ReadPlacementTrackName(NotifyObject.ToSharedRef()));
+		ParsedNotify.NotifyClass = NotifyClass;
+
+		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%s|%s"),
+			*ParsedNotify.Name.ToString(),
+			ParsedNotify.Time,
+			*ParsedNotify.NotifyName.ToString(),
+			*ParsedNotify.TrackName.ToString());
+		if (SeenKeys.Contains(SemanticKey))
+		{
+			return BodyFailure(TEXT("Duplicate notify semantic key"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Name")), TEXT("DuplicateNotifyKey"));
+		}
+		SeenKeys.Add(SemanticKey);
+		OutNotifies.Add(ParsedNotify);
+	}
+
+	OutNotifies.Sort([](const FParsedAnimSequenceNotifyPlacement& Left, const FParsedAnimSequenceNotifyPlacement& Right)
+	{
+		if (!FMath::IsNearlyEqual(Left.Time, Right.Time))
+		{
+			return Left.Time < Right.Time;
+		}
+		return Left.Name.LexicalLess(Right.Name);
+	});
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const UAnimSequence* Sequence,
+	bool& bOutHasNotifyStates,
+	TArray<FParsedAnimSequenceNotifyStatePlacement>& OutNotifyStates)
+{
+	bOutHasNotifyStates = false;
+	OutNotifyStates.Reset();
+	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(TEXT("NotifyStates"));
+	if (!SectionValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	bOutHasNotifyStates = true;
+	const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/NotifyStates"), NotifyStates);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSet<FString> SeenKeys;
+	for (int32 Index = 0; Index < NotifyStates->Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> StateObject;
+		Result = RequireObjectValue((*NotifyStates)[Index], BodyArrayItemPath(TEXT("NotifyStates"), Index), StateObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectUnknownArrayObjectFields(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FString NameString;
+		Result = ReadRequiredStringField(StateObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Name")), NameString);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		double Time = 0.0;
+		Result = ReadRequiredNumberField(StateObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Time")), Time);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		double Duration = 0.0;
+		Result = ReadRequiredNumberField(StateObject.ToSharedRef(), TEXT("Duration"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), Duration);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (Duration <= 0.0)
+		{
+			return BodyFailure(TEXT("Notify state duration must be positive"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), TEXT("InvalidNotifyStateDuration"));
+		}
+		Result = ValidateTimelineTime(Sequence, Time + Duration, BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), TEXT("InvalidNotifyStateDuration"));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		bool bHasClass = false;
+		UClass* NotifyStateClass = nullptr;
+		Result = ResolveClassRefField(StateObject.ToSharedRef(), TEXT("Class"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Class")), TEXT("InvalidNotifyStateClass"), bHasClass, NotifyStateClass);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (!bHasClass)
+		{
+			return BodyFailure(TEXT("Notify state placement requires Class"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Class")), TEXT("MissingNotifyStateClass"));
+		}
+
+		FParsedAnimSequenceNotifyStatePlacement ParsedState;
+		ParsedState.Name = FName(*NameString);
+		ParsedState.Time = static_cast<float>(Time);
+		ParsedState.Duration = static_cast<float>(Duration);
+		ParsedState.TrackName = FName(*ReadPlacementTrackName(StateObject.ToSharedRef()));
+		ParsedState.NotifyStateClass = NotifyStateClass;
+
+		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%.6f|%s|%s"),
+			*ParsedState.Name.ToString(),
+			ParsedState.Time,
+			ParsedState.Duration,
+			*ParsedState.NotifyStateClass->GetPathName(),
+			*ParsedState.TrackName.ToString());
+		if (SeenKeys.Contains(SemanticKey))
+		{
+			return BodyFailure(TEXT("Duplicate notify state semantic key"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Name")), TEXT("DuplicateNotifyStateKey"));
+		}
+		SeenKeys.Add(SemanticKey);
+		OutNotifyStates.Add(ParsedState);
+	}
+
+	OutNotifyStates.Sort([](const FParsedAnimSequenceNotifyStatePlacement& Left, const FParsedAnimSequenceNotifyStatePlacement& Right)
+	{
+		if (!FMath::IsNearlyEqual(Left.Time, Right.Time))
+		{
+			return Left.Time < Right.Time;
+		}
+		return Left.Name.LexicalLess(Right.Name);
+	});
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseAnimSequenceSyncMarkers(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const UAnimSequence* Sequence,
+	bool& bOutHasSyncMarkers,
+	TArray<FParsedAnimSequenceSyncMarker>& OutSyncMarkers)
+{
+	bOutHasSyncMarkers = false;
+	OutSyncMarkers.Reset();
+	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(TEXT("SyncMarkers"));
+	if (!SectionValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	bOutHasSyncMarkers = true;
+	const TArray<TSharedPtr<FJsonValue>>* Markers = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/SyncMarkers"), Markers);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSet<FString> SeenKeys;
+	for (int32 Index = 0; Index < Markers->Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> MarkerObject;
+		Result = RequireObjectValue((*Markers)[Index], BodyArrayItemPath(TEXT("SyncMarkers"), Index), MarkerObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = RejectUnknownArrayObjectFields(MarkerObject.ToSharedRef(), TEXT("SyncMarkers"), Index, { TEXT("Name"), TEXT("Time") });
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FString NameString;
+		Result = ReadRequiredStringField(MarkerObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Name")), NameString);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		double Time = 0.0;
+		Result = ReadRequiredNumberField(MarkerObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), Time);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), TEXT("InvalidSyncMarkerTime"));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		FParsedAnimSequenceSyncMarker ParsedMarker;
+		ParsedMarker.Name = FName(*NameString);
+		ParsedMarker.Time = static_cast<float>(Time);
+
+		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f"), *ParsedMarker.Name.ToString(), ParsedMarker.Time);
+		if (SeenKeys.Contains(SemanticKey))
+		{
+			return BodyFailure(TEXT("Duplicate sync marker semantic key"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Name")), TEXT("DuplicateSyncMarkerKey"));
+		}
+		SeenKeys.Add(SemanticKey);
+		OutSyncMarkers.Add(ParsedMarker);
+	}
+
+	OutSyncMarkers.Sort([](const FParsedAnimSequenceSyncMarker& Left, const FParsedAnimSequenceSyncMarker& Right)
+	{
+		if (!FMath::IsNearlyEqual(Left.Time, Right.Time))
+		{
+			return Left.Time < Right.Time;
+		}
+		return Left.Name.LexicalLess(Right.Name);
+	});
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+int32 EnsureNotifyTrackIndex(TArray<FAnimNotifyTrack>& Tracks, const FName TrackName)
+{
+	const FName EffectiveTrackName = TrackName.IsNone() ? FName(TEXT("Default")) : TrackName;
+	for (int32 Index = 0; Index < Tracks.Num(); ++Index)
+	{
+		if (Tracks[Index].TrackName == EffectiveTrackName)
+		{
+			return Index;
+		}
+	}
+
+	Tracks.Add(FAnimNotifyTrack(EffectiveTrackName, FLinearColor::White));
+	return Tracks.Num() - 1;
+}
+
+TSharedRef<FJsonObject> MakeClassRefObject(const UClass* Class)
+{
+	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
+	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Path"), Class ? Class->GetPathName() : FString());
+	return ClassRef;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifyTracks(const UAnimSequence* Sequence)
+{
+	TArray<TSharedPtr<FJsonValue>> TrackValues;
+	if (!Sequence)
+	{
+		return TrackValues;
+	}
+
+	for (const FAnimNotifyTrack& Track : Sequence->AnimNotifyTracks)
+	{
+		TSharedRef<FJsonObject> TrackObject = MakeShared<FJsonObject>();
+		TrackObject->SetStringField(TEXT("Name"), Track.TrackName.ToString());
+		TrackValues.Add(MakeShared<FJsonValueObject>(TrackObject));
+	}
+	return TrackValues;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceNotifies(const UAnimSequence* Sequence, bool bStates)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	if (!Sequence)
+	{
+		return Values;
+	}
+
+	for (const FAnimNotifyEvent& Event : Sequence->Notifies)
+	{
+		const bool bEventIsState = Event.NotifyStateClass != nullptr;
+		if (bEventIsState != bStates)
+		{
+			continue;
+		}
+		if (bStates && !IsManagedAnimSequenceNotifyStateEvent(Event, Sequence))
+		{
+			continue;
+		}
+		if (!bStates && !IsManagedAnimSequenceNotifyEvent(Event, Sequence))
+		{
+			continue;
+		}
+
+		TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
+		Placement->SetStringField(TEXT("Name"), Event.NotifyName.IsNone() ? FString(TEXT("Notify")) : Event.NotifyName.ToString());
+		Placement->SetNumberField(TEXT("Time"), Event.GetTime());
+		const FString TrackName = Sequence->AnimNotifyTracks.IsValidIndex(Event.TrackIndex)
+			? Sequence->AnimNotifyTracks[Event.TrackIndex].TrackName.ToString()
+			: FString(TEXT("Default"));
+		Placement->SetStringField(TEXT("Track"), TrackName);
+
+		if (bStates)
+		{
+			Placement->SetNumberField(TEXT("Duration"), Event.GetDuration());
+			Placement->SetObjectField(TEXT("Class"), MakeClassRefObject(Event.NotifyStateClass ? Event.NotifyStateClass->GetClass() : UAnimNotifyState::StaticClass()));
+		}
+		else
+		{
+			Placement->SetStringField(TEXT("NotifyName"), Event.NotifyName.ToString());
+			if (Event.Notify)
+			{
+				Placement->SetObjectField(TEXT("Class"), MakeClassRefObject(Event.Notify->GetClass()));
+			}
+		}
+
+		Values.Add(MakeShared<FJsonValueObject>(Placement));
+	}
+
+	Values.Sort([](const TSharedPtr<FJsonValue>& LeftValue, const TSharedPtr<FJsonValue>& RightValue)
+	{
+		const TSharedPtr<FJsonObject> Left = LeftValue->AsObject();
+		const TSharedPtr<FJsonObject> Right = RightValue->AsObject();
+		const double LeftTime = Left.IsValid() ? Left->GetNumberField(TEXT("Time")) : 0.0;
+		const double RightTime = Right.IsValid() ? Right->GetNumberField(TEXT("Time")) : 0.0;
+		if (!FMath::IsNearlyEqual(LeftTime, RightTime))
+		{
+			return LeftTime < RightTime;
+		}
+		return Left->GetStringField(TEXT("Name")) < Right->GetStringField(TEXT("Name"));
+	});
+	return Values;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceSyncMarkers(const UAnimSequence* Sequence)
+{
+	TArray<TSharedPtr<FJsonValue>> MarkerValues;
+	if (!Sequence)
+	{
+		return MarkerValues;
+	}
+
+	TArray<FAnimSyncMarker> SortedMarkers = Sequence->AuthoredSyncMarkers;
+	SortedMarkers.Sort([](const FAnimSyncMarker& Left, const FAnimSyncMarker& Right)
+	{
+		if (!FMath::IsNearlyEqual(Left.Time, Right.Time))
+		{
+			return Left.Time < Right.Time;
+		}
+		return Left.MarkerName.LexicalLess(Right.MarkerName);
+	});
+
+	for (const FAnimSyncMarker& Marker : SortedMarkers)
+	{
+		TSharedRef<FJsonObject> MarkerObject = MakeShared<FJsonObject>();
+		MarkerObject->SetStringField(TEXT("Name"), Marker.MarkerName.ToString());
+		MarkerObject->SetNumberField(TEXT("Time"), Marker.Time);
+		MarkerValues.Add(MakeShared<FJsonValueObject>(MarkerObject));
+	}
+	return MarkerValues;
+}
+
 struct FParsedAnimSequenceBody
 {
 	bool bHasSkeleton = false;
@@ -1173,6 +1885,14 @@ struct FParsedAnimSequenceBody
 	bool bDoNotOverrideCompression = false;
 	bool bHasCurves = false;
 	TArray<FParsedAnimSequenceCurve> Curves;
+	bool bHasNotifies = false;
+	TArray<FParsedAnimSequenceNotifyPlacement> Notifies;
+	bool bHasNotifyStates = false;
+	TArray<FParsedAnimSequenceNotifyStatePlacement> NotifyStates;
+	bool bHasNotifyTracks = false;
+	TArray<FParsedAnimSequenceNotifyTrack> NotifyTracks;
+	bool bHasSyncMarkers = false;
+	TArray<FParsedAnimSequenceSyncMarker> SyncMarkers;
 };
 
 bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
@@ -1579,6 +2299,29 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 	}
 
+	{
+		FAssetDocumentCapabilityResult Result = ParseAnimSequenceNotifyTracks(BodyObject, OutParsed.bHasNotifyTracks, OutParsed.NotifyTracks);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ParseAnimSequenceNotifies(BodyObject, Sequence, OutParsed.bHasNotifies, OutParsed.Notifies);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ParseAnimSequenceNotifyStates(BodyObject, Sequence, OutParsed.bHasNotifyStates, OutParsed.NotifyStates);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ParseAnimSequenceSyncMarkers(BodyObject, Sequence, OutParsed.bHasSyncMarkers, OutParsed.SyncMarkers);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
 	const FAssetDocumentCapabilityResult SequenceValidationResult = ValidateParsedBodyAgainstSequence(Sequence, OutParsed);
 	if (!SequenceValidationResult.bSuccess)
 	{
@@ -1740,6 +2483,129 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		if (!CurvesResult.bSuccess)
 		{
 			return CurvesResult;
+		}
+	}
+
+	if (ParsedBody.bHasNotifyTracks || ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasSyncMarkers)
+	{
+		TArray<FAnimNotifyTrack> UpdatedTracks;
+		if (ParsedBody.bHasNotifyTracks)
+		{
+			for (const FParsedAnimSequenceNotifyTrack& Track : ParsedBody.NotifyTracks)
+			{
+				UpdatedTracks.Add(FAnimNotifyTrack(Track.Name, FLinearColor::White));
+			}
+		}
+		else
+		{
+			UpdatedTracks = Sequence->AnimNotifyTracks;
+		}
+		if (UpdatedTracks.IsEmpty())
+		{
+			UpdatedTracks.Add(FAnimNotifyTrack(TEXT("Default"), FLinearColor::White));
+		}
+
+		TArray<FAnimNotifyEvent> UpdatedNotifies;
+		UpdatedNotifies.Reserve(Sequence->Notifies.Num() + ParsedBody.Notifies.Num() + ParsedBody.NotifyStates.Num());
+		for (const FAnimNotifyEvent& ExistingNotify : Sequence->Notifies)
+		{
+			if (ParsedBody.bHasNotifies && IsManagedAnimSequenceNotifyEvent(ExistingNotify, Sequence))
+			{
+				continue;
+			}
+			if (ParsedBody.bHasNotifyStates && IsManagedAnimSequenceNotifyStateEvent(ExistingNotify, Sequence))
+			{
+				continue;
+			}
+			FAnimNotifyEvent PreservedNotify = ExistingNotify;
+			if (UpdatedTracks.IsValidIndex(PreservedNotify.TrackIndex))
+			{
+				EnsureNotifyTrackIndex(UpdatedTracks, UpdatedTracks[PreservedNotify.TrackIndex].TrackName);
+			}
+			else
+			{
+				PreservedNotify.TrackIndex = 0;
+			}
+			UpdatedNotifies.Add(PreservedNotify);
+		}
+
+		if (ParsedBody.bHasNotifies)
+		{
+			for (const FParsedAnimSequenceNotifyPlacement& ParsedNotify : ParsedBody.Notifies)
+			{
+				FAnimNotifyEvent NotifyEvent;
+				NotifyEvent.NotifyName = ParsedNotify.NotifyName;
+				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, ParsedNotify.TrackName);
+				NotifyEvent.SetTime(ParsedNotify.Time);
+				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedNotify.Time));
+				if (ParsedNotify.NotifyClass)
+				{
+					UAnimNotify* NotifyObject = NewObject<UAnimNotify>(Sequence, ParsedNotify.NotifyClass, NAME_None, RF_Transactional);
+					MarkManagedNotifyObject(NotifyObject, Sequence, false);
+					NotifyEvent.Notify = NotifyObject;
+				}
+#if WITH_EDITORONLY_DATA
+				NotifyEvent.Guid = FGuid::NewGuid();
+#endif
+				UpdatedNotifies.Add(NotifyEvent);
+			}
+		}
+
+		if (ParsedBody.bHasNotifyStates)
+		{
+			for (const FParsedAnimSequenceNotifyStatePlacement& ParsedState : ParsedBody.NotifyStates)
+			{
+				FAnimNotifyEvent NotifyEvent;
+				NotifyEvent.NotifyName = ParsedState.Name;
+				NotifyEvent.TrackIndex = EnsureNotifyTrackIndex(UpdatedTracks, ParsedState.TrackName);
+				NotifyEvent.SetTime(ParsedState.Time);
+				NotifyEvent.RefreshTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedState.Time));
+				NotifyEvent.SetDuration(ParsedState.Duration);
+				NotifyEvent.RefreshEndTriggerOffset(Sequence->CalculateOffsetForNotify(ParsedState.Time + ParsedState.Duration));
+				UAnimNotifyState* NotifyStateObject = NewObject<UAnimNotifyState>(Sequence, ParsedState.NotifyStateClass, NAME_None, RF_Transactional);
+				MarkManagedNotifyObject(NotifyStateObject, Sequence, true);
+				NotifyEvent.NotifyStateClass = NotifyStateObject;
+#if WITH_EDITORONLY_DATA
+				NotifyEvent.Guid = FGuid::NewGuid();
+#endif
+				UpdatedNotifies.Add(NotifyEvent);
+			}
+		}
+
+		if (ParsedBody.bHasNotifies || ParsedBody.bHasNotifyStates || ParsedBody.bHasNotifyTracks)
+		{
+			UpdatedNotifies.Sort();
+			Sequence->AnimNotifyTracks = MoveTemp(UpdatedTracks);
+			Sequence->Notifies = MoveTemp(UpdatedNotifies);
+			Sequence->SortNotifies();
+			Sequence->InitializeNotifyTrack();
+			if (Sequence->GetPlayLength() > 0.0f)
+			{
+				Sequence->ClampNotifiesAtEndOfSequence();
+			}
+			Sequence->RefreshCacheData();
+		}
+
+		if (ParsedBody.bHasSyncMarkers)
+		{
+			TArray<FAnimSyncMarker> UpdatedMarkers;
+			UpdatedMarkers.Reserve(ParsedBody.SyncMarkers.Num());
+			for (const FParsedAnimSequenceSyncMarker& ParsedMarker : ParsedBody.SyncMarkers)
+			{
+				FAnimSyncMarker Marker;
+				Marker.MarkerName = ParsedMarker.Name;
+				Marker.Time = ParsedMarker.Time;
+#if WITH_EDITORONLY_DATA
+				Marker.TrackIndex = 0;
+				Marker.Guid = FGuid::NewGuid();
+#endif
+				UpdatedMarkers.Add(Marker);
+			}
+			UpdatedMarkers.Sort();
+			Sequence->AuthoredSyncMarkers = MoveTemp(UpdatedMarkers);
+			Sequence->SortSyncMarkers();
+			Sequence->RefreshSyncMarkerDataFromAuthored();
+			Sequence->RefreshCacheData();
 		}
 	}
 
@@ -1943,6 +2809,10 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 	OutBodyJson->SetObjectField(TEXT("Compression"), Compression);
 
 	OutBodyJson->SetArrayField(TEXT("Curves"), ExtractAnimSequenceCurves(Sequence));
+	OutBodyJson->SetArrayField(TEXT("NotifyTracks"), ExtractAnimSequenceNotifyTracks(Sequence));
+	OutBodyJson->SetArrayField(TEXT("Notifies"), ExtractAnimSequenceNotifies(Sequence, false));
+	OutBodyJson->SetArrayField(TEXT("NotifyStates"), ExtractAnimSequenceNotifies(Sequence, true));
+	OutBodyJson->SetArrayField(TEXT("SyncMarkers"), ExtractAnimSequenceSyncMarkers(Sequence));
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extracted"));
 }
