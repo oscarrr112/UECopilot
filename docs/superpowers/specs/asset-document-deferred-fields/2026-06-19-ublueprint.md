@@ -89,4 +89,3 @@
   - zoom/pan、selection、open tabs remain excluded editor-only state.
 - 延期原因: 需要区分 graph readability metadata 和 per-user editor state。
 - 清理条件: graph region spec 明确哪些 layout fields are authoring data，哪些永远 extract-only 或 excluded。
-

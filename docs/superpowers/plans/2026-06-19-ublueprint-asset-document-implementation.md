@@ -1278,4 +1278,3 @@ After all tasks:
 5. Dispatch a final read-only code review over `SPEC_BASE..HEAD`, where `SPEC_BASE` is the commit before the implementation branch was created.
 6. Fix all P1/P2 review findings and re-run focused verification.
 7. Do not push or open a PR unless the user asks.
-

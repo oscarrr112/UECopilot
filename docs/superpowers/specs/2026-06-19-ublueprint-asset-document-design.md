@@ -581,4 +581,3 @@ These are not design blockers, but they must be resolved in implementation plans
 - Interface function graph ownership can overlap with `Body.FunctionGraphs`.
 - Timeline templates have graph references and generated variables that need cross-region repair.
 - Blueprint compile/reinstance failures must be reported with useful diagnostics and no silent partial save.
-
