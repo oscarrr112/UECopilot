@@ -150,6 +150,14 @@ bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FSt
 	});
 }
 
+bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == Code;
+	});
+}
+
 TSharedPtr<FJsonObject> FindJsonObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
@@ -679,16 +687,17 @@ bool FAssetDocumentUBlueprintApplyFailureRollsBackTest::RunTest(const FString&)
 	CreateRequest.bSaveAsset = false;
 	TestTrue(TEXT("Initial rollback fixture apply succeeds"), Service.Apply(CreateRequest).IsSuccess());
 
-	TSharedPtr<FJsonObject> ConflictingVariable = MakeFloatVariable(TEXT("Controller"), TEXT("0.0"));
+	TSharedPtr<FJsonObject> InvalidDefaultVariable = MakeFloatVariable(TEXT("RollbackFloat"), TEXT("not-a-float"));
 	FAssetDocumentApplyRequest BadRequest;
 	BadRequest.Document = MakeUBlueprintDocument(
 		Target,
 		TEXT("/Script/Engine.Pawn"),
-		MakeVariableArray({ConflictingVariable}),
+		MakeVariableArray({InvalidDefaultVariable}),
 		TArray<TSharedPtr<FJsonValue>>{});
 	BadRequest.bSaveAsset = false;
 	const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
-	TestFalse(TEXT("Conflicting variable apply fails"), BadResult.IsSuccess());
+	TestFalse(TEXT("Invalid default apply fails after mutation"), BadResult.IsSuccess());
+	TestTrue(TEXT("Failure comes from default sync after mutation"), ResultHasDiagnostic(BadResult, TEXT("InvalidVariableDefaultValue")));
 
 	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
 	TestNotNull(TEXT("Blueprint still exists after rollback failure"), Blueprint);
@@ -696,7 +705,8 @@ bool FAssetDocumentUBlueprintApplyFailureRollsBackTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("Parent rolled back to Actor"), Blueprint->ParentClass.Get(), AActor::StaticClass());
 		TestTrue(TEXT("Health remains after rollback failure"), HasBlueprintVariable(Blueprint, TEXT("Health")));
-		TestFalse(TEXT("Controller was not added after rollback failure"), HasBlueprintVariable(Blueprint, TEXT("Controller")));
+		TestFalse(TEXT("RollbackFloat was not added after rollback failure"), HasBlueprintVariable(Blueprint, TEXT("RollbackFloat")));
+		TestEqual(TEXT("Implemented interfaces remain empty after rollback failure"), Blueprint->ImplementedInterfaces.Num(), 0);
 	}
 	return true;
 }

@@ -480,7 +480,6 @@ void ApplyVariableMetadata(UBlueprint* Blueprint, const FUBlueprintVariableSpec&
 {
 	if (FBPVariableDescription* Variable = FindNewVariable(Blueprint, Spec.Name))
 	{
-		Variable->DefaultValue = Spec.DefaultValue;
 		if (Spec.Category.IsSet())
 		{
 			FBlueprintEditorUtils::SetBlueprintVariableCategory(Blueprint, Spec.Name, nullptr, FText::FromString(Spec.Category.GetValue()), true);
@@ -568,7 +567,7 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 
 		if (!Existing)
 		{
-			if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Spec.Name, Spec.Type, Spec.DefaultValue))
+			if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Spec.Name, Spec.Type))
 			{
 				return BodyFailure(
 					FString::Printf(TEXT("Failed to add Blueprint variable '%s'"), *Spec.Name.ToString()),
