@@ -5,13 +5,19 @@
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimTypes.h"
 #include "Dom/JsonValue.h"
+#include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
+#include "Animation/Skeleton.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace
 {
+const TCHAR* TestSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+const TCHAR* TestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+
 TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
@@ -66,6 +72,84 @@ const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocume
 bool PolicyContainsManagedPath(const FAssetDocumentRegionPolicy* Policy, const FString& ExpectedPath)
 {
 	return Policy && Policy->ManagedUePropertyPaths.Contains(ExpectedPath);
+}
+
+TSharedRef<FJsonObject> MakeAssetRef(const FString& Path)
+{
+	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	Fragment->SetStringField(TEXT("Path"), Path);
+	return Fragment;
+}
+
+TSharedRef<FJsonValue> MakeBodyValue(const TSharedRef<FJsonObject>& Body)
+{
+	return StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(Body));
+}
+
+TSharedRef<FJsonObject> MakeScalarRegionsBody(const FString& PreviewMeshPath)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+
+	TSharedRef<FJsonObject> References = MakeShared<FJsonObject>();
+	References->SetObjectField(TEXT("Skeleton"), MakeAssetRef(TestSkeletonPath));
+	References->SetStringField(TEXT("RetargetSource"), TEXT("Default"));
+	Body->SetObjectField(TEXT("References"), References);
+
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(PreviewMeshPath));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+
+	TSharedRef<FJsonObject> Playback = MakeShared<FJsonObject>();
+	Playback->SetNumberField(TEXT("RateScale"), 1.75);
+	Body->SetObjectField(TEXT("Playback"), Playback);
+
+	TSharedRef<FJsonObject> Additive = MakeShared<FJsonObject>();
+	Additive->SetStringField(TEXT("AdditiveAnimType"), TEXT("AAT_LocalSpaceBase"));
+	Additive->SetStringField(TEXT("RefPoseType"), TEXT("ABPT_LocalAnimFrame"));
+	Additive->SetNumberField(TEXT("RefFrameIndex"), 2);
+	Additive->SetField(TEXT("RefPoseSeq"), MakeShared<FJsonValueNull>());
+	Body->SetObjectField(TEXT("Additive"), Additive);
+
+	TSharedRef<FJsonObject> RootMotion = MakeShared<FJsonObject>();
+	RootMotion->SetBoolField(TEXT("bEnableRootMotion"), true);
+	RootMotion->SetStringField(TEXT("RootMotionRootLock"), TEXT("Zero"));
+	RootMotion->SetBoolField(TEXT("bForceRootLock"), true);
+	RootMotion->SetBoolField(TEXT("bUseNormalizedRootMotionScale"), true);
+	Body->SetObjectField(TEXT("RootMotion"), RootMotion);
+
+	TSharedRef<FJsonObject> Compression = MakeShared<FJsonObject>();
+	Compression->SetNumberField(TEXT("CompressionErrorThresholdScale"), 0.42);
+	Compression->SetBoolField(TEXT("bDoNotOverrideCompression"), true);
+	Body->SetObjectField(TEXT("Compression"), Compression);
+
+	return Body;
+}
+
+UAnimSequence* CreateTransientSequence(const TCHAR* Name)
+{
+	UAnimSequence* Sequence = NewObject<UAnimSequence>(GetTransientPackage(), Name, RF_Transient);
+	USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, TestSkeletonPath);
+	if (Sequence && Skeleton)
+	{
+		Sequence->SetSkeleton(Skeleton);
+	}
+	return Sequence;
+}
+
+FAssetDocumentCapabilityContext MakeSequenceContext(UAnimSequence* Sequence)
+{
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = Sequence;
+	Context.AssetClass = UAnimSequence::StaticClass();
+	return Context;
+}
+
+TSharedPtr<FJsonObject> GetRequiredObject(const TSharedRef<FJsonObject>& Object, const TCHAR* FieldName)
+{
+	const TSharedPtr<FJsonObject>* FieldObject = nullptr;
+	Object->TryGetObjectField(FieldName, FieldObject);
+	return FieldObject ? *FieldObject : nullptr;
 }
 }
 
@@ -159,22 +243,166 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 
 		FAssetDocumentCapabilityContext PreflightContext;
 		const FAssetDocumentCapabilityResult PreflightResult = BodyAdapter->Preflight(PreflightContext, ValidEmptyBodyJson);
-		TestFalse(TEXT("Preflight rejects authored Body while apply is unsupported"), PreflightResult.bSuccess);
-		TestEqual(TEXT("Preflight reports unsupported operation"), PreflightResult.Diagnostics.Num() > 0 ? PreflightResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedOperation")));
+		TestTrue(TEXT("Preflight accepts empty supported Body shape"), PreflightResult.bSuccess);
 
 		FAssetDocumentCapabilityContext ExtractContext;
 		ExtractContext.Asset = NewObject<UAnimSequence>(GetTransientPackage());
 		ExtractContext.AssetClass = UAnimSequence::StaticClass();
 		TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
 		const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(ExtractContext, ExtractedBody);
-		TestTrue(TEXT("Extract succeeds with diagnostic-only skipped metadata"), ExtractResult.bSuccess);
-		const TSharedPtr<FJsonObject>* SkippedObject = nullptr;
-		TestTrue(TEXT("Extract writes _Skipped diagnostic object"), ExtractedBody->TryGetObjectField(TEXT("_Skipped"), SkippedObject));
-		if (SkippedObject && SkippedObject->IsValid())
-		{
-			TestEqual(TEXT("_Skipped diagnostic code"), (*SkippedObject)->GetStringField(TEXT("Code")), FString(TEXT("AnimSequenceBodyExtractUnsupported")));
-		}
+		TestTrue(TEXT("Extract succeeds with supported scalar Body regions"), ExtractResult.bSuccess);
+		TestTrue(TEXT("Extract writes References object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("References")));
+		TestTrue(TEXT("Extract writes Playback object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("Playback")));
+		TestTrue(TEXT("Extract writes RootMotion object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("RootMotion")));
+		TestTrue(TEXT("Extract writes Compression object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("Compression")));
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequenceScalarRegionsTest,
+	"AssetFactory.AssetDocument.AnimSequence.ScalarRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
+{
+	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 25);
+	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 1);
+
+	FAnimSequenceAssetDocumentCapability Capability;
+	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequenceScalarRegions"));
+	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, TestPreviewMeshPath);
+	TestNotNull(TEXT("Fixture creates transient AnimSequence"), Sequence);
+	TestNotNull(TEXT("Tutorial skeleton fixture is available"), Sequence ? Sequence->GetSkeleton() : nullptr);
+	TestNotNull(TEXT("Tutorial preview mesh fixture is available"), PreviewMesh);
+	if (!Sequence || !Sequence->GetSkeleton() || !PreviewMesh)
+	{
+		return true;
+	}
+
+	Sequence->RateScale = 1.0f;
+	Sequence->AdditiveAnimType = AAT_None;
+	Sequence->RefPoseType = ABPT_None;
+	Sequence->RefFrameIndex = 0;
+	Sequence->bEnableRootMotion = false;
+	Sequence->RootMotionRootLock = ERootMotionRootLock::RefPose;
+	Sequence->bForceRootLock = false;
+	Sequence->bUseNormalizedRootMotionScale = false;
+	Sequence->CompressionErrorThresholdScale = 1.0f;
+	Sequence->bDoNotOverrideCompression = false;
+	Sequence->SetPreviewMesh(nullptr, false);
+
+	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
+	TSharedRef<FJsonObject> InitialExtract = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult InitialExtractResult = Capability.Extract(Context, InitialExtract);
+	TestTrue(TEXT("Extract succeeds for scalar/reference regions"), InitialExtractResult.bSuccess);
+	TestTrue(TEXT("Extract emits References"), InitialExtract->HasTypedField<EJson::Object>(TEXT("References")));
+	TestTrue(TEXT("Extract emits Playback"), InitialExtract->HasTypedField<EJson::Object>(TEXT("Playback")));
+	const TSharedPtr<FJsonObject> InitialPlayback = GetRequiredObject(InitialExtract, TEXT("Playback"));
+	TestFalse(TEXT("Extract does not expose derived PlayLength as authored Playback field"), InitialPlayback.IsValid() && InitialPlayback->HasField(TEXT("PlayLength")));
+
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(MakeScalarRegionsBody(TestPreviewMeshPath)));
+	TestTrue(TEXT("Apply succeeds after full scalar parse"), ApplyResult.bSuccess);
+	TestEqual(TEXT("Apply updates Preview.PreviewMesh"), Sequence->GetPreviewMesh(), PreviewMesh);
+	TestEqual(TEXT("Apply updates Playback.RateScale"), Sequence->RateScale, 1.75f);
+	TestEqual(TEXT("Apply updates Additive.AdditiveAnimType"), static_cast<EAdditiveAnimationType>(Sequence->AdditiveAnimType), AAT_LocalSpaceBase);
+	TestEqual(TEXT("Apply updates Additive.RefPoseType"), static_cast<EAdditiveBasePoseType>(Sequence->RefPoseType), ABPT_LocalAnimFrame);
+	TestEqual(TEXT("Apply updates Additive.RefFrameIndex"), Sequence->RefFrameIndex, 2);
+	TestNull(TEXT("Apply accepts null Additive.RefPoseSeq"), Sequence->RefPoseSeq);
+	TestTrue(TEXT("Apply updates RootMotion.bEnableRootMotion"), Sequence->bEnableRootMotion);
+	TestEqual(TEXT("Apply updates RootMotion.RootMotionRootLock"), static_cast<ERootMotionRootLock::Type>(Sequence->RootMotionRootLock), ERootMotionRootLock::Zero);
+	TestTrue(TEXT("Apply updates RootMotion.bForceRootLock"), Sequence->bForceRootLock);
+	TestTrue(TEXT("Apply updates RootMotion.bUseNormalizedRootMotionScale"), Sequence->bUseNormalizedRootMotionScale);
+	TestEqual(TEXT("Apply updates Compression.CompressionErrorThresholdScale"), Sequence->CompressionErrorThresholdScale, 0.42f);
+	TestTrue(TEXT("Apply updates Compression.bDoNotOverrideCompression"), !!Sequence->bDoNotOverrideCompression);
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds after apply"), ExtractResult.bSuccess);
+	const TSharedPtr<FJsonObject> ExtractedReferences = GetRequiredObject(Extracted, TEXT("References"));
+	const TSharedPtr<FJsonObject> ExtractedPreview = GetRequiredObject(Extracted, TEXT("Preview"));
+	const TSharedPtr<FJsonObject> ExtractedPlayback = GetRequiredObject(Extracted, TEXT("Playback"));
+	const TSharedPtr<FJsonObject> ExtractedAdditive = GetRequiredObject(Extracted, TEXT("Additive"));
+	const TSharedPtr<FJsonObject> ExtractedRootMotion = GetRequiredObject(Extracted, TEXT("RootMotion"));
+	const TSharedPtr<FJsonObject> ExtractedCompression = GetRequiredObject(Extracted, TEXT("Compression"));
+	TestTrue(TEXT("Extract outputs References.Skeleton"), ExtractedReferences.IsValid() && ExtractedReferences->HasTypedField<EJson::Object>(TEXT("Skeleton")));
+	TestTrue(TEXT("Extract outputs References.RetargetSource"), ExtractedReferences.IsValid() && ExtractedReferences->HasTypedField<EJson::String>(TEXT("RetargetSource")));
+	TestTrue(TEXT("Extract outputs Preview.PreviewMesh"), ExtractedPreview.IsValid() && ExtractedPreview->HasTypedField<EJson::Object>(TEXT("PreviewMesh")));
+	if (ExtractedPlayback.IsValid())
+	{
+		TestEqual(TEXT("Extract outputs Playback.RateScale"), ExtractedPlayback->GetNumberField(TEXT("RateScale")), 1.75);
+	}
+	if (ExtractedAdditive.IsValid())
+	{
+		TestEqual(TEXT("Extract outputs Additive.AdditiveAnimType"), ExtractedAdditive->GetStringField(TEXT("AdditiveAnimType")), FString(TEXT("AAT_LocalSpaceBase")));
+	}
+	if (ExtractedRootMotion.IsValid())
+	{
+		TestEqual(TEXT("Extract outputs RootMotion.RootMotionRootLock"), ExtractedRootMotion->GetStringField(TEXT("RootMotionRootLock")), FString(TEXT("Zero")));
+	}
+	if (ExtractedCompression.IsValid())
+	{
+		TestTrue(TEXT("Extract outputs Compression.bDoNotOverrideCompression"), ExtractedCompression->GetBoolField(TEXT("bDoNotOverrideCompression")));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyValue(MakeScalarRegionsBody(TestPreviewMeshPath)), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for authored scalar regions"), DiffResult.bSuccess);
+	TestTrue(TEXT("Diff returns entries for authored regions"), DiffEntries.Num() > 0);
+
+	const TArray<FString> UnsupportedTopLevelFields = {
+		TEXT("Import"),
+		TEXT("RawTracks"),
+		TEXT("CompressedData"),
+	};
+	for (const FString& FieldName : UnsupportedTopLevelFields)
+	{
+		TSharedRef<FJsonObject> InvalidBody = MakeShared<FJsonObject>();
+		InvalidBody->SetObjectField(FieldName, MakeShared<FJsonObject>());
+		const FAssetDocumentCapabilityResult InvalidResult = Capability.Validate(Context, MakeBodyValue(InvalidBody));
+		TestFalse(FString::Printf(TEXT("Validate rejects Body.%s"), *FieldName), InvalidResult.bSuccess);
+	}
+
+	TSharedRef<FJsonObject> InvalidPlaybackBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> InvalidPlayback = MakeShared<FJsonObject>();
+	InvalidPlayback->SetNumberField(TEXT("PlayLength"), 3.0);
+	InvalidPlaybackBody->SetObjectField(TEXT("Playback"), InvalidPlayback);
+	TestFalse(TEXT("Validate rejects Body.Playback.PlayLength"), Capability.Validate(Context, MakeBodyValue(InvalidPlaybackBody)).bSuccess);
+	InvalidPlayback->RemoveField(TEXT("PlayLength"));
+	InvalidPlayback->SetNumberField(TEXT("NumberOfSampledKeys"), 30);
+	TestFalse(TEXT("Validate rejects Body.Playback.NumberOfSampledKeys"), Capability.Validate(Context, MakeBodyValue(InvalidPlaybackBody)).bSuccess);
+	InvalidPlayback->RemoveField(TEXT("NumberOfSampledKeys"));
+	InvalidPlayback->SetNumberField(TEXT("SamplingFrameRate"), 30);
+	TestFalse(TEXT("Validate rejects Body.Playback.SamplingFrameRate"), Capability.Validate(Context, MakeBodyValue(InvalidPlaybackBody)).bSuccess);
+
+	const float RateScaleBeforeInvalid = Sequence->RateScale;
+	const bool bEnableRootMotionBeforeInvalid = Sequence->bEnableRootMotion;
+	TSharedRef<FJsonObject> InvalidBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	InvalidBody->GetObjectField(TEXT("Playback"))->SetNumberField(TEXT("RateScale"), 2.25);
+	InvalidBody->GetObjectField(TEXT("Preview"))->SetStringField(TEXT("PreviewMesh"), TEXT("not an asset ref object"));
+	const FAssetDocumentCapabilityResult InvalidTypeApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidBody));
+	TestFalse(TEXT("Apply rejects invalid reference value type"), InvalidTypeApplyResult.bSuccess);
+	TestEqual(TEXT("Invalid value type does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+	TestEqual(TEXT("Invalid value type does not partially mutate root motion"), Sequence->bEnableRootMotion, bEnableRootMotionBeforeInvalid);
+
+	TSharedRef<FJsonObject> MissingRefBody = MakeScalarRegionsBody(TEXT("/Game/AssetDocumentTests/MissingMesh.MissingMesh"));
+	MissingRefBody->GetObjectField(TEXT("Playback"))->SetNumberField(TEXT("RateScale"), 2.5);
+	const FAssetDocumentCapabilityResult MissingRefApplyResult = Capability.Apply(Context, MakeBodyValue(MissingRefBody));
+	TestFalse(TEXT("Apply rejects invalid asset reference"), MissingRefApplyResult.bSuccess);
+	TestEqual(TEXT("Invalid asset reference does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+
+	TSharedRef<FJsonObject> InvalidClassBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	InvalidClassBody->GetObjectField(TEXT("Playback"))->SetNumberField(TEXT("RateScale"), 2.75);
+	InvalidClassBody->GetObjectField(TEXT("Preview"))->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestSkeletonPath));
+	const FAssetDocumentCapabilityResult InvalidClassApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidClassBody));
+	TestFalse(TEXT("Apply rejects asset reference that resolves to wrong class"), InvalidClassApplyResult.bSuccess);
+	TestEqual(TEXT("Invalid reference class does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+
+	TSharedRef<FJsonObject> InvalidNumberBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	InvalidNumberBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
+	TestFalse(TEXT("Apply rejects invalid numeric value"), Capability.Apply(Context, MakeBodyValue(InvalidNumberBody)).bSuccess);
+	TestEqual(TEXT("Invalid numeric value does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 
 	return true;
 }
