@@ -6,9 +6,13 @@
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
+#include "Animation/AnimCurveTypes.h"
+#include "Animation/AnimData/CurveIdentifier.h"
+#include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
+#include "Curves/RichCurve.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
@@ -577,10 +581,91 @@ FString RefPoseTypeToString(EAdditiveBasePoseType Value)
 	}
 }
 
+FString CurveInterpModeToString(ERichCurveInterpMode Value)
+{
+	switch (Value)
+	{
+	case RCIM_Constant:
+		return TEXT("RCIM_Constant");
+	case RCIM_Cubic:
+		return TEXT("RCIM_Cubic");
+	case RCIM_Linear:
+	default:
+		return TEXT("RCIM_Linear");
+	}
+}
+
+bool TryParseCurveInterpMode(const FString& Value, ERichCurveInterpMode& OutInterpMode)
+{
+	if (Value == TEXT("RCIM_Linear") || Value == TEXT("Linear"))
+	{
+		OutInterpMode = RCIM_Linear;
+		return true;
+	}
+	if (Value == TEXT("RCIM_Constant") || Value == TEXT("Constant"))
+	{
+		OutInterpMode = RCIM_Constant;
+		return true;
+	}
+	if (Value == TEXT("RCIM_Cubic") || Value == TEXT("Cubic"))
+	{
+		OutInterpMode = RCIM_Cubic;
+		return true;
+	}
+	return false;
+}
+
+bool TryParseCurveFlag(const FString& Value, int32& OutFlag)
+{
+	if (Value == TEXT("Default"))
+	{
+		OutFlag = AACF_DefaultCurve;
+		return true;
+	}
+	if (Value == TEXT("Editable") || Value == TEXT("AACF_Editable"))
+	{
+		OutFlag = AACF_Editable;
+		return true;
+	}
+	if (Value == TEXT("DriveMorphTarget") || Value == TEXT("AACF_DriveMorphTarget_DEPRECATED"))
+	{
+		OutFlag = AACF_DriveMorphTarget_DEPRECATED;
+		return true;
+	}
+	if (Value == TEXT("DriveAttribute") || Value == TEXT("AACF_DriveAttribute_DEPRECATED"))
+	{
+		OutFlag = AACF_DriveAttribute_DEPRECATED;
+		return true;
+	}
+	return false;
+}
+
+TArray<TSharedPtr<FJsonValue>> CurveFlagsToJsonArray(int32 Flags)
+{
+	TArray<TSharedPtr<FJsonValue>> FlagValues;
+	if (Flags == AACF_DefaultCurve)
+	{
+		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("Default")));
+		return FlagValues;
+	}
+	if ((Flags & AACF_DriveMorphTarget_DEPRECATED) != 0)
+	{
+		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("DriveMorphTarget")));
+	}
+	if ((Flags & AACF_DriveAttribute_DEPRECATED) != 0)
+	{
+		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("DriveAttribute")));
+	}
+	if ((Flags & AACF_Editable) != 0)
+	{
+		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("Editable")));
+	}
+	return FlagValues;
+}
+
 FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<FJsonObject>& BodyObject)
 {
 	const TArray<FString> NotImplementedBodyKeys = {
-		TEXT("Curves"),
 		TEXT("Notifies"),
 		TEXT("NotifyStates"),
 		TEXT("NotifyTracks"),
@@ -664,6 +749,322 @@ FAssetDocumentCapabilityResult RejectUnknownObjectFields(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+struct FParsedAnimSequenceCurve
+{
+	FName Name = NAME_None;
+	int32 Flags = AACF_DefaultCurve;
+	TArray<FRichCurveKey> Keys;
+};
+
+FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool& bOutHasCurves,
+	TArray<FParsedAnimSequenceCurve>& OutCurves)
+{
+	bOutHasCurves = false;
+	OutCurves.Reset();
+
+	const TSharedPtr<FJsonValue>* CurvesValue = BodyObject->Values.Find(TEXT("Curves"));
+	if (!CurvesValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* CurveValues = nullptr;
+	FAssetDocumentCapabilityResult Result = RequireArrayValue(*CurvesValue, TEXT("/Body/Curves"), CurveValues);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	bOutHasCurves = true;
+	TSet<FName> CurveNames;
+	for (int32 CurveIndex = 0; CurveIndex < CurveValues->Num(); ++CurveIndex)
+	{
+		const FString CurvePath = FString::Printf(TEXT("/Body/Curves/%d"), CurveIndex);
+		TSharedPtr<FJsonObject> CurveObject;
+		Result = RequireObjectValue((*CurveValues)[CurveIndex], CurvePath, CurveObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : CurveObject->Values)
+		{
+			if (Pair.Key != TEXT("Name") &&
+				Pair.Key != TEXT("CurveType") &&
+				Pair.Key != TEXT("Flags") &&
+				Pair.Key != TEXT("Keys"))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("Body.Curves[%d].%s is not supported"), CurveIndex, *Pair.Key),
+					FString::Printf(TEXT("%s/%s"), *CurvePath, *Pair.Key),
+					TEXT("UnsupportedAuthoredField"));
+			}
+		}
+
+		FParsedAnimSequenceCurve ParsedCurve;
+		bool bHasName = false;
+		FString CurveNameString;
+		Result = ReadOptionalString(CurveObject.ToSharedRef(), TEXT("Name"), FString::Printf(TEXT("%s/Name"), *CurvePath), bHasName, CurveNameString);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (!bHasName || CurveNameString.IsEmpty())
+		{
+			return BodyFailure(TEXT("Curve Name is required"), FString::Printf(TEXT("%s/Name"), *CurvePath), TEXT("MissingCurveName"));
+		}
+		ParsedCurve.Name = FName(*CurveNameString);
+		if (CurveNames.Contains(ParsedCurve.Name))
+		{
+			return BodyFailure(TEXT("Curve names must be unique"), FString::Printf(TEXT("%s/Name"), *CurvePath), TEXT("DuplicateCurveName"));
+		}
+		CurveNames.Add(ParsedCurve.Name);
+
+		bool bHasCurveType = false;
+		FString CurveType;
+		Result = ReadOptionalString(CurveObject.ToSharedRef(), TEXT("CurveType"), FString::Printf(TEXT("%s/CurveType"), *CurvePath), bHasCurveType, CurveType);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (bHasCurveType && CurveType != TEXT("Float"))
+		{
+			return BodyFailure(TEXT("Only float curves are supported for Body.Curves"), FString::Printf(TEXT("%s/CurveType"), *CurvePath), TEXT("DeferredCurveType"));
+		}
+
+		if (const TSharedPtr<FJsonValue>* FlagsValue = CurveObject->Values.Find(TEXT("Flags")))
+		{
+			const TArray<TSharedPtr<FJsonValue>>* FlagValues = nullptr;
+			Result = RequireArrayValue(*FlagsValue, FString::Printf(TEXT("%s/Flags"), *CurvePath), FlagValues);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			ParsedCurve.Flags = 0;
+			for (int32 FlagIndex = 0; FlagIndex < FlagValues->Num(); ++FlagIndex)
+			{
+				const TSharedPtr<FJsonValue>& FlagValue = (*FlagValues)[FlagIndex];
+				const FString FlagPath = FString::Printf(TEXT("%s/Flags/%d"), *CurvePath, FlagIndex);
+				if (!FlagValue.IsValid() || FlagValue->Type != EJson::String)
+				{
+					return BodyFailure(TEXT("Curve Flags entries must be strings"), FlagPath, TEXT("InvalidCurveFlag"));
+				}
+
+				int32 ParsedFlag = 0;
+				if (!TryParseCurveFlag(FlagValue->AsString(), ParsedFlag))
+				{
+					return BodyFailure(TEXT("Curve flag is not supported"), FlagPath, TEXT("InvalidCurveFlag"));
+				}
+				ParsedCurve.Flags |= ParsedFlag;
+			}
+		}
+
+		const TSharedPtr<FJsonValue>* KeysValue = CurveObject->Values.Find(TEXT("Keys"));
+		if (!KeysValue)
+		{
+			return BodyFailure(TEXT("Curve Keys array is required"), FString::Printf(TEXT("%s/Keys"), *CurvePath), TEXT("MissingCurveKeys"));
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* KeyValues = nullptr;
+		Result = RequireArrayValue(*KeysValue, FString::Printf(TEXT("%s/Keys"), *CurvePath), KeyValues);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		for (int32 KeyIndex = 0; KeyIndex < KeyValues->Num(); ++KeyIndex)
+		{
+			const FString KeyPath = FString::Printf(TEXT("%s/Keys/%d"), *CurvePath, KeyIndex);
+			TSharedPtr<FJsonObject> KeyObject;
+			Result = RequireObjectValue((*KeyValues)[KeyIndex], KeyPath, KeyObject);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : KeyObject->Values)
+			{
+				if (Pair.Key != TEXT("Time") &&
+					Pair.Key != TEXT("Value") &&
+					Pair.Key != TEXT("InterpMode") &&
+					Pair.Key != TEXT("Interpolation"))
+				{
+					return BodyFailure(
+						FString::Printf(TEXT("Body.Curves[%d].Keys[%d].%s is not supported"), CurveIndex, KeyIndex, *Pair.Key),
+						FString::Printf(TEXT("%s/%s"), *KeyPath, *Pair.Key),
+						TEXT("UnsupportedAuthoredField"));
+				}
+			}
+
+			bool bHasTime = false;
+			double Time = 0.0;
+			Result = ReadOptionalNumber(KeyObject.ToSharedRef(), TEXT("Time"), FString::Printf(TEXT("%s/Time"), *KeyPath), bHasTime, Time);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (!bHasTime || Time < 0.0 || !FMath::IsFinite(Time))
+			{
+				return BodyFailure(TEXT("Curve key Time must be finite and non-negative"), FString::Printf(TEXT("%s/Time"), *KeyPath), TEXT("InvalidCurveKeyTime"));
+			}
+
+			bool bHasValue = false;
+			double Value = 0.0;
+			Result = ReadOptionalNumber(KeyObject.ToSharedRef(), TEXT("Value"), FString::Printf(TEXT("%s/Value"), *KeyPath), bHasValue, Value);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (!bHasValue || !FMath::IsFinite(Value))
+			{
+				return BodyFailure(TEXT("Curve key Value must be finite"), FString::Printf(TEXT("%s/Value"), *KeyPath), TEXT("InvalidCurveKeyValue"));
+			}
+
+			ERichCurveInterpMode InterpMode = RCIM_Linear;
+			bool bHasInterpMode = false;
+			FString InterpModeString;
+			Result = ReadOptionalString(KeyObject.ToSharedRef(), TEXT("InterpMode"), FString::Printf(TEXT("%s/InterpMode"), *KeyPath), bHasInterpMode, InterpModeString);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (!bHasInterpMode)
+			{
+				Result = ReadOptionalString(KeyObject.ToSharedRef(), TEXT("Interpolation"), FString::Printf(TEXT("%s/Interpolation"), *KeyPath), bHasInterpMode, InterpModeString);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			if (bHasInterpMode && !TryParseCurveInterpMode(InterpModeString, InterpMode))
+			{
+				const FString InterpPath = KeyObject->HasField(TEXT("InterpMode"))
+					? FString::Printf(TEXT("%s/InterpMode"), *KeyPath)
+					: FString::Printf(TEXT("%s/Interpolation"), *KeyPath);
+				return BodyFailure(TEXT("Curve key interpolation is not supported"), InterpPath, TEXT("InvalidCurveInterpolation"));
+			}
+
+			FRichCurveKey Key(static_cast<float>(Time), static_cast<float>(Value));
+			Key.InterpMode = InterpMode;
+			ParsedCurve.Keys.Add(Key);
+		}
+
+		ParsedCurve.Keys.Sort([](const FRichCurveKey& Left, const FRichCurveKey& Right)
+		{
+			return Left.Time < Right.Time;
+		});
+		for (int32 KeyIndex = 1; KeyIndex < ParsedCurve.Keys.Num(); ++KeyIndex)
+		{
+			if (ParsedCurve.Keys[KeyIndex - 1].Time == ParsedCurve.Keys[KeyIndex].Time)
+			{
+				return BodyFailure(TEXT("Curve key times must be unique"), FString::Printf(TEXT("%s/Keys/%d/Time"), *CurvePath, KeyIndex), TEXT("DuplicateCurveKeyTime"));
+			}
+		}
+
+		OutCurves.Add(MoveTemp(ParsedCurve));
+	}
+
+	OutCurves.Sort([](const FParsedAnimSequenceCurve& Left, const FParsedAnimSequenceCurve& Right)
+	{
+		return Left.Name.LexicalLess(Right.Name);
+	});
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, const TArray<FParsedAnimSequenceCurve>& Curves)
+{
+	if (!Sequence)
+	{
+		return BodyFailure(TEXT("AnimSequence curve apply requires UAnimSequence asset"), TEXT("/Body/Curves"), TEXT("UnsupportedAsset"));
+	}
+
+	IAnimationDataController& Controller = Sequence->GetController();
+	Controller.OpenBracket(FText::FromString(TEXT("Apply AnimSequence AssetDocument Curves")), false);
+
+	auto CloseAndFail = [&Controller](const FString& Message, const FString& Path, const FString& Code) -> FAssetDocumentCapabilityResult
+	{
+		Controller.CloseBracket(false);
+		return BodyFailure(Message, Path, Code);
+	};
+
+	Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Float, false);
+	for (const FParsedAnimSequenceCurve& Curve : Curves)
+	{
+		const FAnimationCurveIdentifier CurveId(Curve.Name, ERawCurveTrackTypes::RCT_Float);
+		const FString CurvePath = FString::Printf(TEXT("/Body/Curves/%s"), *Curve.Name.ToString());
+		if (!Controller.AddCurve(CurveId, Curve.Flags, false))
+		{
+			return CloseAndFail(TEXT("Failed to add AnimSequence float curve"), CurvePath, TEXT("CurveControllerFailure"));
+		}
+		if (!Controller.SetCurveKeys(CurveId, Curve.Keys, false))
+		{
+			return CloseAndFail(TEXT("Failed to set AnimSequence float curve keys"), CurvePath, TEXT("CurveControllerFailure"));
+		}
+		if (!Controller.SetCurveFlags(CurveId, Curve.Flags, false))
+		{
+			return CloseAndFail(TEXT("Failed to set AnimSequence float curve flags"), CurvePath, TEXT("CurveControllerFailure"));
+		}
+	}
+
+	Controller.CloseBracket(false);
+	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Curves applied"));
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceCurves(const UAnimSequence* Sequence)
+{
+	TArray<TSharedPtr<FJsonValue>> CurveValues;
+	const IAnimationDataModel* DataModel = Sequence ? Sequence->GetDataModel() : nullptr;
+	if (!DataModel)
+	{
+		return CurveValues;
+	}
+
+	TArray<const FFloatCurve*> FloatCurves;
+	for (const FFloatCurve& FloatCurve : DataModel->GetFloatCurves())
+	{
+		FloatCurves.Add(&FloatCurve);
+	}
+	FloatCurves.Sort([](const FFloatCurve& Left, const FFloatCurve& Right)
+	{
+		return Left.GetName().LexicalLess(Right.GetName());
+	});
+
+	for (const FFloatCurve* FloatCurve : FloatCurves)
+	{
+		if (!FloatCurve)
+		{
+			continue;
+		}
+
+		TSharedRef<FJsonObject> CurveObject = MakeShared<FJsonObject>();
+		CurveObject->SetStringField(TEXT("Name"), FloatCurve->GetName().ToString());
+		CurveObject->SetStringField(TEXT("CurveType"), TEXT("Float"));
+		CurveObject->SetArrayField(TEXT("Flags"), CurveFlagsToJsonArray(FloatCurve->GetCurveTypeFlags()));
+
+		TArray<FRichCurveKey> Keys = FloatCurve->FloatCurve.GetCopyOfKeys();
+		Keys.Sort([](const FRichCurveKey& Left, const FRichCurveKey& Right)
+		{
+			return Left.Time < Right.Time;
+		});
+
+		TArray<TSharedPtr<FJsonValue>> KeyValues;
+		for (const FRichCurveKey& Key : Keys)
+		{
+			TSharedRef<FJsonObject> KeyObject = MakeShared<FJsonObject>();
+			KeyObject->SetNumberField(TEXT("Time"), Key.Time);
+			KeyObject->SetNumberField(TEXT("Value"), Key.Value);
+			KeyObject->SetStringField(TEXT("InterpMode"), CurveInterpModeToString(Key.InterpMode));
+			KeyValues.Add(MakeShared<FJsonValueObject>(KeyObject));
+		}
+		CurveObject->SetArrayField(TEXT("Keys"), KeyValues);
+		CurveValues.Add(MakeShared<FJsonValueObject>(CurveObject));
+	}
+
+	return CurveValues;
+}
+
 struct FParsedAnimSequenceBody
 {
 	bool bHasSkeleton = false;
@@ -700,6 +1101,8 @@ struct FParsedAnimSequenceBody
 	UAnimCurveCompressionSettings* CurveCompressionSettings = nullptr;
 	bool bHasDoNotOverrideCompression = false;
 	bool bDoNotOverrideCompression = false;
+	bool bHasCurves = false;
+	TArray<FParsedAnimSequenceCurve> Curves;
 };
 
 bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
@@ -1098,6 +1501,14 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 	}
 
+	{
+		FAssetDocumentCapabilityResult Result = ParseAnimSequenceCurves(BodyObject, OutParsed.bHasCurves, OutParsed.Curves);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
 	const FAssetDocumentCapabilityResult SequenceValidationResult = ValidateParsedBodyAgainstSequence(Sequence, OutParsed);
 	if (!SequenceValidationResult.bSuccess)
 	{
@@ -1324,6 +1735,14 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	{
 		Sequence->bDoNotOverrideCompression = ParsedBody.bDoNotOverrideCompression;
 	}
+	if (ParsedBody.bHasCurves)
+	{
+		const FAssetDocumentCapabilityResult CurvesResult = ApplyAnimSequenceCurves(Sequence, ParsedBody.Curves);
+		if (!CurvesResult.bSuccess)
+		{
+			return CurvesResult;
+		}
+	}
 
 	const bool bNeedsCacheRefresh =
 		ParsedBody.bHasRetargetSourceAsset ||
@@ -1452,6 +1871,8 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 	}
 	Compression->SetBoolField(TEXT("bDoNotOverrideCompression"), !!Sequence->bDoNotOverrideCompression);
 	OutBodyJson->SetObjectField(TEXT("Compression"), Compression);
+
+	OutBodyJson->SetArrayField(TEXT("Curves"), ExtractAnimSequenceCurves(Sequence));
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extracted"));
 }

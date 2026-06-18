@@ -193,6 +193,49 @@ TSharedRef<FJsonObject> MakePlaybackRateBody(double RateScale)
 	Body->SetObjectField(TEXT("Playback"), Playback);
 	return Body;
 }
+
+TSharedRef<FJsonObject> MakeCurveKey(double Time, double Value, const FString& InterpMode)
+{
+	TSharedRef<FJsonObject> Key = MakeShared<FJsonObject>();
+	Key->SetNumberField(TEXT("Time"), Time);
+	Key->SetNumberField(TEXT("Value"), Value);
+	Key->SetStringField(TEXT("InterpMode"), InterpMode);
+	return Key;
+}
+
+TSharedRef<FJsonObject> MakeFloatCurve(const FString& Name, const TArray<TSharedRef<FJsonObject>>& Keys, const TArray<FString>& Flags = { TEXT("Editable") })
+{
+	TSharedRef<FJsonObject> Curve = MakeShared<FJsonObject>();
+	Curve->SetStringField(TEXT("Name"), Name);
+	Curve->SetStringField(TEXT("CurveType"), TEXT("Float"));
+
+	TArray<TSharedPtr<FJsonValue>> FlagValues;
+	for (const FString& Flag : Flags)
+	{
+		FlagValues.Add(MakeShared<FJsonValueString>(Flag));
+	}
+	Curve->SetArrayField(TEXT("Flags"), FlagValues);
+
+	TArray<TSharedPtr<FJsonValue>> KeyValues;
+	for (const TSharedRef<FJsonObject>& Key : Keys)
+	{
+		KeyValues.Add(MakeShared<FJsonValueObject>(Key));
+	}
+	Curve->SetArrayField(TEXT("Keys"), KeyValues);
+	return Curve;
+}
+
+TSharedRef<FJsonObject> MakeCurvesBody(const TArray<TSharedRef<FJsonObject>>& Curves)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> CurveValues;
+	for (const TSharedRef<FJsonObject>& Curve : Curves)
+	{
+		CurveValues.Add(MakeShared<FJsonValueObject>(Curve));
+	}
+	Body->SetArrayField(TEXT("Curves"), CurveValues);
+	return Body;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -433,7 +476,6 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	}
 
 	const TArray<FString> NotImplementedRegions = {
-		TEXT("Curves"),
 		TEXT("Metadata"),
 	};
 	for (const FString& RegionName : NotImplementedRegions)
@@ -553,6 +595,198 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	InvalidNumberBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
 	TestFalse(TEXT("Apply rejects invalid numeric value"), Capability.Apply(Context, MakeBodyValue(InvalidNumberBody)).bSuccess);
 	TestEqual(TEXT("Invalid numeric value does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequenceCurvesTest,
+	"AssetFactory.AssetDocument.AnimSequence.Curves",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
+{
+	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("Unable to retrieve valid UMovieSceneControlRigParameterSection"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("Failed to add curve control"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("Failed to set curve control keys"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("Failed to remove curve control"), EAutomationExpectedErrorFlags::Contains, 0);
+	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 0);
+
+	FAnimSequenceAssetDocumentCapability Capability;
+	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequenceCurves"));
+	TestNotNull(TEXT("Fixture creates transient AnimSequence"), Sequence);
+	if (!Sequence)
+	{
+		return true;
+	}
+
+	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
+
+	TSharedRef<FJsonObject> InitialBody = MakeCurvesBody({
+		MakeFloatCurve(
+			TEXT("Speed"),
+			{
+				MakeCurveKey(1.0, 100.0, TEXT("RCIM_Linear")),
+				MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")),
+			},
+			{ TEXT("Editable") }),
+		MakeFloatCurve(
+			TEXT("Lean"),
+			{
+				MakeCurveKey(0.5, -1.0, TEXT("RCIM_Constant")),
+				MakeCurveKey(0.0, 0.0, TEXT("RCIM_Constant")),
+			},
+			{ TEXT("Default") }),
+	});
+
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(InitialBody));
+	TestTrue(TEXT("Apply succeeds for authored float curves"), ApplyResult.bSuccess);
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds after curve apply"), ExtractResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* Curves = nullptr;
+	TestTrue(TEXT("Extract outputs Curves array"), Extracted->TryGetArrayField(TEXT("Curves"), Curves));
+	TestTrue(TEXT("Extract outputs two curves"), Curves && Curves->Num() == 2);
+	if (Curves && Curves->Num() == 2)
+	{
+		const TSharedPtr<FJsonObject> LeanCurve = (*Curves)[0]->AsObject();
+		const TSharedPtr<FJsonObject> SpeedCurve = (*Curves)[1]->AsObject();
+		TestEqual(TEXT("Extract orders curves by name"), LeanCurve->GetStringField(TEXT("Name")), FString(TEXT("Lean")));
+		TestEqual(TEXT("Extract includes float CurveType"), SpeedCurve->GetStringField(TEXT("CurveType")), FString(TEXT("Float")));
+		const TArray<TSharedPtr<FJsonValue>>* SpeedKeys = nullptr;
+		TestTrue(TEXT("Extract includes Speed keys"), SpeedCurve->TryGetArrayField(TEXT("Keys"), SpeedKeys));
+		if (SpeedKeys && SpeedKeys->Num() == 2)
+		{
+			TestEqual(TEXT("Extract sorts Speed keys by Time"), (*SpeedKeys)[0]->AsObject()->GetNumberField(TEXT("Time")), 0.0);
+			TestEqual(TEXT("Extract keeps Speed key value"), (*SpeedKeys)[1]->AsObject()->GetNumberField(TEXT("Value")), 100.0);
+			TestEqual(TEXT("Extract keeps interpolation"), (*SpeedKeys)[1]->AsObject()->GetStringField(TEXT("InterpMode")), FString(TEXT("RCIM_Linear")));
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult UnchangedDiffResult = Capability.Diff(Context, MakeBodyValue(InitialBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for authored Curves"), UnchangedDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> UnchangedCurvesDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Curves"));
+	TestTrue(TEXT("Diff reports Curves path"), UnchangedCurvesDiff.IsValid());
+	if (UnchangedCurvesDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks Curves unchanged after apply"), UnchangedCurvesDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+
+	TSharedRef<FJsonObject> ChangedBody = MakeCurvesBody({
+		MakeFloatCurve(
+			TEXT("Speed"),
+			{
+				MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")),
+				MakeCurveKey(1.0, 250.0, TEXT("RCIM_Linear")),
+			}),
+	});
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult ChangedDiffResult = Capability.Diff(Context, MakeBodyValue(ChangedBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for changed authored Curves"), ChangedDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> ChangedCurvesDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Curves"));
+	TestTrue(TEXT("Diff reports changed Curves path"), ChangedCurvesDiff.IsValid());
+	if (ChangedCurvesDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks Curves changed when desired keys differ"), ChangedCurvesDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+
+	const FAssetDocumentCapabilityResult ReplaceResult = Capability.Apply(Context, MakeBodyValue(ChangedBody));
+	TestTrue(TEXT("Apply replaces authored curve set"), ReplaceResult.bSuccess);
+	Extracted = MakeShared<FJsonObject>();
+	TestTrue(TEXT("Extract succeeds after curve replacement"), Capability.Extract(Context, Extracted).bSuccess);
+	Curves = nullptr;
+	TestTrue(TEXT("Extract outputs replaced Curves array"), Extracted->TryGetArrayField(TEXT("Curves"), Curves));
+	TestTrue(TEXT("Replacing Curves removes omitted authored curves"), Curves && Curves->Num() == 1);
+	if (Curves && Curves->Num() == 1)
+	{
+		TestEqual(TEXT("Only Speed remains after replacement"), (*Curves)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Speed")));
+	}
+
+	const FAssetDocumentCapabilityResult ClearResult = Capability.Apply(Context, MakeBodyValue(MakeCurvesBody({})));
+	TestTrue(TEXT("Empty Curves array clears managed curves"), ClearResult.bSuccess);
+	Extracted = MakeShared<FJsonObject>();
+	TestTrue(TEXT("Extract succeeds after curve clear"), Capability.Extract(Context, Extracted).bSuccess);
+	Curves = nullptr;
+	TestTrue(TEXT("Extract outputs empty Curves array"), Extracted->TryGetArrayField(TEXT("Curves"), Curves));
+	TestTrue(TEXT("Managed curves are cleared"), Curves && Curves->Num() == 0);
+
+	const FAssetDocumentCapabilityResult RestoreResult = Capability.Apply(Context, MakeBodyValue(InitialBody));
+	TestTrue(TEXT("Apply restores curve fixture for validation checks"), RestoreResult.bSuccess);
+	Sequence->RateScale = 1.0f;
+
+	TSharedRef<FJsonObject> DuplicateNamesBody = MakePlaybackRateBody(3.0);
+	DuplicateNamesBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({
+		MakeFloatCurve(TEXT("Speed"), { MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")) }),
+		MakeFloatCurve(TEXT("Speed"), { MakeCurveKey(1.0, 1.0, TEXT("RCIM_Linear")) }),
+	})->GetArrayField(TEXT("Curves")));
+	const FAssetDocumentCapabilityResult DuplicateResult = Capability.Apply(Context, MakeBodyValue(DuplicateNamesBody));
+	TestFalse(TEXT("Apply rejects duplicate curve names"), DuplicateResult.bSuccess);
+	TestTrue(TEXT("Duplicate diagnostic points at second curve name"), HasDiagnostic(DuplicateResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
+	TestEqual(TEXT("Duplicate curve rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(4.0);
+	TSharedRef<FJsonObject> UnknownCurve = MakeFloatCurve(TEXT("UnknownField"), { MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")) });
+	UnknownCurve->SetStringField(TEXT("Unexpected"), TEXT("nope"));
+	UnknownFieldBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({ UnknownCurve })->GetArrayField(TEXT("Curves")));
+	const FAssetDocumentCapabilityResult UnknownFieldResult = Capability.Apply(Context, MakeBodyValue(UnknownFieldBody));
+	TestFalse(TEXT("Apply rejects unknown curve field"), UnknownFieldResult.bSuccess);
+	TestTrue(TEXT("Unknown curve field diagnostic is precise"), HasDiagnostic(UnknownFieldResult, TEXT("/Body/Curves/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
+	TestEqual(TEXT("Unknown curve field does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> InvalidKeyTimeBody = MakePlaybackRateBody(5.0);
+	InvalidKeyTimeBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({
+		MakeFloatCurve(TEXT("BadTime"), { MakeCurveKey(-0.01, 0.0, TEXT("RCIM_Linear")) }),
+	})->GetArrayField(TEXT("Curves")));
+	const FAssetDocumentCapabilityResult InvalidKeyTimeResult = Capability.Apply(Context, MakeBodyValue(InvalidKeyTimeBody));
+	TestFalse(TEXT("Apply rejects negative curve key time"), InvalidKeyTimeResult.bSuccess);
+	TestTrue(TEXT("Negative key time diagnostic is precise"), HasDiagnostic(InvalidKeyTimeResult, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime")));
+	TestEqual(TEXT("Invalid key time does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> InvalidInterpolationBody = MakePlaybackRateBody(6.0);
+	InvalidInterpolationBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({
+		MakeFloatCurve(TEXT("BadInterp"), { MakeCurveKey(0.0, 0.0, TEXT("NotAnInterp")) }),
+	})->GetArrayField(TEXT("Curves")));
+	const FAssetDocumentCapabilityResult InvalidInterpolationResult = Capability.Apply(Context, MakeBodyValue(InvalidInterpolationBody));
+	TestFalse(TEXT("Apply rejects invalid interpolation"), InvalidInterpolationResult.bSuccess);
+	TestTrue(TEXT("Invalid interpolation diagnostic is precise"), HasDiagnostic(InvalidInterpolationResult, TEXT("/Body/Curves/0/Keys/0/InterpMode"), TEXT("InvalidCurveInterpolation")));
+	TestEqual(TEXT("Invalid interpolation does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> UnsupportedCurveTypeBody = MakePlaybackRateBody(7.0);
+	TSharedRef<FJsonObject> TransformCurve = MakeFloatCurve(TEXT("TransformLike"), { MakeCurveKey(0.0, 0.0, TEXT("RCIM_Linear")) });
+	TransformCurve->SetStringField(TEXT("CurveType"), TEXT("Transform"));
+	UnsupportedCurveTypeBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({ TransformCurve })->GetArrayField(TEXT("Curves")));
+	const FAssetDocumentCapabilityResult UnsupportedCurveTypeResult = Capability.Apply(Context, MakeBodyValue(UnsupportedCurveTypeBody));
+	TestFalse(TEXT("Apply rejects non-float curve type"), UnsupportedCurveTypeResult.bSuccess);
+	TestTrue(TEXT("Non-float curve type diagnostic is precise"), HasDiagnostic(UnsupportedCurveTypeResult, TEXT("/Body/Curves/0/CurveType"), TEXT("DeferredCurveType")));
+	TestEqual(TEXT("Unsupported curve type does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> UnsupportedCurveSectionBody = MakePlaybackRateBody(8.0);
+	UnsupportedCurveSectionBody->SetObjectField(TEXT("Attributes"), MakeShared<FJsonObject>());
+	const FAssetDocumentCapabilityResult UnsupportedAttributesResult = Capability.Apply(Context, MakeBodyValue(UnsupportedCurveSectionBody));
+	TestFalse(TEXT("Apply still rejects deferred Attributes region"), UnsupportedAttributesResult.bSuccess);
+	TestTrue(TEXT("Deferred Attributes diagnostic is precise"), HasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
+	TestEqual(TEXT("Deferred Attributes does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	TSharedRef<FJsonObject> UnsupportedTask4Body = MakePlaybackRateBody(9.0);
+	UnsupportedTask4Body->SetArrayField(TEXT("Notifies"), TArray<TSharedPtr<FJsonValue>>());
+	const FAssetDocumentCapabilityResult UnsupportedTask4Result = Capability.Apply(Context, MakeBodyValue(UnsupportedTask4Body));
+	TestFalse(TEXT("Apply still rejects Task 4 regions"), UnsupportedTask4Result.bSuccess);
+	TestTrue(TEXT("Task 4 diagnostic is precise"), HasDiagnostic(UnsupportedTask4Result, TEXT("/Body/Notifies"), TEXT("NotImplementedBodyRegion")));
+	TestEqual(TEXT("Task 4 rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
+
+	Extracted = MakeShared<FJsonObject>();
+	TestTrue(TEXT("Extract succeeds after rejected curve bodies"), Capability.Extract(Context, Extracted).bSuccess);
+	Curves = nullptr;
+	TestTrue(TEXT("Rejected curve bodies preserve existing Curves array"), Extracted->TryGetArrayField(TEXT("Curves"), Curves));
+	TestTrue(TEXT("Rejected curve bodies preserve existing curves"), Curves && Curves->Num() == 2);
+	if (Curves && Curves->Num() == 2)
+	{
+		TestEqual(TEXT("Rejected curve bodies preserve Lean curve"), (*Curves)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Lean")));
+		TestEqual(TEXT("Rejected curve bodies preserve Speed curve"), (*Curves)[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Speed")));
+	}
 
 	return true;
 }
