@@ -35,6 +35,14 @@ TSharedRef<FJsonValue> MakeBodyValue(const TSharedRef<FJsonObject>& Body)
 	return StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(Body));
 }
 
+TSharedRef<FJsonObject> MakeActorParentClassRef()
+{
+	TSharedRef<FJsonObject> ParentClass = MakeShared<FJsonObject>();
+	ParentClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ParentClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Actor"));
+	return ParentClass;
+}
+
 bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
@@ -161,6 +169,7 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	CapabilityContext.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> ValidEmptyBody = MakeShared<FJsonObject>();
+	ValidEmptyBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 	ValidEmptyBody->SetArrayField(TEXT("UbergraphPages"), {});
 	ValidEmptyBody->SetArrayField(TEXT("FunctionGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("MacroGraphs"), {});
@@ -168,6 +177,7 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	TestTrue(TEXT("Empty protected regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
 
 	TSharedRef<FJsonObject> UnknownBody = MakeShared<FJsonObject>();
+	UnknownBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 	UnknownBody->SetObjectField(TEXT("UnexpectedSection"), MakeShared<FJsonObject>());
 	const FAssetDocumentCapabilityResult UnknownResult = Capability.Validate(CapabilityContext, MakeBodyValue(UnknownBody));
 	TestFalse(TEXT("Unknown Body key fails validation"), UnknownResult.bSuccess);
@@ -197,6 +207,7 @@ bool FAssetDocumentUBlueprintUnsupportedGraphProtectionTest::RunTest(const FStri
 	for (const FString& Region : ProtectedRegions)
 	{
 		TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+		Body->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 		TArray<TSharedPtr<FJsonValue>> Values;
 		Values.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
 		Body->SetArrayField(Region, Values);
@@ -286,6 +297,48 @@ bool FAssetDocumentUBlueprintCreateTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("Parent class is Pawn"), PawnBlueprint->ParentClass.Get(), APawn::StaticClass());
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintRequiresParentClassTest,
+	"AssetFactory.AssetDocument.UBlueprint.RequiresParentClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintRequiresParentClassTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_MissingParent_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Blueprint"));
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("ImplementedInterfaces"), {});
+	Body->SetArrayField(TEXT("Variables"), {});
+	Body->SetArrayField(TEXT("Components"), {});
+	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	Body->SetArrayField(TEXT("UbergraphPages"), {});
+	Body->SetArrayField(TEXT("FunctionGraphs"), {});
+	Body->SetArrayField(TEXT("MacroGraphs"), {});
+	Body->SetArrayField(TEXT("Timelines"), {});
+	Document->SetObjectField(TEXT("Body"), Body);
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+
+	const FAssetDocumentResult Result = Service.Apply(Request);
+	TestFalse(TEXT("Blueprint apply without ParentClass fails"), Result.IsSuccess());
+	TestTrue(TEXT("Failure mentions ParentClass"), Result.Message.Contains(TEXT("ParentClass")));
+
+	UObject* Created = FindObject<UObject>(nullptr, *FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target)));
+	TestNull(TEXT("Missing ParentClass does not create a Blueprint asset"), Created);
 	return true;
 }
 

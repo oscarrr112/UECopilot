@@ -143,35 +143,38 @@ bool FAssetDocumentLifecycle::TryResolveBlueprintParentClass(const TSharedPtr<FJ
 {
 	OutParentClass = nullptr;
 
-	FString ParentClassPath = TEXT("/Script/Engine.Actor");
-	if (Document.IsValid())
+	if (!Document.IsValid())
 	{
-		const TSharedPtr<FJsonObject>* Body = nullptr;
-		if (!Document->TryGetObjectField(TEXT("Body"), Body) || !Body || !Body->IsValid())
-		{
-			OutError = TEXT("UBlueprint creation requires Body.ParentClass");
-			return false;
-		}
+		OutError = TEXT("UBlueprint creation requires Body.ParentClass");
+		return false;
+	}
 
-		const TSharedPtr<FJsonObject>* ParentClass = nullptr;
-		if (!(*Body)->TryGetObjectField(TEXT("ParentClass"), ParentClass) || !ParentClass || !ParentClass->IsValid())
-		{
-			OutError = TEXT("UBlueprint creation requires Body.ParentClass");
-			return false;
-		}
+	const TSharedPtr<FJsonObject>* Body = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), Body) || !Body || !Body->IsValid())
+	{
+		OutError = TEXT("UBlueprint creation requires Body.ParentClass");
+		return false;
+	}
 
-		FString Kind;
-		if (!(*ParentClass)->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
-		{
-			OutError = TEXT("Body.ParentClass.Kind must be ClassRef");
-			return false;
-		}
+	const TSharedPtr<FJsonObject>* ParentClass = nullptr;
+	if (!(*Body)->TryGetObjectField(TEXT("ParentClass"), ParentClass) || !ParentClass || !ParentClass->IsValid())
+	{
+		OutError = TEXT("UBlueprint creation requires Body.ParentClass");
+		return false;
+	}
 
-		if (!(*ParentClass)->TryGetStringField(TEXT("Class"), ParentClassPath) || ParentClassPath.IsEmpty())
-		{
-			OutError = TEXT("Body.ParentClass.Class is required");
-			return false;
-		}
+	FString Kind;
+	if (!(*ParentClass)->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+	{
+		OutError = TEXT("Body.ParentClass.Kind must be ClassRef");
+		return false;
+	}
+
+	FString ParentClassPath;
+	if (!(*ParentClass)->TryGetStringField(TEXT("Class"), ParentClassPath) || ParentClassPath.IsEmpty())
+	{
+		OutError = TEXT("Body.ParentClass.Class is required");
+		return false;
 	}
 
 	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ParentClassPath);
@@ -221,6 +224,12 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(cons
 	}
 
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	if (Blueprint->Status == BS_Error)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to compile UBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
 	FAssetRegistryModule::AssetCreated(Blueprint);
 
 	Result.Asset = Blueprint;

@@ -242,10 +242,18 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 		if (Blueprint->ParentClass.Get() != ParentClass)
 		{
+			UClass* PreviousParentClass = Blueprint->ParentClass.Get();
 			Blueprint->Modify();
 			Blueprint->ParentClass = ParentClass;
 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			if (Blueprint->Status == BS_Error)
+			{
+				Blueprint->ParentClass = PreviousParentClass;
+				FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+				FKismetEditorUtilities::CompileBlueprint(Blueprint);
+				return BodyFailure(TEXT("Failed to compile UBlueprint after applying Body.ParentClass"), TEXT("/Body/ParentClass"), TEXT("BlueprintCompileFailed"));
+			}
 		}
 	}
 
@@ -289,6 +297,11 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	if (!Context.Asset && Context.AssetClass && !SupportsClass(Context.AssetClass))
 	{
 		return BodyFailure(TEXT("UBlueprint body validation requires exact UBlueprint class"), TEXT("/Class"), TEXT("UnsupportedClass"));
+	}
+
+	if (!BodyObject->HasField(TEXT("ParentClass")))
+	{
+		return BodyFailure(TEXT("Body.ParentClass is required for UBlueprint documents"), TEXT("/Body/ParentClass"), TEXT("MissingParentClass"));
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
