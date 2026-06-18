@@ -311,6 +311,19 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	}
 	return nullptr;
 }
+
+bool IsUnchangedDiffEntry(const TSharedPtr<FJsonObject>& Entry)
+{
+	if (!Entry.IsValid())
+	{
+		return false;
+	}
+
+	FString Status;
+	return Entry->TryGetStringField(TEXT("status"), Status)
+		&& Status == TEXT("unchanged")
+		&& !Entry->HasField(TEXT("change"));
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1236,9 +1249,9 @@ bool FAssetDocumentUBlueprintInheritedSCSOverrideTest::RunTest(const FString&)
 		const FAssetDocumentCapabilityResult DiffResult =
 			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(ChildOverrideRequest.Document).ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Inherited component diff succeeds"), DiffResult.bSuccess);
-		TestNotNull(
-			TEXT("Inherited component diff includes override path"),
-			FindDiffEntryByPath(DiffEntries, FString::Printf(TEXT("/Body/Components/%s:ParentSensor"), *ParentGeneratedClassPath)).Get());
+		TSharedPtr<FJsonObject> InheritedDiff = FindDiffEntryByPath(DiffEntries, FString::Printf(TEXT("/Body/Components/%s:ParentSensor"), *ParentGeneratedClassPath));
+		TestNotNull(TEXT("Inherited component diff includes override path"), InheritedDiff.Get());
+		TestTrue(TEXT("Inherited component roundtrip diff is unchanged"), IsUnchangedDiffEntry(InheritedDiff));
 	}
 
 	FAssetDocumentApplyRequest ChildResetRequest;
@@ -1334,9 +1347,28 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 		const FAssetDocumentCapabilityResult DiffResult =
 			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(OverrideRequest.Document).ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Native component diff succeeds"), DiffResult.bSuccess);
-		TestNotNull(
-			TEXT("Native component diff includes alias path"),
-			FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement")).Get());
+		TSharedPtr<FJsonObject> NativeDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
+		TestNotNull(TEXT("Native component diff includes alias path"), NativeDiff.Get());
+		TestTrue(TEXT("Native component roundtrip diff is unchanged"), IsUnchangedDiffEntry(NativeDiff));
+
+		TSharedPtr<FJsonObject> NativeMovementByObjectName = MakeReferencedComponent(TEXT("Native"), TEXT("CharMoveComp"), TEXT("/Script/Engine.Character"));
+		NativeMovementByObjectName->SetStringField(TEXT("Class"), TEXT("/Script/Engine.CharacterMovementComponent"));
+		NativeMovementByObjectName->SetObjectField(TEXT("Properties"), MovementProperties);
+		TSharedPtr<FJsonObject> ObjectNameDocument = MakeUBlueprintDocument(
+			Target,
+			TEXT("/Script/Engine.Character"),
+			TArray<TSharedPtr<FJsonValue>>{},
+			TArray<TSharedPtr<FJsonValue>>{},
+			MakeComponentArray({NativeMovementByObjectName}));
+		TSharedPtr<FJsonObject> ObjectNameBody = LoadBlueprintDocumentBody(ObjectNameDocument);
+
+		TArray<TSharedPtr<FJsonValue>> ObjectNameDiffEntries;
+		const FAssetDocumentCapabilityResult ObjectNameDiffResult = Capability.Diff(Context, MakeBodyValue(ObjectNameBody.ToSharedRef()), ObjectNameDiffEntries);
+		TestTrue(TEXT("Native object-name component diff succeeds"), ObjectNameDiffResult.bSuccess);
+		TSharedPtr<FJsonObject> ObjectNameNativeDiff =
+			FindDiffEntryByPath(ObjectNameDiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
+		TestNotNull(TEXT("Native object-name diff canonicalizes to alias path"), ObjectNameNativeDiff.Get());
+		TestTrue(TEXT("Native object-name desired diff is unchanged"), IsUnchangedDiffEntry(ObjectNameNativeDiff));
 	}
 
 	const ACharacter* ParentCDO = GetDefault<ACharacter>();

@@ -2674,7 +2674,8 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	const bool bHasInterfacesRegion = BodyObject->HasField(TEXT("ImplementedInterfaces"));
 	const bool bHasComponentsRegion = BodyObject->HasField(TEXT("Components"));
 	const UClass* EffectiveParentClass = ParsedParentClass ? ParsedParentClass : Blueprint->ParentClass.Get();
-	if (ParsedParentClass && Blueprint->ParentClass.Get() != ParsedParentClass && (!bHasVariablesRegion || !bHasInterfacesRegion))
+	const bool bParentChangesExistingBlueprint = ParsedParentClass && Blueprint->ParentClass.Get() != ParsedParentClass;
+	if (bParentChangesExistingBlueprint && (!bHasVariablesRegion || !bHasInterfacesRegion))
 	{
 		return BodyFailure(
 			TEXT("Changing Body.ParentClass on an existing UBlueprint requires Body.Variables and Body.ImplementedInterfaces in the same apply"),
@@ -2704,14 +2705,17 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 			return ComponentPropertiesResult;
 		}
 
-		const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(Blueprint, ParsedComponents);
-		if (!InheritedNativePreflightResult.bSuccess)
+		if (!bParentChangesExistingBlueprint)
 		{
-			return InheritedNativePreflightResult;
+			const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(Blueprint, ParsedComponents);
+			if (!InheritedNativePreflightResult.bSuccess)
+			{
+				return InheritedNativePreflightResult;
+			}
 		}
 	}
 
-	if (bHasClassDefaultsRegion)
+	if (bHasClassDefaultsRegion && !bParentChangesExistingBlueprint)
 	{
 		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsPreflightResult.bSuccess)
@@ -3111,10 +3115,18 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			return ComponentParseResult;
 		}
 
-		TMap<FString, const FUBlueprintComponentSpec*> DesiredByKey;
+		struct FDesiredComponentDiffSpec
+		{
+			TSharedPtr<FJsonObject> Value;
+			FString OriginalKeyString;
+		};
+		TMap<FString, FDesiredComponentDiffSpec> DesiredByKey;
 		for (const FUBlueprintComponentSpec& Component : DesiredComponents)
 		{
-			DesiredByKey.Add(ComponentKeyToString(Component.Key), &Component);
+			FDesiredComponentDiffSpec Desired;
+			Desired.Value = ComponentSpecToJsonObject(Component);
+			Desired.OriginalKeyString = ComponentKeyToString(Component.Key);
+			DesiredByKey.Add(ComponentKeyToString(Component.Key), Desired);
 			if (Component.Scope == TEXT("Native"))
 			{
 				UActorComponent* GeneratedComponent = nullptr;
@@ -3125,7 +3137,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 					UObject* GeneratedCDO = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
 					const FName AliasName = FindAliasPropertyNameForComponent(GeneratedCDO, GeneratedComponent);
 					CanonicalKey.Name = AliasName.IsNone() ? GeneratedComponent->GetFName() : AliasName;
-					DesiredByKey.Add(ComponentKeyToString(CanonicalKey), &Component);
+					FUBlueprintComponentSpec CanonicalComponent = Component;
+					CanonicalComponent.Key = CanonicalKey;
+					FDesiredComponentDiffSpec CanonicalDesired;
+					CanonicalDesired.Value = ComponentSpecToJsonObject(CanonicalComponent);
+					CanonicalDesired.OriginalKeyString = ComponentKeyToString(Component.Key);
+					DesiredByKey.Add(ComponentKeyToString(CanonicalKey), CanonicalDesired);
 				}
 			}
 		}
@@ -3150,16 +3167,15 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			}
 
 			const FString CurrentKeyString = ComponentKeyToString(CurrentKey);
-			const FUBlueprintComponentSpec* const* DesiredComponentPtr = DesiredByKey.Find(CurrentKeyString);
-			const FUBlueprintComponentSpec* DesiredComponent = DesiredComponentPtr ? *DesiredComponentPtr : nullptr;
+			const FDesiredComponentDiffSpec* DesiredComponent = DesiredByKey.Find(CurrentKeyString);
 			if (DesiredComponent)
 			{
-				SeenDesiredComponents.Add(ComponentKeyToString(DesiredComponent->Key));
+				SeenDesiredComponents.Add(DesiredComponent->OriginalKeyString);
 			}
 
 			const TSharedPtr<FJsonValue> CurrentValue = MakeShared<FJsonValueObject>(CurrentObject.ToSharedRef());
 			const TSharedPtr<FJsonValue> DesiredValue = DesiredComponent
-				? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(ComponentSpecToJsonObject(*DesiredComponent)))
+				? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(DesiredComponent->Value.ToSharedRef()))
 				: TSharedPtr<FJsonValue>(MakeShared<FJsonValueNull>());
 			const bool bChanged = !DesiredComponent || JsonValuesDiffer(CurrentValue, DesiredValue);
 			AddBodyDiffEntry(
@@ -3388,20 +3404,37 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		return ComponentPropertiesResult;
 	}
 
-	if (UBlueprint* Blueprint = const_cast<UBlueprint*>(Cast<UBlueprint>(Context.Asset)))
+	UBlueprint* ValidationBlueprint = const_cast<UBlueprint*>(Cast<UBlueprint>(Context.Asset));
+	bool bParentChangesExistingBlueprint = false;
+	if (ValidationBlueprint)
 	{
-		const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(Blueprint, ComponentSpecs);
+		UClass* DesiredParentClass = nullptr;
+		const TSharedPtr<FJsonValue>* ParentClassValue = BodyObject->Values.Find(TEXT("ParentClass"));
+		if (ParentClassValue)
+		{
+			const FAssetDocumentCapabilityResult ParentClassResult = ResolveParentClass(*ParentClassValue, DesiredParentClass);
+			if (!ParentClassResult.bSuccess)
+			{
+				return ParentClassResult;
+			}
+		}
+		bParentChangesExistingBlueprint = DesiredParentClass && ValidationBlueprint->ParentClass.Get() != DesiredParentClass;
+	}
+
+	if (ValidationBlueprint && !bParentChangesExistingBlueprint)
+	{
+		const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(ValidationBlueprint, ComponentSpecs);
 		if (!InheritedNativePreflightResult.bSuccess)
 		{
 			return InheritedNativePreflightResult;
 		}
 	}
 
-	if (bHasClassDefaultsRegion)
+	if (bHasClassDefaultsRegion && !bParentChangesExistingBlueprint)
 	{
-		if (UBlueprint* Blueprint = const_cast<UBlueprint*>(Cast<UBlueprint>(Context.Asset)))
+		if (ValidationBlueprint)
 		{
-			const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ClassDefaults);
+			const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(ValidationBlueprint, ClassDefaults);
 			if (!ClassDefaultsPreflightResult.bSuccess)
 			{
 				return ClassDefaultsPreflightResult;
