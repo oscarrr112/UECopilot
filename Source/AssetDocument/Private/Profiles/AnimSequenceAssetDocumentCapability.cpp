@@ -2,6 +2,7 @@
 
 #include "Profiles/AnimSequenceAssetDocumentCapability.h"
 
+#include "AssetDocumentClassResolver.h"
 #include "AssetDocumentFragmentCompiler.h"
 #include "AssetDocumentPropertyAdapter.h"
 
@@ -21,6 +22,7 @@
 #include "Engine/AssetUserData.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
+#include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
 
 #include <cmath>
@@ -29,6 +31,21 @@ namespace
 {
 const TCHAR* ManagedMetadataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceMetadata_");
 const TCHAR* ManagedAssetUserDataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceAssetUserData_");
+const TCHAR* ManagedNamedObjectMarker = TEXT("Named_");
+const TCHAR* ManagedNameDelimiter = TEXT("__");
+
+struct FParsedManagedObjectFragment
+{
+	FString ExplicitName;
+	TObjectPtr<UObject> Object;
+};
+
+struct FManagedObjectMoveRecord
+{
+	TObjectPtr<UObject> Object;
+	TObjectPtr<UObject> OriginalOuter;
+	FName OriginalName;
+};
 
 bool IsKnownBodyKey(const FString& BodyKey)
 {
@@ -2138,6 +2155,52 @@ FString BodyArrayFieldPath(const TCHAR* ArrayName, int32 Index)
 	return FString::Printf(TEXT("/Body/%s/%d"), ArrayName, Index);
 }
 
+bool IsValidManagedObjectExplicitName(const FString& Name)
+{
+	if (Name.IsEmpty() || Name.Contains(ManagedNameDelimiter))
+	{
+		return false;
+	}
+	for (const TCHAR Char : Name)
+	{
+		if (!FChar::IsAlnum(Char) && Char != TEXT('_'))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+FName MakeManagedObjectName(UObject* Outer, UClass* ObjectClass, const TCHAR* Prefix, const FString& ExplicitName)
+{
+	if (!ExplicitName.IsEmpty())
+	{
+		const FString BaseName = FString::Printf(TEXT("%s%s%s%s"), Prefix, ManagedNamedObjectMarker, *ExplicitName, ManagedNameDelimiter);
+		return MakeUniqueObjectName(Outer, ObjectClass, *BaseName);
+	}
+	return MakeUniqueObjectName(Outer, ObjectClass, *FString::Printf(TEXT("%sAuto"), Prefix));
+}
+
+bool TryExtractExplicitNameFromManagedObjectName(const FString& ObjectName, const TCHAR* Prefix, FString& OutExplicitName)
+{
+	OutExplicitName.Reset();
+	const FString NamedPrefix = FString::Printf(TEXT("%s%s"), Prefix, ManagedNamedObjectMarker);
+	if (!ObjectName.StartsWith(NamedPrefix))
+	{
+		return false;
+	}
+
+	const int32 NameStart = NamedPrefix.Len();
+	const int32 DelimiterIndex = ObjectName.Find(ManagedNameDelimiter, ESearchCase::CaseSensitive, ESearchDir::FromStart, NameStart);
+	if (DelimiterIndex == INDEX_NONE || DelimiterIndex <= NameStart)
+	{
+		return false;
+	}
+
+	OutExplicitName = ObjectName.Mid(NameStart, DelimiterIndex - NameStart);
+	return !OutExplicitName.IsEmpty();
+}
+
 FAssetDocumentCapabilityResult GetObjectFragmentFromArrayEntry(
 	const TSharedPtr<FJsonValue>& Value,
 	const TCHAR* ArrayName,
@@ -2161,11 +2224,20 @@ FAssetDocumentCapabilityResult GetObjectFragmentFromArrayEntry(
 			return BodyFailure(TEXT("Name must be a string"), EntryPath / TEXT("Name"), TEXT("InvalidStringField"));
 		}
 		OutExplicitName = (*NameValue)->AsString();
+		if (!IsValidManagedObjectExplicitName(OutExplicitName))
+		{
+			return BodyFailure(TEXT("Name must be non-empty and contain only letters, digits, or '_'"), EntryPath / TEXT("Name"), TEXT("InvalidObjectFragmentName"));
+		}
 	}
 
-	const TSharedPtr<FJsonObject>* WrappedObject = nullptr;
-	if (OutEntryObject->TryGetObjectField(TEXT("Object"), WrappedObject) && WrappedObject && WrappedObject->IsValid())
+	if (const TSharedPtr<FJsonValue>* ObjectValue = OutEntryObject->Values.Find(TEXT("Object")))
 	{
+		TSharedPtr<FJsonObject> WrappedObject;
+		const FAssetDocumentCapabilityResult WrappedObjectResult = RequireObjectValue(*ObjectValue, EntryPath / TEXT("Object"), WrappedObject);
+		if (!WrappedObjectResult.bSuccess)
+		{
+			return WrappedObjectResult;
+		}
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : OutEntryObject->Values)
 		{
 			if (Pair.Key != TEXT("Name") && Pair.Key != TEXT("Object"))
@@ -2176,7 +2248,7 @@ FAssetDocumentCapabilityResult GetObjectFragmentFromArrayEntry(
 					TEXT("UnsupportedAuthoredField"));
 			}
 		}
-		OutFragmentObject = *WrappedObject;
+		OutFragmentObject = WrappedObject;
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
@@ -2195,6 +2267,58 @@ FAssetDocumentCapabilityResult GetObjectFragmentFromArrayEntry(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ValidateManagedObjectFragmentShape(
+	const TSharedRef<FJsonObject>& FragmentObject,
+	const TCHAR* ArrayName,
+	int32 Index,
+	UClass* ExpectedBaseClass)
+{
+	const FString EntryPath = BodyArrayFieldPath(ArrayName, Index);
+	FString Kind;
+	FAssetDocumentCapabilityResult Result = ReadRequiredStringField(FragmentObject, TEXT("Kind"), EntryPath / TEXT("Kind"), Kind);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Kind != TEXT("EmbeddedObject"))
+	{
+		return BodyFailure(TEXT("Object fragment Kind must be EmbeddedObject"), EntryPath / TEXT("Kind"), TEXT("UnsupportedObjectFragmentKind"));
+	}
+
+	FString ClassName;
+	Result = ReadRequiredStringField(FragmentObject, TEXT("Class"), EntryPath / TEXT("Class"), ClassName);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UClass* ResolvedClass = nullptr;
+	FString ResolveError;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassName, ResolvedClass, ResolveError))
+	{
+		return BodyFailure(ResolveError, EntryPath, TEXT("embeddedobject-class-resolve-failed"));
+	}
+	if (ExpectedBaseClass && (!ResolvedClass || !ResolvedClass->IsChildOf(ExpectedBaseClass)))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Class '%s' is not a child of '%s'."), ResolvedClass ? *ResolvedClass->GetName() : TEXT("<null>"), *ExpectedBaseClass->GetName()),
+			EntryPath,
+			TEXT("embeddedobject-base-class-mismatch"));
+	}
+
+	if (const TSharedPtr<FJsonValue>* PropertiesValue = FragmentObject->Values.Find(TEXT("Properties")))
+	{
+		TSharedPtr<FJsonObject> PropertiesObject;
+		Result = RequireObjectValue(*PropertiesValue, EntryPath / TEXT("Properties"), PropertiesObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 	const FAssetDocumentFragmentCompiler& Compiler,
 	const FAssetDocumentCapabilityContext& Context,
@@ -2204,7 +2328,7 @@ FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 	const TCHAR* ArrayName,
 	UClass* ExpectedBaseClass,
 	const TCHAR* DuplicateCode,
-	TArray<TObjectPtr<UObject>>& OutObjects)
+	TArray<FParsedManagedObjectFragment>& OutObjects)
 {
 	OutObjects.Reset();
 	OutObjects.Reserve(Values.Num());
@@ -2224,6 +2348,12 @@ FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 		if (!FragmentObject.IsValid())
 		{
 			return BodyFailure(TEXT("Object fragment entry is invalid"), BodyArrayFieldPath(ArrayName, Index), TEXT("InvalidObjectFragment"));
+		}
+
+		FAssetDocumentCapabilityResult ShapeResult = ValidateManagedObjectFragmentShape(FragmentObject.ToSharedRef(), ArrayName, Index, ExpectedBaseClass);
+		if (!ShapeResult.bSuccess)
+		{
+			return ShapeResult;
 		}
 
 		FAssetDocumentFragmentContext FragmentContext;
@@ -2249,7 +2379,10 @@ FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 			return BodyFailure(TEXT("Duplicate object fragment semantic key"), BodyArrayFieldPath(ArrayName, Index) / TEXT("Class"), DuplicateCode);
 		}
 		SemanticKeys.Add(SemanticKey);
-		OutObjects.Add(FragmentResult.Object);
+		FParsedManagedObjectFragment ParsedFragment;
+		ParsedFragment.ExplicitName = ExplicitName;
+		ParsedFragment.Object = FragmentResult.Object;
+		OutObjects.Add(ParsedFragment);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -2265,7 +2398,7 @@ FAssetDocumentCapabilityResult ParseManagedObjectFragmentArray(
 	const TCHAR* DuplicateCode,
 	bool bResolveFragments,
 	bool& bOutHasArray,
-	TArray<TObjectPtr<UObject>>& OutObjects)
+	TArray<FParsedManagedObjectFragment>& OutObjects)
 {
 	bOutHasArray = false;
 	OutObjects.Reset();
@@ -2306,6 +2439,14 @@ FAssetDocumentCapabilityResult ParseManagedObjectFragmentArray(
 			}
 			SemanticKeys.Add(SemanticKey);
 		}
+		if (FragmentObject.IsValid())
+		{
+			FAssetDocumentCapabilityResult ShapeResult = ValidateManagedObjectFragmentShape(FragmentObject.ToSharedRef(), ArrayName, Index, ExpectedBaseClass);
+			if (!ShapeResult.bSuccess)
+			{
+				return ShapeResult;
+			}
+		}
 	}
 
 	if (!bResolveFragments)
@@ -2326,17 +2467,31 @@ bool IsManagedObjectByName(const UObject* Object, const TCHAR* Prefix)
 	return Object && Object->GetName().StartsWith(Prefix);
 }
 
+void RollbackManagedObjectMoves(TArray<FManagedObjectMoveRecord>& MoveRecords)
+{
+	for (int32 Index = MoveRecords.Num() - 1; Index >= 0; --Index)
+	{
+		FManagedObjectMoveRecord& Record = MoveRecords[Index];
+		if (Record.Object && Record.OriginalOuter)
+		{
+			Record.Object->Rename(*Record.OriginalName.ToString(), Record.OriginalOuter, REN_DontCreateRedirectors | REN_NonTransactional);
+		}
+	}
+	MoveRecords.Reset();
+}
+
 FAssetDocumentCapabilityResult MoveManagedObjectsToSequence(
 	UAnimSequence* Sequence,
-	TArray<TObjectPtr<UObject>>& Objects,
+	TArray<FParsedManagedObjectFragment>& Objects,
 	UClass* ExpectedBaseClass,
 	const TCHAR* Prefix,
 	const TCHAR* ArrayName,
-	const TCHAR* FailureCode)
+	const TCHAR* FailureCode,
+	TArray<FManagedObjectMoveRecord>& MoveRecords)
 {
 	for (int32 Index = 0; Index < Objects.Num(); ++Index)
 	{
-		UObject* Object = Objects[Index];
+		UObject* Object = Objects[Index].Object;
 		if (!Object || !Object->IsA(ExpectedBaseClass))
 		{
 			return BodyFailure(TEXT("Object fragment resolved to an invalid object"), BodyArrayFieldPath(ArrayName, Index), TEXT("InvalidObjectFragment"));
@@ -2347,12 +2502,65 @@ FAssetDocumentCapabilityResult MoveManagedObjectsToSequence(
 			continue;
 		}
 
-		const FName ObjectName = MakeUniqueObjectName(Sequence, Object->GetClass(), Prefix);
+		const FName ObjectName = MakeManagedObjectName(Sequence, Object->GetClass(), Prefix, Objects[Index].ExplicitName);
+		FManagedObjectMoveRecord MoveRecord;
+		MoveRecord.Object = Object;
+		MoveRecord.OriginalOuter = Object->GetOuter();
+		MoveRecord.OriginalName = Object->GetFName();
 		if (!Object->Rename(*ObjectName.ToString(), Sequence, REN_DontCreateRedirectors | REN_NonTransactional))
 		{
+			RollbackManagedObjectMoves(MoveRecords);
 			return BodyFailure(TEXT("Failed to attach object fragment to AnimSequence"), BodyArrayFieldPath(ArrayName, Index), FailureCode);
 		}
+		MoveRecords.Add(MoveRecord);
 	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReplaceManagedAssetUserDataByReflection(
+	UAnimSequence* Sequence,
+	const TArray<FParsedManagedObjectFragment>& NewUserData)
+{
+	if (!Sequence)
+	{
+		return BodyFailure(TEXT("AnimSequence body apply requires UAnimSequence asset"), TEXT("/Body/AssetUserData"), TEXT("UnsupportedAsset"));
+	}
+
+	FArrayProperty* AssetUserDataProperty = FindFProperty<FArrayProperty>(UAnimationAsset::StaticClass(), TEXT("AssetUserData"));
+	if (!AssetUserDataProperty)
+	{
+		return BodyFailure(TEXT("UAnimationAsset.AssetUserData array property was not found"), TEXT("/Body/AssetUserData"), TEXT("AssetUserDataPropertyMissing"));
+	}
+
+	FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(AssetUserDataProperty->Inner);
+	if (!ObjectProperty || !ObjectProperty->PropertyClass || !ObjectProperty->PropertyClass->IsChildOf(UAssetUserData::StaticClass()))
+	{
+		return BodyFailure(TEXT("UAnimationAsset.AssetUserData array property has an unsupported inner type"), TEXT("/Body/AssetUserData"), TEXT("AssetUserDataPropertyInvalid"));
+	}
+
+	void* ArrayPtr = AssetUserDataProperty->ContainerPtrToValuePtr<void>(Sequence);
+	FScriptArrayHelper ArrayHelper(AssetUserDataProperty, ArrayPtr);
+	for (int32 Index = ArrayHelper.Num() - 1; Index >= 0; --Index)
+	{
+		UAssetUserData* ExistingUserData = Cast<UAssetUserData>(ObjectProperty->GetObjectPropertyValue(ArrayHelper.GetRawPtr(Index)));
+		if (IsManagedObjectByName(ExistingUserData, ManagedAssetUserDataObjectPrefix))
+		{
+			ArrayHelper.RemoveValues(Index);
+		}
+	}
+
+	for (const FParsedManagedObjectFragment& ParsedFragment : NewUserData)
+	{
+		UAssetUserData* UserDataObject = Cast<UAssetUserData>(ParsedFragment.Object);
+		if (!UserDataObject)
+		{
+			return BodyFailure(TEXT("AssetUserData object fragment resolved to an invalid object"), TEXT("/Body/AssetUserData"), TEXT("InvalidObjectFragment"));
+		}
+
+		const int32 NewIndex = ArrayHelper.AddValue();
+		ObjectProperty->SetObjectPropertyValue(ArrayHelper.GetRawPtr(NewIndex), UserDataObject);
+	}
+
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -2411,6 +2619,11 @@ FAssetDocumentCapabilityResult ExtractManagedMetadata(
 		{
 			return Result;
 		}
+		FString ExplicitName;
+		if (TryExtractExplicitNameFromManagedObjectName(MetadataObject->GetName(), ManagedMetadataObjectPrefix, ExplicitName))
+		{
+			Fragment->SetStringField(TEXT("Name"), ExplicitName);
+		}
 		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
 		++ExtractedIndex;
 	}
@@ -2452,6 +2665,11 @@ FAssetDocumentCapabilityResult ExtractManagedAssetUserData(
 		if (!Result.bSuccess)
 		{
 			return Result;
+		}
+		FString ExplicitName;
+		if (TryExtractExplicitNameFromManagedObjectName(UserDataObject->GetName(), ManagedAssetUserDataObjectPrefix, ExplicitName))
+		{
+			Fragment->SetStringField(TEXT("Name"), ExplicitName);
 		}
 		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
 		++ExtractedIndex;
@@ -2534,9 +2752,9 @@ struct FParsedAnimSequenceBody
 	bool bHasSyncMarkers = false;
 	TArray<FParsedAnimSequenceSyncMarker> SyncMarkers;
 	bool bHasMetadata = false;
-	TArray<TObjectPtr<UObject>> Metadata;
+	TArray<FParsedManagedObjectFragment> Metadata;
 	bool bHasAssetUserData = false;
-	TArray<TObjectPtr<UObject>> AssetUserData;
+	TArray<FParsedManagedObjectFragment> AssetUserData;
 };
 
 bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
@@ -3350,74 +3568,69 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		}
 	}
 
-	if (ParsedBody.bHasMetadata)
+	if (ParsedBody.bHasMetadata || ParsedBody.bHasAssetUserData)
 	{
-		const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
-			Sequence,
-			ParsedBody.Metadata,
-			UAnimMetaData::StaticClass(),
-			ManagedMetadataObjectPrefix,
-			TEXT("Metadata"),
-			TEXT("MetadataOuterMoveFailed"));
-		if (!MoveResult.bSuccess)
+		TArray<FManagedObjectMoveRecord> MoveRecords;
+		if (ParsedBody.bHasMetadata)
 		{
-			return MoveResult;
-		}
-
-		TArray<UAnimMetaData*> ExistingManagedMetadata;
-		for (UAnimMetaData* MetadataObject : Sequence->GetMetaData())
-		{
-			if (IsManagedObjectByName(MetadataObject, ManagedMetadataObjectPrefix))
+			const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
+				Sequence,
+				ParsedBody.Metadata,
+				UAnimMetaData::StaticClass(),
+				ManagedMetadataObjectPrefix,
+				TEXT("Metadata"),
+				TEXT("MetadataOuterMoveFailed"),
+				MoveRecords);
+			if (!MoveResult.bSuccess)
 			{
-				ExistingManagedMetadata.Add(MetadataObject);
+				return MoveResult;
 			}
 		}
-		if (!ExistingManagedMetadata.IsEmpty())
-		{
-			Sequence->RemoveMetaData(MakeArrayView(ExistingManagedMetadata));
-		}
-		for (UObject* MetadataObject : ParsedBody.Metadata)
-		{
-			Sequence->AddMetaData(CastChecked<UAnimMetaData>(MetadataObject));
-		}
-	}
 
-	if (ParsedBody.bHasAssetUserData)
-	{
-		const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
-			Sequence,
-			ParsedBody.AssetUserData,
-			UAssetUserData::StaticClass(),
-			ManagedAssetUserDataObjectPrefix,
-			TEXT("AssetUserData"),
-			TEXT("AssetUserDataOuterMoveFailed"));
-		if (!MoveResult.bSuccess)
+		if (ParsedBody.bHasAssetUserData)
 		{
-			return MoveResult;
-		}
-
-		TSet<UClass*> ExistingManagedClasses;
-		if (const TArray<UAssetUserData*>* UserDataArray = Sequence->GetAssetUserDataArray())
-		{
-			for (UAssetUserData* UserDataObject : *UserDataArray)
+			const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
+				Sequence,
+				ParsedBody.AssetUserData,
+				UAssetUserData::StaticClass(),
+				ManagedAssetUserDataObjectPrefix,
+				TEXT("AssetUserData"),
+				TEXT("AssetUserDataOuterMoveFailed"),
+				MoveRecords);
+			if (!MoveResult.bSuccess)
 			{
-				if (IsManagedObjectByName(UserDataObject, ManagedAssetUserDataObjectPrefix))
+				return MoveResult;
+			}
+		}
+
+		if (ParsedBody.bHasAssetUserData)
+		{
+			const FAssetDocumentCapabilityResult ReplaceResult = ReplaceManagedAssetUserDataByReflection(Sequence, ParsedBody.AssetUserData);
+			if (!ReplaceResult.bSuccess)
+			{
+				RollbackManagedObjectMoves(MoveRecords);
+				return ReplaceResult;
+			}
+		}
+
+		if (ParsedBody.bHasMetadata)
+		{
+			TArray<UAnimMetaData*> ExistingManagedMetadata;
+			for (UAnimMetaData* MetadataObject : Sequence->GetMetaData())
+			{
+				if (IsManagedObjectByName(MetadataObject, ManagedMetadataObjectPrefix))
 				{
-					ExistingManagedClasses.Add(UserDataObject->GetClass());
+					ExistingManagedMetadata.Add(MetadataObject);
 				}
 			}
-		}
-		for (UClass* ManagedClass : ExistingManagedClasses)
-		{
-			while (Sequence->GetAssetUserDataOfClass(ManagedClass)
-				&& IsManagedObjectByName(Sequence->GetAssetUserDataOfClass(ManagedClass), ManagedAssetUserDataObjectPrefix))
+			if (!ExistingManagedMetadata.IsEmpty())
 			{
-				Sequence->RemoveUserDataOfClass(ManagedClass);
+				Sequence->RemoveMetaData(MakeArrayView(ExistingManagedMetadata));
 			}
-		}
-		for (UObject* UserDataObject : ParsedBody.AssetUserData)
-		{
-			Sequence->AddAssetUserData(CastChecked<UAssetUserData>(UserDataObject));
+			for (const FParsedManagedObjectFragment& MetadataFragment : ParsedBody.Metadata)
+			{
+				Sequence->AddMetaData(CastChecked<UAnimMetaData>(MetadataFragment.Object));
+			}
 		}
 	}
 
