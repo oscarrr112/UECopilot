@@ -8,6 +8,7 @@
 #include "AssetDocumentService.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
+#include "Profiles/UBlueprintAssetDocumentProfile.h"
 
 DEFINE_LOG_CATEGORY(LogAssetDocument);
 
@@ -19,6 +20,7 @@ void FAssetDocumentModule::StartupModule()
 	UE_LOG(LogAssetDocument, Log, TEXT("AssetDocument module starting up"));
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimMontageAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimSequenceAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FUBlueprintAssetDocumentProfile>());
 	Service = MakeShared<FAssetDocumentService>();
 	HttpRoutes = MakeUnique<FAssetDocumentHttpRoutes>(Service.ToSharedRef());
 	HttpRoutes->Register();
