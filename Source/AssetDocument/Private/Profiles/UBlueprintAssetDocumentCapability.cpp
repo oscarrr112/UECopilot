@@ -499,6 +499,11 @@ bool IsSelfComponentKey(const FUBlueprintComponentKey& Key)
 	return Key.OwnerClass == TEXT("Self");
 }
 
+bool IsDefaultSceneRootKey(const FUBlueprintComponentKey& Key)
+{
+	return IsSelfComponentKey(Key) && Key.Name == USceneComponent::GetDefaultSceneRootVariableName();
+}
+
 FAssetDocumentCapabilityResult ReadComponentKey(const TSharedPtr<FJsonObject>& Object, const FString& Path, FUBlueprintComponentKey& OutKey)
 {
 	OutKey = FUBlueprintComponentKey();
@@ -599,6 +604,10 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 		{
 			return BodyFailure(TEXT("OwnedSCS components require Key.OwnerClass == Self"), Path / TEXT("Key/OwnerClass"), TEXT("InvalidOwnedSCSOwnerClass"));
 		}
+		if (Spec.Scope == TEXT("OwnedSCS") && IsDefaultSceneRootKey(Spec.Key))
+		{
+			return BodyFailure(TEXT("DefaultSceneRoot is reserved for the generated default scene root"), Path / TEXT("Key/Name"), TEXT("ProtectedComponentName"));
+		}
 
 		FString ClassPath;
 		if (!ComponentObject->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
@@ -677,6 +686,119 @@ bool HasOwnedSCSComponent(const TArray<FUBlueprintComponentSpec>& Components)
 	{
 		return Spec.Scope == TEXT("OwnedSCS");
 	});
+}
+
+void CollectOwnedSCSComponents(
+	const TArray<FUBlueprintComponentSpec>& Specs,
+	TArray<const FUBlueprintComponentSpec*>& OutOwnedSpecs,
+	TMap<FString, const FUBlueprintComponentSpec*>& OutOwnedByKey)
+{
+	OutOwnedSpecs.Reset();
+	OutOwnedByKey.Reset();
+	for (const FUBlueprintComponentSpec& Spec : Specs)
+	{
+		if (Spec.Scope == TEXT("OwnedSCS"))
+		{
+			OutOwnedSpecs.Add(&Spec);
+			OutOwnedByKey.Add(ComponentKeyToString(Spec.Key), &Spec);
+		}
+	}
+}
+
+USCS_Node* FindSCSNodeByKey(USimpleConstructionScript* SCS, const FUBlueprintComponentKey& Key);
+
+FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
+	const UBlueprint* Blueprint,
+	const TArray<const FUBlueprintComponentSpec*>& DesiredOwnedSpecs,
+	const TMap<FString, const FUBlueprintComponentSpec*>& DesiredOwnedByKey)
+{
+	int32 RootCount = 0;
+	TMap<FString, FString> DesiredAttachParentByChild;
+
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredOwnedSpecs)
+	{
+		const FUBlueprintComponentSpec& Spec = *SpecPtr;
+		const FString SpecKeyString = ComponentKeyToString(Spec.Key);
+		if (Spec.bRoot)
+		{
+			++RootCount;
+			if (RootCount > 1)
+			{
+				return BodyFailure(TEXT("Only one OwnedSCS component can declare Root:true"), ComponentPath(Spec.Key) / TEXT("Root"), TEXT("MultipleRootComponents"));
+			}
+			if (Spec.AttachTo.IsSet())
+			{
+				return BodyFailure(TEXT("Root components cannot also declare AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("RootComponentCannotAttach"));
+			}
+		}
+
+		if (!Spec.AttachTo.IsSet())
+		{
+			continue;
+		}
+
+		if (!Spec.ComponentClass || !Spec.ComponentClass->IsChildOf(USceneComponent::StaticClass()))
+		{
+			return BodyFailure(TEXT("Only scene components can use AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+		}
+
+		const FUBlueprintComponentKey AttachToKey = Spec.AttachTo.GetValue();
+		const FString AttachToKeyString = ComponentKeyToString(AttachToKey);
+		if (AttachToKeyString == SpecKeyString)
+		{
+			return BodyFailure(TEXT("Component cannot attach to itself"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+		}
+
+		if (const FUBlueprintComponentSpec* const* DesiredParent = DesiredOwnedByKey.Find(AttachToKeyString))
+		{
+			const FUBlueprintComponentSpec* ParentSpec = *DesiredParent;
+			if (!ParentSpec->ComponentClass || !ParentSpec->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
+			{
+				return BodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
+			}
+			DesiredAttachParentByChild.Add(SpecKeyString, AttachToKeyString);
+			continue;
+		}
+
+		if (IsDefaultSceneRootKey(AttachToKey))
+		{
+			continue;
+		}
+
+		USCS_Node* ExistingParent = Blueprint && Blueprint->SimpleConstructionScript
+			? FindSCSNodeByKey(Blueprint->SimpleConstructionScript, AttachToKey)
+			: nullptr;
+		if (!ExistingParent)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("AttachTo component '%s' was not found"), *AttachToKeyString),
+				ComponentPath(Spec.Key) / TEXT("AttachTo"),
+				TEXT("MissingAttachParent"));
+		}
+		if (!ExistingParent->ComponentClass || !ExistingParent->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
+		{
+			return BodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
+		}
+	}
+
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredOwnedSpecs)
+	{
+		const FUBlueprintComponentSpec& Spec = *SpecPtr;
+		const FString StartKey = ComponentKeyToString(Spec.Key);
+		TSet<FString> SeenKeys;
+		FString CurrentKey = StartKey;
+		while (const FString* ParentKey = DesiredAttachParentByChild.Find(CurrentKey))
+		{
+			if (*ParentKey == StartKey || SeenKeys.Contains(*ParentKey))
+			{
+				return BodyFailure(TEXT("OwnedSCS AttachTo declarations cannot form a cycle"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("ComponentAttachCycle"));
+			}
+			SeenKeys.Add(CurrentKey);
+			CurrentKey = *ParentKey;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FBPVariableDescription* FindNewVariable(UBlueprint* Blueprint, FName Name)
@@ -955,8 +1077,10 @@ FAssetDocumentCapabilityResult AttachOwnedNode(USimpleConstructionScript* SCS, U
 
 FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs)
 {
-	const bool bHasDesiredOwned = HasOwnedSCSComponent(Specs);
-	if (!bHasDesiredOwned && (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(AActor::StaticClass())))
+	TArray<const FUBlueprintComponentSpec*> DesiredOwnedSpecs;
+	TMap<FString, const FUBlueprintComponentSpec*> DesiredOwnedByKey;
+	CollectOwnedSCSComponents(Specs, DesiredOwnedSpecs, DesiredOwnedByKey);
+	if (DesiredOwnedSpecs.Num() == 0)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
@@ -966,19 +1090,16 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	}
 
+	const FAssetDocumentCapabilityResult StructureResult = PreflightOwnedSCSStructure(Blueprint, DesiredOwnedSpecs, DesiredOwnedByKey);
+	if (!StructureResult.bSuccess)
+	{
+		return StructureResult;
+	}
+
 	USimpleConstructionScript* SCS = EnsureSimpleConstructionScript(Blueprint);
 	if (!SCS)
 	{
 		return BodyFailure(TEXT("Failed to create SimpleConstructionScript for UBlueprint"), TEXT("/Body/Components"), TEXT("MissingSimpleConstructionScript"));
-	}
-
-	TMap<FString, const FUBlueprintComponentSpec*> DesiredOwned;
-	for (const FUBlueprintComponentSpec& Spec : Specs)
-	{
-		if (Spec.Scope == TEXT("OwnedSCS"))
-		{
-			DesiredOwned.Add(ComponentKeyToString(Spec.Key), &Spec);
-		}
 	}
 
 	TArray<USCS_Node*> ExistingNodes = SCS->GetAllNodes();
@@ -992,16 +1113,17 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		FUBlueprintComponentKey ExistingKey;
 		ExistingKey.Name = Node->GetVariableName();
 		ExistingKey.OwnerClass = TEXT("Self");
-		if (!DesiredOwned.Contains(ComponentKeyToString(ExistingKey)))
+		if (!DesiredOwnedByKey.Contains(ComponentKeyToString(ExistingKey)))
 		{
 			SCS->RemoveNode(Node, false);
 		}
 	}
 
 	TMap<FString, USCS_Node*> NodesByKey;
-	for (const TPair<FString, const FUBlueprintComponentSpec*>& Pair : DesiredOwned)
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredOwnedSpecs)
 	{
-		const FUBlueprintComponentSpec& Spec = *Pair.Value;
+		const FUBlueprintComponentSpec& Spec = *SpecPtr;
+		const FString SpecKeyString = ComponentKeyToString(Spec.Key);
 		USCS_Node* Node = FindSCSNodeByKey(SCS, Spec.Key);
 		if (!Node)
 		{
@@ -1026,13 +1148,13 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 					TEXT("CreateSCSNodeFailed"));
 			}
 		}
-		NodesByKey.Add(Pair.Key, Node);
+		NodesByKey.Add(SpecKeyString, Node);
 	}
 
-	for (const TPair<FString, const FUBlueprintComponentSpec*>& Pair : DesiredOwned)
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredOwnedSpecs)
 	{
-		const FUBlueprintComponentSpec& Spec = *Pair.Value;
-		USCS_Node* Node = NodesByKey.FindRef(Pair.Key);
+		const FUBlueprintComponentSpec& Spec = *SpecPtr;
+		USCS_Node* Node = NodesByKey.FindRef(ComponentKeyToString(Spec.Key));
 		if (Spec.bRoot)
 		{
 			DetachNodeFromCurrentParent(SCS, Node);
@@ -1047,10 +1169,10 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		}
 	}
 
-	for (const TPair<FString, const FUBlueprintComponentSpec*>& Pair : DesiredOwned)
+	for (const FUBlueprintComponentSpec* SpecPtr : DesiredOwnedSpecs)
 	{
-		const FUBlueprintComponentSpec& Spec = *Pair.Value;
-		USCS_Node* Node = NodesByKey.FindRef(Pair.Key);
+		const FUBlueprintComponentSpec& Spec = *SpecPtr;
+		USCS_Node* Node = NodesByKey.FindRef(ComponentKeyToString(Spec.Key));
 		if (!Node || !Node->ComponentTemplate)
 		{
 			return BodyFailure(
@@ -1601,6 +1723,15 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	}
 
+	if (bHasComponentsRegion)
+	{
+		const FAssetDocumentCapabilityResult ComponentPropertiesResult = PreflightComponentProperties(ParsedComponents);
+		if (!ComponentPropertiesResult.bSuccess)
+		{
+			return ComponentPropertiesResult;
+		}
+	}
+
 	bool bChanged = false;
 	UClass* PreviousParentClass = Blueprint->ParentClass.Get();
 	const TArray<FBPInterfaceDescription> PreviousInterfaces = Blueprint->ImplementedInterfaces;
@@ -1641,7 +1772,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ComponentApplyResult);
 		}
-		bChanged = true;
+		bChanged |= HasOwnedSCSComponent(ParsedComponents);
 	}
 
 	if (bChanged)

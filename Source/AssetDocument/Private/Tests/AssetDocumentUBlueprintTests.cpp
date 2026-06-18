@@ -159,6 +159,27 @@ TSharedPtr<FJsonObject> MakeOwnedSphereComponent(const TCHAR* Name, double Spher
 	return Component;
 }
 
+TSharedPtr<FJsonObject> MakeOwnedSceneComponent(const TCHAR* Name)
+{
+	TSharedPtr<FJsonObject> Component = MakeShared<FJsonObject>();
+	Component->SetObjectField(TEXT("Key"), MakeComponentKey(Name));
+	Component->SetStringField(TEXT("Scope"), TEXT("OwnedSCS"));
+	Component->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SceneComponent"));
+	Component->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("DefaultSceneRoot")));
+	Component->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	return Component;
+}
+
+TSharedPtr<FJsonObject> MakeReferencedComponent(const TCHAR* Scope, const TCHAR* Name, const TCHAR* OwnerClass)
+{
+	TSharedPtr<FJsonObject> Component = MakeShared<FJsonObject>();
+	Component->SetObjectField(TEXT("Key"), MakeComponentKey(Name, OwnerClass));
+	Component->SetStringField(TEXT("Scope"), Scope);
+	Component->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SceneComponent"));
+	Component->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	return Component;
+}
+
 TArray<TSharedPtr<FJsonValue>> MakeComponentArray(std::initializer_list<TSharedPtr<FJsonObject>> Components)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
@@ -682,6 +703,159 @@ bool FAssetDocumentUBlueprintOwnedSCSComponentsAuthoritativeTest::RunTest(const 
 			}
 			TestEqual(TEXT("Sensor attaches to DefaultSceneRoot"), Blueprint->SimpleConstructionScript->FindParentNode(Sensor), DefaultSceneRoot);
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintNativeInheritedComponentsDoNotDeleteOwnedSCSTest,
+	"AssetFactory.AssetDocument.UBlueprint.NativeInheritedComponentsDoNotDeleteOwnedSCS",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintNativeInheritedComponentsDoNotDeleteOwnedSCSTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentScopes_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest CreateRequest;
+	CreateRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(CreateRequest.Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+	CreateRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult CreateResult = Service.Apply(CreateRequest);
+	TestTrue(TEXT("Initial owned component apply succeeds"), CreateResult.IsSuccess());
+
+	FAssetDocumentApplyRequest ReferenceOnlyRequest;
+	ReferenceOnlyRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(ReferenceOnlyRequest.Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({
+			MakeReferencedComponent(TEXT("Native"), TEXT("NativeRoot"), TEXT("/Script/Engine.Actor")),
+			MakeReferencedComponent(TEXT("Inherited"), TEXT("InheritedMesh"), TEXT("/Script/Engine.Pawn")),
+		}));
+	ReferenceOnlyRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult ReferenceOnlyResult = Service.Apply(ReferenceOnlyRequest);
+	TestTrue(TEXT("Native/Inherited-only components apply succeeds"), ReferenceOnlyResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Blueprint exists"), Blueprint);
+	if (Blueprint)
+	{
+		TestNotNull(TEXT("Existing owned Sensor is preserved"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintOwnedSCSComponentsStructuralPreflightTest,
+	"AssetFactory.AssetDocument.UBlueprint.OwnedSCSComponentsStructuralPreflight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintOwnedSCSComponentsStructuralPreflightTest::RunTest(const FString&)
+{
+	FAssetDocumentService Service;
+
+	{
+		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentBadAttach_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		FAssetDocumentApplyRequest CreateRequest;
+		CreateRequest.Document = MakeUBlueprintDocument(
+			Target,
+			TEXT("/Script/Engine.Actor"),
+			TArray<TSharedPtr<FJsonValue>>{},
+			TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(CreateRequest.Document)->SetArrayField(
+			TEXT("Components"),
+			MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+		CreateRequest.bSaveAsset = false;
+		TestTrue(TEXT("Initial Sensor apply succeeds"), Service.Apply(CreateRequest).IsSuccess());
+
+		TSharedPtr<FJsonObject> BadChild = MakeOwnedSceneComponent(TEXT("BadChild"));
+		BadChild->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("MissingParent")));
+
+		FAssetDocumentApplyRequest BadRequest;
+		BadRequest.Document = MakeUBlueprintDocument(
+			Target,
+			TEXT("/Script/Engine.Actor"),
+			TArray<TSharedPtr<FJsonValue>>{},
+			TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(BadRequest.Document)->SetArrayField(TEXT("Components"), MakeComponentArray({BadChild}));
+		BadRequest.bSaveAsset = false;
+
+		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+		TestFalse(TEXT("Missing AttachTo parent rejects apply"), BadResult.IsSuccess());
+
+		UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+		TestNotNull(TEXT("Blueprint remains loadable after bad apply"), Blueprint);
+		if (Blueprint)
+		{
+			TestNotNull(TEXT("Existing Sensor survives failed apply"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
+			TestNull(TEXT("BadChild is not left behind after failed apply"), FindSCSNodeByVariableName(Blueprint, TEXT("BadChild")));
+		}
+	}
+
+	{
+		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentCycle_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		TSharedPtr<FJsonObject> A = MakeOwnedSceneComponent(TEXT("A"));
+		TSharedPtr<FJsonObject> B = MakeOwnedSceneComponent(TEXT("B"));
+		A->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("B")));
+		B->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("A")));
+
+		FAssetDocumentApplyRequest Request;
+		Request.Document = MakeUBlueprintDocument(Target, TEXT("/Script/Engine.Actor"), TArray<TSharedPtr<FJsonValue>>{}, TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(Request.Document)->SetArrayField(TEXT("Components"), MakeComponentArray({A, B}));
+		Request.bSaveAsset = false;
+
+		const FAssetDocumentResult Result = Service.Apply(Request);
+		TestFalse(TEXT("Attach cycle rejects apply"), Result.IsSuccess());
+	}
+
+	{
+		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentProtectedName_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		FAssetDocumentApplyRequest Request;
+		Request.Document = MakeUBlueprintDocument(Target, TEXT("/Script/Engine.Actor"), TArray<TSharedPtr<FJsonValue>>{}, TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(Request.Document)->SetArrayField(
+			TEXT("Components"),
+			MakeComponentArray({MakeOwnedSceneComponent(*USceneComponent::GetDefaultSceneRootVariableName().ToString())}));
+		Request.bSaveAsset = false;
+
+		const FAssetDocumentResult Result = Service.Apply(Request);
+		TestFalse(TEXT("DefaultSceneRoot protected component name rejects apply"), Result.IsSuccess());
+	}
+
+	{
+		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentRootRules_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		TSharedPtr<FJsonObject> A = MakeOwnedSceneComponent(TEXT("A"));
+		TSharedPtr<FJsonObject> B = MakeOwnedSceneComponent(TEXT("B"));
+		A->SetBoolField(TEXT("Root"), true);
+		B->SetBoolField(TEXT("Root"), true);
+
+		FAssetDocumentApplyRequest MultiRootRequest;
+		MultiRootRequest.Document = MakeUBlueprintDocument(Target, TEXT("/Script/Engine.Actor"), TArray<TSharedPtr<FJsonValue>>{}, TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(MultiRootRequest.Document)->SetArrayField(TEXT("Components"), MakeComponentArray({A, B}));
+		MultiRootRequest.bSaveAsset = false;
+		TestFalse(TEXT("Multiple Root components reject apply"), Service.Apply(MultiRootRequest).IsSuccess());
+
+		TSharedPtr<FJsonObject> RootWithAttach = MakeOwnedSceneComponent(TEXT("RootWithAttach"));
+		RootWithAttach->SetBoolField(TEXT("Root"), true);
+
+		FAssetDocumentApplyRequest RootAttachRequest;
+		RootAttachRequest.Document = MakeUBlueprintDocument(Target, TEXT("/Script/Engine.Actor"), TArray<TSharedPtr<FJsonValue>>{}, TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(RootAttachRequest.Document)->SetArrayField(TEXT("Components"), MakeComponentArray({RootWithAttach}));
+		RootAttachRequest.bSaveAsset = false;
+		TestFalse(TEXT("Root with AttachTo rejects apply"), Service.Apply(RootAttachRequest).IsSuccess());
 	}
 
 	return true;
