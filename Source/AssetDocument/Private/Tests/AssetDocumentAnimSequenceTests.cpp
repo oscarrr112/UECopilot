@@ -364,6 +364,30 @@ bool AssetUserDataArrayContains(const UAnimSequence* Sequence, const UAssetUserD
 	return UserDataArray && UserDataArray->Contains(Expected);
 }
 
+int32 JsonArrayNum(const TArray<TSharedPtr<FJsonValue>>* Values)
+{
+	return Values ? Values->Num() : 0;
+}
+
+bool JsonArrayContainsObjectStringField(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& FieldName, const FString& ExpectedValue)
+{
+	if (!Values)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString ActualValue;
+		if (Object.IsValid() && Object->TryGetStringField(FieldName, ActualValue) && ActualValue == ExpectedValue)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 TSharedPtr<FJsonObject> FindCurveByName(const TArray<TSharedPtr<FJsonValue>>* Curves, const FString& Name)
 {
 	if (!Curves)
@@ -1653,28 +1677,12 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	const TArray<TSharedPtr<FJsonValue>>* NamedExtractedUserData = nullptr;
 	TestTrue(TEXT("Extract outputs named Metadata array"), NamedExtracted->TryGetArrayField(TEXT("Metadata"), NamedExtractedMetadata));
 	TestTrue(TEXT("Extract outputs named AssetUserData array"), NamedExtracted->TryGetArrayField(TEXT("AssetUserData"), NamedExtractedUserData));
-	if (NamedExtractedMetadata && NamedExtractedMetadata->Num() == 2)
-	{
-		const TSharedPtr<FJsonObject> FirstMetadataObject = (*NamedExtractedMetadata)[0]->AsObject();
-		const TSharedPtr<FJsonObject> SecondMetadataObject = (*NamedExtractedMetadata)[1]->AsObject();
-		TestTrue(TEXT("Extracted metadata includes first explicit Name"),
-			(FirstMetadataObject.IsValid() && FirstMetadataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredMetaA"))
-			|| (SecondMetadataObject.IsValid() && SecondMetadataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredMetaA")));
-		TestTrue(TEXT("Extracted metadata includes second explicit Name"),
-			(FirstMetadataObject.IsValid() && FirstMetadataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredMetaB"))
-			|| (SecondMetadataObject.IsValid() && SecondMetadataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredMetaB")));
-	}
-	if (NamedExtractedUserData && NamedExtractedUserData->Num() == 2)
-	{
-		const TSharedPtr<FJsonObject> FirstUserDataObject = (*NamedExtractedUserData)[0]->AsObject();
-		const TSharedPtr<FJsonObject> SecondUserDataObject = (*NamedExtractedUserData)[1]->AsObject();
-		TestTrue(TEXT("Extracted AssetUserData includes first explicit Name"),
-			(FirstUserDataObject.IsValid() && FirstUserDataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredUserDataA"))
-			|| (SecondUserDataObject.IsValid() && SecondUserDataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredUserDataA")));
-		TestTrue(TEXT("Extracted AssetUserData includes second explicit Name"),
-			(FirstUserDataObject.IsValid() && FirstUserDataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredUserDataB"))
-			|| (SecondUserDataObject.IsValid() && SecondUserDataObject->GetStringField(TEXT("Name")) == TEXT("AuthoredUserDataB")));
-	}
+	TestEqual(TEXT("Extracted named Metadata array has expected count"), JsonArrayNum(NamedExtractedMetadata), 2);
+	TestTrue(TEXT("Extracted metadata includes first explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedMetadata, TEXT("Name"), TEXT("AuthoredMetaA")));
+	TestTrue(TEXT("Extracted metadata includes second explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedMetadata, TEXT("Name"), TEXT("AuthoredMetaB")));
+	TestEqual(TEXT("Extracted named AssetUserData array has expected count"), JsonArrayNum(NamedExtractedUserData), 2);
+	TestTrue(TEXT("Extracted AssetUserData includes first explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedUserData, TEXT("Name"), TEXT("AuthoredUserDataA")));
+	TestTrue(TEXT("Extracted AssetUserData includes second explicit Name"), JsonArrayContainsObjectStringField(NamedExtractedUserData, TEXT("Name"), TEXT("AuthoredUserDataB")));
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	TSharedPtr<FJsonObject> MetadataDiff;
@@ -1684,10 +1692,12 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	TestTrue(TEXT("Diff succeeds for explicit Name object fragments"), NamedDiffResult.bSuccess);
 	MetadataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Metadata"));
 	UserDataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/AssetUserData"));
+	TestTrue(TEXT("Diff reports named Metadata path"), MetadataDiff.IsValid());
 	if (MetadataDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks named Metadata unchanged"), MetadataDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
 	}
+	TestTrue(TEXT("Diff reports named AssetUserData path"), UserDataDiff.IsValid());
 	if (UserDataDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks named AssetUserData unchanged"), UserDataDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
@@ -1898,18 +1908,10 @@ bool FAssetDocumentAnimSequenceObjectFragmentsTest::RunTest(const FString&)
 	const TArray<TSharedPtr<FJsonValue>>* ExtractedUserData = nullptr;
 	TestTrue(TEXT("ObjectFragments extract outputs Metadata"), Extracted->TryGetArrayField(TEXT("Metadata"), ExtractedMetadata));
 	TestTrue(TEXT("ObjectFragments extract outputs AssetUserData"), Extracted->TryGetArrayField(TEXT("AssetUserData"), ExtractedUserData));
-	if (ExtractedMetadata && ExtractedMetadata->Num() == 1)
-	{
-		const TSharedPtr<FJsonObject> MetadataObject = (*ExtractedMetadata)[0]->AsObject();
-		TestTrue(TEXT("ObjectFragments metadata extracts explicit Name"),
-			MetadataObject.IsValid() && MetadataObject->GetStringField(TEXT("Name")) == TEXT("ObjectFragmentMeta"));
-	}
-	if (ExtractedUserData && ExtractedUserData->Num() == 1)
-	{
-		const TSharedPtr<FJsonObject> UserDataObject = (*ExtractedUserData)[0]->AsObject();
-		TestTrue(TEXT("ObjectFragments AssetUserData extracts explicit Name"),
-			UserDataObject.IsValid() && UserDataObject->GetStringField(TEXT("Name")) == TEXT("ObjectFragmentUserData"));
-	}
+	TestEqual(TEXT("ObjectFragments extracted Metadata has expected count"), JsonArrayNum(ExtractedMetadata), 1);
+	TestTrue(TEXT("ObjectFragments metadata extracts explicit Name"), JsonArrayContainsObjectStringField(ExtractedMetadata, TEXT("Name"), TEXT("ObjectFragmentMeta")));
+	TestEqual(TEXT("ObjectFragments extracted AssetUserData has expected count"), JsonArrayNum(ExtractedUserData), 1);
+	TestTrue(TEXT("ObjectFragments AssetUserData extracts explicit Name"), JsonArrayContainsObjectStringField(ExtractedUserData, TEXT("Name"), TEXT("ObjectFragmentUserData")));
 
 	return true;
 }
