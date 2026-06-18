@@ -643,11 +643,6 @@ bool TryParseCurveFlag(const FString& Value, int32& OutFlag)
 TArray<TSharedPtr<FJsonValue>> CurveFlagsToJsonArray(int32 Flags)
 {
 	TArray<TSharedPtr<FJsonValue>> FlagValues;
-	if (Flags == AACF_DefaultCurve)
-	{
-		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("Default")));
-		return FlagValues;
-	}
 	if ((Flags & AACF_DriveMorphTarget_DEPRECATED) != 0)
 	{
 		FlagValues.Add(MakeShared<FJsonValueString>(TEXT("DriveMorphTarget")));
@@ -756,6 +751,17 @@ struct FParsedAnimSequenceCurve
 	TArray<FRichCurveKey> Keys;
 };
 
+struct FParsedAnimSequenceCurveKey
+{
+	int32 AuthoredIndex = INDEX_NONE;
+	FRichCurveKey Key;
+};
+
+struct FFloatCurveView
+{
+	const FFloatCurve* Curve = nullptr;
+};
+
 FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 	const TSharedRef<FJsonObject>& BodyObject,
 	bool& bOutHasCurves,
@@ -816,6 +822,10 @@ FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 			return BodyFailure(TEXT("Curve Name is required"), FString::Printf(TEXT("%s/Name"), *CurvePath), TEXT("MissingCurveName"));
 		}
 		ParsedCurve.Name = FName(*CurveNameString);
+		if (ParsedCurve.Name.IsNone())
+		{
+			return BodyFailure(TEXT("Curve Name must not resolve to NAME_None"), FString::Printf(TEXT("%s/Name"), *CurvePath), TEXT("InvalidCurveName"));
+		}
 		if (CurveNames.Contains(ParsedCurve.Name))
 		{
 			return BodyFailure(TEXT("Curve names must be unique"), FString::Printf(TEXT("%s/Name"), *CurvePath), TEXT("DuplicateCurveName"));
@@ -909,6 +919,11 @@ FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 			{
 				return BodyFailure(TEXT("Curve key Time must be finite and non-negative"), FString::Printf(TEXT("%s/Time"), *KeyPath), TEXT("InvalidCurveKeyTime"));
 			}
+			const float TimeFloat = static_cast<float>(Time);
+			if (!FMath::IsFinite(TimeFloat))
+			{
+				return BodyFailure(TEXT("Curve key Time must fit in a finite float"), FString::Printf(TEXT("%s/Time"), *KeyPath), TEXT("InvalidCurveKeyTime"));
+			}
 
 			bool bHasValue = false;
 			double Value = 0.0;
@@ -920,6 +935,11 @@ FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 			if (!bHasValue || !FMath::IsFinite(Value))
 			{
 				return BodyFailure(TEXT("Curve key Value must be finite"), FString::Printf(TEXT("%s/Value"), *KeyPath), TEXT("InvalidCurveKeyValue"));
+			}
+			const float ValueFloat = static_cast<float>(Value);
+			if (!FMath::IsFinite(ValueFloat))
+			{
+				return BodyFailure(TEXT("Curve key Value must fit in a finite float"), FString::Printf(TEXT("%s/Value"), *KeyPath), TEXT("InvalidCurveKeyValue"));
 			}
 
 			ERichCurveInterpMode InterpMode = RCIM_Linear;
@@ -946,21 +966,39 @@ FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 				return BodyFailure(TEXT("Curve key interpolation is not supported"), InterpPath, TEXT("InvalidCurveInterpolation"));
 			}
 
-			FRichCurveKey Key(static_cast<float>(Time), static_cast<float>(Value));
+			FRichCurveKey Key(TimeFloat, ValueFloat);
 			Key.InterpMode = InterpMode;
 			ParsedCurve.Keys.Add(Key);
 		}
 
-		ParsedCurve.Keys.Sort([](const FRichCurveKey& Left, const FRichCurveKey& Right)
+		TArray<FParsedAnimSequenceCurveKey> SortedKeys;
+		SortedKeys.Reserve(ParsedCurve.Keys.Num());
+		for (int32 KeyIndex = 0; KeyIndex < ParsedCurve.Keys.Num(); ++KeyIndex)
 		{
-			return Left.Time < Right.Time;
-		});
-		for (int32 KeyIndex = 1; KeyIndex < ParsedCurve.Keys.Num(); ++KeyIndex)
+			FParsedAnimSequenceCurveKey SortedKey;
+			SortedKey.AuthoredIndex = KeyIndex;
+			SortedKey.Key = ParsedCurve.Keys[KeyIndex];
+			SortedKeys.Add(SortedKey);
+		}
+		SortedKeys.Sort([](const FParsedAnimSequenceCurveKey& Left, const FParsedAnimSequenceCurveKey& Right)
 		{
-			if (ParsedCurve.Keys[KeyIndex - 1].Time == ParsedCurve.Keys[KeyIndex].Time)
+			if (Left.Key.Time == Right.Key.Time)
 			{
-				return BodyFailure(TEXT("Curve key times must be unique"), FString::Printf(TEXT("%s/Keys/%d/Time"), *CurvePath, KeyIndex), TEXT("DuplicateCurveKeyTime"));
+				return Left.AuthoredIndex < Right.AuthoredIndex;
 			}
+			return Left.Key.Time < Right.Key.Time;
+		});
+		for (int32 KeyIndex = 1; KeyIndex < SortedKeys.Num(); ++KeyIndex)
+		{
+			if (SortedKeys[KeyIndex - 1].Key.Time == SortedKeys[KeyIndex].Key.Time)
+			{
+				return BodyFailure(TEXT("Curve key times must be unique"), FString::Printf(TEXT("%s/Keys/%d/Time"), *CurvePath, SortedKeys[KeyIndex].AuthoredIndex), TEXT("DuplicateCurveKeyTime"));
+			}
+		}
+		ParsedCurve.Keys.Reset(SortedKeys.Num());
+		for (const FParsedAnimSequenceCurveKey& SortedKey : SortedKeys)
+		{
+			ParsedCurve.Keys.Add(SortedKey.Key);
 		}
 
 		OutCurves.Add(MoveTemp(ParsedCurve));
@@ -973,7 +1011,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceCurves(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, const TArray<FParsedAnimSequenceCurve>& Curves)
+FAssetDocumentCapabilityResult ApplyAnimSequenceCurvesToSequence(UAnimSequence* Sequence, const TArray<FParsedAnimSequenceCurve>& Curves)
 {
 	if (!Sequence)
 	{
@@ -989,12 +1027,13 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, 
 		return BodyFailure(Message, Path, Code);
 	};
 
-	Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Float, false);
 	for (const FParsedAnimSequenceCurve& Curve : Curves)
 	{
 		const FAnimationCurveIdentifier CurveId(Curve.Name, ERawCurveTrackTypes::RCT_Float);
 		const FString CurvePath = FString::Printf(TEXT("/Body/Curves/%s"), *Curve.Name.ToString());
-		if (!Controller.AddCurve(CurveId, Curve.Flags, false))
+		const IAnimationDataModel* DataModel = Sequence->GetDataModel();
+		const bool bExistingCurve = DataModel && DataModel->FindCurve(CurveId) != nullptr;
+		if (!bExistingCurve && !Controller.AddCurve(CurveId, Curve.Flags, false))
 		{
 			return CloseAndFail(TEXT("Failed to add AnimSequence float curve"), CurvePath, TEXT("CurveControllerFailure"));
 		}
@@ -1012,6 +1051,28 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Curves applied"));
 }
 
+FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, const TArray<FParsedAnimSequenceCurve>& Curves)
+{
+	if (Curves.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Curves patch is empty"));
+	}
+
+	UAnimSequence* PreviewSequence = DuplicateObject<UAnimSequence>(Sequence, GetTransientPackage());
+	if (!PreviewSequence)
+	{
+		return BodyFailure(TEXT("Failed to duplicate AnimSequence for curve validation"), TEXT("/Body/Curves"), TEXT("DuplicateFailed"));
+	}
+
+	const FAssetDocumentCapabilityResult PreviewResult = ApplyAnimSequenceCurvesToSequence(PreviewSequence, Curves);
+	if (!PreviewResult.bSuccess)
+	{
+		return PreviewResult;
+	}
+
+	return ApplyAnimSequenceCurvesToSequence(Sequence, Curves);
+}
+
 TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceCurves(const UAnimSequence* Sequence)
 {
 	TArray<TSharedPtr<FJsonValue>> CurveValues;
@@ -1021,18 +1082,27 @@ TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceCurves(const UAnimSequence* Se
 		return CurveValues;
 	}
 
-	TArray<const FFloatCurve*> FloatCurves;
+	TArray<FFloatCurveView> FloatCurves;
 	for (const FFloatCurve& FloatCurve : DataModel->GetFloatCurves())
 	{
-		FloatCurves.Add(&FloatCurve);
+		FloatCurves.Add({ &FloatCurve });
 	}
-	FloatCurves.Sort([](const FFloatCurve& Left, const FFloatCurve& Right)
+	FloatCurves.Sort([](const FFloatCurveView& Left, const FFloatCurveView& Right)
 	{
-		return Left.GetName().LexicalLess(Right.GetName());
+		if (!Left.Curve)
+		{
+			return Right.Curve != nullptr;
+		}
+		if (!Right.Curve)
+		{
+			return false;
+		}
+		return Left.Curve->GetName().LexicalLess(Right.Curve->GetName());
 	});
 
-	for (const FFloatCurve* FloatCurve : FloatCurves)
+	for (const FFloatCurveView& FloatCurveView : FloatCurves)
 	{
+		const FFloatCurve* FloatCurve = FloatCurveView.Curve;
 		if (!FloatCurve)
 		{
 			continue;
@@ -1664,6 +1734,15 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		return BodyFailure(TEXT("Body.References.Skeleton must match the current AnimSequence skeleton in Task 2"), TEXT("/Body/References/Skeleton"), TEXT("SkeletonMismatch"));
 	}
 
+	if (ParsedBody.bHasCurves)
+	{
+		const FAssetDocumentCapabilityResult CurvesResult = ApplyAnimSequenceCurves(Sequence, ParsedBody.Curves);
+		if (!CurvesResult.bSuccess)
+		{
+			return CurvesResult;
+		}
+	}
+
 	if (ParsedBody.bHasRetargetSource)
 	{
 		Sequence->RetargetSource = ParsedBody.RetargetSource;
@@ -1735,15 +1814,6 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	{
 		Sequence->bDoNotOverrideCompression = ParsedBody.bDoNotOverrideCompression;
 	}
-	if (ParsedBody.bHasCurves)
-	{
-		const FAssetDocumentCapabilityResult CurvesResult = ApplyAnimSequenceCurves(Sequence, ParsedBody.Curves);
-		if (!CurvesResult.bSuccess)
-		{
-			return CurvesResult;
-		}
-	}
-
 	const bool bNeedsCacheRefresh =
 		ParsedBody.bHasRetargetSourceAsset ||
 		ParsedBody.bHasPreviewMesh ||
