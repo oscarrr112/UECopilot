@@ -1940,12 +1940,29 @@ bool IsSupportedAuthoredPinType(const FEdGraphPinType& PinType)
 	return false;
 }
 
-TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable)
+FString ResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
+{
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		UObject* GeneratedCDO = Blueprint->GeneratedClass->GetDefaultObject(false);
+		FProperty* Property = GeneratedCDO ? FindFProperty<FProperty>(GeneratedCDO->GetClass(), Variable.VarName) : nullptr;
+		if (GeneratedCDO && Property)
+		{
+			FString Value;
+			FBlueprintEditorUtils::PropertyValueToString(Property, reinterpret_cast<const uint8*>(GeneratedCDO), Value, GeneratedCDO, PPF_SerializedAsImportText);
+			return Value;
+		}
+	}
+
+	return Variable.DefaultValue;
+}
+
+TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("Name"), Variable.VarName.ToString());
 	Object->SetObjectField(TEXT("Type"), PinTypeToJsonObject(Variable.VarType));
-	Object->SetStringField(TEXT("DefaultValue"), Variable.DefaultValue);
+	Object->SetStringField(TEXT("DefaultValue"), ResolveVariableDefaultValue(Blueprint, Variable));
 	if (!Variable.Category.IsEmpty())
 	{
 		Object->SetStringField(TEXT("Category"), Variable.Category.ToString());
@@ -2075,13 +2092,13 @@ bool AuthoredDefaultValuesDiffer(const FEdGraphPinType& PinType, const FString& 
 	return Current != Desired;
 }
 
-TSharedPtr<FJsonValue> MakeVariableDiffValue(const FBPVariableDescription& Variable)
+TSharedPtr<FJsonValue> MakeVariableDiffValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
 {
 	if (!IsSupportedAuthoredPinType(Variable.VarType))
 	{
 		return MakeShared<FJsonValueString>(TEXT("UnsupportedPinType"));
 	}
-	return MakeShared<FJsonValueObject>(VariableToJsonObject(Variable));
+	return MakeShared<FJsonValueObject>(VariableToJsonObject(Variable, Blueprint));
 }
 
 TSharedRef<FJsonObject> InterfaceToJsonObject(UClass* InterfaceClass)
@@ -2248,10 +2265,10 @@ FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint*
 
 		if (FBPVariableDescription* MutableVariable = FindNewVariable(Blueprint, Variable.Name))
 		{
-			MutableVariable->DefaultValue.Empty();
-			FBlueprintEditorUtils::PropertyValueToString(Property, reinterpret_cast<const uint8*>(GeneratedCDO), MutableVariable->DefaultValue, GeneratedCDO, PPF_SerializedAsImportText);
+			MutableVariable->DefaultValue = Variable.DefaultValue;
 		}
 	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	return FAssetDocumentCapabilityResult::Success();
 }
@@ -2905,7 +2922,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 				AddSkippedVariableEvidence(OutBodyJson, Variable.VarName.ToString(), TEXT("UnsupportedPinType"));
 				continue;
 			}
-			Variables.Add(MakeShared<FJsonValueObject>(VariableToJsonObject(Variable)));
+			Variables.Add(MakeShared<FJsonValueObject>(VariableToJsonObject(Variable, Blueprint)));
 		}
 	}
 	OutBodyJson->SetArrayField(TEXT("Variables"), Variables);
@@ -3030,14 +3047,15 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 					OutDiffEntries,
 					Path,
 					TEXT("changed"),
-					MakeVariableDiffValue(CurrentVariable),
+					MakeVariableDiffValue(Blueprint, CurrentVariable),
 					MakeShared<FJsonValueNull>(),
 					TEXT("extra"));
 				continue;
 			}
 
 			const bool bTypeChanged = AuthoredPinTypesDiffer(CurrentVariable.VarType, DesiredVariable->Type);
-			const bool bDefaultChanged = AuthoredDefaultValuesDiffer(CurrentVariable.VarType, CurrentVariable.DefaultValue, DesiredVariable->DefaultValue);
+			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, CurrentVariable);
+			const bool bDefaultChanged = AuthoredDefaultValuesDiffer(CurrentVariable.VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
 			const FString DesiredCategory = DesiredVariable->Category.IsSet() ? DesiredVariable->Category.GetValue() : FString();
 			const bool bCategoryChanged = CurrentVariable.Category.ToString() != DesiredCategory;
 			const FString CurrentTooltip = CurrentVariable.HasMetaData(FBlueprintMetadata::MD_Tooltip)
@@ -3050,7 +3068,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 				OutDiffEntries,
 				Path,
 				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : TEXT("unchanged"),
-				MakeVariableDiffValue(CurrentVariable),
+				MakeVariableDiffValue(Blueprint, CurrentVariable),
 				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(*DesiredVariable)),
 				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : FString());
 		}

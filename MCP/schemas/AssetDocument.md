@@ -155,6 +155,84 @@ Excluded or diagnostic-only fields include `Import`, `RawTracks`, `CompressedDat
 
 For post-import smoke and sidecar workflows, use a real existing sequence such as `/Game/AssetDocumentSmoke/AS_PostImportSidecarSmoke` with sidecar `C:/AVH1/Content/AssetDocumentSmoke/AS_PostImportSidecarSmoke.assetdoc.json`. If old names such as `RawTracks`, `Import`, or `CompressedData` appear, replace them with supported post-import sections (`References`, `Preview`, `Playback`, `Additive`, `RootMotion`, `Compression`, `Curves`, `Notifies`, `NotifyStates`, `NotifyTracks`, `SyncMarkers`, `Metadata`, or `AssetUserData`) or leave the raw/import/compressed data out of the sidecar entirely.
 
+## UBlueprint Profile
+
+The `/Script/Engine.Blueprint` profile represents ordinary `UBlueprint` assets. It does not cover `UWidgetBlueprint`, `UAnimBlueprint`, or specialized Blueprint-derived assets, and it does not use the legacy Blueprint generator path.
+
+The profile owns these canonical `Body` keys:
+
+- `ParentClass`: `ClassRef` for the generated class parent.
+- `ImplementedInterfaces`: authoritative array of implemented interface class refs.
+- `Variables`: authoritative array of member variables using `FEdGraphPinType`-shaped `Type`.
+- `Components`: authoritative component tree and inherited/native component override declarations keyed by `{Name, OwnerClass}`.
+- `ClassDefaults`: generated CDO default value deltas.
+- `UbergraphPages`, `FunctionGraphs`, `MacroGraphs`, and `Timelines`: reserved full-surface regions. Non-empty values are rejected until the graph/timeline region implementation lands.
+
+Missing entries in implemented UBlueprint regions delete or reset the corresponding Blueprint authoring surface; they do not preserve current `.uasset` state. Missing `Variables` entries remove member variables. Missing owned `Components` entries remove owned SCS component nodes. Missing inherited component entries remove inherited SCS override templates. Missing native component entries reset supported native component property overrides to the parent CDO baseline. Missing `ClassDefaults` entries reset supported generated CDO default deltas to the parent CDO baseline.
+
+Component entries use:
+
+- `Scope`: `OwnedSCS`, `Inherited`, or `Native`.
+- `Key`: object with `Name` and `OwnerClass`. `OwnerClass` is `Self` for Blueprint-owned SCS nodes, a generated parent class path for inherited SCS nodes, or the native owner class path for native default subobjects.
+- `Class`: component class path.
+- `AttachTo`: optional `{Name, OwnerClass}` key for `OwnedSCS` scene components.
+- `Root`: optional boolean for `OwnedSCS` scene components.
+- `Properties`: reflected component default value deltas.
+
+Inherited and native component property overrides are supported. Inherited/native `AttachTo` and `Root` overrides are intentionally rejected with `UnsupportedInheritedComponentAttachRoot` until that capability has a separate UE-backed contract.
+
+Example:
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/AssetDocumentSmoke/BP_BlueprintSidecarSmoke",
+  "Class": "/Script/Engine.Blueprint",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "ParentClass": {
+      "Kind": "ClassRef",
+      "Class": "/Script/Engine.Actor"
+    },
+    "ImplementedInterfaces": [],
+    "Variables": [
+      {
+        "Name": "Health",
+        "Type": {
+          "PinCategory": "real",
+          "PinSubCategory": "float"
+        },
+        "DefaultValue": "100.0"
+      }
+    ],
+    "Components": [
+      {
+        "Scope": "OwnedSCS",
+        "Key": {
+          "Name": "Sensor",
+          "OwnerClass": "Self"
+        },
+        "Class": "/Script/Engine.SphereComponent",
+        "AttachTo": {
+          "Name": "DefaultSceneRoot",
+          "OwnerClass": "Self"
+        },
+        "Properties": {
+          "SphereRadius": 500.0
+        }
+      }
+    ],
+    "ClassDefaults": {},
+    "UbergraphPages": [],
+    "FunctionGraphs": [],
+    "MacroGraphs": [],
+    "Timelines": []
+  }
+}
+```
+
 ## Legacy Reflected Apply Shape
 
 The current reflected apply, validate, diff, extract, and sidecar file routes still use the legacy GenericAsset sidecar shape:

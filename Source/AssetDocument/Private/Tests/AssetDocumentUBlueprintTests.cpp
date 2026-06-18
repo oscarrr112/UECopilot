@@ -699,10 +699,15 @@ bool FAssetDocumentUBlueprintVariablesAuthoritativeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Blueprint exists"), Blueprint);
 	if (Blueprint)
 	{
-		TestTrue(TEXT("Health remains"), Blueprint->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable)
+		const FBPVariableDescription* Health = Blueprint->NewVariables.FindByPredicate([](const FBPVariableDescription& Variable)
 		{
 			return Variable.VarName == TEXT("Health");
-		}));
+		});
+		TestNotNull(TEXT("Health remains"), Health);
+		if (Health)
+		{
+			TestFalse(TEXT("Health default value is persisted on variable description"), Health->DefaultValue.IsEmpty());
+		}
 		TestFalse(TEXT("Stamina was removed"), Blueprint->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable)
 		{
 			return Variable.VarName == TEXT("Stamina");
