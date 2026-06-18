@@ -259,6 +259,45 @@ TSharedPtr<FJsonObject> FindJsonObjectByStringField(const TArray<TSharedPtr<FJso
 	return nullptr;
 }
 
+TSharedPtr<FJsonObject> FindComponentByScopeAndKey(
+	const TArray<TSharedPtr<FJsonValue>>& Values,
+	const FString& Scope,
+	const FString& Name,
+	const FString& OwnerClass)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Object.IsValid())
+		{
+			continue;
+		}
+
+		FString ActualScope;
+		if (!Object->TryGetStringField(TEXT("Scope"), ActualScope) || ActualScope != Scope)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonObject>* Key = nullptr;
+		if (!Object->TryGetObjectField(TEXT("Key"), Key) || !Key || !Key->IsValid())
+		{
+			continue;
+		}
+
+		FString ActualName;
+		FString ActualOwnerClass;
+		if ((*Key)->TryGetStringField(TEXT("Name"), ActualName)
+			&& (*Key)->TryGetStringField(TEXT("OwnerClass"), ActualOwnerClass)
+			&& ActualName == Name
+			&& ActualOwnerClass == OwnerClass)
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
 TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
@@ -1176,6 +1215,32 @@ bool FAssetDocumentUBlueprintInheritedSCSOverrideTest::RunTest(const FString&)
 		}
 	}
 
+	if (ChildBlueprint)
+	{
+		const FUBlueprintAssetDocumentCapability Capability;
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = ChildBlueprint;
+		Context.AssetClass = UBlueprint::StaticClass();
+
+		TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+		TestTrue(TEXT("Inherited component extract succeeds"), ExtractResult.bSuccess);
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedComponents = nullptr;
+		TestTrue(TEXT("Extract includes inherited Components"), ExtractedBody->TryGetArrayField(TEXT("Components"), ExtractedComponents));
+		TSharedPtr<FJsonObject> ExtractedInherited = ExtractedComponents
+			? FindComponentByScopeAndKey(*ExtractedComponents, TEXT("Inherited"), TEXT("ParentSensor"), ParentGeneratedClassPath)
+			: nullptr;
+		TestTrue(TEXT("Extract includes inherited override component"), ExtractedInherited.IsValid());
+
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		const FAssetDocumentCapabilityResult DiffResult =
+			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(ChildOverrideRequest.Document).ToSharedRef()), DiffEntries);
+		TestTrue(TEXT("Inherited component diff succeeds"), DiffResult.bSuccess);
+		TestNotNull(
+			TEXT("Inherited component diff includes override path"),
+			FindDiffEntryByPath(DiffEntries, FString::Printf(TEXT("/Body/Components/%s:ParentSensor"), *ParentGeneratedClassPath)).Get());
+	}
+
 	FAssetDocumentApplyRequest ChildResetRequest;
 	ChildResetRequest.Document = MakeUBlueprintDocument(
 		ChildTarget,
@@ -1246,6 +1311,32 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 		{
 			TestEqual(TEXT("Native MaxWalkSpeed override is applied"), Movement->MaxWalkSpeed, 700.0f);
 		}
+	}
+
+	if (Blueprint)
+	{
+		const FUBlueprintAssetDocumentCapability Capability;
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = Blueprint;
+		Context.AssetClass = UBlueprint::StaticClass();
+
+		TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+		TestTrue(TEXT("Native component extract succeeds"), ExtractResult.bSuccess);
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedComponents = nullptr;
+		TestTrue(TEXT("Extract includes native Components"), ExtractedBody->TryGetArrayField(TEXT("Components"), ExtractedComponents));
+		TSharedPtr<FJsonObject> ExtractedNative = ExtractedComponents
+			? FindComponentByScopeAndKey(*ExtractedComponents, TEXT("Native"), TEXT("CharacterMovement"), TEXT("/Script/Engine.Character"))
+			: nullptr;
+		TestTrue(TEXT("Extract includes native CharacterMovement override"), ExtractedNative.IsValid());
+
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		const FAssetDocumentCapabilityResult DiffResult =
+			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(OverrideRequest.Document).ToSharedRef()), DiffEntries);
+		TestTrue(TEXT("Native component diff succeeds"), DiffResult.bSuccess);
+		TestNotNull(
+			TEXT("Native component diff includes alias path"),
+			FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement")).Get());
 	}
 
 	const ACharacter* ParentCDO = GetDefault<ACharacter>();
