@@ -131,6 +131,28 @@ The `/Script/Engine.AnimMontage` profile owns the following `Body` keys:
 
 The profile's `InternalAdapters` include `AnimMontageBody` and `AnimMontageNotifyPlacementAdapter`.
 
+## UAnimSequence Profile
+
+The `/Script/Engine.AnimSequence` profile is post-import only. It manages authored state on an existing `UAnimSequence`; it does not create raw animation tracks, author import settings, replace reimport workflows, or serialize compressed animation output. Use the generic AssetDocument MCP tools with profile inspection; no AnimSequence-specific MCP tool is required.
+
+The profile owns these canonical `Body` keys:
+
+- `References`: object for `Skeleton`, `RetargetSource`, and `RetargetSourceAsset` references/configuration.
+- `Preview`: object for preview-only fields such as `PreviewMesh` and `PreviewPoseAsset`.
+- `Playback`: object for authored playback fields such as `RateScale`; derived length/sample fields are extract-only diagnostics.
+- `Additive`: object for `AdditiveAnimType`, `RefPoseType`, `RefFrameIndex`, and `RefPoseSeq`.
+- `RootMotion`: object for root motion settings, not root motion track data.
+- `Compression`: object for compression configuration references/scalars, not compressed output.
+- `Curves`: array for sequence-owned float curve authoring.
+- `Notifies`: array for point notify placements.
+- `NotifyStates`: array for ranged notify-state placements.
+- `NotifyTracks`: array for notify track names/order.
+- `SyncMarkers`: array for authored sync markers.
+- `Metadata`: array of `UAnimMetaData` embedded object fragments.
+- `AssetUserData`: array of `UAssetUserData` embedded object fragments.
+
+Excluded or diagnostic-only fields include `Import`, `RawTracks`, `CompressedData`, derived playback length/sample/frame-rate fields, referenced asset internals, thumbnails, and transient editor state. Authored `_Skipped` metadata is rejected; `_Skipped` is reserved for extracted diagnostics.
+
 ## Legacy Reflected Apply Shape
 
 The current reflected apply, validate, diff, extract, and sidecar file routes still use the legacy GenericAsset sidecar shape:
