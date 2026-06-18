@@ -11,12 +11,14 @@
 #include "Animation/AnimData/CurveIdentifier.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimData/IAnimationDataModel.h"
+#include "Animation/AnimMetaData.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
 #include "Curves/RichCurve.h"
 #include "Dom/JsonValue.h"
+#include "Engine/AssetUserData.h"
 #include "Engine/SkeletalMesh.h"
 #include "Animation/Skeleton.h"
 #include "UObject/UObjectGlobals.h"
@@ -25,6 +27,9 @@
 
 namespace
 {
+const TCHAR* ManagedMetadataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceMetadata_");
+const TCHAR* ManagedAssetUserDataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceAssetUserData_");
+
 bool IsKnownBodyKey(const FString& BodyKey)
 {
 	for (const FName& KnownBodyKey : FAnimSequenceAssetDocumentCapability::GetCanonicalBodyKeys())
@@ -665,22 +670,6 @@ TArray<TSharedPtr<FJsonValue>> CurveFlagsToJsonArray(int32 Flags)
 
 FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<FJsonObject>& BodyObject)
 {
-	const TArray<FString> NotImplementedBodyKeys = {
-		TEXT("Metadata"),
-		TEXT("AssetUserData"),
-	};
-	for (const FString& BodyKey : NotImplementedBodyKeys)
-	{
-		if (BodyObject->HasField(BodyKey))
-		{
-			const FString Path = FString::Printf(TEXT("/Body/%s"), *BodyKey);
-			return BodyFailure(
-				FString::Printf(TEXT("Body.%s is declared but not implemented by the AnimSequence Task 2 scalar capability"), *BodyKey),
-				Path,
-				TEXT("NotImplementedBodyRegion"));
-		}
-	}
-
 	const TArray<FString> UnsupportedBodyKeys = {
 		TEXT("Import"),
 		TEXT("RawTracks"),
@@ -2144,6 +2133,332 @@ FAssetDocumentCapabilityResult ExtractAnimSequenceNotifies(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FString BodyArrayFieldPath(const TCHAR* ArrayName, int32 Index)
+{
+	return FString::Printf(TEXT("/Body/%s/%d"), ArrayName, Index);
+}
+
+FAssetDocumentCapabilityResult GetObjectFragmentFromArrayEntry(
+	const TSharedPtr<FJsonValue>& Value,
+	const TCHAR* ArrayName,
+	int32 Index,
+	TSharedPtr<FJsonObject>& OutEntryObject,
+	TSharedPtr<FJsonObject>& OutFragmentObject,
+	FString& OutExplicitName)
+{
+	const FString EntryPath = BodyArrayFieldPath(ArrayName, Index);
+	const FAssetDocumentCapabilityResult ObjectResult = RequireObjectValue(Value, EntryPath, OutEntryObject);
+	if (!ObjectResult.bSuccess)
+	{
+		return ObjectResult;
+	}
+
+	OutExplicitName.Reset();
+	if (const TSharedPtr<FJsonValue>* NameValue = OutEntryObject->Values.Find(TEXT("Name")))
+	{
+		if (!NameValue->IsValid() || (*NameValue)->Type != EJson::String)
+		{
+			return BodyFailure(TEXT("Name must be a string"), EntryPath / TEXT("Name"), TEXT("InvalidStringField"));
+		}
+		OutExplicitName = (*NameValue)->AsString();
+	}
+
+	const TSharedPtr<FJsonObject>* WrappedObject = nullptr;
+	if (OutEntryObject->TryGetObjectField(TEXT("Object"), WrappedObject) && WrappedObject && WrappedObject->IsValid())
+	{
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : OutEntryObject->Values)
+		{
+			if (Pair.Key != TEXT("Name") && Pair.Key != TEXT("Object"))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("Body.%s entries do not support field '%s'"), ArrayName, *Pair.Key),
+					EntryPath / Pair.Key,
+					TEXT("UnsupportedAuthoredField"));
+			}
+		}
+		OutFragmentObject = *WrappedObject;
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : OutEntryObject->Values)
+	{
+		if (Pair.Key != TEXT("Name") && Pair.Key != TEXT("Kind") && Pair.Key != TEXT("Class") && Pair.Key != TEXT("Properties"))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Body.%s entries do not support field '%s'"), ArrayName, *Pair.Key),
+				EntryPath / Pair.Key,
+				TEXT("UnsupportedAuthoredField"));
+		}
+	}
+
+	OutFragmentObject = OutEntryObject;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult CompileManagedObjectFragments(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimSequence* Sequence,
+	UObject* FragmentOuter,
+	const TArray<TSharedPtr<FJsonValue>>& Values,
+	const TCHAR* ArrayName,
+	UClass* ExpectedBaseClass,
+	const TCHAR* DuplicateCode,
+	TArray<TObjectPtr<UObject>>& OutObjects)
+{
+	OutObjects.Reset();
+	OutObjects.Reserve(Values.Num());
+
+	TSet<FString> SemanticKeys;
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> EntryObject;
+		TSharedPtr<FJsonObject> FragmentObject;
+		FString ExplicitName;
+		FAssetDocumentCapabilityResult EntryResult = GetObjectFragmentFromArrayEntry(Values[Index], ArrayName, Index, EntryObject, FragmentObject, ExplicitName);
+		if (!EntryResult.bSuccess)
+		{
+			return EntryResult;
+		}
+
+		if (!FragmentObject.IsValid())
+		{
+			return BodyFailure(TEXT("Object fragment entry is invalid"), BodyArrayFieldPath(ArrayName, Index), TEXT("InvalidObjectFragment"));
+		}
+
+		FAssetDocumentFragmentContext FragmentContext;
+		FragmentContext.OwnerAsset = Sequence;
+		FragmentContext.Outer = FragmentOuter;
+		FragmentContext.ExpectedBaseClass = ExpectedBaseClass;
+		FragmentContext.Definitions = Context.Definitions;
+		FragmentContext.JsonPath = BodyArrayFieldPath(ArrayName, Index);
+
+		const FAssetDocumentFragmentResult FragmentResult = Compiler.Compile(FragmentObject.ToSharedRef(), FragmentContext);
+		if (!FragmentResult.bSuccess)
+		{
+			return FragmentFailure(FragmentResult);
+		}
+		if (!FragmentResult.Object || !FragmentResult.Object->IsA(ExpectedBaseClass))
+		{
+			return BodyFailure(TEXT("Object fragment did not resolve to the expected base class"), BodyArrayFieldPath(ArrayName, Index), TEXT("InvalidObjectFragment"));
+		}
+
+		const FString SemanticKey = FragmentResult.Object->GetClass()->GetPathName() / ExplicitName;
+		if (SemanticKeys.Contains(SemanticKey))
+		{
+			return BodyFailure(TEXT("Duplicate object fragment semantic key"), BodyArrayFieldPath(ArrayName, Index) / TEXT("Class"), DuplicateCode);
+		}
+		SemanticKeys.Add(SemanticKey);
+		OutObjects.Add(FragmentResult.Object);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseManagedObjectFragmentArray(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimSequence* Sequence,
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TCHAR* ArrayName,
+	UClass* ExpectedBaseClass,
+	const TCHAR* DuplicateCode,
+	bool bResolveFragments,
+	bool& bOutHasArray,
+	TArray<TObjectPtr<UObject>>& OutObjects)
+{
+	bOutHasArray = false;
+	OutObjects.Reset();
+
+	const TSharedPtr<FJsonValue>* ArrayValue = BodyObject->Values.Find(ArrayName);
+	if (!ArrayValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*ArrayValue, FString::Printf(TEXT("/Body/%s"), ArrayName), Values);
+	if (!ArrayResult.bSuccess)
+	{
+		return ArrayResult;
+	}
+	bOutHasArray = true;
+
+	TSet<FString> SemanticKeys;
+	for (int32 Index = 0; Index < Values->Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> EntryObject;
+		TSharedPtr<FJsonObject> FragmentObject;
+		FString ExplicitName;
+		FAssetDocumentCapabilityResult EntryResult = GetObjectFragmentFromArrayEntry((*Values)[Index], ArrayName, Index, EntryObject, FragmentObject, ExplicitName);
+		if (!EntryResult.bSuccess)
+		{
+			return EntryResult;
+		}
+
+		FString ClassName;
+		if (FragmentObject.IsValid() && FragmentObject->TryGetStringField(TEXT("Class"), ClassName) && !ClassName.IsEmpty())
+		{
+			const FString SemanticKey = ClassName / ExplicitName;
+			if (SemanticKeys.Contains(SemanticKey))
+			{
+				return BodyFailure(TEXT("Duplicate object fragment semantic key"), BodyArrayFieldPath(ArrayName, Index) / TEXT("Class"), DuplicateCode);
+			}
+			SemanticKeys.Add(SemanticKey);
+		}
+	}
+
+	if (!bResolveFragments)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if (!Compiler || !Sequence)
+	{
+		return BodyFailure(TEXT("Object fragment resolution requires an AnimSequence asset"), FString::Printf(TEXT("/Body/%s"), ArrayName), TEXT("UnsupportedAsset"));
+	}
+
+	UObject* FragmentOuter = NewObject<UAnimSequence>(GetTransientPackage(), UAnimSequence::StaticClass(), NAME_None, RF_Transient);
+	return CompileManagedObjectFragments(*Compiler, Context, Sequence, FragmentOuter, *Values, ArrayName, ExpectedBaseClass, DuplicateCode, OutObjects);
+}
+
+bool IsManagedObjectByName(const UObject* Object, const TCHAR* Prefix)
+{
+	return Object && Object->GetName().StartsWith(Prefix);
+}
+
+FAssetDocumentCapabilityResult MoveManagedObjectsToSequence(
+	UAnimSequence* Sequence,
+	TArray<TObjectPtr<UObject>>& Objects,
+	UClass* ExpectedBaseClass,
+	const TCHAR* Prefix,
+	const TCHAR* ArrayName,
+	const TCHAR* FailureCode)
+{
+	for (int32 Index = 0; Index < Objects.Num(); ++Index)
+	{
+		UObject* Object = Objects[Index];
+		if (!Object || !Object->IsA(ExpectedBaseClass))
+		{
+			return BodyFailure(TEXT("Object fragment resolved to an invalid object"), BodyArrayFieldPath(ArrayName, Index), TEXT("InvalidObjectFragment"));
+		}
+
+		if (Object->GetOuter() == Sequence && Object->GetName().StartsWith(Prefix))
+		{
+			continue;
+		}
+
+		const FName ObjectName = MakeUniqueObjectName(Sequence, Object->GetClass(), Prefix);
+		if (!Object->Rename(*ObjectName.ToString(), Sequence, REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			return BodyFailure(TEXT("Failed to attach object fragment to AnimSequence"), BodyArrayFieldPath(ArrayName, Index), FailureCode);
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractEmbeddedObjectFragment(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	UObject* OwnerAsset,
+	UObject* Object,
+	const FString& JsonPath,
+	TSharedRef<FJsonObject>& OutFragment)
+{
+	FAssetDocumentFragmentExtractContext ExtractContext;
+	ExtractContext.OwnerAsset = OwnerAsset;
+	ExtractContext.ValueObject = Object;
+	ExtractContext.Kind = TEXT("EmbeddedObject");
+	ExtractContext.JsonPath = JsonPath;
+
+	const FAssetDocumentFragmentResult FragmentResult = Compiler.Extract(ExtractContext, OutFragment);
+	if (!FragmentResult.bSuccess)
+	{
+		return FragmentFailure(FragmentResult);
+	}
+	if (TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Object, true))
+	{
+		OutFragment->SetObjectField(TEXT("Properties"), Properties);
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractManagedMetadata(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const UAnimSequence* Sequence,
+	TArray<TSharedPtr<FJsonValue>>& OutValues)
+{
+	OutValues.Reset();
+	if (!Sequence)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	int32 ExtractedIndex = 0;
+	for (UAnimMetaData* MetadataObject : Sequence->GetMetaData())
+	{
+		if (!IsManagedObjectByName(MetadataObject, ManagedMetadataObjectPrefix))
+		{
+			continue;
+		}
+
+		TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult Result = ExtractEmbeddedObjectFragment(
+			Compiler,
+			const_cast<UAnimSequence*>(Sequence),
+			MetadataObject,
+			BodyArrayFieldPath(TEXT("Metadata"), ExtractedIndex),
+			Fragment);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
+		++ExtractedIndex;
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractManagedAssetUserData(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const UAnimSequence* Sequence,
+	TArray<TSharedPtr<FJsonValue>>& OutValues)
+{
+	OutValues.Reset();
+	if (!Sequence)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<UAssetUserData*>* UserDataArray = Sequence->GetAssetUserDataArray();
+	if (!UserDataArray)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	int32 ExtractedIndex = 0;
+	for (UAssetUserData* UserDataObject : *UserDataArray)
+	{
+		if (!IsManagedObjectByName(UserDataObject, ManagedAssetUserDataObjectPrefix))
+		{
+			continue;
+		}
+
+		TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult Result = ExtractEmbeddedObjectFragment(
+			Compiler,
+			const_cast<UAnimSequence*>(Sequence),
+			UserDataObject,
+			BodyArrayFieldPath(TEXT("AssetUserData"), ExtractedIndex),
+			Fragment);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutValues.Add(MakeShared<FJsonValueObject>(Fragment));
+		++ExtractedIndex;
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceSyncMarkers(const UAnimSequence* Sequence)
 {
 	TArray<TSharedPtr<FJsonValue>> MarkerValues;
@@ -2218,6 +2533,10 @@ struct FParsedAnimSequenceBody
 	TArray<FParsedAnimSequenceNotifyTrack> NotifyTracks;
 	bool bHasSyncMarkers = false;
 	TArray<FParsedAnimSequenceSyncMarker> SyncMarkers;
+	bool bHasMetadata = false;
+	TArray<TObjectPtr<UObject>> Metadata;
+	bool bHasAssetUserData = false;
+	TArray<TObjectPtr<UObject>> AssetUserData;
 };
 
 bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
@@ -2655,6 +2974,40 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 	}
 
+	{
+		FAssetDocumentCapabilityResult Result = ParseManagedObjectFragmentArray(
+			Compiler,
+			Context,
+			Sequence,
+			BodyObject,
+			TEXT("Metadata"),
+			UAnimMetaData::StaticClass(),
+			TEXT("DuplicateMetadataKey"),
+			bResolveFragments,
+			OutParsed.bHasMetadata,
+			OutParsed.Metadata);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		Result = ParseManagedObjectFragmentArray(
+			Compiler,
+			Context,
+			Sequence,
+			BodyObject,
+			TEXT("AssetUserData"),
+			UAssetUserData::StaticClass(),
+			TEXT("DuplicateAssetUserDataKey"),
+			bResolveFragments,
+			OutParsed.bHasAssetUserData,
+			OutParsed.AssetUserData);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
 	const FAssetDocumentCapabilityResult SequenceValidationResult = ValidateParsedBodyAgainstSequence(Sequence, OutParsed);
 	if (!SequenceValidationResult.bSuccess)
 	{
@@ -2997,6 +3350,77 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		}
 	}
 
+	if (ParsedBody.bHasMetadata)
+	{
+		const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
+			Sequence,
+			ParsedBody.Metadata,
+			UAnimMetaData::StaticClass(),
+			ManagedMetadataObjectPrefix,
+			TEXT("Metadata"),
+			TEXT("MetadataOuterMoveFailed"));
+		if (!MoveResult.bSuccess)
+		{
+			return MoveResult;
+		}
+
+		TArray<UAnimMetaData*> ExistingManagedMetadata;
+		for (UAnimMetaData* MetadataObject : Sequence->GetMetaData())
+		{
+			if (IsManagedObjectByName(MetadataObject, ManagedMetadataObjectPrefix))
+			{
+				ExistingManagedMetadata.Add(MetadataObject);
+			}
+		}
+		if (!ExistingManagedMetadata.IsEmpty())
+		{
+			Sequence->RemoveMetaData(MakeArrayView(ExistingManagedMetadata));
+		}
+		for (UObject* MetadataObject : ParsedBody.Metadata)
+		{
+			Sequence->AddMetaData(CastChecked<UAnimMetaData>(MetadataObject));
+		}
+	}
+
+	if (ParsedBody.bHasAssetUserData)
+	{
+		const FAssetDocumentCapabilityResult MoveResult = MoveManagedObjectsToSequence(
+			Sequence,
+			ParsedBody.AssetUserData,
+			UAssetUserData::StaticClass(),
+			ManagedAssetUserDataObjectPrefix,
+			TEXT("AssetUserData"),
+			TEXT("AssetUserDataOuterMoveFailed"));
+		if (!MoveResult.bSuccess)
+		{
+			return MoveResult;
+		}
+
+		TSet<UClass*> ExistingManagedClasses;
+		if (const TArray<UAssetUserData*>* UserDataArray = Sequence->GetAssetUserDataArray())
+		{
+			for (UAssetUserData* UserDataObject : *UserDataArray)
+			{
+				if (IsManagedObjectByName(UserDataObject, ManagedAssetUserDataObjectPrefix))
+				{
+					ExistingManagedClasses.Add(UserDataObject->GetClass());
+				}
+			}
+		}
+		for (UClass* ManagedClass : ExistingManagedClasses)
+		{
+			while (Sequence->GetAssetUserDataOfClass(ManagedClass)
+				&& IsManagedObjectByName(Sequence->GetAssetUserDataOfClass(ManagedClass), ManagedAssetUserDataObjectPrefix))
+			{
+				Sequence->RemoveUserDataOfClass(ManagedClass);
+			}
+		}
+		for (UObject* UserDataObject : ParsedBody.AssetUserData)
+		{
+			Sequence->AddAssetUserData(CastChecked<UAssetUserData>(UserDataObject));
+		}
+	}
+
 	if (ParsedBody.bHasRetargetSource)
 	{
 		Sequence->RetargetSource = ParsedBody.RetargetSource;
@@ -3213,6 +3637,20 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 	}
 	OutBodyJson->SetArrayField(TEXT("NotifyStates"), ExtractedNotifyStates);
 	OutBodyJson->SetArrayField(TEXT("SyncMarkers"), ExtractAnimSequenceSyncMarkers(Sequence));
+	TArray<TSharedPtr<FJsonValue>> ExtractedMetadata;
+	FAssetDocumentCapabilityResult ObjectFragmentExtractResult = ExtractManagedMetadata(Compiler, Sequence, ExtractedMetadata);
+	if (!ObjectFragmentExtractResult.bSuccess)
+	{
+		return ObjectFragmentExtractResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("Metadata"), ExtractedMetadata);
+	TArray<TSharedPtr<FJsonValue>> ExtractedAssetUserData;
+	ObjectFragmentExtractResult = ExtractManagedAssetUserData(Compiler, Sequence, ExtractedAssetUserData);
+	if (!ObjectFragmentExtractResult.bSuccess)
+	{
+		return ObjectFragmentExtractResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("AssetUserData"), ExtractedAssetUserData);
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extracted"));
 }

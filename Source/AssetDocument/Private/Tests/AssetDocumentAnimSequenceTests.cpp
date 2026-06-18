@@ -7,12 +7,23 @@
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
+#include "Animation/AnimMetaData.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Dom/JsonValue.h"
+#include "Engine/AssetUserData.h"
+#include "Engine/Blueprint.h"
 #include "Engine/SkeletalMesh.h"
+#include "HAL/FileManager.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/Guid.h"
+#include "Misc/PackageName.h"
+#include "Misc/ScopeExit.h"
 #include "Animation/Skeleton.h"
+#include "ObjectTools.h"
+#include "UObject/SavePackage.h"
 
 #include <limits>
 
@@ -25,6 +36,99 @@ const TCHAR* TestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAss
 const TCHAR* TestConcreteNotifyClassPath = TEXT("/Script/Engine.AnimNotify_PlaySound");
 const TCHAR* TestManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotify_");
 const TCHAR* TestManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotifyState_");
+const TCHAR* TestManagedMetadataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceMetadata_");
+const TCHAR* TestManagedAssetUserDataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceAssetUserData_");
+const TCHAR* TestAssetUserDataClassPath = TEXT("/Script/Engine.AnimCurveMetaData");
+const TCHAR* TestUnmanagedAssetUserDataClassPath = TEXT("/Script/Engine.SubtitleAssetUserData");
+
+struct FBlueprintClassFixture
+{
+	FString ClassPath;
+	FString ObjectPath;
+	FString PackageFileName;
+
+	bool IsValid() const
+	{
+		return !ClassPath.IsEmpty();
+	}
+
+	void Cleanup() const
+	{
+		if (!ObjectPath.IsEmpty())
+		{
+			UObject* ExistingAsset = FindObject<UObject>(nullptr, *ObjectPath);
+			if (!ExistingAsset && !PackageFileName.IsEmpty() && IFileManager::Get().FileExists(*PackageFileName))
+			{
+				ExistingAsset = LoadObject<UObject>(nullptr, *ObjectPath);
+			}
+
+			if (ExistingAsset)
+			{
+				TArray<UObject*> ObjectsToDelete;
+				ObjectsToDelete.Add(ExistingAsset);
+				ObjectTools::DeleteObjectsUnchecked(ObjectsToDelete);
+			}
+		}
+
+		if (!PackageFileName.IsEmpty() && IFileManager::Get().FileExists(*PackageFileName))
+		{
+			IFileManager::Get().Delete(*PackageFileName, false, true);
+		}
+	}
+};
+
+FBlueprintClassFixture CreateBlueprintClassFixture(UClass* ParentClass, const FString& Prefix)
+{
+	FBlueprintClassFixture Fixture;
+	if (!ParentClass)
+	{
+		return Fixture;
+	}
+
+	const FString AssetName = FString::Printf(TEXT("%s_%s"), *Prefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString PackageName = FString::Printf(TEXT("/Game/AssetDocumentTests/%s"), *AssetName);
+	Fixture.ObjectPath = FString::Printf(TEXT("%s.%s"), *PackageName, *AssetName);
+	Fixture.PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+
+	UPackage* Package = CreatePackage(*PackageName);
+	if (!Package)
+	{
+		return Fixture;
+	}
+
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		ParentClass,
+		Package,
+		*AssetName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (!Blueprint)
+	{
+		Fixture.Cleanup();
+		return Fixture;
+	}
+
+	Blueprint->bGenerateAbstractClass = false;
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FAssetRegistryModule::AssetCreated(Blueprint);
+	Package->MarkPackageDirty();
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	if (!UPackage::SavePackage(Package, Blueprint, *Fixture.PackageFileName, SaveArgs))
+	{
+		Fixture.Cleanup();
+		return Fixture;
+	}
+
+	if (Blueprint->GeneratedClass && !Blueprint->GeneratedClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		Fixture.ClassPath = Blueprint->GeneratedClass->GetPathName();
+	}
+	return Fixture;
+}
 
 TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& ExpectedValue)
 {
@@ -209,6 +313,55 @@ int32 CountManagedNotifyObjectsWithOuter(const UObject* Outer)
 		}
 	}
 	return Count;
+}
+
+int32 CountManagedMetadata(const UAnimSequence* Sequence)
+{
+	int32 Count = 0;
+	if (!Sequence)
+	{
+		return Count;
+	}
+	for (const UAnimMetaData* Metadata : Sequence->GetMetaData())
+	{
+		if (Metadata && Metadata->GetName().StartsWith(TestManagedMetadataObjectPrefix))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+int32 CountManagedAssetUserData(const UAnimSequence* Sequence)
+{
+	int32 Count = 0;
+	if (!Sequence)
+	{
+		return Count;
+	}
+	const TArray<UAssetUserData*>* UserDataArray = Sequence->GetAssetUserDataArray();
+	if (!UserDataArray)
+	{
+		return Count;
+	}
+	for (const UAssetUserData* UserData : *UserDataArray)
+	{
+		if (UserData && UserData->GetName().StartsWith(TestManagedAssetUserDataObjectPrefix))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+bool AssetUserDataArrayContains(const UAnimSequence* Sequence, const UAssetUserData* Expected)
+{
+	if (!Sequence || !Expected)
+	{
+		return false;
+	}
+	const TArray<UAssetUserData*>* UserDataArray = Sequence->GetAssetUserDataArray();
+	return UserDataArray && UserDataArray->Contains(Expected);
 }
 
 TSharedPtr<FJsonObject> FindCurveByName(const TArray<TSharedPtr<FJsonValue>>* Curves, const FString& Name)
@@ -675,25 +828,13 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TestFalse(FString::Printf(TEXT("Validate rejects Body.%s"), *FieldName), InvalidResult.bSuccess);
 	}
 
-	const TArray<FString> NotImplementedRegions = {
-		TEXT("Metadata"),
-		TEXT("AssetUserData"),
-	};
-	for (const FString& RegionName : NotImplementedRegions)
-	{
-		TSharedRef<FJsonObject> InvalidBody = MakePlaybackRateBody(3.0);
-		InvalidBody->SetArrayField(RegionName, TArray<TSharedPtr<FJsonValue>>());
-		const FString RegionPath = FString::Printf(TEXT("/Body/%s"), *RegionName);
-		const FAssetDocumentCapabilityResult ValidateUnsupportedRegionResult = Capability.Validate(Context, MakeBodyValue(InvalidBody));
-		TestFalse(FString::Printf(TEXT("Validate rejects not-yet-implemented Body.%s"), *RegionName), ValidateUnsupportedRegionResult.bSuccess);
-		TestTrue(FString::Printf(TEXT("Validate diagnostic points at Body.%s"), *RegionName), HasDiagnostic(ValidateUnsupportedRegionResult, RegionPath, TEXT("NotImplementedBodyRegion")));
-		const FAssetDocumentCapabilityResult PreflightUnsupportedRegionResult = Capability.Preflight(Context, MakeBodyValue(InvalidBody));
-		TestFalse(FString::Printf(TEXT("Preflight rejects not-yet-implemented Body.%s"), *RegionName), PreflightUnsupportedRegionResult.bSuccess);
-		const float RateScaleBeforeUnsupportedRegion = Sequence->RateScale;
-		const FAssetDocumentCapabilityResult ApplyUnsupportedRegionResult = Capability.Apply(Context, MakeBodyValue(InvalidBody));
-		TestFalse(FString::Printf(TEXT("Apply rejects not-yet-implemented Body.%s"), *RegionName), ApplyUnsupportedRegionResult.bSuccess);
-		TestEqual(FString::Printf(TEXT("Not-yet-implemented Body.%s does not partially mutate RateScale"), *RegionName), Sequence->RateScale, RateScaleBeforeUnsupportedRegion);
-	}
+	TSharedRef<FJsonObject> EmptyObjectFragmentsBody = MakePlaybackRateBody(3.0);
+	EmptyObjectFragmentsBody->SetArrayField(TEXT("Metadata"), TArray<TSharedPtr<FJsonValue>>());
+	EmptyObjectFragmentsBody->SetArrayField(TEXT("AssetUserData"), TArray<TSharedPtr<FJsonValue>>());
+	TestTrue(TEXT("Validate accepts Body.Metadata and Body.AssetUserData"), Capability.Validate(Context, MakeBodyValue(EmptyObjectFragmentsBody)).bSuccess);
+	TestTrue(TEXT("Preflight accepts Body.Metadata and Body.AssetUserData"), Capability.Preflight(Context, MakeBodyValue(EmptyObjectFragmentsBody)).bSuccess);
+	const FAssetDocumentCapabilityResult ApplyEmptyObjectFragmentsResult = Capability.Apply(Context, MakeBodyValue(EmptyObjectFragmentsBody));
+	TestTrue(TEXT("Apply accepts empty Body.Metadata and Body.AssetUserData"), ApplyEmptyObjectFragmentsResult.bSuccess);
 
 	const TArray<TPair<FString, FString>> RejectedImplementedFields = {
 		TPair<FString, FString>(TEXT("Playback"), TEXT("FrameRate")),
@@ -1380,6 +1521,206 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects duplicate sync marker identities"), DuplicateMarkerResult.bSuccess);
 	TestTrue(TEXT("Duplicate marker diagnostic is precise"), HasDiagnostic(DuplicateMarkerResult, TEXT("/Body/SyncMarkers/1/Name"), TEXT("DuplicateSyncMarkerKey")));
 	TestEqual(TEXT("Duplicate marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequenceMetadataAndUserDataTest,
+	"AssetFactory.AssetDocument.AnimSequence.MetadataAndUserData",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
+{
+	const FBlueprintClassFixture MetadataFixture = CreateBlueprintClassFixture(UAnimMetaData::StaticClass(), TEXT("BP_AnimSequenceMetaData"));
+	ON_SCOPE_EXIT
+	{
+		MetadataFixture.Cleanup();
+	};
+	TestTrue(TEXT("Concrete AnimMetaData fixture class path is available"), MetadataFixture.IsValid());
+	if (!MetadataFixture.IsValid())
+	{
+		return true;
+	}
+
+	UClass* MetadataClass = StaticLoadClass(UAnimMetaData::StaticClass(), nullptr, *MetadataFixture.ClassPath);
+	UClass* UserDataClass = StaticLoadClass(UAssetUserData::StaticClass(), nullptr, TestAssetUserDataClassPath);
+	UClass* UnmanagedUserDataClass = StaticLoadClass(UAssetUserData::StaticClass(), nullptr, TestUnmanagedAssetUserDataClassPath);
+	TestNotNull(TEXT("Concrete AnimMetaData fixture class is loadable"), MetadataClass);
+	TestNotNull(TEXT("Concrete AssetUserData class is loadable"), UserDataClass);
+	TestNotNull(TEXT("Concrete unmanaged AssetUserData class is loadable"), UnmanagedUserDataClass);
+	if (!MetadataClass || !UserDataClass || !UnmanagedUserDataClass)
+	{
+		return true;
+	}
+
+	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AD_AnimSequence_MetadataAndUserData"));
+	TestNotNull(TEXT("Transient sequence exists"), Sequence);
+	if (!Sequence)
+	{
+		return true;
+	}
+	SetSequencePlayLength(Sequence, 1.0f);
+
+	UAnimMetaData* ManualMetadata = NewObject<UAnimMetaData>(Sequence, MetadataClass, TEXT("Manual_Metadata"), RF_Transactional);
+	Sequence->AddMetaData(ManualMetadata);
+	UAssetUserData* ManualUserData = NewObject<UAssetUserData>(Sequence, UnmanagedUserDataClass, TEXT("Manual_UserData"), RF_Transactional);
+	Sequence->AddAssetUserData(ManualUserData);
+
+	FAnimSequenceAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
+
+	TSharedRef<FJsonObject> PlaybackOnlyBody = MakePlaybackRateBody(1.5);
+	const FAssetDocumentCapabilityResult PlaybackOnlyResult = Capability.Apply(Context, MakeBodyValue(PlaybackOnlyBody));
+	TestTrue(TEXT("Missing Metadata/AssetUserData regions leave existing data untouched"), PlaybackOnlyResult.bSuccess);
+	TestEqual(TEXT("Missing Metadata region preserves manual metadata"), Sequence->GetMetaData().Num(), 1);
+	TestTrue(TEXT("Missing AssetUserData region preserves manual user data"), AssetUserDataArrayContains(Sequence, ManualUserData));
+
+	TSharedRef<FJsonObject> ObjectFragmentBody = MakePlaybackRateBody(2.0);
+	ObjectFragmentBody->SetArrayField(TEXT("Metadata"), ObjectArray({
+		MakeEmbeddedObjectRef(MetadataFixture.ClassPath),
+	}));
+	ObjectFragmentBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({
+		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+	}));
+
+	TestTrue(TEXT("Validate accepts metadata/userdata object fragments"), Capability.Validate(Context, MakeBodyValue(ObjectFragmentBody)).bSuccess);
+	TestTrue(TEXT("Preflight accepts metadata/userdata object fragments"), Capability.Preflight(Context, MakeBodyValue(ObjectFragmentBody)).bSuccess);
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(ObjectFragmentBody));
+	TestTrue(TEXT("Apply succeeds for metadata/userdata object fragments"), ApplyResult.bSuccess);
+	TestEqual(TEXT("Apply updates scalar field after object fragment preflight"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Apply preserves unmanaged metadata"), Sequence->GetMetaData().Contains(ManualMetadata), true);
+	TestEqual(TEXT("Apply adds one managed metadata object"), CountManagedMetadata(Sequence), 1);
+	TestTrue(TEXT("Apply preserves unmanaged user data"), AssetUserDataArrayContains(Sequence, ManualUserData));
+	TestEqual(TEXT("Apply adds one managed asset user data object"), CountManagedAssetUserData(Sequence), 1);
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds after metadata/userdata apply"), ExtractResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedMetadata = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedUserData = nullptr;
+	TestTrue(TEXT("Extract outputs Metadata array"), Extracted->TryGetArrayField(TEXT("Metadata"), ExtractedMetadata));
+	TestTrue(TEXT("Extract outputs AssetUserData array"), Extracted->TryGetArrayField(TEXT("AssetUserData"), ExtractedUserData));
+	TestTrue(TEXT("Extract returns only managed metadata"), ExtractedMetadata && ExtractedMetadata->Num() == 1);
+	TestTrue(TEXT("Extract returns only managed asset user data"), ExtractedUserData && ExtractedUserData->Num() == 1);
+	if (ExtractedMetadata && ExtractedMetadata->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> MetadataObject = (*ExtractedMetadata)[0]->AsObject();
+		TestTrue(TEXT("Extracted metadata object is valid"), MetadataObject.IsValid());
+		if (MetadataObject.IsValid())
+		{
+			TestEqual(TEXT("Extracted metadata kind"), MetadataObject->GetStringField(TEXT("Kind")), FString(TEXT("EmbeddedObject")));
+			TestEqual(TEXT("Extracted metadata class"), MetadataObject->GetStringField(TEXT("Class")), MetadataFixture.ClassPath);
+		}
+	}
+	if (ExtractedUserData && ExtractedUserData->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> UserDataObject = (*ExtractedUserData)[0]->AsObject();
+		TestTrue(TEXT("Extracted asset user data object is valid"), UserDataObject.IsValid());
+		if (UserDataObject.IsValid())
+		{
+			TestEqual(TEXT("Extracted asset user data kind"), UserDataObject->GetStringField(TEXT("Kind")), FString(TEXT("EmbeddedObject")));
+			TestEqual(TEXT("Extracted asset user data class"), UserDataObject->GetStringField(TEXT("Class")), FString(TestAssetUserDataClassPath));
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult UnchangedDiffResult = Capability.Diff(Context, MakeBodyValue(ObjectFragmentBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for unchanged Metadata and AssetUserData"), UnchangedDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> MetadataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Metadata"));
+	TSharedPtr<FJsonObject> UserDataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/AssetUserData"));
+	TestTrue(TEXT("Diff reports Metadata path"), MetadataDiff.IsValid());
+	TestTrue(TEXT("Diff reports AssetUserData path"), UserDataDiff.IsValid());
+	if (MetadataDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks Metadata unchanged"), MetadataDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+	if (UserDataDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks AssetUserData unchanged"), UserDataDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+
+	TSharedRef<FJsonObject> EmptyManagedBody = MakePlaybackRateBody(2.5);
+	EmptyManagedBody->SetArrayField(TEXT("Metadata"), TArray<TSharedPtr<FJsonValue>>());
+	EmptyManagedBody->SetArrayField(TEXT("AssetUserData"), TArray<TSharedPtr<FJsonValue>>());
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult ChangedDiffResult = Capability.Diff(Context, MakeBodyValue(EmptyManagedBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for changed Metadata and AssetUserData"), ChangedDiffResult.bSuccess);
+	MetadataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Metadata"));
+	UserDataDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/AssetUserData"));
+	if (MetadataDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks Metadata changed"), MetadataDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+	if (UserDataDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks AssetUserData changed"), UserDataDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+
+	const FAssetDocumentCapabilityResult EmptyManagedApplyResult = Capability.Apply(Context, MakeBodyValue(EmptyManagedBody));
+	TestTrue(TEXT("Present empty regions remove managed object fragments"), EmptyManagedApplyResult.bSuccess);
+	TestEqual(TEXT("Present Metadata region preserves unmanaged metadata while removing managed entries"), CountManagedMetadata(Sequence), 0);
+	TestTrue(TEXT("Present Metadata region keeps manual metadata"), Sequence->GetMetaData().Contains(ManualMetadata));
+	TestEqual(TEXT("Present AssetUserData region removes managed entries"), CountManagedAssetUserData(Sequence), 0);
+	TestTrue(TEXT("Present AssetUserData region keeps manual user data"), AssetUserDataArrayContains(Sequence, ManualUserData));
+
+	const float RateScaleBeforeInvalid = Sequence->RateScale;
+	const int32 MetadataCountBeforeInvalid = Sequence->GetMetaData().Num();
+	const int32 ManagedUserDataCountBeforeInvalid = CountManagedAssetUserData(Sequence);
+
+	TSharedRef<FJsonObject> UnknownMetadataFieldBody = MakePlaybackRateBody(3.0);
+	TSharedRef<FJsonObject> UnknownMetadataField = MakeEmbeddedObjectRef(MetadataFixture.ClassPath);
+	UnknownMetadataField->SetStringField(TEXT("Unexpected"), TEXT("nope"));
+	UnknownMetadataFieldBody->SetArrayField(TEXT("Metadata"), ObjectArray({ UnknownMetadataField }));
+	const FAssetDocumentCapabilityResult UnknownMetadataFieldResult = Capability.Apply(Context, MakeBodyValue(UnknownMetadataFieldBody));
+	TestFalse(TEXT("Apply rejects unknown metadata item field"), UnknownMetadataFieldResult.bSuccess);
+	TestTrue(TEXT("Unknown metadata field diagnostic is precise"), HasDiagnostic(UnknownMetadataFieldResult, TEXT("/Body/Metadata/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
+	TestEqual(TEXT("Unknown metadata field does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+	TestEqual(TEXT("Unknown metadata field does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> InvalidMetadataClassBody = MakePlaybackRateBody(3.1);
+	InvalidMetadataClassBody->SetArrayField(TEXT("Metadata"), ObjectArray({ MakeEmbeddedObjectRef(TestAssetUserDataClassPath) }));
+	const FAssetDocumentCapabilityResult InvalidMetadataClassResult = Capability.Apply(Context, MakeBodyValue(InvalidMetadataClassBody));
+	TestFalse(TEXT("Apply rejects metadata fragment with non-UAnimMetaData class"), InvalidMetadataClassResult.bSuccess);
+	TestTrue(TEXT("Invalid metadata base diagnostic is precise"), HasDiagnostic(InvalidMetadataClassResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestEqual(TEXT("Invalid metadata class does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> DuplicateUserDataBody = MakePlaybackRateBody(3.2);
+	DuplicateUserDataBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({
+		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+	}));
+	const FAssetDocumentCapabilityResult DuplicateUserDataResult = Capability.Apply(Context, MakeBodyValue(DuplicateUserDataBody));
+	TestFalse(TEXT("Apply rejects duplicate AssetUserData semantic class key"), DuplicateUserDataResult.bSuccess);
+	TestTrue(TEXT("Duplicate AssetUserData diagnostic is precise"), HasDiagnostic(DuplicateUserDataResult, TEXT("/Body/AssetUserData/1/Class"), TEXT("DuplicateAssetUserDataKey")));
+	TestEqual(TEXT("Duplicate AssetUserData does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+	TestEqual(TEXT("Duplicate AssetUserData does not add managed user data"), CountManagedAssetUserData(Sequence), ManagedUserDataCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> InvalidUserDataClassBody = MakePlaybackRateBody(3.3);
+	InvalidUserDataClassBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ MakeEmbeddedObjectRef(MetadataFixture.ClassPath) }));
+	const FAssetDocumentCapabilityResult InvalidUserDataClassResult = Capability.Apply(Context, MakeBodyValue(InvalidUserDataClassBody));
+	TestFalse(TEXT("Apply rejects AssetUserData fragment with non-UAssetUserData class"), InvalidUserDataClassResult.bSuccess);
+	TestTrue(TEXT("Invalid AssetUserData base diagnostic is precise"), HasDiagnostic(InvalidUserDataClassResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestEqual(TEXT("Invalid AssetUserData class does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+
+	TSharedRef<FJsonObject> BadFragmentBody = MakePlaybackRateBody(3.4);
+	TSharedRef<FJsonObject> BadFragment = MakeEmbeddedObjectRef(TestAssetUserDataClassPath);
+	TSharedRef<FJsonObject> BadProperties = MakeShared<FJsonObject>();
+	BadProperties->SetBoolField(TEXT("NoSuchAssetUserDataProperty"), true);
+	BadFragment->SetObjectField(TEXT("Properties"), BadProperties);
+	BadFragmentBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ BadFragment }));
+	const FAssetDocumentCapabilityResult BadFragmentResult = Capability.Apply(Context, MakeBodyValue(BadFragmentBody));
+	TestFalse(TEXT("Apply rejects bad AssetUserData embedded object fragment"), BadFragmentResult.bSuccess);
+	TestTrue(TEXT("Bad fragment diagnostic points at AssetUserData item"), HasDiagnostic(BadFragmentResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-preflight-failed")));
+	TestEqual(TEXT("Bad fragment does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
+	TestEqual(TEXT("Bad fragment does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
+	TestEqual(TEXT("Bad fragment does not mutate managed user data"), CountManagedAssetUserData(Sequence), ManagedUserDataCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> UnsupportedAttributesBody = MakePlaybackRateBody(3.5);
+	UnsupportedAttributesBody->SetObjectField(TEXT("Attributes"), MakeShared<FJsonObject>());
+	const FAssetDocumentCapabilityResult UnsupportedAttributesResult = Capability.Validate(Context, MakeBodyValue(UnsupportedAttributesBody));
+	TestFalse(TEXT("Task 5 does not newly support unrelated Attributes section"), UnsupportedAttributesResult.bSuccess);
+	TestTrue(TEXT("Unrelated Attributes section remains rejected"), HasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
 
 	return true;
 }
