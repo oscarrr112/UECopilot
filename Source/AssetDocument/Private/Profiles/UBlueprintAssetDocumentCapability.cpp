@@ -765,6 +765,14 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 			continue;
 		}
 
+		if (IsSelfComponentKey(AttachToKey))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("AttachTo component '%s' is not present in the authoritative OwnedSCS component set"), *AttachToKeyString),
+				ComponentPath(Spec.Key) / TEXT("AttachTo"),
+				TEXT("AttachParentRemovedByAuthoritativeRegion"));
+		}
+
 		USCS_Node* ExistingParent = Blueprint && Blueprint->SimpleConstructionScript
 			? FindSCSNodeByKey(Blueprint->SimpleConstructionScript, AttachToKey)
 			: nullptr;

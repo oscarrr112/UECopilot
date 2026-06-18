@@ -807,6 +807,44 @@ bool FAssetDocumentUBlueprintOwnedSCSComponentsStructuralPreflightTest::RunTest(
 	}
 
 	{
+		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentStaleAttach_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+		FAssetDocumentApplyRequest CreateRequest;
+		CreateRequest.Document = MakeUBlueprintDocument(
+			Target,
+			TEXT("/Script/Engine.Actor"),
+			TArray<TSharedPtr<FJsonValue>>{},
+			TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(CreateRequest.Document)->SetArrayField(
+			TEXT("Components"),
+			MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+		CreateRequest.bSaveAsset = false;
+		TestTrue(TEXT("Initial stale-parent Sensor apply succeeds"), Service.Apply(CreateRequest).IsSuccess());
+
+		TSharedPtr<FJsonObject> BadChild = MakeOwnedSceneComponent(TEXT("BadChild"));
+		BadChild->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("Sensor")));
+
+		FAssetDocumentApplyRequest BadRequest;
+		BadRequest.Document = MakeUBlueprintDocument(
+			Target,
+			TEXT("/Script/Engine.Actor"),
+			TArray<TSharedPtr<FJsonValue>>{},
+			TArray<TSharedPtr<FJsonValue>>{});
+		LoadBlueprintDocumentBody(BadRequest.Document)->SetArrayField(TEXT("Components"), MakeComponentArray({BadChild}));
+		BadRequest.bSaveAsset = false;
+
+		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+		TestFalse(TEXT("AttachTo removed owned parent rejects apply"), BadResult.IsSuccess());
+
+		UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+		TestNotNull(TEXT("Blueprint remains loadable after stale parent apply"), Blueprint);
+		if (Blueprint)
+		{
+			TestNotNull(TEXT("Existing Sensor survives stale parent apply"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
+			TestNull(TEXT("BadChild is not left behind after stale parent apply"), FindSCSNodeByVariableName(Blueprint, TEXT("BadChild")));
+		}
+	}
+
+	{
 		const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentCycle_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 		TSharedPtr<FJsonObject> A = MakeOwnedSceneComponent(TEXT("A"));
 		TSharedPtr<FJsonObject> B = MakeOwnedSceneComponent(TEXT("B"));
