@@ -7,7 +7,10 @@
 
 #include "Dom/JsonValue.h"
 #include "EdGraphSchema_K2.h"
+#include "Components/SphereComponent.h"
 #include "Engine/Blueprint.h"
+#include "Engine/SCS_Node.h"
+#include "Engine/SimpleConstructionScript.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Misc/AutomationTest.h"
@@ -132,6 +135,55 @@ TSharedPtr<FJsonObject> LoadBlueprintDocumentBody(TSharedPtr<FJsonObject> Docume
 UBlueprint* LoadBlueprintForTarget(const FString& Target)
 {
 	return LoadObject<UBlueprint>(nullptr, *FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target)));
+}
+
+TSharedPtr<FJsonObject> MakeComponentKey(const TCHAR* Name, const TCHAR* OwnerClass = TEXT("Self"))
+{
+	TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+	Key->SetStringField(TEXT("Name"), Name);
+	Key->SetStringField(TEXT("OwnerClass"), OwnerClass);
+	return Key;
+}
+
+TSharedPtr<FJsonObject> MakeOwnedSphereComponent(const TCHAR* Name, double SphereRadius)
+{
+	TSharedPtr<FJsonObject> Component = MakeShared<FJsonObject>();
+	Component->SetObjectField(TEXT("Key"), MakeComponentKey(Name));
+	Component->SetStringField(TEXT("Scope"), TEXT("OwnedSCS"));
+	Component->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SphereComponent"));
+	Component->SetObjectField(TEXT("AttachTo"), MakeComponentKey(TEXT("DefaultSceneRoot")));
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetNumberField(TEXT("SphereRadius"), SphereRadius);
+	Component->SetObjectField(TEXT("Properties"), Properties);
+	return Component;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeComponentArray(std::initializer_list<TSharedPtr<FJsonObject>> Components)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const TSharedPtr<FJsonObject>& Component : Components)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(Component));
+	}
+	return Result;
+}
+
+USCS_Node* FindSCSNodeByVariableName(const UBlueprint* Blueprint, FName VariableName)
+{
+	if (!Blueprint || !Blueprint->SimpleConstructionScript)
+	{
+		return nullptr;
+	}
+
+	for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+	{
+		if (Node && Node->GetVariableName() == VariableName)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
 }
 
 bool HasBlueprintVariable(const UBlueprint* Blueprint, FName Name)
@@ -554,6 +606,192 @@ bool FAssetDocumentUBlueprintVariablesAuthoritativeTest::RunTest(const FString&)
 		{
 			return Variable.VarName == TEXT("Stamina");
 		}));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintOwnedSCSComponentsAuthoritativeTest,
+	"AssetFactory.AssetDocument.UBlueprint.OwnedSCSComponentsAuthoritative",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintOwnedSCSComponentsAuthoritativeTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_Components_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest FirstRequest;
+	FirstRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(FirstRequest.Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({
+			MakeOwnedSphereComponent(TEXT("Sensor"), 500.0),
+			MakeOwnedSphereComponent(TEXT("Vision"), 250.0),
+		}));
+	FirstRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult FirstResult = Service.Apply(FirstRequest);
+	if (!FirstResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Initial component apply failed: %s"), *FirstResult.Message));
+	}
+	TestTrue(TEXT("Initial component apply succeeds"), FirstResult.IsSuccess());
+
+	FAssetDocumentApplyRequest SecondRequest;
+	SecondRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(SecondRequest.Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+	SecondRequest.bSaveAsset = false;
+
+	const FAssetDocumentResult SecondResult = Service.Apply(SecondRequest);
+	if (!SecondResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Second component apply failed: %s"), *SecondResult.Message));
+	}
+	TestTrue(TEXT("Second component apply succeeds"), SecondResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Blueprint exists"), Blueprint);
+	if (Blueprint)
+	{
+		USCS_Node* Sensor = FindSCSNodeByVariableName(Blueprint, TEXT("Sensor"));
+		USCS_Node* Vision = FindSCSNodeByVariableName(Blueprint, TEXT("Vision"));
+		USCS_Node* DefaultSceneRoot = FindSCSNodeByVariableName(Blueprint, USceneComponent::GetDefaultSceneRootVariableName());
+
+		TestNotNull(TEXT("Sensor component remains"), Sensor);
+		TestNull(TEXT("Vision component was removed"), Vision);
+		TestNotNull(TEXT("DefaultSceneRoot exists"), DefaultSceneRoot);
+		if (Sensor)
+		{
+			TestEqual(TEXT("Sensor class is SphereComponent"), Sensor->ComponentClass.Get(), USphereComponent::StaticClass());
+			const USphereComponent* SensorTemplate = Cast<USphereComponent>(Sensor->ComponentTemplate);
+			TestNotNull(TEXT("Sensor has SphereComponent template"), SensorTemplate);
+			if (SensorTemplate)
+			{
+				TestEqual(TEXT("SphereRadius property was applied"), SensorTemplate->GetUnscaledSphereRadius(), 500.0f);
+			}
+			TestEqual(TEXT("Sensor attaches to DefaultSceneRoot"), Blueprint->SimpleConstructionScript->FindParentNode(Sensor), DefaultSceneRoot);
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintOwnedSCSComponentsValidationAndDiffTest,
+	"AssetFactory.AssetDocument.UBlueprint.OwnedSCSComponentsValidationAndDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintOwnedSCSComponentsValidationAndDiffTest::RunTest(const FString&)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext ValidationContext;
+	ValidationContext.AssetClass = UBlueprint::StaticClass();
+
+	TSharedPtr<FJsonObject> InvalidDocument = MakeUBlueprintDocument(
+		TEXT("/Game/AssetDocumentTests/BP_AD_InvalidComponentParent"),
+		TEXT("/Script/Engine.GameInstance"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(InvalidDocument)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+
+	const FAssetDocumentCapabilityResult InvalidResult = Capability.Validate(
+		ValidationContext,
+		MakeBodyValue(LoadBlueprintDocumentBody(InvalidDocument).ToSharedRef()));
+	TestFalse(TEXT("OwnedSCS component with non-Actor parent fails validation"), InvalidResult.bSuccess);
+	const bool bHasExpectedInvalidParentDiagnostic = ResultHasDiagnostic(InvalidResult, TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
+	if (!bHasExpectedInvalidParentDiagnostic)
+	{
+		for (const FAssetDocumentDiagnostic& Diagnostic : InvalidResult.Diagnostics)
+		{
+			AddError(FString::Printf(TEXT("Unexpected non-Actor component diagnostic: Path=%s Code=%s Message=%s"), *Diagnostic.Path, *Diagnostic.Code, *Diagnostic.Message));
+		}
+	}
+	TestTrue(TEXT("Non-Actor component failure is reported at Components"), bHasExpectedInvalidParentDiagnostic);
+
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentDiff_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	TSharedPtr<FJsonObject> Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Component diff fixture apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Component diff fixture apply succeeds"), ApplyResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Component diff Blueprint exists"), Blueprint);
+	if (Blueprint)
+	{
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = Blueprint;
+		Context.AssetClass = UBlueprint::StaticClass();
+
+		TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+		TestTrue(TEXT("Component extract succeeds"), ExtractResult.bSuccess);
+
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedComponents = nullptr;
+		TestTrue(TEXT("Extract includes Components"), ExtractedBody->TryGetArrayField(TEXT("Components"), ExtractedComponents));
+		TSharedPtr<FJsonObject> Sensor = ExtractedComponents ? FindJsonObjectByStringField(*ExtractedComponents, TEXT("Scope"), TEXT("OwnedSCS")) : nullptr;
+		TestTrue(TEXT("Extract includes an OwnedSCS component"), Sensor.IsValid());
+		if (Sensor.IsValid())
+		{
+			const TSharedPtr<FJsonObject>* Key = nullptr;
+			TestTrue(TEXT("Extracted component includes Key"), Sensor->TryGetObjectField(TEXT("Key"), Key));
+			if (Key && Key->IsValid())
+			{
+				TestEqual(TEXT("Extracted component Key.Name is Sensor"), (*Key)->GetStringField(TEXT("Name")), FString(TEXT("Sensor")));
+				TestEqual(TEXT("Extracted component Key.OwnerClass is Self"), (*Key)->GetStringField(TEXT("OwnerClass")), FString(TEXT("Self")));
+			}
+			TestEqual(TEXT("Extracted component class is SphereComponent"), Sensor->GetStringField(TEXT("Class")), FString(TEXT("/Script/Engine.SphereComponent")));
+			const TSharedPtr<FJsonObject>* AttachTo = nullptr;
+			TestTrue(TEXT("Extracted component includes AttachTo"), Sensor->TryGetObjectField(TEXT("AttachTo"), AttachTo));
+			if (AttachTo && AttachTo->IsValid())
+			{
+				TestEqual(TEXT("Extracted AttachTo.Name is DefaultSceneRoot"), (*AttachTo)->GetStringField(TEXT("Name")), FString(TEXT("DefaultSceneRoot")));
+				TestEqual(TEXT("Extracted AttachTo.OwnerClass is Self"), (*AttachTo)->GetStringField(TEXT("OwnerClass")), FString(TEXT("Self")));
+			}
+			const TSharedPtr<FJsonObject>* Properties = nullptr;
+			TestTrue(TEXT("Extracted component includes Properties"), Sensor->TryGetObjectField(TEXT("Properties"), Properties));
+			if (Properties && Properties->IsValid())
+			{
+				TestEqual(TEXT("Extracted SphereRadius is default diff"), (*Properties)->GetNumberField(TEXT("SphereRadius")), 500.0);
+			}
+		}
+
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(Document).ToSharedRef()), DiffEntries);
+		TestTrue(TEXT("Component diff succeeds"), DiffResult.bSuccess);
+		TSharedPtr<FJsonObject> SensorDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components/Self:Sensor"));
+		TestTrue(TEXT("Component diff includes Sensor"), SensorDiff.IsValid());
+		if (SensorDiff.IsValid())
+		{
+			TestEqual(TEXT("Sensor component diff is unchanged"), SensorDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+		}
 	}
 
 	return true;
