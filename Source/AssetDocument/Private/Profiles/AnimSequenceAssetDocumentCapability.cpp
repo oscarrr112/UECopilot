@@ -6,6 +6,7 @@
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
+#include "Animation/AnimData/IAnimationDataModel.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTypes.h"
 #include "Dom/JsonValue.h"
@@ -381,6 +382,7 @@ FAssetDocumentCapabilityResult ParseAssetRef(
 	UClass* ExpectedBaseClass,
 	const FString& Path,
 	bool bResolveFragments,
+	bool bAllowNull,
 	bool& bOutHasValue,
 	UObject*& OutObject)
 {
@@ -395,6 +397,10 @@ FAssetDocumentCapabilityResult ParseAssetRef(
 
 	if (!Value->IsValid() || (*Value)->Type == EJson::Null)
 	{
+		if (!bAllowNull)
+		{
+			return BodyFailure(FString::Printf(TEXT("%s cannot be null"), FieldName), Path, TEXT("NullNotAllowed"));
+		}
 		bOutHasValue = true;
 		return FAssetDocumentCapabilityResult::Success();
 	}
@@ -573,6 +579,27 @@ FString RefPoseTypeToString(EAdditiveBasePoseType Value)
 
 FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<FJsonObject>& BodyObject)
 {
+	const TArray<FString> NotImplementedBodyKeys = {
+		TEXT("Curves"),
+		TEXT("Notifies"),
+		TEXT("NotifyStates"),
+		TEXT("NotifyTracks"),
+		TEXT("SyncMarkers"),
+		TEXT("Metadata"),
+		TEXT("AssetUserData"),
+	};
+	for (const FString& BodyKey : NotImplementedBodyKeys)
+	{
+		if (BodyObject->HasField(BodyKey))
+		{
+			const FString Path = FString::Printf(TEXT("/Body/%s"), *BodyKey);
+			return BodyFailure(
+				FString::Printf(TEXT("Body.%s is declared but not implemented by the AnimSequence Task 2 scalar capability"), *BodyKey),
+				Path,
+				TEXT("NotImplementedBodyRegion"));
+		}
+	}
+
 	const TArray<FString> UnsupportedBodyKeys = {
 		TEXT("Import"),
 		TEXT("RawTracks"),
@@ -605,6 +632,32 @@ FAssetDocumentCapabilityResult RejectUnsupportedAuthoredFields(const TSharedRef<
 					Path,
 					TEXT("UnsupportedAuthoredField"));
 			}
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult RejectUnknownObjectFields(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TCHAR* SectionName,
+	const TArray<FString>& AllowedFields)
+{
+	const TSharedPtr<FJsonObject>* SectionObject = nullptr;
+	if (!BodyObject->TryGetObjectField(SectionName, SectionObject) || !SectionObject || !SectionObject->IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*SectionObject)->Values)
+	{
+		if (!AllowedFields.Contains(Pair.Key))
+		{
+			const FString Path = FString::Printf(TEXT("/Body/%s/%s"), SectionName, *Pair.Key);
+			return BodyFailure(
+				FString::Printf(TEXT("Body.%s.%s is not supported by the AnimSequence Task 2 scalar capability"), SectionName, *Pair.Key),
+				Path,
+				TEXT("UnsupportedAuthoredField"));
 		}
 	}
 
@@ -648,6 +701,89 @@ struct FParsedAnimSequenceBody
 	bool bHasDoNotOverrideCompression = false;
 	bool bDoNotOverrideCompression = false;
 };
+
+bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
+{
+	OutFrameCount = 0;
+	if (!Sequence)
+	{
+		return false;
+	}
+
+	const int32 SampledKeys = Sequence->GetNumberOfSampledKeys();
+	if (SampledKeys > 0)
+	{
+		OutFrameCount = SampledKeys;
+		return true;
+	}
+
+	if (IAnimationDataModel* DataModel = Sequence->GetDataModel())
+	{
+		const int32 DataModelKeys = DataModel->GetNumberOfKeys();
+		if (DataModelKeys > 0)
+		{
+			OutFrameCount = DataModelKeys;
+			return true;
+		}
+
+		const int32 DataModelFrames = DataModel->GetNumberOfFrames();
+		if (DataModelFrames >= 0)
+		{
+			OutFrameCount = DataModelFrames + 1;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FAssetDocumentCapabilityResult ValidateParsedBodyAgainstSequence(
+	const UAnimSequence* Sequence,
+	const FParsedAnimSequenceBody& ParsedBody)
+{
+	if (!Sequence)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (ParsedBody.bHasSkeleton && ParsedBody.Skeleton && Sequence->GetSkeleton() && Sequence->GetSkeleton() != ParsedBody.Skeleton)
+	{
+		return BodyFailure(TEXT("Body.References.Skeleton must match the current AnimSequence skeleton in Task 2"), TEXT("/Body/References/Skeleton"), TEXT("SkeletonMismatch"));
+	}
+
+	if (ParsedBody.bHasPreviewMesh && ParsedBody.PreviewMesh && Sequence->GetSkeleton() && ParsedBody.PreviewMesh->GetSkeleton() != Sequence->GetSkeleton())
+	{
+		return BodyFailure(TEXT("Body.Preview.PreviewMesh skeleton must match the AnimSequence skeleton"), TEXT("/Body/Preview/PreviewMesh"), TEXT("PreviewMeshSkeletonMismatch"));
+	}
+
+	if (ParsedBody.bHasRefFrameIndex)
+	{
+		const UAnimSequence* FrameSource = Sequence;
+		if (ParsedBody.bHasRefPoseSeq && ParsedBody.RefPoseSeq)
+		{
+			FrameSource = ParsedBody.RefPoseSeq;
+		}
+		else if (!ParsedBody.bHasRefPoseSeq && Sequence->RefPoseSeq)
+		{
+			FrameSource = Sequence->RefPoseSeq;
+		}
+
+		int32 FrameCount = 0;
+		if (!TryGetAnimSequenceFrameCount(FrameSource, FrameCount) || FrameCount <= 0)
+		{
+			return BodyFailure(TEXT("Unable to validate Additive.RefFrameIndex because the frame count is unavailable"), TEXT("/Body/Additive/RefFrameIndex"), TEXT("UnsupportedRefFrameIndexValidation"));
+		}
+		if (ParsedBody.RefFrameIndex >= FrameCount)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Additive.RefFrameIndex must be less than available frame count %d"), FrameCount),
+				TEXT("/Body/Additive/RefFrameIndex"),
+				TEXT("InvalidRefFrameIndex"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
 
 FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObject>& BodyObject)
 {
@@ -723,6 +859,22 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 		}
 	}
 
+	const TArray<FAssetDocumentCapabilityResult> FieldResults = {
+		RejectUnknownObjectFields(BodyObject, TEXT("References"), { TEXT("Skeleton"), TEXT("RetargetSource"), TEXT("RetargetSourceAsset") }),
+		RejectUnknownObjectFields(BodyObject, TEXT("Preview"), { TEXT("PreviewMesh") }),
+		RejectUnknownObjectFields(BodyObject, TEXT("Playback"), { TEXT("RateScale") }),
+		RejectUnknownObjectFields(BodyObject, TEXT("Additive"), { TEXT("AdditiveAnimType"), TEXT("RefPoseType"), TEXT("RefFrameIndex"), TEXT("RefPoseSeq") }),
+		RejectUnknownObjectFields(BodyObject, TEXT("RootMotion"), { TEXT("bEnableRootMotion"), TEXT("RootMotionRootLock"), TEXT("bForceRootLock"), TEXT("bUseNormalizedRootMotionScale") }),
+		RejectUnknownObjectFields(BodyObject, TEXT("Compression"), { TEXT("CompressionErrorThresholdScale"), TEXT("BoneCompressionSettings"), TEXT("CurveCompressionSettings"), TEXT("bDoNotOverrideCompression") }),
+	};
+	for (const FAssetDocumentCapabilityResult& Result : FieldResults)
+	{
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -750,7 +902,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 
 		UObject* SkeletonObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, ReferencesObject.ToSharedRef(), TEXT("Skeleton"), USkeleton::StaticClass(), TEXT("/Body/References/Skeleton"), bResolveFragments, OutParsed.bHasSkeleton, SkeletonObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, ReferencesObject.ToSharedRef(), TEXT("Skeleton"), USkeleton::StaticClass(), TEXT("/Body/References/Skeleton"), bResolveFragments, false, OutParsed.bHasSkeleton, SkeletonObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -769,7 +921,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 
 		UObject* RetargetSourceAssetObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, ReferencesObject.ToSharedRef(), TEXT("RetargetSourceAsset"), USkeletalMesh::StaticClass(), TEXT("/Body/References/RetargetSourceAsset"), bResolveFragments, OutParsed.bHasRetargetSourceAsset, RetargetSourceAssetObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, ReferencesObject.ToSharedRef(), TEXT("RetargetSourceAsset"), USkeletalMesh::StaticClass(), TEXT("/Body/References/RetargetSourceAsset"), bResolveFragments, true, OutParsed.bHasRetargetSourceAsset, RetargetSourceAssetObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -787,7 +939,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 
 		UObject* PreviewMeshObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, PreviewObject.ToSharedRef(), TEXT("PreviewMesh"), USkeletalMesh::StaticClass(), TEXT("/Body/Preview/PreviewMesh"), bResolveFragments, OutParsed.bHasPreviewMesh, PreviewMeshObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, PreviewObject.ToSharedRef(), TEXT("PreviewMesh"), USkeletalMesh::StaticClass(), TEXT("/Body/Preview/PreviewMesh"), bResolveFragments, true, OutParsed.bHasPreviewMesh, PreviewMeshObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -857,7 +1009,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 
 		UObject* RefPoseSeqObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, AdditiveObject.ToSharedRef(), TEXT("RefPoseSeq"), UAnimSequence::StaticClass(), TEXT("/Body/Additive/RefPoseSeq"), bResolveFragments, OutParsed.bHasRefPoseSeq, RefPoseSeqObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, AdditiveObject.ToSharedRef(), TEXT("RefPoseSeq"), UAnimSequence::StaticClass(), TEXT("/Body/Additive/RefPoseSeq"), bResolveFragments, true, OutParsed.bHasRefPoseSeq, RefPoseSeqObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -924,7 +1076,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		}
 
 		UObject* BoneCompressionObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, CompressionObject.ToSharedRef(), TEXT("BoneCompressionSettings"), UAnimBoneCompressionSettings::StaticClass(), TEXT("/Body/Compression/BoneCompressionSettings"), bResolveFragments, OutParsed.bHasBoneCompressionSettings, BoneCompressionObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, CompressionObject.ToSharedRef(), TEXT("BoneCompressionSettings"), UAnimBoneCompressionSettings::StaticClass(), TEXT("/Body/Compression/BoneCompressionSettings"), bResolveFragments, true, OutParsed.bHasBoneCompressionSettings, BoneCompressionObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -932,7 +1084,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		OutParsed.BoneCompressionSettings = Cast<UAnimBoneCompressionSettings>(BoneCompressionObject);
 
 		UObject* CurveCompressionObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, CompressionObject.ToSharedRef(), TEXT("CurveCompressionSettings"), UAnimCurveCompressionSettings::StaticClass(), TEXT("/Body/Compression/CurveCompressionSettings"), bResolveFragments, OutParsed.bHasCurveCompressionSettings, CurveCompressionObject);
+		Result = ParseAssetRef(Compiler, Context, Sequence, CompressionObject.ToSharedRef(), TEXT("CurveCompressionSettings"), UAnimCurveCompressionSettings::StaticClass(), TEXT("/Body/Compression/CurveCompressionSettings"), bResolveFragments, true, OutParsed.bHasCurveCompressionSettings, CurveCompressionObject);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -944,6 +1096,12 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		{
 			return Result;
 		}
+	}
+
+	const FAssetDocumentCapabilityResult SequenceValidationResult = ValidateParsedBodyAgainstSequence(Sequence, OutParsed);
+	if (!SequenceValidationResult.bSuccess)
+	{
+		return SequenceValidationResult;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body parsed"));
@@ -1167,6 +1325,26 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 		Sequence->bDoNotOverrideCompression = ParsedBody.bDoNotOverrideCompression;
 	}
 
+	const bool bNeedsCacheRefresh =
+		ParsedBody.bHasRetargetSourceAsset ||
+		ParsedBody.bHasPreviewMesh ||
+		ParsedBody.bHasAdditiveAnimType ||
+		ParsedBody.bHasRefPoseType ||
+		ParsedBody.bHasRefFrameIndex ||
+		ParsedBody.bHasRefPoseSeq ||
+		ParsedBody.bHasEnableRootMotion ||
+		ParsedBody.bHasRootMotionRootLock ||
+		ParsedBody.bHasForceRootLock ||
+		ParsedBody.bHasUseNormalizedRootMotionScale ||
+		ParsedBody.bHasCompressionErrorThresholdScale ||
+		ParsedBody.bHasBoneCompressionSettings ||
+		ParsedBody.bHasCurveCompressionSettings ||
+		ParsedBody.bHasDoNotOverrideCompression;
+	if (!Context.bIsDryRun && bNeedsCacheRefresh)
+	{
+		// ValidateCompressionSettings is protected in UE 5.7; RefreshCacheData is the public post-apply refresh hook.
+		Sequence->RefreshCacheData();
+	}
 	Sequence->MarkPackageDirty();
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body applied"));
 }
