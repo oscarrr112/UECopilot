@@ -2757,16 +2757,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		bChanged |= bVariablesChanged;
 	}
 
-	if (bHasComponentsRegion)
-	{
-		const FAssetDocumentCapabilityResult ComponentApplyResult = ApplyOwnedSCSComponents(Blueprint, ParsedComponents);
-		if (!ComponentApplyResult.bSuccess)
-		{
-			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ComponentApplyResult);
-		}
-		bChanged |= HasOwnedSCSComponent(ParsedComponents);
-	}
-
 	if (bChanged)
 	{
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
@@ -2812,6 +2802,30 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		if (!ClassDefaultsPreflightResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsPreflightResult);
+		}
+	}
+
+	if (bHasComponentsRegion)
+	{
+		const FAssetDocumentCapabilityResult ComponentApplyResult = ApplyOwnedSCSComponents(Blueprint, ParsedComponents);
+		if (!ComponentApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ComponentApplyResult);
+		}
+
+		if (HasOwnedSCSComponent(ParsedComponents))
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+			FKismetEditorUtilities::CompileBlueprint(Blueprint);
+			if (Blueprint->Status == BS_Error)
+			{
+				return RestoreAndReturnFailure(
+					Blueprint,
+					PreviousParentClass,
+					PreviousInterfaces,
+					PreviousVariables,
+					BodyFailure(TEXT("Failed to compile UBlueprint after applying owned SCS components"), TEXT("/Body/Components"), TEXT("BlueprintCompileFailed")));
+			}
 		}
 	}
 

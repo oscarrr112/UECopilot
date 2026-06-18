@@ -324,6 +324,20 @@ bool IsUnchangedDiffEntry(const TSharedPtr<FJsonObject>& Entry)
 		&& Status == TEXT("unchanged")
 		&& !Entry->HasField(TEXT("change"));
 }
+
+bool HasChangedDiffEntry(const TArray<TSharedPtr<FJsonValue>>& Entries)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Status;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("status"), Status) && Status != TEXT("unchanged"))
+		{
+			return true;
+		}
+	}
+	return false;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1252,6 +1266,7 @@ bool FAssetDocumentUBlueprintInheritedSCSOverrideTest::RunTest(const FString&)
 		TSharedPtr<FJsonObject> InheritedDiff = FindDiffEntryByPath(DiffEntries, FString::Printf(TEXT("/Body/Components/%s:ParentSensor"), *ParentGeneratedClassPath));
 		TestNotNull(TEXT("Inherited component diff includes override path"), InheritedDiff.Get());
 		TestTrue(TEXT("Inherited component roundtrip diff is unchanged"), IsUnchangedDiffEntry(InheritedDiff));
+		TestFalse(TEXT("Inherited component roundtrip has no changed diff entries"), HasChangedDiffEntry(DiffEntries));
 	}
 
 	FAssetDocumentApplyRequest ChildResetRequest;
@@ -1350,6 +1365,7 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 		TSharedPtr<FJsonObject> NativeDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
 		TestNotNull(TEXT("Native component diff includes alias path"), NativeDiff.Get());
 		TestTrue(TEXT("Native component roundtrip diff is unchanged"), IsUnchangedDiffEntry(NativeDiff));
+		TestFalse(TEXT("Native component roundtrip has no changed diff entries"), HasChangedDiffEntry(DiffEntries));
 
 		TSharedPtr<FJsonObject> NativeMovementByObjectName = MakeReferencedComponent(TEXT("Native"), TEXT("CharMoveComp"), TEXT("/Script/Engine.Character"));
 		NativeMovementByObjectName->SetStringField(TEXT("Class"), TEXT("/Script/Engine.CharacterMovementComponent"));
@@ -1369,6 +1385,7 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 			FindDiffEntryByPath(ObjectNameDiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
 		TestNotNull(TEXT("Native object-name diff canonicalizes to alias path"), ObjectNameNativeDiff.Get());
 		TestTrue(TEXT("Native object-name desired diff is unchanged"), IsUnchangedDiffEntry(ObjectNameNativeDiff));
+		TestFalse(TEXT("Native object-name desired has no changed diff entries"), HasChangedDiffEntry(ObjectNameDiffEntries));
 	}
 
 	const ACharacter* ParentCDO = GetDefault<ACharacter>();
@@ -1401,6 +1418,53 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 		{
 			TestEqual(TEXT("Native MaxWalkSpeed resets to parent CDO baseline"), Movement->MaxWalkSpeed, ParentMaxWalkSpeed);
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintParentChangePreflightsBeforeOwnedSCSMutationTest,
+	"AssetFactory.AssetDocument.UBlueprint.ParentChangePreflightsBeforeOwnedSCSMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintParentChangePreflightsBeforeOwnedSCSMutationTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ParentPreflight_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentService Service;
+
+	FAssetDocumentApplyRequest CreateRequest;
+	CreateRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	CreateRequest.bSaveAsset = false;
+	const FAssetDocumentResult CreateResult = Service.Apply(CreateRequest);
+	TestTrue(TEXT("Initial Blueprint applies"), CreateResult.IsSuccess());
+
+	TSharedPtr<FJsonObject> BadClassDefaults = MakeShared<FJsonObject>();
+	BadClassDefaults->SetNumberField(TEXT("NotARealClassDefault"), 1.0);
+
+	FAssetDocumentApplyRequest BadRequest;
+	BadRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Pawn"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{},
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("ShouldNotPersist"), 64.0)}),
+		BadClassDefaults);
+	BadRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+	TestFalse(TEXT("Parent change with invalid post-compile class default fails"), BadResult.IsSuccess());
+
+	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Blueprint still exists after failed parent change"), Blueprint);
+	if (Blueprint)
+	{
+		TestEqual(TEXT("Parent class is restored after failed parent change"), Blueprint->ParentClass.Get(), AActor::StaticClass());
+		TestNull(TEXT("OwnedSCS component is not mutated before post-compile preflight"), FindSCSNodeByVariableName(Blueprint, TEXT("ShouldNotPersist")));
 	}
 
 	return true;
