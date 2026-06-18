@@ -794,11 +794,11 @@ bool FAssetDocumentUBlueprintOwnedSCSComponentsAuthoritativeTest::RunTest(const 
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentUBlueprintNativeInheritedComponentsDoNotDeleteOwnedSCSTest,
-	"AssetFactory.AssetDocument.UBlueprint.NativeInheritedComponentsDoNotDeleteOwnedSCS",
+	FAssetDocumentUBlueprintComponentsAuthoritativeDeletesOwnedSCSTest,
+	"AssetFactory.AssetDocument.UBlueprint.ComponentsAuthoritativeDeletesOwnedSCS",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentUBlueprintNativeInheritedComponentsDoNotDeleteOwnedSCSTest::RunTest(const FString&)
+bool FAssetDocumentUBlueprintComponentsAuthoritativeDeletesOwnedSCSTest::RunTest(const FString&)
 {
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ComponentScopes_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	FAssetDocumentService Service;
@@ -817,28 +817,53 @@ bool FAssetDocumentUBlueprintNativeInheritedComponentsDoNotDeleteOwnedSCSTest::R
 	const FAssetDocumentResult CreateResult = Service.Apply(CreateRequest);
 	TestTrue(TEXT("Initial owned component apply succeeds"), CreateResult.IsSuccess());
 
-	FAssetDocumentApplyRequest ReferenceOnlyRequest;
-	ReferenceOnlyRequest.Document = MakeUBlueprintDocument(
+	FAssetDocumentApplyRequest EmptyComponentsRequest;
+	EmptyComponentsRequest.Document = MakeUBlueprintDocument(
 		Target,
 		TEXT("/Script/Engine.Actor"),
 		TArray<TSharedPtr<FJsonValue>>{},
 		TArray<TSharedPtr<FJsonValue>>{});
-	LoadBlueprintDocumentBody(ReferenceOnlyRequest.Document)->SetArrayField(
-		TEXT("Components"),
-		MakeComponentArray({
-			MakeReferencedComponent(TEXT("Native"), TEXT("NativeRoot"), TEXT("/Script/Engine.Actor")),
-			MakeReferencedComponent(TEXT("Inherited"), TEXT("InheritedMesh"), TEXT("/Script/Engine.Pawn")),
-		}));
-	ReferenceOnlyRequest.bSaveAsset = false;
+	LoadBlueprintDocumentBody(EmptyComponentsRequest.Document)->SetArrayField(TEXT("Components"), TArray<TSharedPtr<FJsonValue>>{});
+	EmptyComponentsRequest.bSaveAsset = false;
 
-	const FAssetDocumentResult ReferenceOnlyResult = Service.Apply(ReferenceOnlyRequest);
-	TestTrue(TEXT("Native/Inherited-only components apply succeeds"), ReferenceOnlyResult.IsSuccess());
+	const FAssetDocumentResult EmptyComponentsResult = Service.Apply(EmptyComponentsRequest);
+	TestTrue(TEXT("Empty Components apply succeeds"), EmptyComponentsResult.IsSuccess());
 
 	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
 	TestNotNull(TEXT("Blueprint exists"), Blueprint);
 	if (Blueprint)
 	{
-		TestNotNull(TEXT("Existing owned Sensor is preserved"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
+		TestNull(TEXT("Explicit empty Components deletes owned Sensor"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
+	}
+
+	FAssetDocumentApplyRequest RecreateRequest;
+	RecreateRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(RecreateRequest.Document)->SetArrayField(
+		TEXT("Components"),
+		MakeComponentArray({MakeOwnedSphereComponent(TEXT("Sensor"), 500.0)}));
+	RecreateRequest.bSaveAsset = false;
+	TestTrue(TEXT("Recreated owned component apply succeeds"), Service.Apply(RecreateRequest).IsSuccess());
+
+	FAssetDocumentApplyRequest OmittedComponentsRequest;
+	OmittedComponentsRequest.Document = MakeUBlueprintDocument(
+		Target,
+		TEXT("/Script/Engine.Actor"),
+		TArray<TSharedPtr<FJsonValue>>{},
+		TArray<TSharedPtr<FJsonValue>>{});
+	LoadBlueprintDocumentBody(OmittedComponentsRequest.Document)->RemoveField(TEXT("Components"));
+	OmittedComponentsRequest.bSaveAsset = false;
+	const FAssetDocumentResult OmittedComponentsResult = Service.Apply(OmittedComponentsRequest);
+	TestTrue(TEXT("Omitted Components apply succeeds"), OmittedComponentsResult.IsSuccess());
+
+	Blueprint = LoadBlueprintForTarget(Target);
+	TestNotNull(TEXT("Blueprint still exists"), Blueprint);
+	if (Blueprint)
+	{
+		TestNull(TEXT("Omitted Components deletes owned Sensor"), FindSCSNodeByVariableName(Blueprint, TEXT("Sensor")));
 	}
 
 	return true;
@@ -1584,11 +1609,11 @@ bool FAssetDocumentUBlueprintClassDefaultsAuthoritativeTest::RunTest(const FStri
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentUBlueprintParentChangeRequiresAuthoritativeRegionsTest,
-	"AssetFactory.AssetDocument.UBlueprint.ParentChangeRequiresAuthoritativeRegions",
+	FAssetDocumentUBlueprintOmittedRegionsAreAuthoritativeTest,
+	"AssetFactory.AssetDocument.UBlueprint.OmittedRegionsAreAuthoritative",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentUBlueprintParentChangeRequiresAuthoritativeRegionsTest::RunTest(const FString&)
+bool FAssetDocumentUBlueprintOmittedRegionsAreAuthoritativeTest::RunTest(const FString&)
 {
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BP_AD_ParentGuard_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	FAssetDocumentService Service;
@@ -1606,13 +1631,15 @@ bool FAssetDocumentUBlueprintParentChangeRequiresAuthoritativeRegionsTest::RunTe
 	ParentOnlyRequest.Document = MakeUBlueprintDocument(Target, TEXT("/Script/Engine.Pawn"), TOptional<TArray<TSharedPtr<FJsonValue>>>(), TOptional<TArray<TSharedPtr<FJsonValue>>>());
 	ParentOnlyRequest.bSaveAsset = false;
 	const FAssetDocumentResult ParentOnlyResult = Service.Apply(ParentOnlyRequest);
-	TestFalse(TEXT("Parent change without Variables and ImplementedInterfaces fails"), ParentOnlyResult.IsSuccess());
+	TestTrue(TEXT("Parent-only apply succeeds with omitted authoritative regions"), ParentOnlyResult.IsSuccess());
 
 	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
 	TestNotNull(TEXT("Blueprint still exists"), Blueprint);
 	if (Blueprint)
 	{
-		TestEqual(TEXT("Parent remains Actor"), Blueprint->ParentClass.Get(), AActor::StaticClass());
+		TestEqual(TEXT("Parent changes to Pawn"), Blueprint->ParentClass.Get(), APawn::StaticClass());
+		TestFalse(TEXT("Omitted Variables region deletes Health"), HasBlueprintVariable(Blueprint, TEXT("Health")));
+		TestEqual(TEXT("Omitted ImplementedInterfaces region leaves no interfaces"), Blueprint->ImplementedInterfaces.Num(), 0);
 	}
 	return true;
 }
@@ -1756,7 +1783,12 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	TArray<TSharedPtr<FJsonValue>> ParentOnlyDiffEntries;
 	const FAssetDocumentCapabilityResult ParentOnlyDiffResult = Capability.Diff(Context, MakeBodyValue(ParentOnlyBody), ParentOnlyDiffEntries);
 	TestTrue(TEXT("Parent-only diff succeeds"), ParentOnlyDiffResult.bSuccess);
-	TestNull(TEXT("Omitted Variables region produces no variable diff entry"), FindDiffEntryByPath(ParentOnlyDiffEntries, TEXT("/Body/Variables/Health")).Get());
+	TSharedPtr<FJsonObject> HealthDiff = FindDiffEntryByPath(ParentOnlyDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Omitted Variables region reports existing variable as extra"), HealthDiff.IsValid());
+	if (HealthDiff.IsValid())
+	{
+		TestEqual(TEXT("Extra variable diff is changed"), HealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
 
 	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
 	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(TEXT("/Script/Engine.ActorSoundParameterInterface")));

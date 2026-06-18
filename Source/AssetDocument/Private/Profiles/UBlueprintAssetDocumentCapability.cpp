@@ -1238,17 +1238,14 @@ FAssetDocumentCapabilityResult AttachOwnedNode(USimpleConstructionScript* SCS, U
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs)
+FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, const TArray<FUBlueprintComponentSpec>& Specs, bool& bOutChanged)
 {
+	bOutChanged = false;
 	TArray<const FUBlueprintComponentSpec*> DesiredOwnedSpecs;
 	TMap<FString, const FUBlueprintComponentSpec*> DesiredOwnedByKey;
 	CollectOwnedSCSComponents(Specs, DesiredOwnedSpecs, DesiredOwnedByKey);
-	if (DesiredOwnedSpecs.Num() == 0)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	if (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(AActor::StaticClass()))
+	bOutChanged = DesiredOwnedSpecs.Num() > 0;
+	if (DesiredOwnedSpecs.Num() > 0 && (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(AActor::StaticClass())))
 	{
 		return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	}
@@ -1259,7 +1256,19 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		return StructureResult;
 	}
 
-	USimpleConstructionScript* SCS = EnsureSimpleConstructionScript(Blueprint);
+	USimpleConstructionScript* SCS = nullptr;
+	if (DesiredOwnedSpecs.Num() > 0)
+	{
+		SCS = EnsureSimpleConstructionScript(Blueprint);
+	}
+	else if (Blueprint)
+	{
+		SCS = Blueprint->SimpleConstructionScript.Get();
+	}
+	if (!SCS && DesiredOwnedSpecs.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
 	if (!SCS)
 	{
 		return BodyFailure(TEXT("Failed to create SimpleConstructionScript for UBlueprint"), TEXT("/Body/Components"), TEXT("MissingSimpleConstructionScript"));
@@ -1279,6 +1288,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		if (!DesiredOwnedByKey.Contains(ComponentKeyToString(ExistingKey)))
 		{
 			SCS->RemoveNode(Node, false);
+			bOutChanged = true;
 		}
 	}
 
@@ -1541,6 +1551,11 @@ bool IsSupportedClassDefaultProperty(FProperty* Property)
 		|| CastField<FSoftObjectProperty>(Property)
 		|| CastField<FClassProperty>(Property)
 		|| CastField<FSoftClassProperty>(Property);
+}
+
+bool IsBlueprintVariableClassDefaultProperty(const UBlueprint* Blueprint, const FProperty* Property)
+{
+	return Blueprint && Property && FindNewVariable(Blueprint, Property->GetFName()) != nullptr;
 }
 
 FAssetDocumentCapabilityResult ResetWritablePropertiesFromBaseline(UObject* Target, UObject* Baseline, const FString& Path)
@@ -2338,6 +2353,13 @@ FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, con
 				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
 				TEXT("UnknownProperty"));
 		}
+		if (IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Blueprint variable '%s' must be authored through Body.Variables, not Body.ClassDefaults"), *Pair.Key),
+				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
+				TEXT("BlueprintVariableClassDefaultUnsupported"));
+		}
 		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property))
 		{
 			return BodyFailure(
@@ -2379,7 +2401,9 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const T
 	for (TFieldIterator<FProperty> PropertyIt(GeneratedClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
-		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property) || !IsSupportedClassDefaultProperty(Property))
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
+			|| !IsSupportedClassDefaultProperty(Property)
+			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2412,7 +2436,7 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const T
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Object, UObject* Baseline)
+TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Object, UObject* Baseline, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
 	if (!Object || !Baseline)
@@ -2423,7 +2447,9 @@ TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Obj
 	for (TFieldIterator<FProperty> PropertyIt(Object->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
-		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property) || !IsSupportedClassDefaultProperty(Property))
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
+			|| !IsSupportedClassDefaultProperty(Property)
+			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2451,7 +2477,7 @@ TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Obj
 	return PropertiesJson;
 }
 
-int32 CountUnsupportedWritableDifferences(UObject* Object, UObject* Baseline)
+int32 CountUnsupportedWritableDifferences(UObject* Object, UObject* Baseline, const UBlueprint* Blueprint = nullptr)
 {
 	if (!Object || !Baseline)
 	{
@@ -2462,7 +2488,9 @@ int32 CountUnsupportedWritableDifferences(UObject* Object, UObject* Baseline)
 	for (TFieldIterator<FProperty> PropertyIt(Object->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
-		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property) || IsSupportedClassDefaultProperty(Property))
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
+			|| IsSupportedClassDefaultProperty(Property)
+			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2686,19 +2714,17 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	{
 		return ClassDefaultsParseResult;
 	}
+	if (!ParsedClassDefaults.IsValid())
+	{
+		ParsedClassDefaults = MakeShared<FJsonObject>();
+	}
 
-	const bool bHasVariablesRegion = BodyObject->HasField(TEXT("Variables"));
-	const bool bHasInterfacesRegion = BodyObject->HasField(TEXT("ImplementedInterfaces"));
-	const bool bHasComponentsRegion = BodyObject->HasField(TEXT("Components"));
+	constexpr bool bHasVariablesRegion = true;
+	constexpr bool bHasInterfacesRegion = true;
+	constexpr bool bHasComponentsRegion = true;
+	constexpr bool bHasClassDefaultsRegionForApply = true;
 	const UClass* EffectiveParentClass = ParsedParentClass ? ParsedParentClass : Blueprint->ParentClass.Get();
 	const bool bParentChangesExistingBlueprint = ParsedParentClass && Blueprint->ParentClass.Get() != ParsedParentClass;
-	if (bParentChangesExistingBlueprint && (!bHasVariablesRegion || !bHasInterfacesRegion))
-	{
-		return BodyFailure(
-			TEXT("Changing Body.ParentClass on an existing UBlueprint requires Body.Variables and Body.ImplementedInterfaces in the same apply"),
-			TEXT("/Body/ParentClass"),
-			TEXT("ParentChangeRequiresAuthoritativeRegions"));
-	}
 
 	if (bHasVariablesRegion)
 	{
@@ -2732,7 +2758,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		}
 	}
 
-	if (bHasClassDefaultsRegion && !bParentChangesExistingBlueprint)
+	if (bHasClassDefaultsRegionForApply && !bParentChangesExistingBlueprint)
 	{
 		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsPreflightResult.bSuccess)
@@ -2813,7 +2839,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		}
 	}
 
-	if (bHasClassDefaultsRegion)
+	if (bHasClassDefaultsRegionForApply)
 	{
 		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsPreflightResult.bSuccess)
@@ -2824,13 +2850,14 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasComponentsRegion)
 	{
-		const FAssetDocumentCapabilityResult ComponentApplyResult = ApplyOwnedSCSComponents(Blueprint, ParsedComponents);
+		bool bOwnedSCSChanged = false;
+		const FAssetDocumentCapabilityResult ComponentApplyResult = ApplyOwnedSCSComponents(Blueprint, ParsedComponents, bOwnedSCSChanged);
 		if (!ComponentApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ComponentApplyResult);
 		}
 
-		if (HasOwnedSCSComponent(ParsedComponents))
+		if (bOwnedSCSChanged)
 		{
 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 			FKismetEditorUtilities::CompileBlueprint(Blueprint);
@@ -2863,7 +2890,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		}
 	}
 
-	if (bHasClassDefaultsRegion)
+	if (bHasClassDefaultsRegionForApply)
 	{
 		const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = ApplyClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsApplyResult.bSuccess)
@@ -2976,8 +3003,8 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		UObject* GeneratedCDO = Blueprint->GeneratedClass->GetDefaultObject(false);
 		UObject* ParentCDO = Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false);
-		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO));
-		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("ClassDefaults"), CountUnsupportedWritableDifferences(GeneratedCDO, ParentCDO));
+		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint));
+		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("ClassDefaults"), CountUnsupportedWritableDifferences(GeneratedCDO, ParentCDO, Blueprint));
 	}
 	else
 	{
@@ -3020,7 +3047,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		return BodyFailure(TEXT("UBlueprint body diff requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
-	if (DesiredBody->HasField(TEXT("Variables")))
 	{
 		TArray<FUBlueprintVariableSpec> DesiredVariables;
 		const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(DesiredBody, DesiredVariables);
@@ -3088,7 +3114,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		}
 	}
 
-	if (DesiredBody->HasField(TEXT("ImplementedInterfaces")))
 	{
 		TArray<FUBlueprintInterfaceSpec> DesiredInterfaces;
 		const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(DesiredBody, DesiredInterfaces);
@@ -3138,7 +3163,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		}
 	}
 
-	if (DesiredBody->HasField(TEXT("Components")))
 	{
 		TArray<FUBlueprintComponentSpec> DesiredComponents;
 		const FAssetDocumentCapabilityResult ComponentParseResult = ParseComponentSpecs(DesiredBody, DesiredComponents);
@@ -3268,7 +3292,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		}
 	}
 
-	if (DesiredBody->HasField(TEXT("ClassDefaults")))
 	{
 		bool bHasClassDefaultsRegion = false;
 		TSharedPtr<FJsonObject> DesiredClassDefaults;
@@ -3277,12 +3300,16 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		{
 			return ClassDefaultsParseResult;
 		}
+		if (!DesiredClassDefaults.IsValid())
+		{
+			DesiredClassDefaults = MakeShared<FJsonObject>();
+		}
 
 		UObject* GeneratedCDO = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
 		UObject* ParentCDO = Blueprint->GeneratedClass && Blueprint->GeneratedClass->GetSuperClass()
 			? Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false)
 			: nullptr;
-		TSharedPtr<FJsonObject> CurrentClassDefaults = ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO);
+		TSharedPtr<FJsonObject> CurrentClassDefaults = ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint);
 		TSet<FString> SeenClassDefaultNames;
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& CurrentPair : CurrentClassDefaults->Values)
 		{

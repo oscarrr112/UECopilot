@@ -6,7 +6,7 @@
 - Worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-ublueprint-impl`
 - Spec base: `c7e123bfc59212597c0be89094271cc4bb98a273`
 - Task 6 base: `6efcbf28131bf05a4a393e072486e1475e3c01cb`
-- Final commit: containing checkpoint commit; use `git log -1` for the exact hash.
+- Final commit: this report is included in the final checkpoint; use `git log -1` or the Codex completion summary for the exact hash.
 
 本阶段只实现普通 `UBlueprint` AssetDocument profile。没有新增 Blueprint Generator，也没有新增 Blueprint 专用 MCP tool；MCP 仍使用通用 AssetDocument tools 和 profile/schema inspection。
 
@@ -39,17 +39,26 @@ HTTP smoke 首次暴露了保存并重启 Editor 后 `/Body/Variables/Health` �
 - 避免在 `AddMemberVariable` 阶段提前传入非法默认值，防止 rollback/preflight 测试制造 UE compiler warning。
 - 增加 automation 断言，确保 `Health` 变量默认值持久化到 variable description。
 
+## Final review 期间修复的问题
+
+Final spec review 指出两个权威语义偏差，已修复：
+
+- `Body.Components` 缺省或为空时现在等价于空权威状态，会删除现存 `OwnedSCS` component；不再因为没有 desired owned specs 而跳过删除。
+- `Variables`、`ImplementedInterfaces`、`Components`、`ClassDefaults` 在 apply/diff 中都按缺省即空处理，不再作为 patch region 跳过。
+- `ClassDefaults` 不再接管 Blueprint 自定义变量对应的 generated properties；这些默认值只由 `Body.Variables` 管理，避免空 `ClassDefaults` reset 覆盖变量默认值。
+- `OwnedSCS` apply 仅在实际 owned component 变更时触发额外 Blueprint compile，避免空 `Components` 空操作扰动变量默认值保存。
+
 ## 验证结果
 
 - UBT:
   - Command: `"E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload`
   - Result: succeeded.
 - Focused UBlueprint automation:
-  - Command: `"E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintFinalClean"`
+  - Command: `"E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/Automation/AssetDocumentUBlueprintFix3"`
   - Result: `20` succeeded, `0` succeededWithWarnings, `0` failed, `0` notRun.
 - Full AssetDocument automation:
-  - Command: `"E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/AssetDocumentFullFinal"`
-  - Result: `81` succeeded, `11` succeededWithWarnings, `0` failed, `0` notRun.
+  - Command: `"E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/Automation/AssetDocumentFullFix"`
+  - Result: `92` succeeded, `0` succeededWithWarnings, `0` failed, `0` notRun.
 - MCP tests:
   - Command: `Push-Location MCP; npm ci; npm test; Pop-Location`
   - Result: `39` passed, `0` failed.
