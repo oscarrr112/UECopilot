@@ -37,12 +37,12 @@ AnimMontage benchmark 已证明 AssetDocument 可以覆盖结构化动画资产�
 | Region | UE surface | 分类 | 处理方式 |
 | --- | --- | --- | --- |
 | `Body.References` | `UAnimationAsset::Skeleton`、`UAnimSequence::RetargetSource`、`UAnimSequence::RetargetSourceAsset` | referenced asset / retarget authoring | 管引用和 retarget source 配置，不管理 referenced asset 内容 |
-| `Body.Preview` | `SetPreviewMesh()`、`PreviewSkeletalMesh`、`PreviewPoseAsset` | editor preview authoring | 管导入后预览配置 |
+| `Body.Preview` | `SetPreviewMesh()`、`PreviewSkeletalMesh` | editor preview authoring | 管导入后预览配置 |
 | `Body.Playback` | `UAnimSequenceBase::RateScale` | scalar authoring | 管 playback rate；play length 和 sampled keys 只作 evidence |
 | `Body.Additive` | `AdditiveAnimType`、`RefPoseType`、`RefFrameIndex`、`RefPoseSeq` | sequence behavior authoring | 管 additive 设置和 base pose 引用 |
 | `Body.RootMotion` | `bEnableRootMotion`、`RootMotionRootLock`、`bForceRootLock`、`bUseNormalizedRootMotionScale` | sequence behavior authoring | 管 root motion 设置，不 author root motion track data |
 | `Body.Compression` | `CompressionErrorThresholdScale`、`BoneCompressionSettings`、`CurveCompressionSettings`、`VariableFrameStrippingSettings`、`bDoNotOverrideCompression` | post-import compression configuration | 管配置引用和 scalar 设置，不管压缩产物 |
-| `Body.Curves` | animation data model float curves / curve flags / keys | sequence-owned timeline data | 管 sequence-owned float curve authoring |
+| `Body.Curves` | animation data model float curves / curve flags / keys | sequence-owned timeline data | 管 sequence-owned float curve sparse add/update patches；delete/clear deferred |
 | `Body.Notifies` | `UAnimSequenceBase::Notifies` point notifies | timeline data | 管 point events |
 | `Body.NotifyStates` | `UAnimSequenceBase::Notifies` ranged notify states | timeline data | 管 ranged events |
 | `Body.NotifyTracks` | `AnimNotifyTracks` | editor timeline layout / grouping | 管 notify track names/order；apply 后修复 notify track cache |
@@ -142,7 +142,7 @@ RegionPolicy：
 ```json
 {
   "PreviewMesh": { "Kind": "AssetRef", "Path": "/Game/Characters/Hero/SK_Hero" },
-  "PreviewPoseAsset": { "Kind": "AssetRef", "Path": "/Game/Characters/Hero/PA_HeroPreview" }
+  "_DeferredPreviewPoseAsset": "PreviewPoseAsset remains out of authored scope until UE API stability is proven."
 }
 ```
 
@@ -150,7 +150,7 @@ Rules：
 
 - `PreviewMesh` 通过 `SetPreviewMesh()` / `SetPreviewSkeletalMesh()` 设置。
 - 需要验证 preview mesh 与 sequence skeleton 兼容。
-- `PreviewPoseAsset` 是 preview-only authoring，若 API 稳定则纳入 apply/extract/diff；否则列入 deferred。
+- `PreviewPoseAsset` 暂列入 deferred，不进入当前 apply/extract/diff authoring surface。
 
 ### `Body.Playback`
 
@@ -246,7 +246,7 @@ Rules：
 
 - identity 是 `Name`，不使用 array index。
 - 支持 float curves；transform/vector/color curves 和 animated attributes 先 deferred，除非 implementation plan 明确验证 API。
-- apply 使用 `IAnimationDataController` 或已验证的 UE animation data APIs，完整 preflight 后 staged apply。
+- apply 使用 `IAnimationDataController` 或已验证的 UE animation data APIs，完整 preflight 后 staged apply；当前支持按 `Name` 稀疏 add/update，delete/clear deferred。
 - extract 输出 canonical ordered curves，diff 使用 curve name identity 和 key comparison。
 
 ### `Body.Notifies`
@@ -406,7 +406,7 @@ Validate：
 | `Body.Additive` | Object | additive settings | field name | CDO | set scalar/ref | validate additive |
 | `Body.RootMotion` | Object | root motion settings | field name | CDO | set scalar/enum | refresh cache |
 | `Body.Compression` | Object | compression config | field name | project defaults / CDO | set scalar/ref | validate compression settings |
-| `Body.Curves` | Array | float curves | curve name | empty managed set | rebuild curve region | animation data controller notify |
+| `Body.Curves` | Array | float curves | curve name | sparse patch | add/update curve entries; deletion deferred | animation data controller notify |
 | `Body.Notifies` | Timeline | point notify events | semantic notify key | empty managed set | rebuild managed notifies | sort/init/clamp notifies |
 | `Body.NotifyStates` | Timeline | ranged notify events | semantic notify key | empty managed set | rebuild managed notify states | sort/init/clamp notifies |
 | `Body.NotifyTracks` | Array | notify track display data | track name | generated/current tracks | rebuild tracks | initialize notify tracks |

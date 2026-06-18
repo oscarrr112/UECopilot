@@ -324,7 +324,7 @@ Managed UE property path hints:
 
 ```text
 Skeleton, RetargetSource, RetargetSourceAsset
-PreviewSkeletalMesh, PreviewPoseAsset
+PreviewSkeletalMesh
 RateScale
 AdditiveAnimType, RefPoseType, RefFrameIndex, RefPoseSeq
 bEnableRootMotion, RootMotionRootLock, bForceRootLock, bUseNormalizedRootMotionScale
@@ -556,7 +556,7 @@ Use `UAnimSequence::GetController()` and animation data controller APIs where po
 
 Apply mode:
 
-- if `Body.Curves` is present, rebuild the managed float curve region by removing existing managed curves with matching names and adding desired curves;
+- if `Body.Curves` is present, apply sparse add/update patches by curve name; explicit deletion/clear is deferred because UE 5.7 transient controller removal produced unstable validation errors;
 - bracket controller mutations if the API supports it;
 - refresh cache and mark package dirty.
 

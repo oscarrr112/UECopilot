@@ -232,15 +232,17 @@ def main() -> int:
     sidecar = make_sidecar()
     sidecar_path.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
 
-    apply_payload = assert_success(
-        request_json(
-            base_url,
-            "POST",
-            "/assetfactory/assetdocument/apply-file",
-            {"file_path": str(sidecar_path).replace("\\", "/"), "save_asset": True},
-        ),
-        "apply-file",
+    apply_response = request_json(
+        base_url,
+        "POST",
+        "/assetfactory/assetdocument/apply-file",
+        {"file_path": str(sidecar_path).replace("\\", "/"), "save_asset": True},
     )
+    apply_payload = assert_success(apply_response, "apply-file")
+    if apply_response.get("wrote_sidecar") is not True:
+        raise RuntimeError(f"apply-file did not write sidecar sync state: {json.dumps(apply_response, indent=2)}")
+    if apply_payload.get("sidecar_sync_update_skipped") is True:
+        raise RuntimeError(f"apply-file skipped sidecar sync update: {json.dumps(apply_payload, indent=2)}")
 
     extract_payload = assert_success(
         request_json(

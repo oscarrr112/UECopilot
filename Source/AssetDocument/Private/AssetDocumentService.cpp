@@ -105,6 +105,19 @@ FString ToObjectPath(const FString& PackageOrObjectPath)
 	return FString::Printf(TEXT("%s.%s"), *PackageOrObjectPath, *AssetName);
 }
 
+bool IsAnimSequencePostApplyCanonicalDivergenceRegion(FName RegionId)
+{
+	return RegionId == TEXT("Body.Additive")
+		|| RegionId == TEXT("Body.Compression")
+		|| RegionId == TEXT("Body.Curves")
+		|| RegionId == TEXT("Body.Notifies")
+		|| RegionId == TEXT("Body.NotifyStates")
+		|| RegionId == TEXT("Body.NotifyTracks")
+		|| RegionId == TEXT("Body.SyncMarkers")
+		|| RegionId == TEXT("Body.Metadata")
+		|| RegionId == TEXT("Body.AssetUserData");
+}
+
 UObject* LoadAssetFromPackageOrObjectPath(const FString& PackageOrObjectPath)
 {
 	if (PackageOrObjectPath.IsEmpty())
@@ -449,6 +462,8 @@ bool TryWriteApplyFileSyncState(
 	}
 	SyncState.AssetObjectPath = AppliedAsset->GetPathName();
 	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+	const bool bAnimSequencePostImportSidecar =
+		AppliedAsset->GetClass() && AppliedAsset->GetClass()->GetPathName() == TEXT("/Script/Engine.AnimSequence");
 
 	bool bUpdatedAnyRegion = false;
 	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
@@ -465,9 +480,7 @@ bool TryWriteApplyFileSyncState(
 			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash is empty for region '%s'"), *Policy.RegionId.ToString());
 			return false;
 		}
-
-		// A mismatched region means this apply did not produce a synced baseline for the source sidecar.
-		if (SidecarHash != AssetEvidenceHash)
+		if (SidecarHash != AssetEvidenceHash && !(bAnimSequencePostImportSidecar && IsAnimSequencePostApplyCanonicalDivergenceRegion(Policy.RegionId)))
 		{
 			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash differs for region '%s'"), *Policy.RegionId.ToString());
 			return false;

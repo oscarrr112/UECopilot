@@ -9,11 +9,6 @@
 
 namespace
 {
-TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
-{
-	return TArray<TSharedPtr<FJsonValue>>();
-}
-
 bool MakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
@@ -62,13 +57,6 @@ TSharedRef<FJsonObject> FAnimSequenceAssetDocumentProfile::CreateTemplate(const 
 	Body->SetObjectField(TEXT("Additive"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("RootMotion"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("Compression"), MakeShared<FJsonObject>());
-	Body->SetArrayField(TEXT("Curves"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("Notifies"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("NotifyStates"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("NotifyTracks"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("SyncMarkers"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("Metadata"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("AssetUserData"), MakeEmptyArray());
 
 	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
 	Template->SetNumberField(TEXT("SchemaVersion"), 1);
@@ -123,7 +111,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 		TEXT("DefaultDiff"),
 		TEXT("Body.Preview"),
 		EAssetDocumentRegionKind::Object,
-		{TEXT("PreviewSkeletalMesh"), TEXT("PreviewPoseAsset")},
+		{TEXT("PreviewSkeletalMesh")},
 		Policy))
 	{
 		Policies.Add(Policy);
@@ -164,7 +152,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Curves"), EAssetDocumentRegionKind::Array, {TEXT("RawCurveData")}, Policy))
+	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Curves"), EAssetDocumentRegionKind::Array, {TEXT("RawCurveData")}, Policy))
 	{
 		Policies.Add(Policy);
 	}

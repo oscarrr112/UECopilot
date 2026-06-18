@@ -138,12 +138,12 @@ The `/Script/Engine.AnimSequence` profile is post-import only. It manages author
 The profile owns these canonical `Body` keys:
 
 - `References`: object for `Skeleton`, `RetargetSource`, and `RetargetSourceAsset` references/configuration.
-- `Preview`: object for preview-only fields such as `PreviewMesh` and `PreviewPoseAsset`.
+- `Preview`: object for preview-only fields such as `PreviewMesh`.
 - `Playback`: object for authored playback fields such as `RateScale`; derived length/sample fields are extract-only diagnostics.
 - `Additive`: object for `AdditiveAnimType`, `RefPoseType`, `RefFrameIndex`, and `RefPoseSeq`.
 - `RootMotion`: object for root motion settings, not root motion track data.
 - `Compression`: object for compression configuration references/scalars, not compressed output.
-- `Curves`: array for sequence-owned float curve authoring.
+- `Curves`: sparse add/update patches for sequence-owned float curves; deletion/clear is deferred.
 - `Notifies`: array for point notify placements.
 - `NotifyStates`: array for ranged notify-state placements.
 - `NotifyTracks`: array for notify track names/order.

@@ -1029,6 +1029,10 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceCurvesToSequence(UAnimSequence* 
 	{
 		return BodyFailure(TEXT("AnimSequence curve apply requires UAnimSequence asset"), TEXT("/Body/Curves"), TEXT("UnsupportedAsset"));
 	}
+	if (Curves.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Curves patch is empty"));
+	}
 
 	IAnimationDataController& Controller = Sequence->GetController();
 	Controller.OpenBracket(FText::FromString(TEXT("Apply AnimSequence AssetDocument Curves")), false);
@@ -1065,11 +1069,6 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceCurvesToSequence(UAnimSequence* 
 
 FAssetDocumentCapabilityResult ApplyAnimSequenceCurves(UAnimSequence* Sequence, const TArray<FParsedAnimSequenceCurve>& Curves)
 {
-	if (Curves.IsEmpty())
-	{
-		return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Curves patch is empty"));
-	}
-
 	UAnimSequence* PreviewSequence = DuplicateObject<UAnimSequence>(Sequence, GetTransientPackage());
 	if (!PreviewSequence)
 	{
@@ -1381,10 +1380,40 @@ FAssetDocumentCapabilityResult ResolveNotifyObjectFragmentField(
 		return Result;
 	}
 
+	FString Kind;
+	Result = ReadRequiredStringField(OutFragment.ToSharedRef(), TEXT("Kind"), Path / TEXT("Kind"), Kind);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	Result = ResolveNotifyObjectFragmentClass(OutFragment.ToSharedRef(), ExpectedBaseClass, Path, InvalidCode, OutClass);
 	if (!Result.bSuccess)
 	{
 		return Result;
+	}
+
+	if (Kind == TEXT("EmbeddedObject"))
+	{
+		const TSharedPtr<FJsonValue>* PropertiesValue = OutFragment->Values.Find(TEXT("Properties"));
+		if (PropertiesValue)
+		{
+			TSharedPtr<FJsonObject> PropertiesObject;
+			Result = RequireObjectValue(*PropertiesValue, Path / TEXT("Properties"), PropertiesObject);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			const FAssetDocumentPropertyApplyResult PropertyPreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(OutClass, PropertiesObject);
+			if (!PropertyPreflightResult.bSuccess)
+			{
+				return BodyFailure(
+					PropertyPreflightResult.Message.IsEmpty() ? TEXT("Notify object fragment property preflight failed") : PropertyPreflightResult.Message,
+					Path,
+					TEXT("embeddedobject-preflight-failed"));
+			}
+		}
 	}
 
 	bOutHasFragment = true;
@@ -3298,12 +3327,12 @@ TSharedRef<FJsonObject> FAnimSequenceAssetDocumentCapability::GetSchemaHint() co
 {
 	TSharedRef<FJsonObject> Hint = MakeShared<FJsonObject>();
 	Hint->SetStringField(TEXT("References"), TEXT("object: Skeleton, RetargetSource, RetargetSourceAsset"));
-	Hint->SetStringField(TEXT("Preview"), TEXT("object: PreviewMesh, PreviewPoseAsset"));
+	Hint->SetStringField(TEXT("Preview"), TEXT("object: PreviewMesh"));
 	Hint->SetStringField(TEXT("Playback"), TEXT("object: RateScale; derived length/sample fields are extract-only"));
 	Hint->SetStringField(TEXT("Additive"), TEXT("object: AdditiveAnimType, RefPoseType, RefFrameIndex, RefPoseSeq"));
 	Hint->SetStringField(TEXT("RootMotion"), TEXT("object: bEnableRootMotion, RootMotionRootLock, bForceRootLock, bUseNormalizedRootMotionScale"));
 	Hint->SetStringField(TEXT("Compression"), TEXT("object: CompressionErrorThresholdScale, BoneCompressionSettings, CurveCompressionSettings, bDoNotOverrideCompression"));
-	Hint->SetStringField(TEXT("Curves"), TEXT("array: sequence-owned float curves"));
+	Hint->SetStringField(TEXT("Curves"), TEXT("array: sequence-owned float curve sparse patches; deletion is deferred"));
 	Hint->SetStringField(TEXT("Notifies"), TEXT("array: point notify placements with Notify embedded object fragments"));
 	Hint->SetStringField(TEXT("NotifyStates"), TEXT("array: ranged notify-state placements with NotifyState embedded object fragments"));
 	Hint->SetStringField(TEXT("NotifyTracks"), TEXT("array: notify TrackName values/order"));

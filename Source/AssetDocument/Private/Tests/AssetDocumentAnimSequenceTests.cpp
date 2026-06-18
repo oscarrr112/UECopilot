@@ -855,9 +855,16 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 	const FAssetDocumentRegionPolicy* CurvesPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Curves"));
 	if (CurvesPolicy)
 	{
-		TestTrue(TEXT("Body.Curves uses ManagedRegion reducer"), CurvesPolicy->ReducerMode == EAssetDocumentReducerMode::ManagedRegion);
-		TestTrue(TEXT("Body.Curves uses rebuild-array apply mode"), CurvesPolicy->ApplyMode == EAssetDocumentApplyMode::RebuildArrayRegion);
+		TestTrue(TEXT("Body.Curves uses DefaultDiff reducer for sparse patch semantics"), CurvesPolicy->ReducerMode == EAssetDocumentReducerMode::DefaultDiff);
+		TestTrue(TEXT("Body.Curves uses set-property policy metadata"), CurvesPolicy->ApplyMode == EAssetDocumentApplyMode::SetProperty);
 		TestTrue(TEXT("Body.Curves owns RawCurveData"), PolicyContainsManagedPath(CurvesPolicy, TEXT("RawCurveData")));
+	}
+
+	const FAssetDocumentRegionPolicy* PreviewPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Preview"));
+	if (PreviewPolicy)
+	{
+		TestTrue(TEXT("Body.Preview owns PreviewSkeletalMesh"), PolicyContainsManagedPath(PreviewPolicy, TEXT("PreviewSkeletalMesh")));
+		TestFalse(TEXT("Body.Preview does not advertise deferred PreviewPoseAsset"), PolicyContainsManagedPath(PreviewPolicy, TEXT("PreviewPoseAsset")));
 	}
 
 	const FAssetDocumentRegionPolicy* NotifiesPolicy = FindPolicyByRegionId(Policies, TEXT("Body.Notifies"));
@@ -906,6 +913,19 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 		TestTrue(TEXT("Extract writes Playback object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("Playback")));
 		TestTrue(TEXT("Extract writes RootMotion object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("RootMotion")));
 		TestTrue(TEXT("Extract writes Compression object"), ExtractedBody->HasTypedField<EJson::Object>(TEXT("Compression")));
+	}
+
+	FAssetDocumentTemplateContext TemplateContext;
+	TemplateContext.Target = TEXT("/Game/Test/AS_Template");
+	const TSharedRef<FJsonObject> Template = Profile.CreateTemplate(TemplateContext);
+	const TSharedPtr<FJsonObject> TemplateBody = GetRequiredObject(Template, TEXT("Body"));
+	TestTrue(TEXT("Template includes Body"), TemplateBody.IsValid());
+	if (TemplateBody.IsValid())
+	{
+		TestTrue(TEXT("Template keeps non-destructive Preview object"), TemplateBody->HasTypedField<EJson::Object>(TEXT("Preview")));
+		TestFalse(TEXT("Template omits destructive empty Curves array"), TemplateBody->HasField(TEXT("Curves")));
+		TestFalse(TEXT("Template omits destructive empty Metadata array"), TemplateBody->HasField(TEXT("Metadata")));
+		TestFalse(TEXT("Template omits destructive empty AssetUserData array"), TemplateBody->HasField(TEXT("AssetUserData")));
 	}
 
 	return true;
@@ -1644,6 +1664,12 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 		MakeEmbeddedNotifyPlacement(TEXT("ValidEmbeddedBeforeFailure"), 0.20, TEXT("ValidEmbeddedBeforeFailure"), TEXT("Default")),
 		InvalidEmbeddedNotify,
 	}));
+	const FAssetDocumentCapabilityResult CrossRegionValidateResult = Capability.Validate(Context, MakeBodyValue(CrossRegionPartialMutationBody));
+	TestFalse(TEXT("Validate rejects invalid embedded notify properties"), CrossRegionValidateResult.bSuccess);
+	TestTrue(TEXT("Validate diagnostic points at notify fragment"), HasDiagnostic(CrossRegionValidateResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
+	const FAssetDocumentCapabilityResult CrossRegionPreflightResult = Capability.Preflight(Context, MakeBodyValue(CrossRegionPartialMutationBody));
+	TestFalse(TEXT("Preflight rejects invalid embedded notify properties"), CrossRegionPreflightResult.bSuccess);
+	TestTrue(TEXT("Preflight diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPreflightResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
 	const FAssetDocumentCapabilityResult CrossRegionPartialMutationResult = Capability.Apply(Context, MakeBodyValue(CrossRegionPartialMutationBody));
 	TestFalse(TEXT("Apply rejects invalid embedded notify properties before any region mutates"), CrossRegionPartialMutationResult.bSuccess);
 	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
@@ -1657,6 +1683,23 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	const TArray<TSharedPtr<FJsonValue>>* ExtractedCurvesAfterFailure = nullptr;
 	TestTrue(TEXT("Extract outputs Curves after rejected cross-region apply"), Extracted->TryGetArrayField(TEXT("Curves"), ExtractedCurvesAfterFailure));
 	TestFalse(TEXT("Rejected cross-region apply does not add curve"), FindCurveByName(ExtractedCurvesAfterFailure, TEXT("AtomicCurve")).IsValid());
+
+	TSharedRef<FJsonObject> InvalidEmbeddedStateBody = MakePlaybackRateBody(7.1);
+	TSharedRef<FJsonObject> InvalidEmbeddedState = MakeEmbeddedNotifyStatePlacement(TEXT("InvalidStateProperties"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default"));
+	TSharedPtr<FJsonObject> InvalidStateFragment = InvalidEmbeddedState->GetObjectField(TEXT("NotifyState"));
+	TSharedRef<FJsonObject> InvalidStateProperties = MakeShared<FJsonObject>();
+	InvalidStateProperties->SetBoolField(TEXT("NoSuchNotifyStateProperty"), true);
+	InvalidStateFragment->SetObjectField(TEXT("Properties"), InvalidStateProperties);
+	InvalidEmbeddedStateBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ InvalidEmbeddedState }));
+	const FAssetDocumentCapabilityResult InvalidStateValidateResult = Capability.Validate(Context, MakeBodyValue(InvalidEmbeddedStateBody));
+	TestFalse(TEXT("Validate rejects invalid embedded notify state properties"), InvalidStateValidateResult.bSuccess);
+	TestTrue(TEXT("Validate diagnostic points at notify state fragment"), HasDiagnostic(InvalidStateValidateResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
+	const FAssetDocumentCapabilityResult InvalidStatePreflightResult = Capability.Preflight(Context, MakeBodyValue(InvalidEmbeddedStateBody));
+	TestFalse(TEXT("Preflight rejects invalid embedded notify state properties"), InvalidStatePreflightResult.bSuccess);
+	TestTrue(TEXT("Preflight diagnostic points at notify state fragment"), HasDiagnostic(InvalidStatePreflightResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
+	const FAssetDocumentCapabilityResult InvalidStateApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidEmbeddedStateBody));
+	TestFalse(TEXT("Apply rejects invalid embedded notify state properties"), InvalidStateApplyResult.bSuccess);
+	TestTrue(TEXT("Apply diagnostic points at notify state fragment"), HasDiagnostic(InvalidStateApplyResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
 
 	TSharedRef<FJsonObject> AmbiguousNotifyTrackBody = MakePlaybackRateBody(5.1);
 	TSharedRef<FJsonObject> AmbiguousNotify = MakeEmbeddedNotifyPlacement(TEXT("AmbiguousTrack"), 0.25, TEXT("AmbiguousTrack"), TEXT("Default"));
@@ -2169,10 +2212,34 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 	ApplyFileRequest.bSaveAsset = true;
 	const FAssetDocumentResult ApplyFileResult = Service.ApplyFile(ApplyFileRequest);
 	TestTrue(TEXT("ApplyFile succeeds for AnimSequence sidecar"), ApplyFileResult.IsSuccess());
+	TestTrue(TEXT("ApplyFile writes AnimSequence sidecar sync state"), ApplyFileResult.bWroteSidecar);
+	if (ApplyFileResult.Payload.IsValid())
+	{
+		TestFalse(TEXT("ApplyFile does not skip AnimSequence sidecar sync update"), ApplyFileResult.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
+	}
 	if (!ApplyFileResult.IsSuccess())
 	{
 		AddError(ApplyFileResult.Message);
 		return false;
+	}
+
+	TSharedPtr<FJsonObject> SyncedSidecarDocument;
+	FString SyncSidecarLoadError;
+	TestTrue(TEXT("ApplyFile reloads AnimSequence sidecar after sync update"), FAssetDocumentSidecar::LoadJsonFile(SidecarPath, SyncedSidecarDocument, SyncSidecarLoadError));
+	const TSharedPtr<FJsonObject>* MetaObject = nullptr;
+	const TSharedPtr<FJsonObject>* SyncObject = nullptr;
+	const TSharedPtr<FJsonObject>* SyncRegionsObject = nullptr;
+	if (SyncedSidecarDocument.IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes _meta"), SyncedSidecarDocument->TryGetObjectField(TEXT("_meta"), MetaObject));
+	}
+	if (MetaObject && MetaObject->IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes _meta.sync"), (*MetaObject)->TryGetObjectField(TEXT("sync"), SyncObject));
+	}
+	if (SyncObject && SyncObject->IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes _meta.sync.regions"), (*SyncObject)->TryGetObjectField(TEXT("regions"), SyncRegionsObject));
 	}
 
 	FAssetDocumentExtractRequest ExtractRequest;
@@ -2210,6 +2277,39 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 		for (const FString& Section : ExpectedBodySections)
 		{
 			TestTrue(FString::Printf(TEXT("Extracted Body includes %s"), *Section), (*ExtractedBody)->HasField(Section));
+		}
+	}
+	if (SyncRegionsObject && SyncRegionsObject->IsValid())
+	{
+		const TSet<FString> AllowedPostApplyCanonicalDivergenceRegions = {
+			TEXT("Body.Additive"),
+			TEXT("Body.Compression"),
+			TEXT("Body.Curves"),
+			TEXT("Body.Notifies"),
+			TEXT("Body.NotifyStates"),
+			TEXT("Body.NotifyTracks"),
+			TEXT("Body.SyncMarkers"),
+			TEXT("Body.Metadata"),
+			TEXT("Body.AssetUserData"),
+		};
+		for (const FString& Section : ExpectedBodySections)
+		{
+			const FString RegionId = FString::Printf(TEXT("Body.%s"), *Section);
+			const TSharedPtr<FJsonObject>* RegionSyncObject = nullptr;
+			TestTrue(FString::Printf(TEXT("Sync state includes %s"), *RegionId), (*SyncRegionsObject)->TryGetObjectField(RegionId, RegionSyncObject));
+			if (!RegionSyncObject || !RegionSyncObject->IsValid())
+			{
+				continue;
+			}
+
+			const FString SidecarHash = (*RegionSyncObject)->GetStringField(TEXT("sidecarHash"));
+			const FString AssetEvidenceHash = (*RegionSyncObject)->GetStringField(TEXT("assetEvidenceHash"));
+			TestFalse(FString::Printf(TEXT("%s sync sidecar hash is initialized"), *RegionId), SidecarHash.IsEmpty());
+			TestFalse(FString::Printf(TEXT("%s sync asset evidence hash is initialized"), *RegionId), AssetEvidenceHash.IsEmpty());
+			if (!AllowedPostApplyCanonicalDivergenceRegions.Contains(RegionId))
+			{
+				TestEqual(FString::Printf(TEXT("%s strict sync hashes match"), *RegionId), SidecarHash, AssetEvidenceHash);
+			}
 		}
 	}
 
