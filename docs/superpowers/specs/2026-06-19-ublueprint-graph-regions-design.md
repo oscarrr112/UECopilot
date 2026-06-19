@@ -53,7 +53,7 @@ sidecar 是 agent 可编辑、可 diff、可 roundtrip 的 Blueprint graph 作�
 - `UWidgetBlueprint` widget tree/bindings。
 - `UAnimBlueprint` AnimGraph、state machine、skeleton lifecycle。
 - natural-language graph DSL。
-- 第一实现 step 中支持任意 K2 node。
+- 第一实现 step 不支持任意 K2 node；任意 K2 node 必须通过后续 adapter capability 扩展。
 - 每用户 editor state：graph zoom、pan、selection、open tabs、editor viewport。
 - graph 执行时动态生成的 runtime component instances。
 - 可从 graph semantics 重建的 UE compiler/intermediate/cache fields。
@@ -442,6 +442,32 @@ Tier 1 extract 可以把 unsupported existing node classes 报到 `_Skipped.Grap
 - 添加 custom events 可能需要 `CustomEvent` adapter，因为 event creation 有 UE lifecycle semantics；但它仍然不得使用 project-specific event name inventories。
 - 添加 array/map/make struct nodes 时，应优先使用 reflected pin allocation 和 typed default fragments。
 
+### 7.4 Unsupported Fallback
+
+当 node class、function、property、pin pattern 或 timeline track 当前无法安全 apply/extract/diff 时，系统必须给 agent 一个可行动的 fallback 结果，而不是静默跳过或只返回泛化的 unsupported。
+
+Apply/validate fallback 必须包含：
+
+- `Code`：例如 `UnsupportedGraphNodeClass`、`UnsupportedGraphFunction`、`UnsupportedGraphPinPattern` 或更窄 diagnostic code。
+- `Path`：指向最窄 JSON path，例如 `/Body/UbergraphPages/EventGraph/Nodes/Print`。
+- `Class`：resolved UE node class path；如果 class 无法加载，则给出 authored `Class`。
+- `Capability`：adapter registry 尝试匹配的 capability，若无匹配则为空。
+- `Member`：涉及 function/property/event 时，给出 resolved 或 authored `MemberRef`。
+- `Reason`：面向 agent 的短解释，说明为什么不支持。例如“node class 无 adapter”、“function has wildcard pins that cannot be reconstructed deterministically”、“function requires latent/world-context handling not implemented yet”。
+- `SuggestedAction`：建议下一步，例如“use supported call function node with reflected UFunction only”、“add a thin adapter for this node class”、“remove this node from managed graph to delete it”。
+
+Extract/diff fallback 必须包含：
+
+- `_Skipped.Graphs` evidence，列出 unsupported node class、node title/name、`NodeGuid`、graph name 和跳过原因。
+- diff status `unsupported`，并在 message 中说明 current asset 中存在无法 canonicalize 的 graph content。
+- 不得输出看似完整但会丢失语义的 lossy `NodeSpec`。
+
+对 `K2Node_CallFunction` 的特殊要求：
+
+- 如果 `MemberRef` 对应 `UFunction` 可以通过 reflection 解析，但 adapter 不支持该 function 的 pin/lifecycle pattern，必须返回 `UnsupportedGraphFunction` 或更窄诊断。
+- 诊断必须说明 function 不支持的具体原因，而不是把函数名加入硬编码黑名单。
+- 不得因为 function 不支持而 fallback 到 raw UE graph dump。
+
 ---
 
 ## 8. Region Semantics
@@ -689,6 +715,8 @@ Path tokens 必须使用 JSON Pointer escaping。link path token 只用于 diagn
 - `InvalidGraphNodeId`：node id 不符合 sidecar id regex。
 - `UnresolvedGraphNodeClass`：node `Class` 无法加载。
 - `UnsupportedGraphNodeClass`：resolved node class 在当前 tier 中没有 adapter。
+- `UnsupportedGraphFunction`：function 已通过 reflection 解析，但当前 adapter 不支持它的 pin/lifecycle pattern。
+- `UnsupportedGraphPinPattern`：node/function 的 pin pattern 当前无法确定性 reconstruct 或 roundtrip。
 - `InvalidGraphNodeCapability`：可选 `Capability` 与 resolved node adapter 冲突。
 - `MissingGraphMemberReference`：缺失必需 member ref。
 - `UnresolvedGraphMemberReference`：member ref 无法通过 reflection 或 staged Blueprint regions 解析。
@@ -780,6 +808,7 @@ Diagnostics 应指向尽可能窄的 JSON path。
   - duplicate graph/node/link identity 失败。
   - unresolved/circular `DefinitionRef` 失败。
   - unsupported node class apply 失败。
+  - unsupported function/pin pattern 返回包含 `Reason` 和 `SuggestedAction` 的 fallback diagnostics。
   - unresolved member ref/link/timeline ref 在 mutation 前失败。
 - Apply：
   - 创建包含 supported nodes 和 links 的 EventGraph。
