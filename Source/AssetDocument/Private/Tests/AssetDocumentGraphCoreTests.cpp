@@ -436,6 +436,75 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Type"),
 		HasDiagnosticCode(InvalidPinTypeResult, TEXT("InvalidGraphPin")));
 
+	const TSharedPtr<FJsonObject> InvalidPinDirectionGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "BeginPlay",
+      "Class": "/Script/BlueprintGraph.K2Node_Event",
+      "PinOverrides": [
+        { "Pin": "then", "Direction": 42 }
+      ]
+    }
+  ],
+  "Links": []
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidPinDirectionResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(InvalidPinDirectionGraph.ToSharedRef()) });
+	TestFalse(TEXT("Pin override Direction with invalid type fails"), InvalidPinDirectionResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Direction"),
+		HasDiagnosticCode(InvalidPinDirectionResult, TEXT("InvalidGraphPin")));
+
+	const TSharedPtr<FJsonObject> InvalidPinHiddenGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "BeginPlay",
+      "Class": "/Script/BlueprintGraph.K2Node_Event",
+      "PinOverrides": [
+        { "Pin": "then", "Hidden": "yes" }
+      ]
+    }
+  ],
+  "Links": []
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidPinHiddenResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(InvalidPinHiddenGraph.ToSharedRef()) });
+	TestFalse(TEXT("Pin override Hidden with invalid type fails"), InvalidPinHiddenResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Hidden"),
+		HasDiagnosticCode(InvalidPinHiddenResult, TEXT("InvalidGraphPin")));
+
+	const TSharedPtr<FJsonObject> InvalidPinAdvancedViewGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "BeginPlay",
+      "Class": "/Script/BlueprintGraph.K2Node_Event",
+      "PinOverrides": [
+        { "Pin": "then", "AdvancedView": "yes" }
+      ]
+    }
+  ],
+  "Links": []
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidPinAdvancedViewResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(InvalidPinAdvancedViewGraph.ToSharedRef()) });
+	TestFalse(TEXT("Pin override AdvancedView with invalid type fails"), InvalidPinAdvancedViewResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin AdvancedView"),
+		HasDiagnosticCode(InvalidPinAdvancedViewResult, TEXT("InvalidGraphPin")));
+
 	return true;
 }
 

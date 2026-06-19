@@ -254,6 +254,60 @@ bool TryGetArrayFieldIfPresent(
 	return true;
 }
 
+bool TryGetStringFieldIfPresent(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* Field,
+	const FString& Path,
+	const FString& InvalidTypeCode,
+	FString& OutValue,
+	FAssetDocumentGraphParseResult& Result)
+{
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (!Value)
+	{
+		return true;
+	}
+
+	if (!Value->IsValid() || (*Value)->Type != EJson::String)
+	{
+		Result.AddDiagnostic(
+			InvalidTypeCode,
+			JoinPath(Path, Field),
+			FString::Printf(TEXT("Field '%s' must be a string."), Field));
+		return false;
+	}
+
+	OutValue = (*Value)->AsString();
+	return true;
+}
+
+bool TryGetBoolFieldIfPresent(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* Field,
+	const FString& Path,
+	const FString& InvalidTypeCode,
+	TOptional<bool>& OutValue,
+	FAssetDocumentGraphParseResult& Result)
+{
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (!Value)
+	{
+		return true;
+	}
+
+	if (!Value->IsValid() || (*Value)->Type != EJson::Boolean)
+	{
+		Result.AddDiagnostic(
+			InvalidTypeCode,
+			JoinPath(Path, Field),
+			FString::Printf(TEXT("Field '%s' must be a boolean."), Field));
+		return false;
+	}
+
+	OutValue = (*Value)->AsBool();
+	return true;
+}
+
 bool TryParseEndpointObject(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& Path,
@@ -394,7 +448,17 @@ bool ParsePinOverride(
 		return false;
 	}
 
-	Object->TryGetStringField(TEXT("Direction"), OutPinOverride.Direction);
+	if (!TryGetStringFieldIfPresent(
+			Object,
+			TEXT("Direction"),
+			Path,
+			TEXT("InvalidGraphPin"),
+			OutPinOverride.Direction,
+			Result))
+	{
+		return false;
+	}
+
 	if (const TSharedPtr<FJsonValue>* Type = Object->Values.Find(TEXT("Type")))
 	{
 		if (!Type->IsValid() || (*Type)->Type != EJson::Object)
@@ -419,14 +483,27 @@ bool ParsePinOverride(
 	{
 		OutPinOverride.DefaultTextValue = CloneJsonValue(*DefaultTextValue);
 	}
-	bool BoolValue = false;
-	if (Object->TryGetBoolField(TEXT("Hidden"), BoolValue))
+
+	if (!TryGetBoolFieldIfPresent(
+			Object,
+			TEXT("Hidden"),
+			Path,
+			TEXT("InvalidGraphPin"),
+			OutPinOverride.Hidden,
+			Result))
 	{
-		OutPinOverride.Hidden = BoolValue;
+		return false;
 	}
-	if (Object->TryGetBoolField(TEXT("AdvancedView"), BoolValue))
+
+	if (!TryGetBoolFieldIfPresent(
+			Object,
+			TEXT("AdvancedView"),
+			Path,
+			TEXT("InvalidGraphPin"),
+			OutPinOverride.AdvancedView,
+			Result))
 	{
-		OutPinOverride.AdvancedView = BoolValue;
+		return false;
 	}
 	return true;
 }
