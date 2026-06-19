@@ -322,7 +322,7 @@ git commit -m "feat(assetdoc): resolve graph definitions"
 - Test: `Source/AssetDocument/Private/Tests/AssetDocumentUBlueprintGraphTests.cpp`
 - Modify: `Source/AssetDocument/Private/Tests/AssetDocumentUBlueprintTests.cpp` only if existing helper extraction is needed.
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -331,7 +331,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Add failing UBlueprint graph validation tests**
+- [x] **Step 2: Add failing UBlueprint graph validation tests**
 
 Create tests:
 
@@ -356,7 +356,7 @@ Expected fallback JSON object fields:
 }
 ```
 
-- [ ] **Step 3: Implement `UBlueprintGraphRegionAdapter` validation hook**
+- [x] **Step 3: Implement `UBlueprintGraphRegionAdapter` validation hook**
 
 Rules:
 
@@ -366,11 +366,11 @@ Rules:
 - unsupported `K2Node_CallFunction` pattern fails with `UnsupportedGraphFunction` or a narrower code;
 - diagnostics must include `Reason` and `SuggestedAction`.
 
-- [ ] **Step 4: Wire capability without moving graph logic into the big capability**
+- [x] **Step 4: Wire capability without moving graph logic into the big capability**
 
 `FUBlueprintAssetDocumentCapability` should delegate graph validation/extract/diff/apply to `FUBlueprintGraphRegionAdapter`. It should keep existing variables/components/class-defaults behavior unchanged.
 
-- [ ] **Step 5: Run UBlueprint graph validation tests**
+- [x] **Step 5: Run UBlueprint graph validation tests**
 
 Run:
 
@@ -381,7 +381,7 @@ Run:
 
 Expected: graph validation tests pass and existing `AssetFactory.AssetDocument.UBlueprint.UnsupportedGraphProtection` still passes for regions not implemented in this task.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 Run:
 
