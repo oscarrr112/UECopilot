@@ -14,4 +14,9 @@ public:
 	FAssetDocumentCapabilityResult ExtractRegions(
 		const FAssetDocumentCapabilityContext& Context,
 		TSharedRef<FJsonObject>& OutBodyJson) const;
+
+	FAssetDocumentCapabilityResult DiffRegions(
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& DesiredBody,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const;
 };

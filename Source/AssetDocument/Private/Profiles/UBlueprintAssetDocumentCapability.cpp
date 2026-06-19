@@ -3052,6 +3052,16 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	}
 
 	{
+		const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+		const FAssetDocumentCapabilityResult GraphDiffResult =
+			GraphRegionAdapter.DiffRegions(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
+		if (!GraphDiffResult.bSuccess)
+		{
+			return GraphDiffResult;
+		}
+	}
+
+	{
 		TArray<FUBlueprintVariableSpec> DesiredVariables;
 		const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(DesiredBody, DesiredVariables);
 		if (!VariableParseResult.bSuccess)

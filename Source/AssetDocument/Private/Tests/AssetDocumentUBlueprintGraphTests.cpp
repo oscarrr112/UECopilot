@@ -383,6 +383,213 @@ bool SkippedGraphsContainClass(const TSharedRef<FJsonObject>& Body, const FStrin
 		return Node.IsValid() && Node->TryGetStringField(TEXT("Class"), FoundClass) && FoundClass == ClassPath;
 	});
 }
+
+TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Path;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return Entry;
+		}
+	}
+	return nullptr;
+}
+
+void RemoveExtractOnlyEvidence(const TSharedRef<FJsonObject>& Body)
+{
+	Body->RemoveField(TEXT("_Skipped"));
+}
+
+bool HasNonUnchangedGraphDiffEntry(const TArray<TSharedPtr<FJsonValue>>& Entries)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Path;
+		FString Status;
+		if (Entry.IsValid()
+			&& Entry->TryGetStringField(TEXT("path"), Path)
+			&& Path.StartsWith(TEXT("/Body/UbergraphPages/"))
+			&& Entry->TryGetStringField(TEXT("status"), Status)
+			&& Status != TEXT("unchanged"))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FAssetDocumentCapabilityResult DiffBlueprintBody(
+	UBlueprint* Blueprint,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries,
+	const TSharedPtr<FJsonObject>* Definitions = nullptr)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = Blueprint;
+	Context.Definitions = Definitions;
+	return Capability.Diff(Context, MakeBodyValue(DesiredBody), OutDiffEntries);
+}
+
+TSharedPtr<FJsonObject> FindGraphByName(const TSharedRef<FJsonObject>& Body, const FString& GraphName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = GetUbergraphPages(Body);
+	if (!Graphs)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Name;
+		if (Graph.IsValid() && Graph->TryGetStringField(TEXT("Name"), Name) && Name == GraphName)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+FString GetNodeIdByMemberName(const TSharedPtr<FJsonObject>& Graph, const FString& MemberName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return FString();
+	}
+
+	const TSharedPtr<FJsonObject> Node = FindNodeByMemberName(*Nodes, MemberName);
+	FString Id;
+	return Node.IsValid() && Node->TryGetStringField(TEXT("Id"), Id) ? Id : FString();
+}
+
+bool RemoveNodeByMemberName(const TSharedPtr<FJsonObject>& Graph, const FString& MemberName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> FilteredNodes;
+	bool bRemoved = false;
+	for (const TSharedPtr<FJsonValue>& Value : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = Value.IsValid() ? Value->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Member = nullptr;
+		FString Name;
+		if (Node.IsValid()
+			&& Node->TryGetObjectField(TEXT("Member"), Member)
+			&& Member
+			&& Member->IsValid()
+			&& (*Member)->TryGetStringField(TEXT("Name"), Name)
+			&& Name == MemberName)
+		{
+			bRemoved = true;
+			continue;
+		}
+		FilteredNodes.Add(Value);
+	}
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(FilteredNodes));
+	return bRemoved;
+}
+
+bool SetPinDefaultForMemberNode(const TSharedPtr<FJsonObject>& Graph, const FString& MemberName, const FString& PinName, const FString& DefaultValue)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> Node = FindNodeByMemberName(*Nodes, MemberName);
+	if (!Node.IsValid())
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> PinOverride = MakeShared<FJsonObject>();
+	PinOverride->SetStringField(TEXT("Pin"), PinName);
+	PinOverride->SetStringField(TEXT("DefaultValue"), DefaultValue);
+	Node->SetArrayField(TEXT("PinOverrides"), MakeJsonArray({PinOverride}));
+	return true;
+}
+
+bool ReplaceMemberWithDefinitionRef(
+	const TSharedPtr<FJsonObject>& Graph,
+	const FString& MemberName,
+	const FString& DefinitionId)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> Node = FindNodeByMemberName(*Nodes, MemberName);
+	if (!Node.IsValid())
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> DefinitionRef = MakeShared<FJsonObject>();
+	DefinitionRef->SetStringField(TEXT("Kind"), TEXT("DefinitionRef"));
+	DefinitionRef->SetStringField(TEXT("Id"), DefinitionId);
+	Node->SetObjectField(TEXT("Member"), DefinitionRef);
+	return true;
+}
+
+void AddLinkToGraph(
+	const TSharedPtr<FJsonObject>& Graph,
+	const FString& FromNode,
+	const FString& FromPin,
+	const FString& ToNode,
+	const FString& ToPin)
+{
+	TSharedRef<FJsonObject> From = MakeShared<FJsonObject>();
+	From->SetStringField(TEXT("Node"), FromNode);
+	From->SetStringField(TEXT("Pin"), FromPin);
+
+	TSharedRef<FJsonObject> To = MakeShared<FJsonObject>();
+	To->SetStringField(TEXT("Node"), ToNode);
+	To->SetStringField(TEXT("Pin"), ToPin);
+
+	TSharedRef<FJsonObject> Link = MakeShared<FJsonObject>();
+	Link->SetObjectField(TEXT("From"), From);
+	Link->SetObjectField(TEXT("To"), To);
+	Graph->SetArrayField(TEXT("Links"), MakeJsonArray({Link}));
+}
+
+FString GraphPath(const FString& GraphName)
+{
+	return FString::Printf(TEXT("/Body/UbergraphPages/%s"), *GraphName);
+}
+
+FString NodePath(const FString& GraphName, const FString& NodeId)
+{
+	return FString::Printf(TEXT("/Body/UbergraphPages/%s/Nodes/%s"), *GraphName, *NodeId);
+}
+
+FString PinPath(const FString& GraphName, const FString& NodeId, const FString& PinId)
+{
+	return FString::Printf(TEXT("/Body/UbergraphPages/%s/Nodes/%s/PinOverrides/%s"), *GraphName, *NodeId, *PinId);
+}
+
+FString LinkPath(const FString& GraphName, const FString& FromNode, const FString& FromPin, const FString& ToNode, const FString& ToPin)
+{
+	return FString::Printf(
+		TEXT("/Body/UbergraphPages/%s/Links/%s:%s->%s:%s"),
+		*GraphName,
+		*FromNode,
+		*FromPin,
+		*ToNode,
+		*ToPin);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -818,6 +1025,253 @@ bool FAssetDocumentUBlueprintGraphExtractKeepsPinOverridesSparseTest::RunTest(co
 	const TSharedPtr<FJsonObject> PrintNode = Nodes ? FindNodeByMemberName(*Nodes, TEXT("PrintString")) : nullptr;
 	TestTrue(TEXT("PrintString node extracted"), PrintNode.IsValid());
 	TestFalse(TEXT("Baseline/default pins are omitted from sparse PinOverrides"), PrintNode.IsValid() && PrintNode->HasField(TEXT("PinOverrides")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffUnchangedAfterExtractTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.UnchangedAfterExtract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffUnchangedAfterExtractTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffUnchanged"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+
+	UK2Node_Event* BeginPlay = AddBeginPlayNode(Graph);
+	UK2Node_CallFunction* Print = AddPrintStringNode(Graph, 320, 0, TEXT("Hello"));
+	TestTrue(TEXT("BeginPlay links to PrintString"), LinkPins(BeginPlay ? BeginPlay->FindPin(UEdGraphSchema_K2::PN_Then) : nullptr, Print ? Print->FindPin(UEdGraphSchema_K2::PN_Execute) : nullptr));
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+
+	const TSharedPtr<FJsonObject> GraphDiff = FindDiffEntryByPath(DiffEntries, GraphPath(TEXT("EventGraph")));
+	TestTrue(TEXT("Graph diff includes EventGraph"), GraphDiff.IsValid());
+	if (GraphDiff.IsValid())
+	{
+		TestEqual(TEXT("EventGraph diff is unchanged"), GraphDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+	TestFalse(TEXT("Extracted graph desired has no changed graph diff entries"), HasNonUnchangedGraphDiffEntry(DiffEntries));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffReportsMissingNodeTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.ReportsMissingNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffReportsMissingNodeTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffMissingNode"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+	AddBeginPlayNode(Graph);
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+	TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+	TestTrue(TEXT("Desired graph exists"), DesiredGraph.IsValid());
+	if (!DesiredGraph.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Desired graph has nodes"), DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	TSharedRef<FJsonObject> DesiredPrint = MakeGraphNode(
+		TEXT("PrintString"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")));
+	Nodes.Add(MakeShared<FJsonValueObject>(DesiredPrint));
+	DesiredGraph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> MissingNode = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), TEXT("PrintString")));
+	TestTrue(TEXT("Diff reports missing PrintString node"), MissingNode.IsValid());
+	if (MissingNode.IsValid())
+	{
+		TestEqual(TEXT("Missing node status"), MissingNode->GetStringField(TEXT("status")), FString(TEXT("missing")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffReportsExtraNodeTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.ReportsExtraNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffReportsExtraNodeTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffExtraNode"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+	AddBeginPlayNode(Graph);
+	AddPrintStringNode(Graph, 320, 0);
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+	const TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+	const FString PrintNodeId = GetNodeIdByMemberName(DesiredGraph, TEXT("PrintString"));
+	TestFalse(TEXT("Extracted PrintString node id exists"), PrintNodeId.IsEmpty());
+	TestTrue(TEXT("Desired graph omits PrintString node"), RemoveNodeByMemberName(DesiredGraph, TEXT("PrintString")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> ExtraNode = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
+	TestTrue(TEXT("Diff reports extra PrintString node"), ExtraNode.IsValid());
+	if (ExtraNode.IsValid())
+	{
+		TestEqual(TEXT("Extra node status"), ExtraNode->GetStringField(TEXT("status")), FString(TEXT("extra")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffReportsChangedPinDefaultTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.ReportsChangedPinDefault",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffReportsChangedPinDefaultTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffChangedPin"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+	AddPrintStringNode(Graph, 320, 0, TEXT("Current"));
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+	const TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+	const FString PrintNodeId = GetNodeIdByMemberName(DesiredGraph, TEXT("PrintString"));
+	TestFalse(TEXT("Extracted PrintString node id exists"), PrintNodeId.IsEmpty());
+	TestTrue(TEXT("Desired pin default is edited"), SetPinDefaultForMemberNode(DesiredGraph, TEXT("PrintString"), TEXT("InString"), TEXT("Desired")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> ChangedPin = FindDiffEntryByPath(DiffEntries, PinPath(TEXT("EventGraph"), PrintNodeId, TEXT("InString")));
+	TestTrue(TEXT("Diff reports changed InString default"), ChangedPin.IsValid());
+	if (ChangedPin.IsValid())
+	{
+		TestEqual(TEXT("Changed pin status"), ChangedPin->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffReportsMissingLinkTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.ReportsMissingLink",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffReportsMissingLinkTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffMissingLink"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+	AddBeginPlayNode(Graph);
+	AddPrintStringNode(Graph, 320, 0);
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+	const TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+	const FString BeginPlayNodeId = GetNodeIdByMemberName(DesiredGraph, TEXT("ReceiveBeginPlay"));
+	const FString PrintNodeId = GetNodeIdByMemberName(DesiredGraph, TEXT("PrintString"));
+	TestFalse(TEXT("Extracted BeginPlay node id exists"), BeginPlayNodeId.IsEmpty());
+	TestFalse(TEXT("Extracted PrintString node id exists"), PrintNodeId.IsEmpty());
+	AddLinkToGraph(DesiredGraph, BeginPlayNodeId, UEdGraphSchema_K2::PN_Then.ToString(), PrintNodeId, UEdGraphSchema_K2::PN_Execute.ToString());
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> MissingLink = FindDiffEntryByPath(
+		DiffEntries,
+		LinkPath(TEXT("EventGraph"), BeginPlayNodeId, UEdGraphSchema_K2::PN_Then.ToString(), PrintNodeId, UEdGraphSchema_K2::PN_Execute.ToString()));
+	TestTrue(TEXT("Diff reports missing execution link"), MissingLink.IsValid());
+	if (MissingLink.IsValid())
+	{
+		TestEqual(TEXT("Missing link status"), MissingLink->GetStringField(TEXT("status")), FString(TEXT("missing")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffTreatsDefinitionRefAndInlineMemberRefAsEqualTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.TreatsDefinitionRefAndInlineMemberRefAsEqual",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffTreatsDefinitionRefAndInlineMemberRefAsEqualTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffDefinitionRef"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+	AddPrintStringNode(Graph, 320, 0);
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+	RemoveExtractOnlyEvidence(DesiredBody);
+	const TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+	const FString PrintNodeId = GetNodeIdByMemberName(DesiredGraph, TEXT("PrintString"));
+	TestFalse(TEXT("Extracted PrintString node id exists"), PrintNodeId.IsEmpty());
+	TestTrue(TEXT("Desired PrintString member uses DefinitionRef"), ReplaceMemberWithDefinitionRef(DesiredGraph, TEXT("PrintString"), TEXT("Func.KismetSystemLibrary.PrintString")));
+
+	TSharedPtr<FJsonObject> Definitions = MakeShared<FJsonObject>();
+	Definitions->SetObjectField(
+		TEXT("Func.KismetSystemLibrary.PrintString"),
+		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries, &Definitions);
+	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> PrintNodeDiff = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
+	TestTrue(TEXT("Diff includes PrintString node"), PrintNodeDiff.IsValid());
+	if (PrintNodeDiff.IsValid())
+	{
+		TestEqual(TEXT("DefinitionRef and inline MemberRef compare unchanged"), PrintNodeDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+	TestFalse(TEXT("DefinitionRef desired has no changed graph diff entries"), HasNonUnchangedGraphDiffEntry(DiffEntries));
 	return true;
 }
 

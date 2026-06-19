@@ -3,6 +3,7 @@
 #include "Profiles/UBlueprintGraphRegionAdapter.h"
 
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
+#include "Graphs/AssetDocumentGraphDiff.h"
 #include "Graphs/AssetDocumentGraphParser.h"
 #include "Graphs/AssetDocumentNodeAdapter.h"
 #include "Graphs/K2GraphAdapter.h"
@@ -227,6 +228,116 @@ void MergeSkippedGraphEvidence(TSharedRef<FJsonObject>& OutBodyJson, const TArra
 	Graphs->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 }
 
+TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
+	const FString& Path,
+	const FString& Status,
+	const TSharedPtr<FJsonValue>& Current,
+	const TSharedPtr<FJsonValue>& Desired,
+	const FString& Change = FString(),
+	const FString& Message = FString())
+{
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), Path);
+	Entry->SetStringField(TEXT("status"), Status);
+	if (!Change.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("change"), Change);
+	}
+	if (!Message.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("message"), Message);
+	}
+	Entry->SetField(TEXT("current"), Current.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Current) : MakeShared<FJsonValueNull>());
+	Entry->SetField(TEXT("desired"), Desired.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Desired) : MakeShared<FJsonValueNull>());
+	return Entry;
+}
+
+TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
+{
+	const FString Change = GraphEntry.Status == TEXT("unchanged") ? FString() : GraphEntry.Status;
+	return MakeCapabilityDiffEntry(
+		GraphEntry.Path,
+		GraphEntry.Status,
+		GraphEntry.Current,
+		GraphEntry.Desired,
+		Change,
+		GraphEntry.Message);
+}
+
+FString GraphPathFromSkippedNode(const TSharedPtr<FJsonObject>& SkippedNode)
+{
+	FString GraphName;
+	if (SkippedNode.IsValid() && SkippedNode->TryGetStringField(TEXT("Graph"), GraphName) && !GraphName.IsEmpty())
+	{
+		FString EscapedName = GraphName;
+		EscapedName.ReplaceInline(TEXT("~"), TEXT("~0"));
+		EscapedName.ReplaceInline(TEXT("/"), TEXT("~1"));
+		return FString::Printf(TEXT("%s/%s"), UbergraphPagesPath, *EscapedName);
+	}
+	return UbergraphPagesPath;
+}
+
+FString SkippedNodeMessage(const TSharedPtr<FJsonObject>& SkippedNode)
+{
+	FString ClassPath;
+	FString NodeTitle;
+	if (SkippedNode.IsValid())
+	{
+		SkippedNode->TryGetStringField(TEXT("Class"), ClassPath);
+		SkippedNode->TryGetStringField(TEXT("NodeTitle"), NodeTitle);
+	}
+	return FString::Printf(
+		TEXT("current asset contains unsupported graph node%s%s; graph content cannot be fully canonicalized"),
+		ClassPath.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" class '%s'"), *ClassPath),
+		NodeTitle.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" titled '%s'"), *NodeTitle));
+}
+
+void AppendSkippedGraphDiffEntries(
+	const TArray<TSharedPtr<FJsonValue>>& SkippedNodes,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	for (const TSharedPtr<FJsonValue>& SkippedValue : SkippedNodes)
+	{
+		const TSharedPtr<FJsonObject> SkippedNode = SkippedValue.IsValid() ? SkippedValue->AsObject() : nullptr;
+		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(
+			GraphPathFromSkippedNode(SkippedNode),
+			TEXT("unsupported"),
+			SkippedValue,
+			nullptr,
+			TEXT("unsupported"),
+			SkippedNodeMessage(SkippedNode))));
+	}
+}
+
+FAssetDocumentCapabilityResult ParseDesiredUbergraphPages(
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<FAssetDocumentGraphSpec>& OutGraphs)
+{
+	OutGraphs.Reset();
+	const TSharedPtr<FJsonValue>* UbergraphPagesValue = DesiredBody->Values.Find(TEXT("UbergraphPages"));
+	if (!UbergraphPagesValue || !UbergraphPagesValue->IsValid() || (*UbergraphPagesValue)->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if ((*UbergraphPagesValue)->Type != EJson::Array)
+	{
+		return InvalidRegionTypeFailure(TEXT("UbergraphPages"));
+	}
+
+	FAssetDocumentGraphParseOptions ParseOptions;
+	ParseOptions.Path = UbergraphPagesPath;
+	FAssetDocumentGraphParseResult ParseResult =
+		FAssetDocumentGraphParser::ParseGraphArray((*UbergraphPagesValue)->AsArray(), ParseOptions);
+	if (!ParseResult.IsValid())
+	{
+		return GraphDiagnosticsFailure(ParseResult.Diagnostics);
+	}
+
+	OutGraphs = MoveTemp(ParseResult.Graphs);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedPtr<FJsonValue>& Value)
@@ -360,4 +471,36 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ExtractRegions(
 	OutBodyJson->SetField(TEXT("UbergraphPages"), FAssetDocumentGraphParser::WriteCanonicalGraphArray(ExtractResult.Graphs));
 	MergeSkippedGraphEvidence(OutBodyJson, ExtractResult.SkippedNodes);
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::DiffRegions(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
+{
+	TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+	const FAssetDocumentCapabilityResult DesiredParseResult = ParseDesiredUbergraphPages(DesiredBody, DesiredGraphs);
+	if (!DesiredParseResult.bSuccess)
+	{
+		return DesiredParseResult;
+	}
+
+	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
+	if (!Blueprint)
+	{
+		return GraphFailure(TEXT("UBlueprint graph diff requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
+	const FAssetDocumentK2GraphExtractResult CurrentExtract = K2GraphAdapter.ExtractUbergraphPages(Blueprint);
+	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
+	const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
+		FAssetDocumentGraphDiff::CompareUbergraphPages(DesiredGraphs, CurrentExtract.Graphs, Definitions);
+	for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
+	{
+		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(GraphEntry)));
+	}
+
+	AppendSkippedGraphDiffEntries(CurrentExtract.SkippedNodes, OutDiffEntries);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed UBlueprint graph regions"));
 }
