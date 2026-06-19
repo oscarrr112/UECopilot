@@ -13,19 +13,22 @@
 - AssetDocument path: `Body.UbergraphPages`
 - UE surface: `UBlueprint::UbergraphPages`
 - 当前处理方式:
-  - validate: profile skeleton 阶段应识别该 key，但在 graph representation 未实现前拒绝非空内容。
-  - apply: 未实现前拒绝应用非空 graph region。
-  - extract: 未实现前可输出 extract-only diagnostic，不能声称 canonical full export。
-  - diff: 未实现前应报告 region unsupported，而不是忽略差异。
-- 延期原因: 需要定义 K2 graph canonical shape，包括 node class、node guid、pins、links、member references、默认 pin 值、schema、注释、layout metadata 和 subgraphs。
-- 清理条件: 完成 canonical K2 graph region spec、roundtrip automation、真实 Blueprint compile smoke。
+  - validate/apply/extract/diff: Tier 1 EventGraph 已支持 canonical `GraphSpec`，覆盖 `K2Node_Event`、`K2Node_CallFunction`、`K2Node_VariableGet`、`K2Node_VariableSet`、`K2Node_Self`。
+  - omitted graph/node/link/pin default 按 authoritative region 语义删除或 reset。
+  - unsupported existing graph contents 通过 `_Skipped.Graphs` 和 diff `skipped` entries 暴露，不能静默忽略。
+- 仍延期范围:
+  - Branch、Sequence、Cast、ConstructObject、Timeline event/update、latent action、delegate、dynamic multicast、custom event 等非 Tier 1 node adapters。
+  - 高级 pin 类型、wildcard pins、expanded struct pins、array/map/set pin editing、复杂 literal/default object canonicalization。
+  - full graph editor-only 状态，例如 zoom/pan、selection、open tabs。
+- 清理条件: 针对每类新增 node/pin lifecycle 添加薄 adapter、preflight/apply/extract/diff automation 和真实 Blueprint compile smoke。
 
 ## Body.FunctionGraphs
 
 - AssetDocument path: `Body.FunctionGraphs`
 - UE surface: `UBlueprint::FunctionGraphs`
 - 当前处理方式:
-  - validate/apply/extract/diff 与 `Body.UbergraphPages` 一致。
+  - validate/apply: 非空内容仍明确拒绝。
+  - extract/diff: 未实现前报告 unsupported/deferred，而不是吞掉差异。
 - 延期原因: function graph 还需要函数签名、entry/return node 对齐、interface-required graph ownership 规则。
 - 清理条件: 能 roundtrip user-created functions 和 interface function stubs，并能在 remove interface 时正确删除或保留相关 graph。
 
@@ -34,7 +37,8 @@
 - AssetDocument path: `Body.MacroGraphs`
 - UE surface: `UBlueprint::MacroGraphs`
 - 当前处理方式:
-  - validate/apply/extract/diff 与 graph regions 一致。
+  - validate/apply: 非空内容仍明确拒绝。
+  - extract/diff: 未实现前报告 unsupported/deferred，而不是吞掉差异。
 - 延期原因: macro tunnel nodes、local wildcard pins 和 macro-specific schema 行为需要单独验证。
 - 清理条件: 能 roundtrip macro signature、tunnel nodes、internal nodes 和 links。
 
@@ -85,7 +89,7 @@
 - AssetDocument path: graph node layout fields inside `Body.*Graphs`
 - UE surface: graph node position、comment bubble、zoom/pan、selection、editor tabs
 - 当前处理方式:
-  - node position and comments may be authoring metadata once graph region exists.
+  - Tier 1 `UbergraphPages` 支持 node `Position` 和 `Comment` 作为 authoring/readability metadata。
   - zoom/pan、selection、open tabs remain excluded editor-only state.
 - 延期原因: 需要区分 graph readability metadata 和 per-user editor state。
 - 清理条件: graph region spec 明确哪些 layout fields are authoring data，哪些永远 extract-only 或 excluded。

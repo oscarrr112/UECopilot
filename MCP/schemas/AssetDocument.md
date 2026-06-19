@@ -166,9 +166,82 @@ The profile owns these canonical `Body` keys:
 - `Variables`: authoritative array of member variables using `FEdGraphPinType`-shaped `Type`.
 - `Components`: authoritative component tree and inherited/native component override declarations keyed by `{Name, OwnerClass}`.
 - `ClassDefaults`: generated CDO default value deltas.
-- `UbergraphPages`, `FunctionGraphs`, `MacroGraphs`, and `Timelines`: reserved full-surface regions. Non-empty values are rejected until the graph/timeline region implementation lands.
+- `UbergraphPages`: authoritative Tier 1 EventGraph region using canonical graph specs. It currently supports reflected K2 nodes for event graphs and round-trips through validate, apply, extract, and diff.
+- `FunctionGraphs`, `MacroGraphs`, and `Timelines`: reserved full-surface regions that still reject non-empty values until their graph/timeline-specific contracts land.
 
-Missing entries in implemented UBlueprint regions delete or reset the corresponding Blueprint authoring surface; they do not preserve current `.uasset` state. Missing `Variables` entries remove member variables. Missing owned `Components` entries remove owned SCS component nodes. Missing inherited component entries remove inherited SCS override templates. Missing native component entries reset supported native component property overrides to the parent CDO baseline. Missing `ClassDefaults` entries reset supported generated CDO default deltas to the parent CDO baseline.
+Missing entries in implemented UBlueprint regions delete or reset the corresponding Blueprint authoring surface; they do not preserve current `.uasset` state. Missing `Variables` entries remove member variables. Missing owned `Components` entries remove owned SCS component nodes. Missing inherited component entries remove inherited SCS override templates. Missing native component entries reset supported native component property overrides to the parent CDO baseline. Missing `ClassDefaults` entries reset supported generated CDO default deltas to the parent CDO baseline. Missing `UbergraphPages` graphs, nodes, links, or pin defaults remove or reset the corresponding managed EventGraph surface.
+
+### UBlueprint Graph Regions
+
+`Body.UbergraphPages` is an array of canonical `GraphSpec` objects. The current implementation is Tier 1 for ordinary Blueprint event graphs; `FunctionGraphs`, `MacroGraphs`, and `Timelines` remain explicit unsupported/deferred regions.
+
+Canonical `GraphSpec` fields:
+
+- `Name`: Required graph name, such as `EventGraph`. Names are unique within `UbergraphPages`.
+- `Schema`: Required graph schema class path. Tier 1 uses `/Script/BlueprintGraph.EdGraphSchema_K2`.
+- `GraphGuid`: Optional stable graph GUID when extraction can preserve one.
+- `Category`: Optional graph category metadata.
+- `Description`: Optional graph description metadata.
+- `Signature`: Optional future signature object; reserved for Function/Macro graph work.
+- `Nodes`: Required array of `NodeSpec` objects.
+- `Links`: Required array of canonical expanded `LinkSpec` objects.
+
+Canonical `NodeSpec` fields:
+
+- `Id`: Required graph-local stable identity. It must match `^[A-Za-z_][A-Za-z0-9_-]*$` and is the identity used by links and diffs.
+- `NodeGuid`: Optional extracted or author-provided UE node GUID. Apply may ignore a stale GUID when it points at a semantically different node.
+- `Class`: Required node class path, such as `/Script/BlueprintGraph.K2Node_CallFunction`.
+- `Capability`: Optional adapter capability hint. Tier 1 usually leaves this empty and resolves through class/member reflection.
+- `Member`: Optional graph member reference. Event, call-function, and variable nodes use `MemberRef`; `K2Node_Self` does not.
+- `PinOverrides`: Optional sparse array of pin default overrides. Each entry may include `Pin`, `Direction`, `Type`, `DefaultValue`, `DefaultObject`, `DefaultTextValue`, `Hidden`, and `AdvancedView`.
+- `Position`: Optional `{ "X": number, "Y": number }` authoring layout metadata.
+- `Comment`: Optional node comment text.
+
+Canonical `LinkSpec` output always uses expanded endpoint objects:
+
+```json
+{
+  "From": { "Node": "BeginPlay", "Pin": "then" },
+  "To": { "Node": "Print", "Pin": "execute" }
+}
+```
+
+Compact link input sugar is accepted only as authoring input when both endpoints are strings of the form `NodeId.PinId` and each token matches the graph id rules:
+
+```json
+{ "From": "BeginPlay.then", "To": "Print.execute" }
+```
+
+Extraction and canonical serialization emit the expanded object shape, not compact strings.
+
+Graph-relevant `Definitions` kinds:
+
+- `ClassRef`: Reusable class reference for graph schemas or reflected member owners when a profile accepts it.
+- `AssetRef`: Reusable asset reference for graph-owned defaults that point at assets.
+- `MemberRef`: Reusable member reference object with `OwnerClass` and `Name`; used by event, function, and variable node specs.
+- `PinType`: Reusable reflected pin type shape for future typed pin authoring.
+- `Literal`: Reusable literal value fragment for pin defaults or future graph metadata.
+- `DefinitionRef`: Inline reference to an entry in `Definitions`; graph diff resolves equivalent inline and referenced values before comparison.
+
+Tier 1 supported node classes:
+
+- `/Script/BlueprintGraph.K2Node_Event`
+- `/Script/BlueprintGraph.K2Node_CallFunction`
+- `/Script/BlueprintGraph.K2Node_VariableGet`
+- `/Script/BlueprintGraph.K2Node_VariableSet`
+- `/Script/BlueprintGraph.K2Node_Self`
+
+Unsupported graph fallback diagnostics are structured and actionable instead of raw UE graph dumps. They include:
+
+- `Code`: Stable diagnostic code, such as `UnsupportedGraphNodeClass`, `UnsupportedGraphFunction`, or `UnresolvedGraphMemberReference`.
+- `Path`: AssetDocument JSON path, such as `/Body/UbergraphPages/0/Nodes/0`.
+- `Class`: Node class path when available.
+- `Capability`: Capability hint when provided.
+- `Member`: Member reference object when available.
+- `Reason`: Human-readable reason.
+- `SuggestedAction`: Next action, such as adding a thin node adapter or removing the node from the managed graph.
+
+Unsupported existing graph contents are surfaced through extract-only `_Skipped.Graphs` evidence and diff `skipped` entries; they are not silently ignored and should not be authored back into `Body`.
 
 Component entries use:
 
