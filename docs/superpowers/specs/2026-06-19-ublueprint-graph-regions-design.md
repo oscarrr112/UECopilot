@@ -19,86 +19,86 @@
 - `Body.MacroGraphs`
 - `Body.Timelines`
 
-sidecar 是 agent 可编辑、可 diff、可 roundtrip 的 Blueprint graph 作者表面；`.uasset` graph 是由 sidecar materialize 出来的 UE 表示。设计参考 Godot `.tres/.tscn` 的文本资源原则：稳定局部 identity、显式引用、外部/内部资源分层、默认值稀疏保存；但 AssetDocument 仍使用 JSON shape，不引入 Godot section 语法。
+sidecar 是 agent 可编辑、可 diff、可 roundtrip 的 Blueprint graph 作者表面；`.uasset` graph 是由 sidecar materialize 出来的 UE 表示。设计参考 Godot `.tres/.tscn` 的文本资源原则：稳定局部 identity、显式引用、外部/内部资源分层、默认值稀疏保存；但 AssetDocument 仍使用 JSON 形状，不引入 Godot section 语法。
 
-实现上允许分 step 落地，但 public sidecar shape 必须在同一个 spec 中稳定。第一轮实现优先完成 shared `GraphCore` 和 `Body.UbergraphPages`，后续 step 复用同一套 graph shape 扩展 `FunctionGraphs`、`MacroGraphs` 和 `Timelines`。
+实现上允许分 step 落地，但公开 sidecar 形状必须在同一个 spec 中稳定。第一轮实现优先完成共享 `GraphCore` 和 `Body.UbergraphPages`，后续 step 复用同一套 graph 形状扩展 `FunctionGraphs`、`MacroGraphs` 和 `Timelines`。
 
 核心原则：
 
 - sidecar 仍是权威作者表示，不是 patch/op DSL。
 - graph 表示必须是结构化 JSON，不允许把 `.uasset` graph 二进制 blob 或 editor serialization dump 当作作者表面。
-- GraphCore 必须是薄中间层：只管 graph/node/pin/link identity、canonical ordering、diagnostics、引用解析和 staged apply 编排。
-- K2 node 细节必须通过 reflection-first adapter hook 扩展；禁止在 GraphCore 或 region apply 主流程中维护硬编码 node/function/property inventory。
-- 缺失的 graph、node、pin default、link、timeline 表示应在 apply 后从 `.uasset` 中移除或恢复 baseline。
+- `GraphCore` 必须是薄中间层：只管 graph/node/pin/link identity、规范排序、diagnostics、引用解析和 staged apply 编排。
+- K2 node 细节必须通过 reflection-first adapter hook 扩展；禁止在 `GraphCore` 或 region apply 主流程中维护硬编码 node/function/property 清单。
+- 缺失的 graph、node、pin default、link、timeline 表示应在 apply 后从 `.uasset` 中移除或恢复基线。
 - 不新增 `BlueprintGenerator`，不复用旧 generator 作为 AssetDocument apply 路径；可以把既有 graph/node 代码当作 UE API 参考。
 
 ---
 
 ## 2. 范围
 
-### 2.1 In Scope
+### 2.1 范围内
 
 - 普通 `UBlueprint` 的 K2 graph authoring。
-- graph extract、validate、apply、diff 的 canonical representation。
+- graph extract、validate、apply、diff 的规范表示。
 - graph identity、node identity、link identity、default pin values、member/function refs、layout metadata。
 - `Definitions` 对 graph refs、pin type、复杂 literal、timeline curve 等可复用 fragment 的承载。
-- Event graph pages stored in `UBlueprint::UbergraphPages`。
-- User-created function graphs and interface function stubs stored in `UBlueprint::FunctionGraphs`。
-- User-created macro graphs stored in `UBlueprint::MacroGraphs`。
-- Timeline templates stored in `UBlueprint::Timelines` and timeline graph node reconciliation。
-- Compile after graph apply and no-partial-save failure handling。
+- 存储在 `UBlueprint::UbergraphPages` 中的 Event graph pages。
+- 存储在 `UBlueprint::FunctionGraphs` 中的 user-created function graphs 和 interface function stubs。
+- 存储在 `UBlueprint::MacroGraphs` 中的 user-created macro graphs。
+- 存储在 `UBlueprint::Timelines` 中的 Timeline templates，以及 timeline graph node reconciliation。
+- graph apply 后的 compile 流程，以及失败时不保存半写入状态。
 
-### 2.2 Out Of Scope
+### 2.2 范围外
 
 - `UWidgetBlueprint` widget tree/bindings。
 - `UAnimBlueprint` AnimGraph、state machine、skeleton lifecycle。
 - natural-language graph DSL。
-- Full arbitrary K2 node support in the first implementation step。
-- Per-user editor state: graph zoom、pan、selection、open tabs、editor viewport。
-- Runtime spawned component instances produced by graph execution。
-- UE compiler/intermediate/cache fields that can be reconstructed from graph semantics。
+- 第一实现 step 中支持任意 K2 node。
+- 每用户 editor state：graph zoom、pan、selection、open tabs、editor viewport。
+- graph 执行时动态生成的 runtime component instances。
+- 可从 graph semantics 重建的 UE compiler/intermediate/cache fields。
 
 ---
 
-## 3. Architecture: Thin Core + Reflection Adapters
+## 3. 架构：薄 Core + 反射 Adapter
 
-Graph support is split into four layers:
+Graph 支持分为四层：
 
 1. `GraphCore`
-   - Parses `GraphSpec`、`NodeSpec`、`PinOverrideSpec`、`LinkSpec`。
-   - Validates JSON shape、duplicate ids、link endpoint syntax、canonical ordering。
-   - Resolves `DefinitionRef` and cross-region references.
-   - Produces narrow JSON path diagnostics.
-   - Does not know concrete K2 node behavior.
+   - 解析 `GraphSpec`、`NodeSpec`、`PinOverrideSpec`、`LinkSpec`。
+   - 校验 JSON 形状、duplicate ids、link endpoint syntax、规范排序。
+   - 解析 `DefinitionRef` 和 cross-region references。
+   - 产出尽可能窄的 JSON path diagnostics。
+   - 不理解具体 K2 node 行为。
 
-2. Ordinary `RegionPolicy`
-   - Graph regions use the existing `RegionPolicy` model with `ApplyMode: RebuildGraphRegion`.
-   - The policy defines identity rule, default source, comparison rule, reducer mode, and after-apply hooks.
-   - Any graph-specific policy text in this spec is a preset/section of the common policy model, not a new parallel runtime system.
+2. 普通 `RegionPolicy`
+   - Graph regions 使用既有 `RegionPolicy` 模型，并设置 `ApplyMode: RebuildGraphRegion`。
+   - policy 定义 identity rule、default source、comparison rule、reducer mode 和 after-apply hooks。
+   - 本 spec 中任何 graph-specific policy 表述都只是 common policy model 的 preset/section，不是新的平行 runtime 系统。
 
 3. `K2GraphAdapter`
-   - Creates or locates `UEdGraph` instances through UE editor APIs.
-   - Resolves graph schema dynamically from `Schema`.
-   - Invokes `FBlueprintEditorUtils`, `UEdGraphSchema_K2`, `AllocateDefaultPins`, `ReconstructNode`, compile/save lifecycle.
-   - Owns engine-specific repair hooks; it is not a node inventory.
+   - 通过 UE editor APIs 创建或定位 `UEdGraph`。
+   - 根据 `Schema` 动态解析 graph schema。
+   - 调用 `FBlueprintEditorUtils`、`UEdGraphSchema_K2`、`AllocateDefaultPins`、`ReconstructNode`、compile/save lifecycle。
+   - 拥有 engine-specific repair hooks；它不是 node inventory。
 
 4. `NodeAdapterRegistry`
-   - Resolves node class dynamically by `Class` path using `StaticLoadClass` / existing `ClassFinderUtils` where available.
-   - Selects a thin adapter only when reflection alone cannot perform the UE lifecycle operation.
-   - Adapters may handle lifecycle operations such as binding `UFunction` to a `UK2Node_CallFunction`, setting an event reference, or reconciling timeline templates.
-   - Adapters must not enumerate concrete function names, variable names, component names, or project-specific classes.
+   - 通过 `Class` path 动态解析 node class，优先使用 `StaticLoadClass` 或已有 `ClassFinderUtils`。
+   - 只有 reflection 本身无法完成 UE lifecycle operation 时，才选择薄 adapter。
+   - adapter 可以处理绑定 `UFunction` 到 `UK2Node_CallFunction`、设置 event reference、reconcile timeline templates 等 lifecycle 操作。
+   - adapter 不得枚举具体 function names、variable names、component names 或 project-specific classes。
 
-Hard-coded branching policy:
+硬编码分支策略：
 
-- Allowed: small adapter selection by UE node class or reflected capability when UE requires a class-specific lifecycle call.
-- Not allowed: `switch` / large `if` chains over concrete function names, property names, project class names, or exhaustive `K2Node_*` include lists.
-- Required: use reflection for `UFunction` / `FProperty` / `FEdGraphPinType` / component property resolution wherever UE exposes enough metadata.
+- 允许：当 UE 需要 class-specific lifecycle call 时，按 UE node class 或 reflected capability 选择小型 adapter。
+- 禁止：对具体 function names、property names、project class names 或全量 `K2Node_*` include 列表写 `switch` / 大型 `if` 链。
+- 要求：只要 UE 暴露了足够 metadata，就使用 reflection 处理 `UFunction` / `FProperty` / `FEdGraphPinType` / component property resolution。
 
 ---
 
-## 4. Document Shape
+## 4. 文档形状
 
-Graph regions share the same `GraphSpec` shape. A minimal EventGraph example:
+Graph regions 共享同一个 `GraphSpec` 形状。最小 EventGraph 示例：
 
 ```json
 {
@@ -165,18 +165,18 @@ Graph regions share the same `GraphSpec` shape. A minimal EventGraph example:
 }
 ```
 
-Rules:
+规则：
 
-- `Definitions` is the Godot-style resource table equivalent. It supports reusable refs and fragments, but it does not own UE package lifecycle.
-- Graph topology stays inline under `Body.*Graphs`. Nodes, link endpoints, and graph ordering must remain easy for agents to edit.
-- Nodes are not moved into `Definitions` by default. Only large, shared, or reused payloads should become definitions.
-- `Timelines` do not use `GraphSpec` directly, but timeline nodes in graph regions reference timeline specs by timeline `Name` or `DefinitionRef`.
+- `Definitions` 是 Godot-style resource table 的 JSON 等价物。它支持 reusable refs 和 fragments，但不拥有 UE package lifecycle。
+- Graph topology 保持 inline，放在 `Body.*Graphs` 下。Nodes、link endpoints 和 graph ordering 必须便于 agent 编辑。
+- Nodes 默认不移入 `Definitions`。只有大型、共享或复用 payload 才应成为 definitions。
+- `Timelines` 不直接使用 `GraphSpec`，但 graph region 中的 timeline nodes 可以通过 timeline `Name` 或 `DefinitionRef` 引用 timeline specs。
 
 ---
 
-## 5. Definitions For Graph Regions
+## 5. Graph Regions 的 Definitions
 
-Graph regions may reference top-level `Definitions` through:
+Graph regions 可以通过以下形状引用顶层 `Definitions`：
 
 ```json
 {
@@ -185,41 +185,41 @@ Graph regions may reference top-level `Definitions` through:
 }
 ```
 
-Initial graph-relevant definition kinds:
+初始 graph-relevant definition kinds：
 
 - `ClassRef`
-  - `Class`: UE class path.
+  - `Class`：UE class path。
 - `AssetRef`
-  - `Path`: asset path.
-  - `Class`: optional expected asset class path.
+  - `Path`：asset path。
+  - `Class`：可选的 expected asset class path。
 - `MemberRef`
-  - `OwnerClass`: class path or `"Self"`.
-  - `Name`: reflected function/property/member name.
-  - `Guid`: optional extracted evidence.
-  - `SelfContext`: optional boolean.
+  - `OwnerClass`：class path 或 `"Self"`。
+  - `Name`：reflected function/property/member name。
+  - `Guid`：可选 extracted evidence。
+  - `SelfContext`：可选 boolean。
 - `PinType`
-  - Uses the same `FEdGraphPinType` JSON shape as `Body.Variables`.
+  - 使用与 `Body.Variables` 相同的 `FEdGraphPinType` JSON shape。
 - `Literal`
-  - Typed literal payload for complex defaults once a typed fragment is proven roundtrippable.
+  - typed literal payload，用于已经证明可 roundtrip 的复杂 defaults。
 - `TimelineCurve`
-  - Canonical curve key payload for reusable timeline tracks.
+  - reusable timeline tracks 的 canonical curve key payload。
 
-Validation rules:
+校验规则：
 
-- Unknown definition kind fails with `UnknownDefinitionKind`.
-- Unused definitions are allowed only when the top-level AssetDocument policy already allows reusable fragments; otherwise diff may report them as extra.
-- Circular `DefinitionRef` chains fail with `CircularDefinitionReference`.
-- A graph node may inline a small ref object or use `DefinitionRef`; both canonicalize to the same resolved semantic value.
+- 未知 definition kind 失败，诊断码为 `UnknownDefinitionKind`。
+- 未使用 definitions 只有在顶层 AssetDocument policy 允许 reusable fragments 时才允许；否则 diff 可以报告为 extra。
+- 循环 `DefinitionRef` 链失败，诊断码为 `CircularDefinitionReference`。
+- graph node 可以 inline 一个小型 ref object，也可以使用 `DefinitionRef`；两者 canonicalize 后得到同一个 resolved semantic value。
 
-Canonical and diff rules:
+规范化与 diff 规则：
 
-- Graph semantic comparison resolves `DefinitionRef` before comparing nodes, pins, links, signatures, and timelines.
-- Inline refs and equivalent `DefinitionRef` values compare equal inside managed graph regions.
-- Extract must not opportunistically hoist simple graph refs into `Definitions`. For the first graph implementation, extract emits inline `ClassRef`, `MemberRef`, `AssetRef`, and `PinType` unless the source sidecar already exists and the sync operation is explicitly preserving authoring style.
-- A future extractor may hoist large reusable payloads only after that definition kind has a deterministic id rule in this spec, for example `TimelineCurve.<TimelineName>.<TrackName>` for timeline curves.
-- Diff paths under `/Definitions/<DefinitionId>` are used for definition table authoring issues: duplicate/invalid definitions, unused top-level fragments when disallowed, or changed reusable definitions that are intentionally managed as definitions.
-- A current asset whose extracted graph has an inline ref must not report `/Definitions/<DefinitionId>` missing merely because the desired sidecar used a `DefinitionRef`; the graph semantic diff compares the resolved value.
-- Definition ids are authoring ids. They must be stable, unique within `Definitions`, and use `^[A-Za-z_][A-Za-z0-9_.:-]*$`.
+- Graph semantic comparison 在比较 nodes、pins、links、signatures 和 timelines 前，先 resolve `DefinitionRef`。
+- Inline refs 与等价 `DefinitionRef` 在 managed graph regions 内比较为相等。
+- Extract 不得 opportunistically hoist 简单 graph refs 到 `Definitions`。第一版 graph 实现中，extract 输出 inline `ClassRef`、`MemberRef`、`AssetRef` 和 `PinType`，除非源 sidecar 已存在且 sync 操作明确要求保留作者风格。
+- 未来 extractor 只有在本 spec 为该 definition kind 定义 deterministic id rule 后，才能 hoist 大型 reusable payload。例如 timeline curves 可使用 `TimelineCurve.<TimelineName>.<TrackName>`。
+- `/Definitions/<DefinitionId>` diff path 只用于 definition table 作者问题：duplicate/invalid definitions、policy 不允许时的 unused top-level fragments，或明确作为 definition 管理的 reusable definitions 发生变化。
+- 如果目标 sidecar 使用 `DefinitionRef`，而当前 asset extract 得到 inline ref，不得仅因为缺少 `/Definitions/<DefinitionId>` 报 missing；graph semantic diff 比较 resolved value。
+- Definition ids 是 authoring ids。它们必须在 `Definitions` 内稳定、唯一，并符合 `^[A-Za-z_][A-Za-z0-9_.:-]*$`。
 
 ---
 
@@ -227,31 +227,31 @@ Canonical and diff rules:
 
 ### 6.1 Graph Fields
 
-Required fields:
+必填字段：
 
-- `Name`: graph name.
-- `Schema`: graph schema class path. First implementation supports only `/Script/BlueprintGraph.EdGraphSchema_K2`, resolved dynamically.
-- `Nodes`: array of `NodeSpec`.
-- `Links`: array of `LinkSpec`.
+- `Name`：graph name。
+- `Schema`：graph schema class path。第一实现仅支持 `/Script/BlueprintGraph.EdGraphSchema_K2`，但必须动态解析。
+- `Nodes`：`NodeSpec` array。
+- `Links`：`LinkSpec` array。
 
-Optional fields:
+可选字段：
 
-- `GraphGuid`: extracted graph GUID evidence. Apply must not require it for identity.
-- `Category`: function/macro authoring category when UE exposes a stable editable field.
-- `Description`: graph description when UE exposes a stable editable field.
-- `Signature`: function/macro signature extension; see sections 11 and 12.
+- `GraphGuid`：extracted graph GUID evidence。Apply 不得依赖它作为 identity。
+- `Category`：function/macro authoring category，仅在 UE 暴露稳定可编辑字段时使用。
+- `Description`：graph description，仅在 UE 暴露稳定可编辑字段时使用。
+- `Signature`：function/macro signature extension；见第 9 节和第 10 节。
 
-Identity rules:
+Identity 规则：
 
-- `UbergraphPages`: `Name`
-- `FunctionGraphs`: `Name`
-- `MacroGraphs`: `Name`
+- `UbergraphPages`：`Name`
+- `FunctionGraphs`：`Name`
+- `MacroGraphs`：`Name`
 
-Unsupported fields fail validation with `UnknownGraphField`.
+不支持字段失败，诊断码为 `UnknownGraphField`。
 
 ### 6.2 NodeSpec
 
-Canonical node shape:
+Canonical node 形状：
 
 ```json
 {
@@ -273,24 +273,24 @@ Canonical node shape:
 }
 ```
 
-Rules:
+规则：
 
-- `Id` is the sidecar identity within one graph. It must be unique, stable, and human-editable.
-- `Id` must use `^[A-Za-z_][A-Za-z0-9_-]*$`. This keeps link addressing, diagnostics, and agent edits unambiguous.
-- `Class` is the primary UE node identity. It is resolved dynamically and drives adapter lookup.
-- `Capability` is an optional semantic alias for diagnostics/templates. It must not become an independent source of behavior when `Class` is present.
-- Apply/extract dispatch must be determined by the resolved `Class` and registered adapter capability. Omitting or changing `Capability` must not change behavior except for validation diagnostics.
-- `NodeGuid` is UE identity evidence. It is optional for authored input. Extract includes it when UE provides a stable value. Apply uses `Id` as sidecar identity and may preserve `NodeGuid` on update when safe.
-- `Member` is required only for node classes whose adapter declares a reflected member requirement.
-- `PinOverrides` is sparse. It contains only authored pin defaults, dynamic pin declarations, or pin metadata that cannot be reconstructed from node class/member reflection.
-- `Position` contains authoring layout metadata. It is included because graph readability is shared project state.
-- `Comment` is authoring metadata. Empty string and missing field both mean no comment.
+- `Id` 是一个 graph 内的 sidecar identity。它必须唯一、稳定，并适合人工编辑。
+- `Id` 必须符合 `^[A-Za-z_][A-Za-z0-9_-]*$`，以保证 link addressing、diagnostics 和 agent edits 不产生歧义。
+- `Class` 是主要 UE node identity。它动态解析，并驱动 adapter lookup。
+- `Capability` 是可选 semantic alias，仅用于 diagnostics/templates。存在 `Class` 时，它不得成为独立行为来源。
+- Apply/extract dispatch 必须由 resolved `Class` 和 registered adapter capability 决定。省略或修改 `Capability` 不得改变行为，除非触发 validation diagnostics。
+- `NodeGuid` 是 UE identity evidence。authored input 可省略。Extract 在 UE 提供稳定值时包含它。Apply 使用 `Id` 作为 sidecar identity，并可在安全时保留 `NodeGuid`。
+- `Member` 仅在 node class 对应 adapter 声明需要 reflected member 时必填。
+- `PinOverrides` 是 sparse 的。它只包含 authored pin defaults、dynamic pin declarations，或无法从 node class/member reflection 重建的 pin metadata。
+- `Position` 是 authoring layout metadata。graph readability 是共享项目状态，所以需要包含它。
+- `Comment` 是 authoring metadata。空字符串和字段缺失都表示无 comment。
 
-GraphCore validation must not require a hard-coded list of node classes. It validates shape and asks `NodeAdapterRegistry` whether the resolved node class is supported for the current apply/extract tier. Unsupported node classes fail with `UnsupportedGraphNodeClass`.
+`GraphCore` validation 不得要求硬编码 node class 列表。它只校验形状，并询问 `NodeAdapterRegistry`：resolved node class 是否在当前 apply/extract tier 中受支持。不支持 node class 失败，诊断码为 `UnsupportedGraphNodeClass`。
 
 ### 6.3 PinOverrideSpec
 
-Pin overrides are intentionally sparse:
+Pin overrides 必须保持 sparse：
 
 ```json
 {
@@ -308,26 +308,26 @@ Pin overrides are intentionally sparse:
 }
 ```
 
-Rules:
+规则：
 
-- `Pin` is the link address inside one node. For ordinary pins it should equal UE `PinName`. Dynamic pins may use a stable sidecar id when UE display name is not unique.
-- `Pin` must use `^[A-Za-z_][A-Za-z0-9_-]*$`. If a UE pin name cannot satisfy this, the adapter must map it to a stable sidecar pin id and keep the UE display/name evidence in adapter-owned metadata.
-- `Direction` is optional for ordinary reflected pins because it can be reconstructed from the allocated UE pin. It is required for dynamic pins.
-- `Type` uses `FEdGraphPinType` shape or `DefinitionRef` to a `PinType`.
-- Default fields are authoritative only for input pins when the pin is not linked.
-- Missing default fields mean reset to node/pin baseline.
-- Linked input pins may still carry default values in UE, but diff treats link state as authoritative behavior. Apply may clear irrelevant defaults when UE requires it for compile stability.
-- Output pin defaults are rejected unless a node adapter explicitly declares that a specific output default is editable and roundtrippable.
-- Transient UE pin fields, compiler state, cache flags, and editor-only expansion state must not be represented.
+- `Pin` 是一个 node 内的 link address。普通 pins 应等于 UE `PinName`。当 UE display name 不唯一时，dynamic pins 可以使用稳定 sidecar id。
+- `Pin` 必须符合 `^[A-Za-z_][A-Za-z0-9_-]*$`。如果 UE pin name 不满足该规则，adapter 必须映射到稳定 sidecar pin id，并在 adapter-owned metadata 中保留 UE display/name evidence。
+- 对普通 reflected pins，`Direction` 可省略，因为它可从 allocated UE pin 重建。对 dynamic pins，`Direction` 必填。
+- `Type` 使用 `FEdGraphPinType` 形状，或使用指向 `PinType` 的 `DefinitionRef`。
+- Default fields 仅对未连接 input pins 有权威含义。
+- 缺失 default fields 表示 reset 到 node/pin baseline。
+- Linked input pins 在 UE 中仍可能携带 default values，但 diff 以 link state 作为权威行为。UE 为 compile stability 需要时，apply 可以清理无关 defaults。
+- Output pin defaults 默认拒绝，除非 node adapter 明确声明某个 output default 可编辑且可 roundtrip。
+- 不得表示 transient UE pin fields、compiler state、cache flags 或 editor-only expansion state。
 
-Extract rules:
+Extract 规则：
 
-- Extract emits pin overrides only when a pin has an authored non-baseline default, dynamic pin metadata, or non-reconstructable authoring metadata.
-- Link endpoints may reference pins that are not present in `PinOverrides`; apply reconstructs them through node allocation before link creation.
+- Extract 仅在 pin 有 authored non-baseline default、dynamic pin metadata，或不可重建 authoring metadata 时输出 pin overrides。
+- Link endpoints 可以引用不在 `PinOverrides` 中出现的 pins；apply 会先通过 node allocation 重建 pins，再创建 links。
 
 ### 6.4 LinkSpec
 
-Canonical link shape:
+Canonical link 形状：
 
 ```json
 {
@@ -342,7 +342,7 @@ Canonical link shape:
 }
 ```
 
-Compact form is accepted only as input sugar when both ids satisfy the node/pin id regex:
+Compact form 只作为 input sugar 接受，且 node/pin ids 必须满足对应 regex：
 
 ```json
 {
@@ -351,19 +351,19 @@ Compact form is accepted only as input sugar when both ids satisfy the node/pin 
 }
 ```
 
-Rules:
+规则：
 
-- Links are directed from output pin to input pin.
-- Both pins must resolve after node allocation and pin reconstruction.
-- Serializer and extract output must use the expanded object shape.
-- Compact input containing ambiguous ids fails with `InvalidGraphLinkEndpointSyntax`.
-- Duplicate links are rejected with `DuplicateGraphLink`.
-- Type-incompatible links are rejected before mutation when UE schema can validate them.
-- Missing link means remove that connection.
+- Links 从 output pin 指向 input pin。
+- 两端 pins 必须在 node allocation 和 pin reconstruction 后可解析。
+- Serializer 和 extract output 必须使用 expanded object shape。
+- compact input 如果 endpoint syntax 有歧义或格式错误，失败码为 `InvalidGraphLinkEndpointSyntax`。
+- duplicate links 失败，诊断码为 `DuplicateGraphLink`。
+- 只要 UE schema 可以校验，type-incompatible links 必须在 mutation 前拒绝。
+- 缺失 link 表示删除该 connection。
 
 ### 6.5 MemberRef
 
-Canonical member reference shape:
+Canonical member reference 形状：
 
 ```json
 {
@@ -373,74 +373,74 @@ Canonical member reference shape:
 }
 ```
 
-Optional fields:
+可选字段：
 
-- `Guid`: extracted UE member GUID when available.
-- `SelfContext`: boolean for member references that are intentionally self-scoped.
+- `Guid`：UE member GUID extracted evidence。
+- `SelfContext`：用于明确 self-scoped member references 的 boolean。
 
-Rules:
+规则：
 
-- Function/event/member identity must prefer explicit owner class plus name.
-- `Guid` is supporting evidence, not the only identity.
-- `OwnerClass: "Self"` resolves against staged `ParentClass`, `Body.Variables`, `Body.Components`, and generated class evidence.
-- Blueprint variables referenced by get/set nodes must exist in `Body.Variables` or be parent-class reflected properties.
-- Component variables referenced by get/set nodes must exist in `Body.Components` or parent/native component evidence.
-- Function refs resolve through `UClass::FindFunctionByName` or equivalent reflection; no concrete function whitelist is allowed.
-- Property refs resolve through `FProperty` reflection and Blueprint variable metadata; no concrete variable whitelist is allowed.
+- Function/event/member identity 优先使用 explicit owner class 加 name。
+- `Guid` 是 supporting evidence，不是唯一 identity。
+- `OwnerClass: "Self"` 解析到 staged `ParentClass`、`Body.Variables`、`Body.Components` 和 generated class evidence。
+- get/set nodes 引用的 Blueprint variables 必须存在于 `Body.Variables`，或存在于 parent-class reflected properties。
+- get/set nodes 引用的 component variables 必须存在于 `Body.Components`，或 parent/native component evidence。
+- Function refs 通过 `UClass::FindFunctionByName` 或等价 reflection 解析；禁止 concrete function whitelist。
+- Property refs 通过 `FProperty` reflection 和 Blueprint variable metadata 解析；禁止 concrete variable whitelist。
 
 ---
 
 ## 7. Reflection-First Node Capability Model
 
-The full `GraphSpec` is designed for arbitrary K2 graphs, but implementation lands in support tiers. Tiers describe current adapter coverage, not a hard-coded semantic universe.
+完整 `GraphSpec` 设计上可覆盖任意 K2 graphs，但实现按支持层级落地。Tiers 表达当前 adapter 覆盖范围，不是硬编码 semantic universe。
 
 ### 7.1 Adapter Contract
 
-Each node adapter declares:
+每个 node adapter 声明：
 
-- supported UE node class or reflected base capability.
-- required refs: none, `MemberRef`, `TimelineRef`, or graph signature.
-- how to create the node using dynamic class resolution.
-- how to bind reflected function/property/event metadata.
-- how to let UE allocate/reconstruct pins.
-- which pin overrides are accepted.
-- how to extract a canonical sparse `NodeSpec`.
+- 支持的 UE node class 或 reflected base capability。
+- 必需 refs：none、`MemberRef`、`TimelineRef` 或 graph signature。
+- 如何使用 dynamic class resolution 创建 node。
+- 如何绑定 reflected function/property/event metadata。
+- 如何让 UE allocate/reconstruct pins。
+- 接受哪些 pin overrides。
+- 如何 extract canonical sparse `NodeSpec`。
 
-Adapter code may include the minimum UE headers needed for the node classes it actually manipulates in that task. It must not include a broad inventory of all possible `K2Node_*` headers.
+adapter code 可以 include 当前 task 真正操作的 node class 所需的最小 UE headers。不得 include 所有可能的 `K2Node_*` headers inventory。
 
-### 7.2 Tier 1: EventGraph 基础节点
+### 7.2 Tier 1：EventGraph 基础节点
 
-First implementation should support `Body.UbergraphPages` through these adapter capabilities:
+第一实现应通过以下 adapter capabilities 支持 `Body.UbergraphPages`：
 
 - Event node adapter
-  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_Event`
-  - Required `MemberRef`.
-  - Event function resolves by owner class plus function name.
-  - Initial smoke events may include `Actor.ReceiveBeginPlay` and `Actor.ReceiveTick`, but implementation must not be limited by a hard-coded event-name whitelist if UE reflection resolves the event safely.
+  - 初始 adapter 覆盖范围：`/Script/BlueprintGraph.K2Node_Event`
+  - Required `MemberRef`。
+  - Event function 按 owner class 加 function name 解析。
+  - 初始 smoke events 可以包含 `Actor.ReceiveBeginPlay` 和 `Actor.ReceiveTick`，但只要 UE reflection 可以安全解析 event，实现不得受限于硬编码 event-name whitelist。
 - Call function adapter
-  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_CallFunction`
-  - Required `MemberRef`.
-  - Supports ordinary callable functions resolved from reflected `UFunction`.
-  - Function-specific pin shape comes from UE allocation after binding the `UFunction`.
+  - 初始 adapter 覆盖范围：`/Script/BlueprintGraph.K2Node_CallFunction`
+  - Required `MemberRef`。
+  - 支持通过 reflected `UFunction` 解析的普通 callable functions。
+  - 绑定 `UFunction` 后，由 UE allocation 产生 function-specific pin 形状。
 - Variable get/set adapters
-  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_VariableGet`, `/Script/BlueprintGraph.K2Node_VariableSet`
-  - Required `MemberRef`.
-  - Variable/property resolves from Blueprint variables, parent class `FProperty`, component vars, or staged component evidence.
+  - 初始 adapter 覆盖范围：`/Script/BlueprintGraph.K2Node_VariableGet`、`/Script/BlueprintGraph.K2Node_VariableSet`
+  - Required `MemberRef`。
+  - Variable/property 从 Blueprint variables、parent class `FProperty`、component vars 或 staged component evidence 解析。
 - Self adapter
-  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_Self`
-  - No member ref.
+  - 初始 adapter 覆盖范围：`/Script/BlueprintGraph.K2Node_Self`
+  - 不需要 member ref。
 
-Tier 1 may extract unsupported existing node classes as `_Skipped.Graphs` evidence. Apply of a managed graph containing unsupported node classes must fail unless those nodes are absent because the sidecar intentionally deletes them.
+Tier 1 extract 可以把 unsupported existing node classes 报到 `_Skipped.Graphs` evidence。对 managed graph 执行 apply 时，如果 graph 内出现 unsupported node classes，必须失败；除非这些 nodes 已经因为 sidecar 有意删除而不存在于目标 graph 中。
 
-These class paths are registry coverage for the first implementation tier. GraphCore and graph parsers must not depend on this list.
+这些 class paths 是第一实现 tier 的 registry 覆盖范围。`GraphCore` 和 graph parsers 不得依赖该列表。
 
 ### 7.3 Capability Boundary
 
-Support expansion should add adapter capability, not branchy graph logic. Examples:
+扩展支持时应新增 adapter capability，而不是新增 branchy graph logic。例如：
 
-- Adding `K2Node_Branch` should add a tiny adapter for a reflected/dynamic node class with known pin reconstruction, not special-case every branch link path in GraphCore.
-- Adding custom events may require a `CustomEvent` adapter because event creation has UE lifecycle semantics; it must still avoid project-specific event name inventories.
-- Adding array/map/make struct nodes should prefer reflected pin allocation and typed default fragments.
+- 添加 `K2Node_Branch` 时，应新增一个小型 adapter，用 reflected/dynamic node class 和已知 pin reconstruction 处理，而不是在 `GraphCore` 特判所有 branch link path。
+- 添加 custom events 可能需要 `CustomEvent` adapter，因为 event creation 有 UE lifecycle semantics；但它仍然不得使用 project-specific event name inventories。
+- 添加 array/map/make struct nodes 时，应优先使用 reflected pin allocation 和 typed default fragments。
 
 ---
 
@@ -448,40 +448,40 @@ Support expansion should add adapter capability, not branchy graph logic. Exampl
 
 ### 8.1 `Body.UbergraphPages`
 
-- Missing `UbergraphPages` means empty authoritative event graph set except for UE-required baseline default graph.
-- Missing graph page means remove that graph page when UE allows it.
-- The default `EventGraph` is special:
-  - If sidecar omits all event graphs, apply should remove user-authored nodes from the default graph, not necessarily delete the UE-required graph object.
-  - Extract should emit an empty `EventGraph` only if it is needed as canonical baseline, or emit an empty array when no user-authored graph data remains. The implementation plan must pick one canonical behavior and test it.
-- Missing node means delete the node.
-- Missing link means delete the link.
-- Missing pin default means reset to node/pin baseline.
+- 缺失 `UbergraphPages` 表示 event graph set 为空，UE-required baseline default graph 除外。
+- 缺失 graph page 表示在 UE 允许时移除该 graph page。
+- 默认 `EventGraph` 是特殊情况：
+  - 如果 sidecar 省略所有 event graphs，apply 应移除默认 graph 中的 user-authored nodes，但不一定删除 UE-required graph object。
+  - Extract 应只在 canonical baseline 需要时输出空 `EventGraph`；否则无 user-authored graph data 时输出空数组。implementation plan 必须选择一个 canonical 行为并测试。
+- 缺失 node 表示删除该 node。
+- 缺失 link 表示删除该 link。
+- 缺失 pin default 表示 reset 到 node/pin baseline。
 
 ### 8.2 `Body.FunctionGraphs`
 
-- Missing user function graph means delete it.
-- `Signature` is authoritative for user-created function graphs.
-- Required interface function graph cannot be silently deleted while the interface remains implemented.
-- Removing an interface via `Body.ImplementedInterfaces` should remove now-unneeded interface stubs unless they are also represented as user-authored functions with a distinct identity.
+- 缺失 user function graph 表示删除它。
+- `Signature` 对 user-created function graphs 是权威的。
+- interface 仍实现时，不得静默删除 required interface function graph。
+- 通过 `Body.ImplementedInterfaces` 移除 interface 时，应移除不再需要的 interface stubs，除非它们同时以 distinct identity 表示为 user-authored functions。
 
 ### 8.3 `Body.MacroGraphs`
 
-- Missing macro graph means delete it.
-- `Signature` is authoritative for macro tunnel pins.
-- Missing tunnel pin from signature means remove it if UE allows; otherwise fail before mutation with `InvalidMacroSignature`.
+- 缺失 macro graph 表示删除它。
+- `Signature` 对 macro tunnel pins 是权威的。
+- signature 中缺失 tunnel pin 表示如果 UE 允许则移除；否则 mutation 前失败，诊断码为 `InvalidMacroSignature`。
 
 ### 8.4 `Body.Timelines`
 
-- Missing timeline means delete it.
-- Existing graph nodes that reference a deleted timeline must also be deleted or rejected before mutation. The implementation plan must choose one behavior per step:
-  - First timeline step may reject deletion when graph references exist as an implementation-stage limitation, with a deferred-fields entry and `UnresolvedTimelineReference` or a narrower diagnostic.
-  - Full timeline step should reconcile graph nodes in the same staged apply.
+- 缺失 timeline 表示删除它。
+- 引用已删除 timeline 的现有 graph nodes 必须同时删除，或在 mutation 前拒绝。implementation plan 必须按 step 选择行为：
+  - 第一 timeline step 可以在 graph references 存在时拒绝 deletion，作为实现阶段限制；同时必须有 deferred-fields entry，并返回 `UnresolvedTimelineReference` 或更窄 diagnostic。
+  - 完整 timeline step 应在同一个 staged apply 中 reconcile graph nodes。
 
 ---
 
 ## 9. FunctionGraphs
 
-Function graph spec extends `GraphSpec`:
+Function graph spec 扩展 `GraphSpec`：
 
 ```json
 {
@@ -505,23 +505,23 @@ Function graph spec extends `GraphSpec`:
 }
 ```
 
-Required additional adapters:
+额外需要的 adapters：
 
-- Function entry adapter.
-- Function result adapter.
+- Function entry adapter。
+- Function result adapter。
 
-Rules:
+规则：
 
-- Function entry/result nodes must match `Signature` after apply.
-- Interface-required function stubs are governed jointly by `Body.ImplementedInterfaces` and `Body.FunctionGraphs`.
-- Interface signature compatibility is checked through reflected interface `UFunction` metadata, not a hard-coded interface list.
-- User-created functions absent from sidecar are deleted.
+- Function entry/result nodes 在 apply 后必须匹配 `Signature`。
+- interface-required function stubs 由 `Body.ImplementedInterfaces` 和 `Body.FunctionGraphs` 共同管理。
+- interface signature compatibility 通过 reflected interface `UFunction` metadata 检查，不使用硬编码 interface list。
+- sidecar 缺失的 user-created functions 应删除。
 
 ---
 
 ## 10. MacroGraphs
 
-Macro graph spec extends `GraphSpec`:
+Macro graph spec 扩展 `GraphSpec`：
 
 ```json
 {
@@ -536,21 +536,21 @@ Macro graph spec extends `GraphSpec`:
 }
 ```
 
-Required additional adapter:
+额外需要的 adapter：
 
-- Tunnel node adapter for macro entry and exit tunnel nodes.
+- 用于 macro entry 和 exit tunnel nodes 的 tunnel node adapter。
 
-Rules:
+规则：
 
-- Macro tunnel nodes are part of canonical graph representation.
-- Macro `Signature` is authoritative and must match tunnel pins.
-- Wildcard pins are rejected in the first macro implementation unless a node adapter can roundtrip them deterministically.
+- Macro tunnel nodes 是 canonical graph representation 的一部分。
+- Macro `Signature` 是权威的，并且必须匹配 tunnel pins。
+- 第一版 macro 实现拒绝 wildcard pins，除非 node adapter 可以确定性 roundtrip。
 
 ---
 
 ## 11. Timelines
 
-Timeline spec:
+Timeline spec：
 
 ```json
 {
@@ -581,29 +581,29 @@ Timeline spec:
 }
 ```
 
-Rules:
+规则：
 
-- Timeline `Name` is identity.
-- Missing timeline means delete the `UTimelineTemplate` and reconcile graph timeline nodes.
-- Timeline graph nodes must reference `Body.Timelines[*].Name` or a timeline `DefinitionRef`.
-- Timeline-generated variables are derived implementation details and must not be independently authored in `Body.Variables`.
-- Timeline track curve representation must use canonical key data or `DefinitionRef` to `TimelineCurve`.
-- External curve asset refs are future extension and must use `AssetRef` when added.
+- Timeline `Name` 是 identity。
+- 缺失 timeline 表示删除 `UTimelineTemplate` 并 reconcile graph timeline nodes。
+- Timeline graph nodes 必须引用 `Body.Timelines[*].Name` 或 timeline `DefinitionRef`。
+- Timeline-generated variables 是 derived implementation details，不得在 `Body.Variables` 中独立 author。
+- Timeline track curve representation 必须使用 canonical key data，或使用指向 `TimelineCurve` 的 `DefinitionRef`。
+- External curve asset refs 是未来扩展；添加时必须使用 `AssetRef`。
 
 ---
 
 ## 12. Apply Pipeline
 
-Graph/timeline apply must remain staged:
+Graph/timeline apply 必须保持 staged：
 
-1. Parse all graph/timeline regions and graph-relevant `Definitions`.
-2. Validate graph region arrays, duplicate identities, node classes, pin overrides, member refs, links, timeline refs.
-3. Resolve `DefinitionRef` chains and cross-region references against staged `ParentClass`, `Variables`, `Components`, `ImplementedInterfaces`, `ClassDefaults`, graph specs, and timeline specs.
-4. Resolve graph schema and node classes dynamically; reject missing/unsupported classes before mutation.
-5. Ask `NodeAdapterRegistry` for adapters required by the resolved node classes. Missing adapter fails with `UnsupportedGraphNodeClass`.
-6. Preflight parent class changes that would invalidate reflected graph refs.
-7. Snapshot previous Blueprint graph state enough to rollback on failure, or mutate only after all preflight succeeds.
-8. Apply dependency regions in this order:
+1. 解析所有 graph/timeline regions 和 graph-relevant `Definitions`。
+2. 校验 graph region arrays、duplicate identities、node classes、pin overrides、member refs、links、timeline refs。
+3. 解析 `DefinitionRef` chains，并将 cross-region references 对齐到 staged `ParentClass`、`Variables`、`Components`、`ImplementedInterfaces`、`ClassDefaults`、graph specs 和 timeline specs。
+4. 动态解析 graph schema 和 node classes；mutation 前拒绝 missing/unsupported classes。
+5. 向 `NodeAdapterRegistry` 查询 resolved node classes 所需 adapters。缺失 adapter 失败，诊断码为 `UnsupportedGraphNodeClass`。
+6. preflight parent class changes，确认不会破坏 reflected graph refs。
+7. 在所有 preflight 成功后才 mutation，或 snapshot 足够的 previous Blueprint graph state 用于失败 rollback。
+8. 按以下顺序 apply dependency regions：
    - `ParentClass`
    - `ImplementedInterfaces`
    - `Variables`
@@ -613,43 +613,43 @@ Graph/timeline apply must remain staged:
    - `UbergraphPages`
    - `FunctionGraphs`
    - `MacroGraphs`
-9. For each graph:
-   - create/find graph through `K2GraphAdapter`.
-   - create/find nodes by sidecar `Id`.
-   - bind reflected refs through node adapters.
-   - call UE pin allocation/reconstruction.
-   - apply sparse pin overrides.
-   - create links through graph schema validation.
-   - delete omitted nodes/links.
-10. Compile Blueprint.
-11. If compile fails, rollback staged mutations where possible and return `BlueprintCompileFailed` with graph path diagnostics.
-12. Save only after successful compile when `bSaveAsset` is requested.
+9. 对每个 graph：
+   - 通过 `K2GraphAdapter` create/find graph。
+   - 按 sidecar `Id` create/find nodes。
+   - 通过 node adapters 绑定 reflected refs。
+   - 调用 UE pin allocation/reconstruction。
+   - apply sparse pin overrides。
+   - 通过 graph schema validation 创建 links。
+   - 删除 omitted nodes/links。
+10. Compile Blueprint。
+11. 如果 compile 失败，尽可能 rollback staged mutations，并返回带 graph path diagnostics 的 `BlueprintCompileFailed`。
+12. 仅在 compile 成功且请求 `bSaveAsset` 时保存。
 
-No step may leave partially applied graph changes saved to disk.
+任何 step 都不得把 partially applied graph changes 保存到磁盘。
 
 ---
 
 ## 13. Extract
 
-Extract produces canonical graph specs:
+Extract 产出 canonical graph specs：
 
-- Graph arrays sorted by UE graph array order.
-- Nodes sorted by UE node order, with `NodeGuid` fallback for deterministic output when UE order changes.
-- Pin overrides emitted only for non-baseline authored defaults, dynamic pins, or non-reconstructable authoring metadata.
-- Links sorted by source node id, source pin id, target node id, target pin id.
-- Extract must follow the definition canonical rules in section 5. It must not opportunistically hoist simple refs into `Definitions`.
-- Supported node classes extract fully through adapters.
-- Unsupported existing node classes are reported in `_Skipped.Graphs` with count and node class names. Once a graph region is marked fully managed for a tier, unsupported nodes in that tier should make extract report incomplete evidence rather than pretending full roundtrip.
+- Graph arrays 按 UE graph array order 排序。
+- Nodes 按 UE node order 排序；当 UE order 变化时，用 `NodeGuid` fallback 保持 deterministic output。
+- 仅对 non-baseline authored defaults、dynamic pins，或不可重建 authoring metadata 输出 pin overrides。
+- Links 按 source node id、source pin id、target node id、target pin id 排序。
+- Extract 必须遵守第 5 节的 definition canonical rules。不得 opportunistically hoist simple refs 到 `Definitions`。
+- 受支持 node classes 通过 adapters 完整 extract。
+- Unsupported existing node classes 报到 `_Skipped.Graphs`，包含 count 和 node class names。一旦某 graph region 在当前 tier 被标记为 fully managed，unsupported nodes 应让 extract 报告 incomplete evidence，而不是输出看似可 roundtrip 的 lossy graph。
 
-Extract must not include editor-only graph zoom/pan/selection/tab state, compiler intermediates, transient pin flags, or cache fields.
+Extract 不得包含 editor-only graph zoom/pan/selection/tab state、compiler intermediates、transient pin flags 或 cache fields。
 
 ---
 
 ## 14. Diff
 
-Diff parses desired graph regions using the same parser as apply, extracts current evidence, resolves definitions, and compares canonical semantic objects.
+Diff 使用与 apply 相同的 parser 解析目标 graph regions，extract 当前 evidence，resolve definitions，然后比较 canonical semantic objects。
 
-Required diff paths:
+必需 diff paths：
 
 - `/Definitions/<DefinitionId>`
 - `/Body/UbergraphPages/<GraphName>`
@@ -660,171 +660,171 @@ Required diff paths:
 - `/Body/MacroGraphs/<GraphName>`
 - `/Body/Timelines/<TimelineName>`
 
-Diff statuses:
+Diff 状态：
 
-- `unchanged`: canonical current and desired values match.
-- `changed`: value exists on both sides but differs.
-- `missing`: desired exists, current does not.
-- `extra`: current exists, desired does not.
-- `unsupported`: current cannot be represented by implemented graph capability.
+- `unchanged`：当前值和目标 canonical values 相等。
+- `changed`：两侧都存在但值不同。
+- `missing`：目标存在，当前不存在。
+- `extra`：当前存在，目标不存在。
+- `unsupported`：current 无法由已实现 graph capability 表达。
 
-Missing supported graph region fields mean empty authoritative state, consistent with the rest of `UBlueprint` Body semantics.
+缺失 supported graph region fields 表示 empty authoritative state，与 `UBlueprint` Body 其他语义一致。
 
-Path tokens must use JSON Pointer escaping. The link path token is diagnostic display only; the expanded `LinkSpec` object is authoritative and must be used for parsing.
+Path tokens 必须使用 JSON Pointer escaping。link path token 只用于 diagnostic display；expanded `LinkSpec` object 才是解析时的权威数据。
 
 ---
 
 ## 15. Validation Diagnostics
 
-Required diagnostic codes:
+必需 diagnostic codes：
 
-- `InvalidGraphRegionType`: graph region is not an array.
-- `DuplicateGraphName`: duplicate graph identity in one region.
-- `InvalidGraphSchema`: unsupported or unresolved graph schema.
-- `UnknownGraphField`: unknown field in graph spec.
-- `UnknownDefinitionKind`: definition kind is not supported.
-- `CircularDefinitionReference`: definition refs form a cycle.
-- `UnresolvedDefinitionReference`: definition ref target does not exist.
-- `DuplicateGraphNodeId`: duplicate node identity in one graph.
-- `InvalidGraphNodeId`: node id does not match the sidecar id regex.
-- `UnresolvedGraphNodeClass`: node `Class` cannot be loaded.
-- `UnsupportedGraphNodeClass`: resolved node class has no adapter for this tier.
-- `InvalidGraphNodeCapability`: optional `Capability` conflicts with the resolved node adapter.
-- `MissingGraphMemberReference`: required member ref is missing.
-- `UnresolvedGraphMemberReference`: member ref cannot be resolved through reflection or staged Blueprint regions.
-- `InvalidGraphPin`: pin shape or pin direction is invalid.
-- `InvalidGraphPinId`: pin id does not match the sidecar id regex.
-- `InvalidGraphPinDefault`: authored pin default cannot be applied.
-- `DuplicateGraphLink`: duplicate link.
-- `InvalidGraphLinkEndpointSyntax`: compact link syntax is ambiguous or malformed.
-- `UnresolvedGraphLinkEndpoint`: link node/pin endpoint does not exist after node reconstruction.
-- `InvalidGraphLinkType`: UE graph schema rejects the link.
-- `InvalidFunctionSignature`: function signature and graph entry/result nodes conflict.
-- `InvalidMacroSignature`: macro signature and tunnel nodes conflict.
-- `UnresolvedTimelineReference`: graph node references a missing timeline.
-- `UnsupportedTimelineTrackKind`: timeline track kind is not implemented.
-- `BlueprintCompileFailed`: apply compiled graph into an invalid Blueprint.
+- `InvalidGraphRegionType`：graph region 不是 array。
+- `DuplicateGraphName`：同一 region 内 graph identity 重复。
+- `InvalidGraphSchema`：graph schema 不支持或无法解析。
+- `UnknownGraphField`：graph spec 包含 unknown field。
+- `UnknownDefinitionKind`：definition kind 不支持。
+- `CircularDefinitionReference`：definition refs 形成环。
+- `UnresolvedDefinitionReference`：definition ref target 不存在。
+- `DuplicateGraphNodeId`：同一 graph 内 node identity 重复。
+- `InvalidGraphNodeId`：node id 不符合 sidecar id regex。
+- `UnresolvedGraphNodeClass`：node `Class` 无法加载。
+- `UnsupportedGraphNodeClass`：resolved node class 在当前 tier 中没有 adapter。
+- `InvalidGraphNodeCapability`：可选 `Capability` 与 resolved node adapter 冲突。
+- `MissingGraphMemberReference`：缺失必需 member ref。
+- `UnresolvedGraphMemberReference`：member ref 无法通过 reflection 或 staged Blueprint regions 解析。
+- `InvalidGraphPin`：pin shape 或 pin direction 无效。
+- `InvalidGraphPinId`：pin id 不符合 sidecar id regex。
+- `InvalidGraphPinDefault`：authored pin default 无法 apply。
+- `DuplicateGraphLink`：link 重复。
+- `InvalidGraphLinkEndpointSyntax`：compact link syntax 有歧义或格式错误。
+- `UnresolvedGraphLinkEndpoint`：node reconstruction 后 link node/pin endpoint 不存在。
+- `InvalidGraphLinkType`：UE graph schema 拒绝该 link。
+- `InvalidFunctionSignature`：function signature 与 graph entry/result nodes 冲突。
+- `InvalidMacroSignature`：macro signature 与 tunnel nodes 冲突。
+- `UnresolvedTimelineReference`：graph node 引用缺失 timeline。
+- `UnsupportedTimelineTrackKind`：timeline track kind 未实现。
+- `BlueprintCompileFailed`：apply 后 graph 编译为无效 Blueprint。
 
-Diagnostics should point at the narrowest possible JSON path.
+Diagnostics 应指向尽可能窄的 JSON path。
 
 ---
 
 ## 16. Implementation Steps
 
-This spec is implemented through checkpoint tasks, not one large patch.
+本 spec 通过 checkpoint tasks 实现，不作为一个大 patch 落地。
 
 ### Step 1: GraphCore Data Model And Validation
 
-- Add parser/serializer helpers for `GraphSpec`, `NodeSpec`, `PinOverrideSpec`, `LinkSpec`, `MemberRef`, and graph-relevant `DefinitionRef`.
-- Add `NodeAdapterRegistry` interface with no broad K2 inventory.
-- Keep apply rejection for non-empty graph regions except validation tests that exercise parser failure modes.
-- Add automation tests for duplicate graph names, duplicate node ids, unresolved definitions, unresolved links, unsupported node classes, and invalid schema.
+- 添加 `GraphSpec`、`NodeSpec`、`PinOverrideSpec`、`LinkSpec`、`MemberRef` 和 graph-relevant `DefinitionRef` parser/serializer helpers。
+- 添加 `NodeAdapterRegistry` interface，不引入 broad K2 inventory。
+- 对非空 graph regions 继续保持 apply rejection；只允许 validation tests exercise parser failure modes。
+- 添加 automation tests：duplicate graph names、duplicate node ids、unresolved definitions、unresolved links、unsupported node classes、invalid schema。
 
 ### Step 2: Reflection-First Tier 1 Extract/Diff
 
-- Extract `Body.UbergraphPages` for Tier 1 adapter classes.
-- Resolve event/function/property refs through reflection.
-- Emit sparse pin overrides only.
-- Diff supported EventGraph nodes and links.
-- Existing unsupported nodes produce `_Skipped.Graphs` and `unsupported` diff entries.
+- 对 Tier 1 adapter classes extract `Body.UbergraphPages`。
+- 通过 reflection 解析 event/function/property refs。
+- 仅输出 sparse pin overrides。
+- diff supported EventGraph nodes 和 links。
+- existing unsupported nodes 产出 `_Skipped.Graphs` 和 `unsupported` diff entries。
 
 ### Step 3: EventGraph Apply
 
-- Apply `Body.UbergraphPages` for Tier 1 adapter classes.
-- Rebuild missing/extra nodes and links authoritatively.
-- Compile and verify a real `BeginPlay -> PrintString` or equivalent smoke graph without hard-coding `PrintString` as a special function.
+- 对 Tier 1 adapter classes apply `Body.UbergraphPages`。
+- 权威 rebuild missing/extra nodes 和 links。
+- compile 并验证真实 `BeginPlay -> PrintString` 或等价 smoke graph；不得把 `PrintString` 硬编码为特殊函数。
 
 ### Step 4: Definitions Reuse Hardening
 
-- Support `DefinitionRef` for `MemberRef`, `ClassRef`, `AssetRef`, `PinType`, and simple `Literal`.
-- Add canonicalization tests proving inline refs and definition refs compare equal.
-- Add cycle detection tests.
+- 支持 `MemberRef`、`ClassRef`、`AssetRef`、`PinType` 和简单 `Literal` 的 `DefinitionRef`。
+- 添加 canonicalization tests，证明 inline refs 与 definition refs 比较相等。
+- 添加 cycle detection tests。
 
 ### Step 5: FunctionGraphs
 
-- Add `Signature` support.
-- Apply/extract/diff user-created function graphs.
-- Support interface-required function stubs controlled jointly by `Body.ImplementedInterfaces`.
-- Validate interface signatures through reflected interface metadata.
+- 添加 `Signature` 支持。
+- apply/extract/diff user-created function graphs。
+- 支持由 `Body.ImplementedInterfaces` 和 `Body.FunctionGraphs` 共同控制的 interface-required function stubs。
+- 通过 reflected interface metadata 校验 interface signatures。
 
 ### Step 6: MacroGraphs
 
-- Add macro `Signature` and tunnel node support.
-- Apply/extract/diff user-created macros with supported internal Tier 1 nodes.
+- 添加 macro `Signature` 和 tunnel node 支持。
+- 对包含 supported internal Tier 1 nodes 的 user-created macros 执行 apply/extract/diff。
 
 ### Step 7: Timelines
 
-- Add `Body.Timelines` parser/serializer.
-- Support float tracks first.
-- Support `TimelineCurve` definition refs where useful.
-- Reconcile timeline node references in graph regions.
-- Compile and smoke a timeline Blueprint.
+- 添加 `Body.Timelines` parser/serializer。
+- 第一版支持 float tracks。
+- 在有价值时支持 `TimelineCurve` definition refs。
+- reconcile graph regions 中的 timeline node references。
+- compile 并 smoke 一个 timeline Blueprint。
 
 ### Step 8: Final Graph Roundtrip Smoke
 
-- Run UBT against `C:/AVH1`.
-- Run focused automation for `AssetFactory.AssetDocument.UBlueprint`.
-- Run full `AssetFactory.AssetDocument` automation.
-- Run external HTTP smoke with a real graph sidecar under `C:/AVH1/Content/AssetDocumentSmoke/`.
-- Update deferred-fields doc by removing completed graph/timeline entries or narrowing their remaining limits.
-- Update final report.
+- 对 `C:/AVH1` 运行 UBT。
+- 运行 focused automation：`AssetFactory.AssetDocument.UBlueprint`。
+- 运行完整 `AssetFactory.AssetDocument` automation。
+- 使用 `C:/AVH1/Content/AssetDocumentSmoke/` 下真实 graph sidecar 运行 external HTTP apply-file/extract/diff smoke。
+- 更新 deferred-fields doc，移除已完成 graph/timeline entries 或缩窄剩余限制。
+- 更新 final report。
 
 ---
 
 ## 17. Verification Requirements
 
-Minimum automation coverage:
+最低 automation 覆盖：
 
-- Validate:
-  - empty graph regions still pass.
-  - duplicate graph/node/link identity fails.
-  - unresolved/circular `DefinitionRef` fails.
-  - unsupported node class fails apply.
-  - unresolved member ref/link/timeline ref fails before mutation.
-- Apply:
-  - create EventGraph with supported nodes and links.
-  - update existing graph, deleting omitted nodes and links.
-  - apply failure leaves previous graph state loadable.
-  - function graph create/update/delete.
-  - macro graph create/update/delete when that step lands.
-  - timeline create/update/delete when that step lands.
-- Extract:
-  - supported graph roundtrips to canonical sidecar.
-  - extract is sparse for baseline pins.
-  - unsupported nodes are surfaced as skipped evidence.
-- Diff:
-  - unchanged graph reports unchanged.
-  - inline ref and equivalent `DefinitionRef` compare unchanged.
-  - omitted graph/node/link reports extra.
-  - desired graph/node/link missing in asset reports missing.
-- Architecture:
-  - GraphCore tests do not depend on concrete `K2Node_*` subclasses.
-  - adding a new node class requires adapter registration, not edits to graph parser/diff core.
-- Smoke:
-  - external HTTP apply-file/extract/diff for one Blueprint with graph content.
+- Validate：
+  - empty graph regions 仍然通过。
+  - duplicate graph/node/link identity 失败。
+  - unresolved/circular `DefinitionRef` 失败。
+  - unsupported node class apply 失败。
+  - unresolved member ref/link/timeline ref 在 mutation 前失败。
+- Apply：
+  - 创建包含 supported nodes 和 links 的 EventGraph。
+  - 更新 existing graph，并删除 omitted nodes 和 links。
+  - apply failure 后 previous graph state 仍可 load。
+  - function graph create/update/delete。
+  - macro graph create/update/delete，随对应 step 落地。
+  - timeline create/update/delete，随对应 step 落地。
+- Extract：
+  - supported graph 可 roundtrip 到 canonical sidecar。
+  - baseline pins 的 extract 保持 sparse。
+  - unsupported nodes 作为 skipped evidence 暴露。
+- Diff：
+  - unchanged graph 报 unchanged。
+  - inline ref 与等价 `DefinitionRef` 比较为 unchanged。
+  - omitted graph/node/link 报 extra。
+  - desired graph/node/link 在 asset 中不存在时报 missing。
+- Architecture：
+  - `GraphCore` tests 不依赖具体 `K2Node_*` subclasses。
+  - 添加新 node class 只需要 adapter registration，不需要修改 graph parser/diff core。
+- Smoke：
+  - 对一个包含 graph content 的 Blueprint 运行 external HTTP apply-file/extract/diff。
 
 ---
 
 ## 18. Open Risks
 
-- UE may regenerate node GUIDs or pins during compile/reconstruction; sidecar identity must not depend solely on `NodeGuid`.
-- Some K2 nodes allocate pins dynamically based on member refs or default values; implementation must reconstruct pins before applying links.
-- Reflection may expose enough metadata to validate a function/property but not enough lifecycle operations to create a valid node. Such cases need thin adapters, not graph-core branching.
-- Interface function stubs may be owned by UE/interface logic rather than user graph arrays. The function graph step must preserve required stubs while still deleting omitted user-created functions.
-- Timeline templates produce generated variables and graph node references. Timeline apply must avoid treating derived timeline variables as user-authored `Body.Variables`.
-- Unsupported node extraction must be honest. It is better to report unsupported evidence than to emit a lossy graph that looks roundtrippable.
-- Overusing `Definitions` for every node/pin would make agent editing worse. Definitions are for reusable refs/fragments, not the default storage for graph topology.
+- UE 可能在 compile/reconstruction 时重新生成 node GUIDs 或 pins；sidecar identity 不得只依赖 `NodeGuid`。
+- 某些 K2 nodes 会基于 member refs 或 default values 动态分配 pins；实现必须在 apply links 前先 reconstruct pins。
+- Reflection 可能足以校验 function/property，但不足以创建合法 node。这类场景需要薄 adapters，而不是 graph-core branching。
+- Interface function stubs 可能由 UE/interface logic 管理，而不只是 user graph arrays。function graph step 必须保留 required stubs，同时仍删除 omitted user-created functions。
+- Timeline templates 会产生 generated variables 和 graph node references。Timeline apply 必须避免把 derived timeline variables 当作 user-authored `Body.Variables`。
+- Unsupported node extraction 必须诚实。报告 unsupported evidence 好过输出看似可 roundtrip 的 lossy graph。
+- 过度把每个 node/pin 都放入 `Definitions` 会伤害 agent editing。Definitions 只用于 reusable refs/fragments，不是 graph topology 的默认存储位置。
 
 ---
 
 ## 19. Success Criteria
 
-The graph regions are considered complete for this spec when:
+Graph regions 被视为完成时应满足：
 
-- `Body.UbergraphPages`, `Body.FunctionGraphs`, `Body.MacroGraphs`, and `Body.Timelines` have stable schema docs and tests.
-- GraphCore remains thin: no concrete function/property/project inventories, no raw UE graph dump fields, and no node-specific behavior in parser/diff core.
-- Supported graph/timeline content can be apply-file roundtripped through a real `UBlueprint` in `C:/AVH1`.
-- Omitted graph/timeline sidecar content deletes or resets current asset state according to the authoritative Body semantics.
-- Unsupported graph/timeline content fails with clear diagnostics or is reported as skipped evidence on extract/diff.
-- `Definitions` can be used for reusable graph refs/fragments without moving normal graph topology out of `Body.*Graphs`.
-- No Blueprint Generator or Blueprint-specific MCP tool is introduced.
+- `Body.UbergraphPages`、`Body.FunctionGraphs`、`Body.MacroGraphs` 和 `Body.Timelines` 都有稳定 schema docs 和 tests。
+- `GraphCore` 保持薄：没有 concrete function/property/project inventories，没有 raw UE graph dump fields，也没有 node-specific behavior in parser/diff core。
+- supported graph/timeline content 可以通过 `C:/AVH1` 中真实 `UBlueprint` apply-file roundtrip。
+- omitted graph/timeline sidecar content 会根据 authoritative Body semantics 删除或 reset 当前 asset state。
+- unsupported graph/timeline content 会以清晰 diagnostics 失败，或在 extract/diff 中报告为 skipped evidence。
+- `Definitions` 可以用于 reusable graph refs/fragments，同时不把普通 graph topology 移出 `Body.*Graphs`。
+- 不引入 `BlueprintGenerator` 或 Blueprint-specific MCP tool。
