@@ -8,6 +8,7 @@
 #include "Engine/MemberReference.h"
 #include "K2Node_CallFunction.h"
 #include "UObject/Class.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -28,6 +29,69 @@ TSharedRef<FJsonObject> MakeMemberRef(const UFunction* Function, const FGuid& Gu
 		Member->SetStringField(TEXT("Guid"), Guid.ToString(EGuidFormats::Digits));
 	}
 	return Member;
+}
+
+bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
+{
+	if (!Member.IsValid())
+	{
+		return false;
+	}
+
+	FString Kind;
+	return Member->TryGetStringField(TEXT("Kind"), Kind)
+		&& Kind == TEXT("MemberRef")
+		&& Member->TryGetStringField(TEXT("OwnerClass"), OutOwnerClass)
+		&& !OutOwnerClass.IsEmpty()
+		&& Member->TryGetStringField(TEXT("Name"), OutName)
+		&& !OutName.IsEmpty();
+}
+
+UClass* ResolveClass(const FString& ClassPath)
+{
+	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+}
+
+UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
+{
+	if (OwnerClassPath == TEXT("Self"))
+	{
+		if (Blueprint && Blueprint->GeneratedClass)
+		{
+			return Blueprint->GeneratedClass;
+		}
+		return Blueprint ? Blueprint->ParentClass.Get() : nullptr;
+	}
+	return ResolveClass(OwnerClassPath);
+}
+
+UFunction* ResolveMemberFunction(const UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Member)
+{
+	FString OwnerClassPath;
+	FString FunctionName;
+	if (!TryReadMemberRef(Member, OwnerClassPath, FunctionName))
+	{
+		return nullptr;
+	}
+
+	UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
+	return OwnerClass ? OwnerClass->FindFunctionByName(FName(*FunctionName)) : nullptr;
+}
+
+FAssetDocumentCapabilityResult MissingMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+{
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("Graph node '%s' requires a reflected MemberRef"), *Node.Id),
+		Context.NodePath / TEXT("Member"),
+		TEXT("MissingGraphMemberReference"));
+}
+
+FAssetDocumentCapabilityResult UnresolvedMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+{
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("Graph node '%s' MemberRef could not be resolved"), *Node.Id),
+		Context.NodePath / TEXT("Member"),
+		TEXT("UnresolvedGraphMemberReference"));
 }
 
 bool HasAuthoredDefault(const UEdGraphPin* Pin)
@@ -105,6 +169,49 @@ bool IsBaselineFunctionPinDefault(const UEdGraphPin* Pin, const UFunction* Funct
 
 	return Pin->DefaultValue == TEXT("None") && Pin->DefaultTextValue.IsEmpty();
 }
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentK2CallFunctionNodeAdapter::ConfigureNodeForApply(
+	const FAssetDocumentNodeApplyContext& Context,
+	UEdGraphNode* Node,
+	const FAssetDocumentNodeSpec& NodeSpec) const
+{
+	UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+	if (!CallNode)
+	{
+		return FAssetDocumentCapabilityResult::Failure(
+			FString::Printf(TEXT("Graph node '%s' is not a K2 call function node"), *NodeSpec.Id),
+			Context.NodePath,
+			TEXT("UnsupportedGraphNodeClass"));
+	}
+
+	UFunction* Function = ResolveMemberFunction(Context.Blueprint, NodeSpec.Member);
+	if (!Function)
+	{
+		return NodeSpec.Member.IsValid()
+			? UnresolvedMemberFailure(Context, NodeSpec)
+			: MissingMemberFailure(Context, NodeSpec);
+	}
+
+	CallNode->SetFromFunction(Function);
+	CallNode->FunctionReference.SetFromField<UFunction>(Function, false);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+bool FAssetDocumentK2CallFunctionNodeAdapter::DoesNodeMatchSpec(
+	const UBlueprint* Blueprint,
+	const UEdGraphNode* Node,
+	const FAssetDocumentNodeSpec& NodeSpec) const
+{
+	const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+	if (!CallNode || Node->GetClass()->GetPathName() != NodeSpec.Class)
+	{
+		return false;
+	}
+
+	UFunction* DesiredFunction = ResolveMemberFunction(Blueprint, NodeSpec.Member);
+	UFunction* CurrentFunction = CallNode->GetTargetFunction();
+	return DesiredFunction && CurrentFunction == DesiredFunction;
 }
 
 bool FAssetDocumentK2CallFunctionNodeAdapter::ExtractNode(const UBlueprint* Blueprint, const UK2Node_CallFunction* Node, FAssetDocumentNodeSpec& OutNode) const

@@ -20,6 +20,8 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -1579,6 +1581,27 @@ bool FAssetDocumentUBlueprintGraphApplyCreatesBeginPlayPrintStringTest::RunTest(
 	}
 	TestTrue(TEXT("BeginPlay exec pin links to PrintString execute pin"), GraphHasLink(Graph, UEdGraphSchema_K2::PN_Then, UEdGraphSchema_K2::PN_Execute));
 	TestFalse(TEXT("Applied Blueprint compiles without error"), Blueprint->Status == BS_Error);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyUsesNodeAdaptersForMemberBindingTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.UsesNodeAdaptersForMemberBinding",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyUsesNodeAdaptersForMemberBindingTest::RunTest(const FString&)
+{
+	const FString K2GraphAdapterPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(
+		FPaths::ProjectPluginsDir(),
+		TEXT("UECopilot/Source/AssetDocument/Private/Graphs/K2GraphAdapter.cpp")));
+
+	FString Source;
+	TestTrue(TEXT("K2GraphAdapter source is available to architecture test"), FFileHelper::LoadFileToString(Source, *K2GraphAdapterPath));
+	TestFalse(TEXT("K2GraphAdapter apply does not centralize member binding in ConfigureNodeFromSpec"), Source.Contains(TEXT("ConfigureNodeFromSpec")));
+	TestFalse(TEXT("Event member binding lives in node adapter"), Source.Contains(TEXT("EventReference.SetExternalMember")));
+	TestFalse(TEXT("CallFunction member binding lives in node adapter"), Source.Contains(TEXT("FunctionReference.SetFromField")));
+	TestFalse(TEXT("Variable self binding lives in node adapter"), Source.Contains(TEXT("VariableReference.SetSelfMember")));
+	TestFalse(TEXT("Variable external binding lives in node adapter"), Source.Contains(TEXT("VariableReference.SetExternalMember")));
 	return true;
 }
 

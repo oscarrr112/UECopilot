@@ -2,6 +2,7 @@
 
 #include "Graphs/AssetDocumentNodeAdapter.h"
 
+#include "EdGraph/EdGraphNode.h"
 #include "UObject/Class.h"
 
 namespace
@@ -10,6 +11,25 @@ FString GetClassPathName(UClass* Class)
 {
 	return Class ? Class->GetPathName() : FString();
 }
+}
+
+FAssetDocumentCapabilityResult IAssetDocumentNodeAdapter::ConfigureNodeForApply(
+	const FAssetDocumentNodeApplyContext& Context,
+	UEdGraphNode*,
+	const FAssetDocumentNodeSpec&) const
+{
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("Graph node class '%s' is not supported for apply"), *GetClassPath()),
+		Context.NodePath,
+		TEXT("UnsupportedGraphNodeClass"));
+}
+
+bool IAssetDocumentNodeAdapter::DoesNodeMatchSpec(
+	const UBlueprint*,
+	const UEdGraphNode* Node,
+	const FAssetDocumentNodeSpec& NodeSpec) const
+{
+	return Node && Node->GetClass()->GetPathName() == NodeSpec.Class;
 }
 
 TSharedRef<FJsonObject> FAssetDocumentUnsupportedNodeDiagnostic::ToJsonObject() const

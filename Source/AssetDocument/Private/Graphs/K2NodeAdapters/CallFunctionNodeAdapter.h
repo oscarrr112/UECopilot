@@ -12,6 +12,14 @@ class FAssetDocumentK2CallFunctionNodeAdapter final : public IAssetDocumentNodeA
 public:
 	virtual FString GetClassPath() const override { return TEXT("/Script/BlueprintGraph.K2Node_CallFunction"); }
 	virtual FString GetCapability() const override { return TEXT("CallFunction"); }
+	virtual FAssetDocumentCapabilityResult ConfigureNodeForApply(
+		const FAssetDocumentNodeApplyContext& Context,
+		UEdGraphNode* Node,
+		const FAssetDocumentNodeSpec& NodeSpec) const override;
+	virtual bool DoesNodeMatchSpec(
+		const UBlueprint* Blueprint,
+		const UEdGraphNode* Node,
+		const FAssetDocumentNodeSpec& NodeSpec) const override;
 
 	bool ExtractNode(const UBlueprint* Blueprint, const UK2Node_CallFunction* Node, FAssetDocumentNodeSpec& OutNode) const;
 };

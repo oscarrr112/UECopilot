@@ -3,15 +3,25 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssetDocumentProfile.h"
 #include "Graphs/AssetDocumentGraphTypes.h"
 
+class UBlueprint;
 class UClass;
+class UEdGraphNode;
 class UObject;
 
 struct FAssetDocumentNodeAdapterContext
 {
 	UObject* Asset = nullptr;
 	FString GraphPath;
+};
+
+struct FAssetDocumentNodeApplyContext
+{
+	UBlueprint* Blueprint = nullptr;
+	FString GraphPath;
+	FString NodePath;
 };
 
 struct FAssetDocumentUnsupportedNodeDiagnostic
@@ -34,6 +44,16 @@ public:
 
 	virtual FString GetClassPath() const = 0;
 	virtual FString GetCapability() const { return FString(); }
+
+	virtual FAssetDocumentCapabilityResult ConfigureNodeForApply(
+		const FAssetDocumentNodeApplyContext& Context,
+		UEdGraphNode* Node,
+		const FAssetDocumentNodeSpec& NodeSpec) const;
+
+	virtual bool DoesNodeMatchSpec(
+		const UBlueprint* Blueprint,
+		const UEdGraphNode* Node,
+		const FAssetDocumentNodeSpec& NodeSpec) const;
 };
 
 class FAssetDocumentNodeAdapterRegistry

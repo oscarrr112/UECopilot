@@ -13,7 +13,6 @@
 #include "EdGraph/EdGraphSchema.h"
 #include "EdGraphSchema_K2.h"
 #include "Engine/Blueprint.h"
-#include "Engine/MemberReference.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Event.h"
 #include "K2Node_Self.h"
@@ -69,98 +68,19 @@ UClass* ResolveClass(const FString& ClassPath, UClass* RequiredBaseClass)
 	return Class && (!RequiredBaseClass || Class->IsChildOf(RequiredBaseClass)) ? Class : nullptr;
 }
 
-bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
-{
-	if (!Member.IsValid())
-	{
-		return false;
-	}
-
-	FString Kind;
-	return Member->TryGetStringField(TEXT("Kind"), Kind)
-		&& Kind == TEXT("MemberRef")
-		&& Member->TryGetStringField(TEXT("OwnerClass"), OutOwnerClass)
-		&& !OutOwnerClass.IsEmpty()
-		&& Member->TryGetStringField(TEXT("Name"), OutName)
-		&& !OutName.IsEmpty();
-}
-
-UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
-{
-	if (OwnerClassPath == TEXT("Self"))
-	{
-		if (Blueprint && Blueprint->GeneratedClass)
-		{
-			return Blueprint->GeneratedClass;
-		}
-		return Blueprint ? Blueprint->ParentClass.Get() : nullptr;
-	}
-	return ResolveClass(OwnerClassPath, UObject::StaticClass());
-}
-
-UFunction* ResolveMemberFunction(const UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Member)
-{
-	FString OwnerClassPath;
-	FString FunctionName;
-	if (!TryReadMemberRef(Member, OwnerClassPath, FunctionName))
-	{
-		return nullptr;
-	}
-
-	UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
-	return OwnerClass ? OwnerClass->FindFunctionByName(FName(*FunctionName)) : nullptr;
-}
-
-FProperty* ResolveMemberProperty(const UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Member)
-{
-	FString OwnerClassPath;
-	FString PropertyName;
-	if (!TryReadMemberRef(Member, OwnerClassPath, PropertyName))
-	{
-		return nullptr;
-	}
-
-	if (OwnerClassPath == TEXT("Self") && Blueprint)
-	{
-		const FName VariableName(*PropertyName);
-		if (Blueprint->NewVariables.ContainsByPredicate([VariableName](const FBPVariableDescription& Variable)
-		{
-			return Variable.VarName == VariableName;
-		}))
-		{
-			return FindFProperty<FProperty>(Blueprint->SkeletonGeneratedClass ? Blueprint->SkeletonGeneratedClass : Blueprint->GeneratedClass, VariableName);
-		}
-	}
-
-	UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
-	return OwnerClass ? FindFProperty<FProperty>(OwnerClass, FName(*PropertyName)) : nullptr;
-}
-
-FAssetDocumentCapabilityResult MakeMissingMemberFailure(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentNodeSpec& Node)
-{
-	return GraphFailure(
-		FString::Printf(TEXT("Graph node '%s' requires a reflected MemberRef"), *Node.Id),
-		JoinPath(NodePath(Graph, Node), TEXT("Member")),
-		TEXT("MissingGraphMemberReference"));
-}
-
-FAssetDocumentCapabilityResult MakeUnresolvedMemberFailure(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentNodeSpec& Node)
-{
-	return GraphFailure(
-		FString::Printf(TEXT("Graph node '%s' MemberRef could not be resolved"), *Node.Id),
-		JoinPath(NodePath(Graph, Node), TEXT("Member")),
-		TEXT("UnresolvedGraphMemberReference"));
-}
-
-bool ConfigureNodeFromSpec(UBlueprint* Blueprint, UEdGraphNode* Node, const FAssetDocumentGraphSpec& GraphSpec, const FAssetDocumentNodeSpec& NodeSpec, FAssetDocumentCapabilityResult& OutFailure)
+FAssetDocumentCapabilityResult ConfigureNodeWithAdapter(
+	UBlueprint* Blueprint,
+	const IAssetDocumentNodeAdapter& Adapter,
+	UEdGraphNode* Node,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec)
 {
 	if (!Node)
 	{
-		OutFailure = GraphFailure(
+		return GraphFailure(
 			FString::Printf(TEXT("Graph node '%s' could not be created"), *NodeSpec.Id),
 			NodePath(GraphSpec, NodeSpec),
 			TEXT("UnresolvedGraphNodeClass"));
-		return false;
 	}
 
 	Node->Modify();
@@ -177,95 +97,14 @@ bool ConfigureNodeFromSpec(UBlueprint* Blueprint, UEdGraphNode* Node, const FAss
 	}
 	Node->NodeComment = NodeSpec.bHasComment ? NodeSpec.Comment : FString();
 
-	if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+	FAssetDocumentNodeApplyContext Context;
+	Context.Blueprint = Blueprint;
+	Context.GraphPath = GraphPath(GraphSpec);
+	Context.NodePath = NodePath(GraphSpec, NodeSpec);
+	const FAssetDocumentCapabilityResult AdapterResult = Adapter.ConfigureNodeForApply(Context, Node, NodeSpec);
+	if (!AdapterResult.bSuccess)
 	{
-		FString OwnerClassPath;
-		FString FunctionName;
-		if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName))
-		{
-			OutFailure = MakeMissingMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-		UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
-		UFunction* Function = OwnerClass ? OwnerClass->FindFunctionByName(FName(*FunctionName)) : nullptr;
-		if (!OwnerClass || !Function)
-		{
-			OutFailure = MakeUnresolvedMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-
-		EventNode->EventReference.SetExternalMember(FName(*FunctionName), OwnerClass);
-		EventNode->bOverrideFunction = true;
-	}
-	else if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
-	{
-		UFunction* Function = ResolveMemberFunction(Blueprint, NodeSpec.Member);
-		if (!Function)
-		{
-			OutFailure = NodeSpec.Member.IsValid()
-				? MakeUnresolvedMemberFailure(GraphSpec, NodeSpec)
-				: MakeMissingMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-
-		CallNode->SetFromFunction(Function);
-		CallNode->FunctionReference.SetFromField<UFunction>(Function, false);
-	}
-	else if (UK2Node_VariableGet* VariableGet = Cast<UK2Node_VariableGet>(Node))
-	{
-		FString OwnerClassPath;
-		FString PropertyName;
-		if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName))
-		{
-			OutFailure = MakeMissingMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-		if (!ResolveMemberProperty(Blueprint, NodeSpec.Member))
-		{
-			OutFailure = MakeUnresolvedMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-		if (OwnerClassPath == TEXT("Self"))
-		{
-			VariableGet->VariableReference.SetSelfMember(FName(*PropertyName));
-		}
-		else
-		{
-			UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
-			VariableGet->VariableReference.SetExternalMember(FName(*PropertyName), OwnerClass);
-		}
-	}
-	else if (UK2Node_VariableSet* VariableSet = Cast<UK2Node_VariableSet>(Node))
-	{
-		FString OwnerClassPath;
-		FString PropertyName;
-		if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName))
-		{
-			OutFailure = MakeMissingMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-		if (!ResolveMemberProperty(Blueprint, NodeSpec.Member))
-		{
-			OutFailure = MakeUnresolvedMemberFailure(GraphSpec, NodeSpec);
-			return false;
-		}
-		if (OwnerClassPath == TEXT("Self"))
-		{
-			VariableSet->VariableReference.SetSelfMember(FName(*PropertyName));
-		}
-		else
-		{
-			UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
-			VariableSet->VariableReference.SetExternalMember(FName(*PropertyName), OwnerClass);
-		}
-	}
-	else if (!Node->IsA<UK2Node_Self>())
-	{
-		OutFailure = GraphFailure(
-			FString::Printf(TEXT("Graph node class '%s' is not supported by Tier 1 K2 apply"), *NodeSpec.Class),
-			NodePath(GraphSpec, NodeSpec),
-			TEXT("UnsupportedGraphNodeClass"));
-		return false;
+		return AdapterResult;
 	}
 
 	if (Node->Pins.IsEmpty())
@@ -276,7 +115,7 @@ bool ConfigureNodeFromSpec(UBlueprint* Blueprint, UEdGraphNode* Node, const FAss
 	{
 		Node->ReconstructNode();
 	}
-	return true;
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FString JsonScalarToString(const TSharedPtr<FJsonValue>& Value)
@@ -443,7 +282,8 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("Class")),
 				TEXT("UnresolvedGraphNodeClass"));
 		}
-		if (!Registry.FindAdapter(NodeClass).IsValid())
+		const TSharedPtr<IAssetDocumentNodeAdapter> Adapter = Registry.FindAdapter(NodeClass);
+		if (!Adapter.IsValid())
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph node class '%s' has no Tier 1 adapter"), *NodeSpec.Class),
@@ -453,10 +293,10 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 
 		UEdGraphNode* TempNode = NewObject<UEdGraphNode>(TempGraph, NodeClass, NAME_None, RF_Transient);
 		TempGraph->AddNode(TempNode, false, false);
-		FAssetDocumentCapabilityResult ConfigureFailure = FAssetDocumentCapabilityResult::Success();
-		if (!ConfigureNodeFromSpec(Blueprint, TempNode, GraphSpec, NodeSpec, ConfigureFailure))
+		const FAssetDocumentCapabilityResult ConfigureResult = ConfigureNodeWithAdapter(Blueprint, *Adapter, TempNode, GraphSpec, NodeSpec);
+		if (!ConfigureResult.bSuccess)
 		{
-			return ConfigureFailure;
+			return ConfigureResult;
 		}
 		const FAssetDocumentCapabilityResult PinResult = ApplyPinDefaults(GraphSpec, NodeSpec, TempNode);
 		if (!PinResult.bSuccess)
@@ -505,40 +345,27 @@ UEdGraph* FindOrCreateUbergraphPage(UBlueprint* Blueprint, const FAssetDocumentG
 	return Graph;
 }
 
-bool NodeMatchesMemberSpec(const UBlueprint* Blueprint, const UEdGraphNode* Node, const FAssetDocumentNodeSpec& NodeSpec)
+bool NodeMatchesMemberSpec(
+	const UBlueprint* Blueprint,
+	const FAssetDocumentNodeAdapterRegistry& Registry,
+	const UEdGraphNode* Node,
+	const FAssetDocumentNodeSpec& NodeSpec)
 {
 	if (!Node || Node->GetClass()->GetPathName() != NodeSpec.Class)
 	{
 		return false;
 	}
 
-	if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
-	{
-		FString OwnerClassPath;
-		FString FunctionName;
-		if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName))
-		{
-			return false;
-		}
-		return EventNode->GetFunctionName() == FName(*FunctionName);
-	}
-	if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
-	{
-		UFunction* DesiredFunction = ResolveMemberFunction(Blueprint, NodeSpec.Member);
-		UFunction* CurrentFunction = CallNode->GetTargetFunction();
-		return DesiredFunction && CurrentFunction == DesiredFunction;
-	}
-	if (const UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node))
-	{
-		FString OwnerClassPath;
-		FString PropertyName;
-		return TryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName)
-			&& VariableNode->GetVarName() == FName(*PropertyName);
-	}
-	return Node->IsA<UK2Node_Self>();
+	const TSharedPtr<IAssetDocumentNodeAdapter> Adapter = Registry.FindAdapter(Node->GetClass());
+	return Adapter.IsValid() && Adapter->DoesNodeMatchSpec(Blueprint, Node, NodeSpec);
 }
 
-UEdGraphNode* FindReusableNode(const UBlueprint* Blueprint, UEdGraph* Graph, const FAssetDocumentNodeSpec& NodeSpec, TSet<UEdGraphNode*>& UsedNodes)
+UEdGraphNode* FindReusableNode(
+	const UBlueprint* Blueprint,
+	const FAssetDocumentNodeAdapterRegistry& Registry,
+	UEdGraph* Graph,
+	const FAssetDocumentNodeSpec& NodeSpec,
+	TSet<UEdGraphNode*>& UsedNodes)
 {
 	if (!NodeSpec.NodeGuid.IsEmpty())
 	{
@@ -558,7 +385,7 @@ UEdGraphNode* FindReusableNode(const UBlueprint* Blueprint, UEdGraph* Graph, con
 
 	for (UEdGraphNode* Node : Graph->Nodes)
 	{
-		if (Node && !UsedNodes.Contains(Node) && NodeMatchesMemberSpec(Blueprint, Node, NodeSpec))
+		if (Node && !UsedNodes.Contains(Node) && NodeMatchesMemberSpec(Blueprint, Registry, Node, NodeSpec))
 		{
 			UsedNodes.Add(Node);
 			return Node;
@@ -611,6 +438,7 @@ FAssetDocumentCapabilityResult CreateLinks(const FAssetDocumentGraphSpec& GraphS
 
 FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs, bool& bOutChanged)
 {
+	const FAssetDocumentNodeAdapterRegistry Registry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
 	TSet<FString> DesiredGraphNames;
 	TMap<FString, UClass*> SchemaClassesByGraph;
 	TMap<FString, TMap<FString, UClass*>> NodeClassesByGraph;
@@ -673,7 +501,16 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		const TMap<FString, UClass*>* NodeClasses = NodeClassesByGraph.Find(GraphSpec.Name);
 		for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
 		{
-			UEdGraphNode* Node = FindReusableNode(Blueprint, Graph, NodeSpec, UsedExistingNodes);
+			const TSharedPtr<IAssetDocumentNodeAdapter> Adapter = Registry.FindAdapter(NodeSpec.Class);
+			if (!Adapter.IsValid())
+			{
+				return GraphFailure(
+					FString::Printf(TEXT("Graph node class '%s' has no Tier 1 adapter"), *NodeSpec.Class),
+					JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("Class")),
+					TEXT("UnsupportedGraphNodeClass"));
+			}
+
+			UEdGraphNode* Node = FindReusableNode(Blueprint, Registry, Graph, NodeSpec, UsedExistingNodes);
 			if (!Node)
 			{
 				UClass* NodeClass = NodeClasses ? NodeClasses->FindRef(NodeSpec.Id) : nullptr;
@@ -683,10 +520,10 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 				bOutChanged = true;
 			}
 
-			FAssetDocumentCapabilityResult ConfigureFailure = FAssetDocumentCapabilityResult::Success();
-			if (!ConfigureNodeFromSpec(Blueprint, Node, GraphSpec, NodeSpec, ConfigureFailure))
+			const FAssetDocumentCapabilityResult ConfigureResult = ConfigureNodeWithAdapter(Blueprint, *Adapter, Node, GraphSpec, NodeSpec);
+			if (!ConfigureResult.bSuccess)
 			{
-				return ConfigureFailure;
+				return ConfigureResult;
 			}
 			const FAssetDocumentCapabilityResult PinResult = ApplyPinDefaults(GraphSpec, NodeSpec, Node);
 			if (!PinResult.bSuccess)
