@@ -94,6 +94,97 @@ FAssetDocumentCapabilityResult UnresolvedMemberFailure(const FAssetDocumentNodeA
 		TEXT("UnresolvedGraphFunction"));
 }
 
+FAssetDocumentCapabilityResult UnsupportedFunctionFailure(
+	const FAssetDocumentNodeApplyContext& Context,
+	const FAssetDocumentNodeSpec& Node,
+	const UFunction* Function,
+	const FString& Reason)
+{
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(
+			TEXT("Graph call function '%s' is not supported by Tier 1 apply: %s"),
+			Function ? *Function->GetPathName() : *Node.Id,
+			*Reason),
+		Context.NodePath / TEXT("Member"),
+		TEXT("UnsupportedGraphFunction"));
+}
+
+FAssetDocumentCapabilityResult UnsupportedPinDefaultFailure(
+	const FAssetDocumentNodeApplyContext& Context,
+	const FAssetDocumentNodeSpec& Node,
+	const FAssetDocumentPinOverrideSpec& PinOverride,
+	const FString& Reason)
+{
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("Graph call function pin '%s' is not supported by Tier 1 apply: %s"), *PinOverride.Pin, *Reason),
+		Context.NodePath / TEXT("PinOverrides") / PinOverride.Pin,
+		TEXT("UnsupportedGraphPinDefault"));
+}
+
+bool IsSupportedTier1Function(const UFunction* Function, FString& OutReason)
+{
+	if (!Function)
+	{
+		OutReason = TEXT("function could not be resolved");
+		return false;
+	}
+	if (Function->HasMetaData(TEXT("Latent")))
+	{
+		OutReason = TEXT("latent functions require latent action lifecycle handling that Tier 1 graph apply does not author yet");
+		return false;
+	}
+	if (Function->HasMetaData(TEXT("CustomThunk")))
+	{
+		OutReason = TEXT("custom thunk functions require node-specific expansion that Tier 1 graph apply does not author yet");
+		return false;
+	}
+	if (Function->HasMetaData(TEXT("CustomStructureParam"))
+		|| Function->HasMetaData(TEXT("DeterminesOutputType"))
+		|| Function->HasMetaData(TEXT("DynamicOutputParam"))
+		|| Function->HasMetaData(TEXT("ArrayParm"))
+		|| Function->HasMetaData(TEXT("ArrayTypeDependentParams"))
+		|| Function->HasMetaData(TEXT("MapParam"))
+		|| Function->HasMetaData(TEXT("SetParam")))
+	{
+		OutReason = TEXT("dynamic, wildcard, or container-dependent function pins are outside Tier 1 graph apply support");
+		return false;
+	}
+	return true;
+}
+
+bool IsComplexDefaultProperty(const FProperty* Property)
+{
+	return Property
+		&& (Property->IsA<FArrayProperty>()
+			|| Property->IsA<FMapProperty>()
+			|| Property->IsA<FSetProperty>()
+			|| Property->IsA<FStructProperty>()
+			|| Property->IsA<FObjectPropertyBase>()
+			|| Property->IsA<FInterfaceProperty>()
+			|| Property->IsA<FDelegateProperty>()
+			|| Property->IsA<FMulticastDelegateProperty>());
+}
+
+FAssetDocumentCapabilityResult PreflightPinDefaultsForFunction(
+	const FAssetDocumentNodeApplyContext& Context,
+	const FAssetDocumentNodeSpec& Node,
+	const UFunction* Function)
+{
+	for (const FAssetDocumentPinOverrideSpec& PinOverride : Node.PinOverrides)
+	{
+		const FProperty* Property = Function ? FindFProperty<FProperty>(Function, FName(*PinOverride.Pin)) : nullptr;
+		if (PinOverride.DefaultObject.IsValid())
+		{
+			return UnsupportedPinDefaultFailure(Context, Node, PinOverride, TEXT("DefaultObject overrides are not supported for call-function pins in the current tier"));
+		}
+		if ((PinOverride.DefaultValue.IsValid() || PinOverride.DefaultTextValue.IsValid()) && IsComplexDefaultProperty(Property))
+		{
+			return UnsupportedPinDefaultFailure(Context, Node, PinOverride, TEXT("container, struct, object, delegate, and interface defaults are not supported for call-function pins in the current tier"));
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 bool HasAuthoredDefault(const UEdGraphPin* Pin)
 {
 	return Pin && (!Pin->DefaultValue.IsEmpty() || Pin->DefaultObject || !Pin->DefaultTextValue.IsEmpty());
@@ -191,6 +282,18 @@ FAssetDocumentCapabilityResult FAssetDocumentK2CallFunctionNodeAdapter::Configur
 		return NodeSpec.Member.IsValid()
 			? UnresolvedMemberFailure(Context, NodeSpec)
 			: MissingMemberFailure(Context, NodeSpec);
+	}
+
+	FString UnsupportedReason;
+	if (!IsSupportedTier1Function(Function, UnsupportedReason))
+	{
+		return UnsupportedFunctionFailure(Context, NodeSpec, Function, UnsupportedReason);
+	}
+
+	const FAssetDocumentCapabilityResult PinSupportResult = PreflightPinDefaultsForFunction(Context, NodeSpec, Function);
+	if (!PinSupportResult.bSuccess)
+	{
+		return PinSupportResult;
 	}
 
 	CallNode->SetFromFunction(Function);

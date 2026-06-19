@@ -64,19 +64,19 @@ unsupported graph content 不输出 raw UE graph dump。当前 fallback diagnost
 & "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload
 ```
 
-结果：exit 0；`Target is up to date`；`Result: Succeeded`。
+结果：exit 0；`Result: Succeeded`。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.GraphCore;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/GraphCoreFinal"
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.GraphCore;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/GraphCoreFixFinalCodex"
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/GraphCoreFinal/index.json` 记录 `succeeded=17`、`failed=0`、`notRun=0`。
+结果：exit 0；`C:/AVH1/Saved/AutomationReports/GraphCoreFixFinalCodex/index.json` 记录 `succeeded=17`、`failed=0`、`notRun=0`。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinal"
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintGraphFixFinalCodex"
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinal/index.json` 记录 `succeeded=52`、`failed=0`、`notRun=0`。
+结果：exit 0；`C:/AVH1/Saved/AutomationReports/UBlueprintGraphFixFinalCodex/index.json` 记录 `succeeded=56`、`failed=0`、`notRun=0`。
 
 ```powershell
 Push-Location MCP; npm test; Pop-Location
@@ -85,10 +85,12 @@ Push-Location MCP; npm test; Pop-Location
 结果：exit 0；Node test runner 记录 `tests 39`、`pass 39`、`fail 0`。`npm test` 生成的 `MCP/dist` 构建噪声已恢复，未纳入本 task diff。
 
 ```powershell
+Start-Process -FilePath "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" -ArgumentList "`"C:/AVH1/AVH1.uproject`"" -PassThru -WindowStyle Hidden
+Invoke-RestMethod -Uri http://127.0.0.1:8559/assetfactory/health
 python docs/superpowers/verification/asset_document_ublueprint_graph_http_smoke.py --base-url http://127.0.0.1:8559
 ```
 
-结果：exit 0。脚本临时启动 `C:/AVH1/AVH1.uproject` editor server，完成 `/assetfactory/assetdocument/apply-file` -> `/assetfactory/assetdocument/extract` -> `/assetfactory/assetdocument/diff`。
+结果：health 返回 `status=ok`、`service=AssetFactory`、`port=8559`；smoke exit 0。脚本需要一个已运行的 editor HTTP server，随后完成 `/assetfactory/assetdocument/apply-file` -> `/assetfactory/assetdocument/extract` -> `/assetfactory/assetdocument/diff`。
 
 HTTP smoke sidecar:
 
@@ -103,12 +105,18 @@ Smoke graph:
 
 ## Final Review Prep
 
-本 worker 环境没有可调用的 subagent dispatch/review tool；未能派发独立只读 reviewer。已进行本地 diff 复核，重点检查：
+主线已派发独立只读 reviewer，范围为 `73d573b398b5189dadf1365dbc45091dc296eb0a..0252a141ec13f5ca9b3ca03ddecc952226ac5db4`。本地 diff 复核与 reviewer 重点检查：
 
 - 文档是否仍声称 `UbergraphPages` 非空未实现。
 - smoke 是否使用真实 `/assetfactory/assetdocument/apply-file`、`extract`、`diff` route。
 - diff 是否只允许 generated graph metadata-only changed entries。
 - task diff 是否只包含允许范围文件。
+
+Review 后已修复的阻塞项：
+
+- graph apply 失败路径调整为在 components / class defaults 写入前执行，并在 graph 内部 apply failure 时恢复 graph snapshot，避免外层 Body 写入被半应用。
+- successful apply 删除现有 graph 内容前会拒绝删除当前 Tier 1 无法表示的 existing node/graph，并返回 `UnsupportedGraphNodeClass`。
+- `K2Node_CallFunction` 通过 UFunction metadata / pin FProperty 反射做保守能力检查，对 latent、custom thunk、dynamic/wildcard/container 相关函数和 unsupported pin default 返回 `UnsupportedGraphFunction` / `UnsupportedGraphPinDefault`。
 
 ## Known Risks
 

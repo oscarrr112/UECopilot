@@ -2916,6 +2916,17 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		}
 	}
 
+	{
+		bool bGraphChanged = false;
+		const FAssetDocumentCapabilityResult GraphApplyResult =
+			ApplyUBlueprintGraphRegions(Context, BodyObject.ToSharedRef(), bGraphChanged);
+		if (!GraphApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, GraphApplyResult);
+		}
+		bChanged |= bGraphChanged;
+	}
+
 	if (bHasComponentsRegion)
 	{
 		const FAssetDocumentCapabilityResult InheritedNativePreflightResult = PreflightInheritedNativeComponents(Blueprint, ParsedComponents);
@@ -2983,17 +2994,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsApplyResult);
 		}
-	}
-
-	{
-		bool bGraphChanged = false;
-		const FAssetDocumentCapabilityResult GraphApplyResult =
-			ApplyUBlueprintGraphRegions(Context, BodyObject.ToSharedRef(), bGraphChanged);
-		if (!GraphApplyResult.bSuccess)
-		{
-			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, GraphApplyResult);
-		}
-		bChanged |= bGraphChanged;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied UBlueprint Body"));

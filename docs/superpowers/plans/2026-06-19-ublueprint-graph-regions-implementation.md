@@ -668,7 +668,7 @@ git commit -m "feat(assetdoc): apply ublueprint event graphs"
 - Create: `docs/reports/asset-document-ublueprint-graph-regions-report.md`
 - Modify: `MCP/src/index.ts` only if profile catalog/schema exposure requires it.
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -677,7 +677,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Update schema documentation**
+- [x] **Step 2: Update schema documentation**
 
 Document:
 
@@ -690,7 +690,7 @@ Document:
 - unsupported fallback diagnostics;
 - remaining unsupported `FunctionGraphs`、`MacroGraphs`、`Timelines` scope.
 
-- [ ] **Step 3: Add external graph smoke script**
+- [x] **Step 3: Add external graph smoke script**
 
 Create script that:
 
@@ -702,7 +702,7 @@ Create script that:
 - asserts extract contains `Body.UbergraphPages[0].Nodes` with `BeginPlay` and `Print`;
 - asserts diff has no unexpected changed entries after apply.
 
-- [ ] **Step 4: Run final verification**
+- [x] **Step 4: Run final verification**
 
 Run:
 
@@ -722,7 +722,7 @@ Expected:
 - `MCP` tests succeed or only generate known `MCP/dist` churn that is restored before commit;
 - HTTP smoke succeeds against live editor server.
 
-- [ ] **Step 5: Write final report**
+- [x] **Step 5: Write final report**
 
 Report in Chinese:
 
@@ -735,7 +735,7 @@ Report in Chinese:
 - HTTP smoke sidecar path and asset path;
 - known risks.
 
-- [ ] **Step 6: Dispatch read-only spec/code quality review**
+- [x] **Step 6: Dispatch read-only spec/code quality review**
 
 Review only `SPEC_BASE..HEAD` or the task-level range requested by the main agent. Reviewer checks:
 
@@ -746,7 +746,7 @@ Review only `SPEC_BASE..HEAD` or the task-level range requested by the main agen
 - tests cover delete/update/reset authoritative semantics;
 - validation host evidence is current.
 
-- [ ] **Step 7: Fix review findings and commit final docs**
+- [x] **Step 7: Fix review findings and commit final docs**
 
 Run focused verification again after fixes, then:
 

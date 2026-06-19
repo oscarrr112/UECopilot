@@ -1849,14 +1849,13 @@ bool FAssetDocumentUBlueprintGraphApplyCompileFailureRollbackPreservesUnsupporte
 	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 	AppendLinkToGraph(Graph, TEXT("BeginPlayDuplicate"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Print"), UEdGraphSchema_K2::PN_Execute.ToString());
 
-	AddExpectedError(TEXT("Found more than one function with the same name ReceiveBeginPlay"), EAutomationExpectedErrorFlags::Contains, 1);
 	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, BadBody);
-	TestFalse(TEXT("Duplicate event compile failure rejects apply"), ApplyResult.bSuccess);
-	TestTrue(TEXT("Compile failure reports BlueprintCompileFailed"), ResultHasDiagnosticCode(ApplyResult, TEXT("BlueprintCompileFailed")));
+	TestFalse(TEXT("Apply rejects before deleting unsupported existing node"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Unsupported existing node reports actionable diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnsupportedGraphNodeClass")));
 
 	EventGraph = GetEventGraph(Blueprint);
 	TestEqual(TEXT("Failed compile rollback preserves unsupported branch node"), CountGraphNodesByClass(EventGraph, UK2Node_IfThenElse::StaticClass()), UnsupportedCountBefore);
-	TestEqual(TEXT("Failed compile rollback removed duplicate BeginPlay"), CountGraphNodesByMemberName(EventGraph, TEXT("ReceiveBeginPlay")), 1);
+	TestEqual(TEXT("Rejected apply did not add duplicate BeginPlay"), CountGraphNodesByMemberName(EventGraph, TEXT("ReceiveBeginPlay")), 1);
 	return true;
 }
 
@@ -1905,6 +1904,112 @@ bool FAssetDocumentUBlueprintGraphApplyIgnoresStaleNodeGuidWithDifferentMemberTe
 		TestNotEqual(TEXT("Stale NodeGuid was not reused for a semantically different node"), LogNode->NodeGuid, StaleGuid);
 	}
 	TestEqual(TEXT("Omitted PrintString node is not rebound into LogString"), CountGraphNodesByMemberName(Graph, TEXT("PrintString")), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyCompileFailureRollsBackClassDefaultsTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.CompileFailureRollsBackClassDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyCompileFailureRollsBackClassDefaultsTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyCompileFailClassDefaults"));
+	TestTrue(TEXT("Initial clean graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+	const double InitialLifeSpanBefore = GetBlueprintInitialLifeSpan(Blueprint);
+
+	TSharedRef<FJsonObject> BadBody = MakeBeginPlayPrintStringBody(TEXT("First"));
+	SetClassDefaultInitialLifeSpan(BadBody, 42.0);
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(BadBody, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+		TEXT("BeginPlayDuplicate"),
+		TEXT("/Script/BlueprintGraph.K2Node_Event"),
+		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
+	Nodes.Add(MakeShared<FJsonValueObject>(DuplicateBeginPlay));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(Graph, TEXT("BeginPlayDuplicate"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Print"), UEdGraphSchema_K2::PN_Execute.ToString());
+
+	AddExpectedError(TEXT("Found more than one function with the same name ReceiveBeginPlay"), EAutomationExpectedErrorFlags::Contains, 1);
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, BadBody);
+	TestFalse(TEXT("Duplicate event compile failure rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Compile failure reports BlueprintCompileFailed"), ResultHasDiagnosticCode(ApplyResult, TEXT("BlueprintCompileFailed")));
+	TestEqual(TEXT("Compile failure rolled back preceding ClassDefaults mutation"), GetBlueprintInitialLifeSpan(Blueprint), InitialLifeSpanBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsDeletingUnsupportedExistingNodeTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsDeletingUnsupportedExistingNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsDeletingUnsupportedExistingNodeTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyDeleteUnsupported"));
+	TestTrue(TEXT("Initial graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	AddUnsupportedBranchNode(Graph, 640, 0);
+	TestEqual(TEXT("Unsupported branch exists before apply"), CountGraphNodesByClass(Graph, UK2Node_IfThenElse::StaticClass()), 1);
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody());
+	TestFalse(TEXT("Apply rejects deleting unsupported existing node"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Deleting unsupported node reports actionable diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnsupportedGraphNodeClass")));
+	TestEqual(TEXT("Rejected apply preserves unsupported branch"), CountGraphNodesByClass(GetEventGraph(Blueprint), UK2Node_IfThenElse::StaticClass()), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedLatentCallFunctionTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsUnsupportedLatentCallFunction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedLatentCallFunctionTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyUnsupportedLatent"));
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false);
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+		TEXT("Delay"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("Delay")))));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(Graph, TEXT("BeginPlay"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Delay"), UEdGraphSchema_K2::PN_Execute.ToString());
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestFalse(TEXT("Latent function is outside Tier 1 apply support"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Latent function reports unsupported function diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnsupportedGraphFunction")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedPinDefaultObjectTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsUnsupportedPinDefaultObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedPinDefaultObjectTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyUnsupportedPinDefaultObject"));
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody();
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TSharedPtr<FJsonObject> Print = FindNodeById(Graph, TEXT("Print"));
+	TestTrue(TEXT("Print node exists"), Print.IsValid());
+	if (Print.IsValid())
+	{
+		TSharedRef<FJsonObject> PinOverride = MakeShared<FJsonObject>();
+		PinOverride->SetStringField(TEXT("Pin"), TEXT("InString"));
+		PinOverride->SetStringField(TEXT("DefaultObject"), TEXT("/Script/Engine.Actor"));
+		Print->SetArrayField(TEXT("PinOverrides"), MakeJsonArray({PinOverride}));
+	}
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestFalse(TEXT("DefaultObject on string pin is outside Tier 1 apply support"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Unsupported pin default reports actionable diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnsupportedGraphPinDefault")));
 	return true;
 }
 

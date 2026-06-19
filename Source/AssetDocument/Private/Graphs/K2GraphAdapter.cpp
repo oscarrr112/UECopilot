@@ -153,6 +153,57 @@ void ResetPinDefaultToBaseline(UEdGraphPin* Pin)
 	Pin->DefaultTextValue = FText::GetEmpty();
 }
 
+bool IsObjectBackedPin(const UEdGraphPin* Pin)
+{
+	if (!Pin)
+	{
+		return false;
+	}
+
+	const FName& Category = Pin->PinType.PinCategory;
+	return Category == UEdGraphSchema_K2::PC_Object
+		|| Category == UEdGraphSchema_K2::PC_Class
+		|| Category == UEdGraphSchema_K2::PC_SoftObject
+		|| Category == UEdGraphSchema_K2::PC_SoftClass
+		|| Category == UEdGraphSchema_K2::PC_Interface;
+}
+
+bool IsSupportedAuthoredPinDefault(const UEdGraphPin* Pin, const FAssetDocumentPinOverrideSpec& PinOverride, FString& OutReason)
+{
+	if (!Pin)
+	{
+		OutReason = TEXT("pin is missing");
+		return false;
+	}
+	if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Wildcard)
+	{
+		OutReason = TEXT("wildcard pins require node-specific type expansion before defaults can be authored safely");
+		return false;
+	}
+	if (Pin->PinType.ContainerType != EPinContainerType::None)
+	{
+		OutReason = TEXT("container pin defaults are not supported by Tier 1 graph apply");
+		return false;
+	}
+	if (PinOverride.DefaultObject.IsValid() && !IsObjectBackedPin(Pin))
+	{
+		OutReason = FString::Printf(
+			TEXT("DefaultObject is only supported for object-backed pins, but pin '%s' has category '%s'"),
+			*PinOverride.Pin,
+			*Pin->PinType.PinCategory.ToString());
+		return false;
+	}
+	if (PinOverride.DefaultTextValue.IsValid() && Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Text)
+	{
+		OutReason = FString::Printf(
+			TEXT("DefaultTextValue is only supported for text pins, but pin '%s' has category '%s'"),
+			*PinOverride.Pin,
+			*Pin->PinType.PinCategory.ToString());
+		return false;
+	}
+	return true;
+}
+
 FAssetDocumentCapabilityResult ApplyPinDefaults(const FAssetDocumentGraphSpec& GraphSpec, const FAssetDocumentNodeSpec& NodeSpec, UEdGraphNode* Node)
 {
 	TSet<FString> AuthoredPins;
@@ -185,6 +236,15 @@ FAssetDocumentCapabilityResult ApplyPinDefaults(const FAssetDocumentGraphSpec& G
 				FString::Printf(TEXT("Graph pin '%s' is not an input pin"), *PinOverride.Pin),
 				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
 				TEXT("InvalidGraphPin"));
+		}
+
+		FString UnsupportedReason;
+		if (!IsSupportedAuthoredPinDefault(Pin, PinOverride, UnsupportedReason))
+		{
+			return GraphFailure(
+				FString::Printf(TEXT("Graph pin '%s' default is not supported: %s"), *PinOverride.Pin, *UnsupportedReason),
+				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
+				TEXT("UnsupportedGraphPinDefault"));
 		}
 
 		ResetPinDefaultToBaseline(Pin);
@@ -400,6 +460,69 @@ UEdGraphNode* FindReusableNode(
 	return nullptr;
 }
 
+FString ExistingGraphPath(const UEdGraph* Graph)
+{
+	return JoinPath(UbergraphPagesPath, Graph ? Graph->GetName() : FString(TEXT("UnknownGraph")));
+}
+
+FString ExistingNodePath(const UEdGraph* Graph, const UEdGraphNode* Node)
+{
+	const FString NodeIdentity = Node && Node->NodeGuid.IsValid()
+		? Node->NodeGuid.ToString(EGuidFormats::Digits)
+		: Node ? Node->GetName() : FString(TEXT("UnknownNode"));
+	return JoinPath(JoinPath(ExistingGraphPath(Graph), TEXT("Nodes")), NodeIdentity);
+}
+
+FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
+	const FAssetDocumentNodeAdapterRegistry& Registry,
+	const UEdGraph* Graph,
+	const UEdGraphNode* Node)
+{
+	if (!Node)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!Registry.FindAdapter(Node->GetClass()).IsValid())
+	{
+		return GraphFailure(
+			FString::Printf(
+				TEXT("Existing graph node class '%s' is outside Tier 1 and cannot be deleted by graph sidecar apply"),
+				*GetClassPath(Node->GetClass())),
+			ExistingNodePath(Graph, Node),
+			TEXT("UnsupportedGraphNodeClass"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
+	const FAssetDocumentNodeAdapterRegistry& Registry,
+	const UEdGraph* Graph)
+{
+	if (!Graph)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!Cast<UEdGraphSchema_K2>(Graph->GetSchema()))
+	{
+		return GraphFailure(
+			FString::Printf(TEXT("Existing graph '%s' does not use EdGraphSchema_K2 and cannot be deleted by Tier 1 graph sidecar apply"), *Graph->GetName()),
+			ExistingGraphPath(Graph),
+			TEXT("InvalidGraphSchema"));
+	}
+
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		const FAssetDocumentCapabilityResult NodeResult = PreflightDeleteExistingNode(Registry, Graph, Node);
+		if (!NodeResult.bSuccess)
+		{
+			return NodeResult;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 void BreakAllLinksForManagedNodes(const TMap<FString, UEdGraphNode*>& NodesById)
 {
 	for (const TPair<FString, UEdGraphNode*>& Pair : NodesById)
@@ -471,6 +594,11 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 
 		if (ExistingGraph == FBlueprintEditorUtils::FindEventGraph(Blueprint))
 		{
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Registry, ExistingGraph);
+			if (!DeleteResult.bSuccess)
+			{
+				return DeleteResult;
+			}
 			for (UEdGraphNode* Node : TArray<UEdGraphNode*>(ExistingGraph->Nodes))
 			{
 				if (Node)
@@ -482,6 +610,11 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		}
 		else
 		{
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Registry, ExistingGraph);
+			if (!DeleteResult.bSuccess)
+			{
+				return DeleteResult;
+			}
 			FBlueprintEditorUtils::RemoveGraph(Blueprint, ExistingGraph, EGraphRemoveFlags::MarkTransient);
 			bOutChanged = true;
 		}
@@ -544,6 +677,11 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		{
 			if (ExistingNode && !UsedExistingNodes.Contains(ExistingNode))
 			{
+				const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Registry, Graph, ExistingNode);
+				if (!DeleteResult.bSuccess)
+				{
+					return DeleteResult;
+				}
 				ExistingNode->DestroyNode();
 				bOutChanged = true;
 			}
@@ -910,6 +1048,9 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 	ApplyResult.Result = ApplyGraphsNoCompile(Blueprint, DesiredGraphs, bChanged);
 	if (!ApplyResult.Result.bSuccess)
 	{
+		Snapshot.Restore(Blueprint);
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 		return ApplyResult;
 	}
 
