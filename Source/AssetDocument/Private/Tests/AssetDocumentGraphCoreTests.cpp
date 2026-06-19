@@ -1,6 +1,8 @@
 // Copyright ProjectRPG. All Rights Reserved.
 
 #include "Graphs/AssetDocumentGraphParser.h"
+#include "Graphs/AssetDocumentGraphDefinitionResolver.h"
+#include "Graphs/AssetDocumentGraphDiff.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -56,6 +58,50 @@ bool HasDiagnosticCode(const FAssetDocumentGraphParseResult& Result, const FStri
 		[&Code](const FAssetDocumentGraphDiagnostic& Diagnostic)
 		{
 			return Diagnostic.Code == Code;
+		});
+}
+
+bool HasDiagnosticCode(const FAssetDocumentGraphDefinitionResolveResult& Result, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate(
+		[&Code](const FAssetDocumentGraphDiagnostic& Diagnostic)
+		{
+			return Diagnostic.Code == Code;
+		});
+}
+
+TSharedPtr<FJsonObject> MakeDefinitions()
+{
+	return ParseJsonObject(TEXT(R"JSON(
+{
+  "Func.KismetSystemLibrary.PrintString": {
+    "Kind": "MemberRef",
+    "OwnerClass": "/Script/Engine.KismetSystemLibrary",
+    "Name": "PrintString"
+  }
+}
+)JSON"));
+}
+
+FAssetDocumentGraphDefinitionResolveResult ResolveGraphs(
+	const TArray<FAssetDocumentGraphSpec>& Graphs,
+	const TSharedPtr<FJsonObject>& Definitions)
+{
+	FAssetDocumentGraphDefinitionResolveOptions Options;
+	Options.DefinitionsPath = TEXT("/Definitions");
+	Options.GraphsPath = TEXT("/Body/UbergraphPages");
+	return FAssetDocumentGraphDefinitionResolver::ResolveGraphArray(Graphs, Definitions, Options);
+}
+
+bool HasDiffStatusAtPath(
+	const TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& Path,
+	const FString& Status)
+{
+	return Entries.ContainsByPredicate(
+		[&Path, &Status](const FAssetDocumentGraphDiffEntry& Entry)
+		{
+			return Entry.Path == Path && Entry.Status == Status;
 		});
 }
 }
@@ -605,6 +651,248 @@ bool FAssetDocumentGraphCoreRejectUnknownEndpointObjectFieldTest::RunTest(const 
 	TestTrue(
 		TEXT("UnknownGraphLinkEndpointField diagnostic is emitted"),
 		HasDiagnosticCode(Result, TEXT("UnknownGraphLinkEndpointField")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreResolveDefinitionRefsTest,
+	"AssetFactory.AssetDocument.GraphCore.ResolveDefinitionRefs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreResolveDefinitionRefsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> Graph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "Print",
+      "Class": "/Script/BlueprintGraph.K2Node_CallFunction",
+      "Member": { "Kind": "DefinitionRef", "Id": "Func.KismetSystemLibrary.PrintString" }
+    }
+  ],
+  "Links": []
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult ParseResult = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
+	TestTrue(TEXT("Graph with DefinitionRef parses"), ParseResult.IsValid());
+
+	const FAssetDocumentGraphDefinitionResolveResult ResolveResult = ResolveGraphs(ParseResult.Graphs, MakeDefinitions());
+	TestTrue(TEXT("DefinitionRef resolves"), ResolveResult.IsValid());
+	TestEqual(
+		TEXT("Resolved member kind"),
+		ResolveResult.Graphs[0].Nodes[0].Member->GetStringField(TEXT("Kind")),
+		FString(TEXT("MemberRef")));
+	TestEqual(
+		TEXT("Resolved member name"),
+		ResolveResult.Graphs[0].Nodes[0].Member->GetStringField(TEXT("Name")),
+		FString(TEXT("PrintString")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreRejectCircularDefinitionRefsTest,
+	"AssetFactory.AssetDocument.GraphCore.RejectCircularDefinitionRefs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreRejectCircularDefinitionRefsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> Definitions = ParseJsonObject(TEXT(R"JSON(
+{
+  "A": { "Kind": "DefinitionRef", "Id": "B" },
+  "B": { "Kind": "DefinitionRef", "Id": "A" }
+}
+)JSON"));
+	const TSharedPtr<FJsonObject> Graph = MakeValidEventGraph();
+	Graph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetObjectField(
+		TEXT("Member"),
+		ParseJsonObject(TEXT(R"JSON({ "Kind": "DefinitionRef", "Id": "A" })JSON")));
+
+	const FAssetDocumentGraphParseResult ParseResult = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
+	const FAssetDocumentGraphDefinitionResolveResult ResolveResult = ResolveGraphs(ParseResult.Graphs, Definitions);
+
+	TestFalse(TEXT("Circular DefinitionRefs fail"), ResolveResult.IsValid());
+	TestTrue(
+		TEXT("CircularDefinitionReference diagnostic is emitted"),
+		HasDiagnosticCode(ResolveResult, TEXT("CircularDefinitionReference")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreRejectUnresolvedDefinitionRefTest,
+	"AssetFactory.AssetDocument.GraphCore.RejectUnresolvedDefinitionRef",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreRejectUnresolvedDefinitionRefTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> Graph = MakeValidEventGraph();
+	Graph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetObjectField(
+		TEXT("Member"),
+		ParseJsonObject(TEXT(R"JSON({ "Kind": "DefinitionRef", "Id": "Func.Missing" })JSON")));
+
+	const FAssetDocumentGraphParseResult ParseResult = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
+	const FAssetDocumentGraphDefinitionResolveResult ResolveResult = ResolveGraphs(ParseResult.Graphs, MakeDefinitions());
+
+	TestFalse(TEXT("Unresolved DefinitionRef fails"), ResolveResult.IsValid());
+	TestTrue(
+		TEXT("UnresolvedDefinitionReference diagnostic is emitted"),
+		HasDiagnosticCode(ResolveResult, TEXT("UnresolvedDefinitionReference")));
+
+	const TSharedPtr<FJsonObject> UnknownKindDefinitions = ParseJsonObject(TEXT(R"JSON(
+{
+  "Broken.Definition": { "Kind": "MysteryRef", "Value": "nope" }
+}
+)JSON"));
+	const FAssetDocumentGraphDefinitionResolveResult UnknownKindResult =
+		ResolveGraphs(ParseResult.Graphs, UnknownKindDefinitions);
+	TestFalse(TEXT("Unknown definition kind fails"), UnknownKindResult.IsValid());
+	TestTrue(
+		TEXT("UnknownDefinitionKind diagnostic is emitted"),
+		HasDiagnosticCode(UnknownKindResult, TEXT("UnknownDefinitionKind")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreCompareInlineAndDefinitionRefAsEqualTest,
+	"AssetFactory.AssetDocument.GraphCore.CompareInlineAndDefinitionRefAsEqual",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreCompareInlineAndDefinitionRefAsEqualTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> InlineGraph = MakeValidEventGraph();
+	InlineGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetStringField(
+		TEXT("Class"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"));
+	InlineGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetStringField(TEXT("Id"), TEXT("Print"));
+	InlineGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetObjectField(
+		TEXT("Member"),
+		MakeDefinitions()->GetObjectField(TEXT("Func.KismetSystemLibrary.PrintString")));
+
+	const TSharedPtr<FJsonObject> RefGraph = MakeValidEventGraph();
+	RefGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetStringField(
+		TEXT("Class"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"));
+	RefGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetStringField(TEXT("Id"), TEXT("Print"));
+	RefGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject()->SetObjectField(
+		TEXT("Member"),
+		ParseJsonObject(TEXT(R"JSON({ "Kind": "DefinitionRef", "Id": "Func.KismetSystemLibrary.PrintString" })JSON")));
+
+	const FAssetDocumentGraphParseResult InlineParseResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(InlineGraph.ToSharedRef()) });
+	const FAssetDocumentGraphParseResult RefParseResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(RefGraph.ToSharedRef()) });
+	const TArray<FAssetDocumentGraphDiffEntry> Entries = FAssetDocumentGraphDiff::CompareUbergraphPages(
+		RefParseResult.Graphs,
+		InlineParseResult.Graphs,
+		MakeDefinitions());
+
+	TestTrue(
+		TEXT("Inline MemberRef and equivalent DefinitionRef compare as unchanged"),
+		HasDiffStatusAtPath(Entries, TEXT("/Body/UbergraphPages/EventGraph/Nodes/Print"), TEXT("unchanged")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreReportMissingExtraChangedGraphDiffsTest,
+	"AssetFactory.AssetDocument.GraphCore.ReportMissingExtraChangedGraphDiffs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreReportMissingExtraChangedGraphDiffsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> DesiredGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "Print",
+      "Class": "/Script/BlueprintGraph.K2Node_CallFunction",
+      "Member": { "Kind": "DefinitionRef", "Id": "Func.KismetSystemLibrary.PrintString" },
+      "PinOverrides": [
+        { "Pin": "InString", "DefaultValue": "Desired" }
+      ]
+    },
+    { "Id": "MissingInCurrent", "Class": "/Script/BlueprintGraph.K2Node_Self" }
+  ],
+  "Links": [
+    { "From": "MissingInCurrent.self", "To": "Print.self" }
+  ]
+}
+)JSON"));
+	const TSharedPtr<FJsonObject> CurrentGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    {
+      "Id": "Print",
+      "Class": "/Script/BlueprintGraph.K2Node_CallFunction",
+      "Member": {
+        "Kind": "MemberRef",
+        "OwnerClass": "/Script/Engine.KismetSystemLibrary",
+        "Name": "PrintString"
+      },
+      "PinOverrides": [
+        { "Pin": "InString", "DefaultValue": "Current" },
+        { "Pin": "WorldContextObject", "DefaultValue": "Self" }
+      ]
+    },
+    { "Id": "ExtraInCurrent", "Class": "/Script/BlueprintGraph.K2Node_Self" }
+  ],
+  "Links": [
+    { "From": "ExtraInCurrent.self", "To": "Print.self" }
+  ]
+}
+)JSON"));
+
+	const FAssetDocumentGraphParseResult DesiredParseResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(DesiredGraph.ToSharedRef()) });
+	const FAssetDocumentGraphParseResult CurrentParseResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(CurrentGraph.ToSharedRef()) });
+	const TArray<FAssetDocumentGraphDiffEntry> Entries = FAssetDocumentGraphDiff::CompareUbergraphPages(
+		DesiredParseResult.Graphs,
+		CurrentParseResult.Graphs,
+		MakeDefinitions());
+
+	TestTrue(
+		TEXT("Changed node is reported"),
+		HasDiffStatusAtPath(Entries, TEXT("/Body/UbergraphPages/EventGraph/Nodes/Print"), TEXT("changed")));
+	TestTrue(
+		TEXT("Missing node is reported"),
+		HasDiffStatusAtPath(Entries, TEXT("/Body/UbergraphPages/EventGraph/Nodes/MissingInCurrent"), TEXT("missing")));
+	TestTrue(
+		TEXT("Extra node is reported"),
+		HasDiffStatusAtPath(Entries, TEXT("/Body/UbergraphPages/EventGraph/Nodes/ExtraInCurrent"), TEXT("extra")));
+	TestTrue(
+		TEXT("Changed pin is reported"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/UbergraphPages/EventGraph/Nodes/Print/PinOverrides/InString"),
+			TEXT("changed")));
+	TestTrue(
+		TEXT("Extra pin is reported"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/UbergraphPages/EventGraph/Nodes/Print/PinOverrides/WorldContextObject"),
+			TEXT("extra")));
+	TestTrue(
+		TEXT("Missing link is reported"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/UbergraphPages/EventGraph/Links/MissingInCurrent:self->Print:self"),
+			TEXT("missing")));
+	TestTrue(
+		TEXT("Extra link is reported"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/UbergraphPages/EventGraph/Links/ExtraInCurrent:self->Print:self"),
+			TEXT("extra")));
 
 	return true;
 }

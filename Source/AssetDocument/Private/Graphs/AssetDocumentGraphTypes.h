@@ -100,3 +100,11 @@ struct FAssetDocumentGraphParseResult
 	bool IsValid() const { return Diagnostics.IsEmpty(); }
 	void AddDiagnostic(const FString& Code, const FString& Path, const FString& Message);
 };
+
+namespace AssetDocumentGraphJson
+{
+	TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value);
+	TSharedPtr<FJsonObject> CloneJsonObject(const TSharedPtr<FJsonObject>& Object);
+	bool AreJsonValuesEqual(const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right);
+	bool AreJsonObjectsEqual(const TSharedPtr<FJsonObject>& Left, const TSharedPtr<FJsonObject>& Right);
+}
