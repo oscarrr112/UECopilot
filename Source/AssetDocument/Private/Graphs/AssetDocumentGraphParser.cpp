@@ -37,6 +37,16 @@ const TCHAR* PinOverrideFields[] = {
 	TEXT("AdvancedView")
 };
 
+const TCHAR* LinkFields[] = {
+	TEXT("From"),
+	TEXT("To")
+};
+
+const TCHAR* LinkEndpointFields[] = {
+	TEXT("Node"),
+	TEXT("Pin")
+};
+
 bool IsKnownField(const FString& Field, const TCHAR* const* KnownFields, int32 KnownFieldCount)
 {
 	for (int32 Index = 0; Index < KnownFieldCount; ++Index)
@@ -190,12 +200,74 @@ bool TryGetStringField(
 	return true;
 }
 
+bool TryGetObjectFieldIfPresent(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* Field,
+	const FString& Path,
+	const FString& InvalidTypeCode,
+	TSharedPtr<FJsonObject>& OutObject,
+	FAssetDocumentGraphParseResult& Result)
+{
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (!Value)
+	{
+		return false;
+	}
+
+	if (!Value->IsValid() || (*Value)->Type != EJson::Object)
+	{
+		Result.AddDiagnostic(
+			InvalidTypeCode,
+			JoinPath(Path, Field),
+			FString::Printf(TEXT("Field '%s' must be an object."), Field));
+		return false;
+	}
+
+	OutObject = (*Value)->AsObject();
+	return OutObject.IsValid();
+}
+
+bool TryGetArrayFieldIfPresent(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* Field,
+	const FString& Path,
+	const FString& InvalidTypeCode,
+	const TArray<TSharedPtr<FJsonValue>>*& OutArray,
+	FAssetDocumentGraphParseResult& Result)
+{
+	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(Field);
+	if (!Value)
+	{
+		return false;
+	}
+
+	if (!Value->IsValid() || (*Value)->Type != EJson::Array)
+	{
+		Result.AddDiagnostic(
+			InvalidTypeCode,
+			JoinPath(Path, Field),
+			FString::Printf(TEXT("Field '%s' must be an array."), Field));
+		return false;
+	}
+
+	OutArray = &(*Value)->AsArray();
+	return true;
+}
+
 bool TryParseEndpointObject(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& Path,
 	FAssetDocumentGraphEndpoint& OutEndpoint,
 	FAssetDocumentGraphParseResult& Result)
 {
+	ValidateUnknownFields(
+		Object,
+		Path,
+		LinkEndpointFields,
+		UE_ARRAY_COUNT(LinkEndpointFields),
+		TEXT("UnknownGraphLinkEndpointField"),
+		Result);
+
 	if (!TryGetStringField(Object, TEXT("Node"), Path, TEXT("InvalidGraphLinkEndpointSyntax"), OutEndpoint.Node, Result) ||
 		!TryGetStringField(Object, TEXT("Pin"), Path, TEXT("InvalidGraphLinkEndpointSyntax"), OutEndpoint.Pin, Result))
 	{
@@ -325,6 +397,14 @@ bool ParsePinOverride(
 	Object->TryGetStringField(TEXT("Direction"), OutPinOverride.Direction);
 	if (const TSharedPtr<FJsonValue>* Type = Object->Values.Find(TEXT("Type")))
 	{
+		if (!Type->IsValid() || (*Type)->Type != EJson::Object)
+		{
+			Result.AddDiagnostic(
+				TEXT("InvalidGraphPin"),
+				JoinPath(Path, TEXT("Type")),
+				TEXT("Pin override Type must be an object."));
+			return false;
+		}
 		OutPinOverride.Type = CloneJsonValue(*Type);
 	}
 	if (const TSharedPtr<FJsonValue>* DefaultValue = Object->Values.Find(TEXT("DefaultValue")))
@@ -385,20 +465,20 @@ bool ParseNode(
 	Object->TryGetStringField(TEXT("Comment"), OutNode.Comment);
 	OutNode.bHasComment = Object->HasField(TEXT("Comment"));
 
-	const TSharedPtr<FJsonObject>* Member = nullptr;
-	if (Object->TryGetObjectField(TEXT("Member"), Member))
+	TSharedPtr<FJsonObject> Member;
+	if (TryGetObjectFieldIfPresent(Object, TEXT("Member"), Path, TEXT("InvalidGraphMemberReference"), Member, Result))
 	{
-		OutNode.Member = CloneJsonObject(*Member);
+		OutNode.Member = CloneJsonObject(Member);
 	}
 
-	const TSharedPtr<FJsonObject>* Position = nullptr;
-	if (Object->TryGetObjectField(TEXT("Position"), Position))
+	TSharedPtr<FJsonObject> Position;
+	if (TryGetObjectFieldIfPresent(Object, TEXT("Position"), Path, TEXT("InvalidGraphPosition"), Position, Result))
 	{
-		OutNode.Position = CloneJsonObject(*Position);
+		OutNode.Position = CloneJsonObject(Position);
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* PinOverrides = nullptr;
-	if (Object->TryGetArrayField(TEXT("PinOverrides"), PinOverrides))
+	if (TryGetArrayFieldIfPresent(Object, TEXT("PinOverrides"), Path, TEXT("InvalidGraphPin"), PinOverrides, Result))
 	{
 		for (int32 Index = 0; Index < PinOverrides->Num(); ++Index)
 		{
@@ -431,6 +511,14 @@ bool ParseLink(
 	FAssetDocumentLinkSpec& OutLink,
 	FAssetDocumentGraphParseResult& Result)
 {
+	ValidateUnknownFields(
+		Object,
+		Path,
+		LinkFields,
+		UE_ARRAY_COUNT(LinkFields),
+		TEXT("UnknownGraphLinkField"),
+		Result);
+
 	const TSharedPtr<FJsonValue>* From = Object->Values.Find(TEXT("From"));
 	const TSharedPtr<FJsonValue>* To = Object->Values.Find(TEXT("To"));
 	const bool bParsedFrom = TryParseEndpoint(From ? *From : nullptr, JoinPath(Path, TEXT("From")), OutLink.From, Result);
@@ -506,10 +594,10 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseSingleGraph(
 	GraphObject->TryGetStringField(TEXT("Category"), Graph.Category);
 	GraphObject->TryGetStringField(TEXT("Description"), Graph.Description);
 
-	const TSharedPtr<FJsonObject>* Signature = nullptr;
-	if (GraphObject->TryGetObjectField(TEXT("Signature"), Signature))
+	TSharedPtr<FJsonObject> Signature;
+	if (TryGetObjectFieldIfPresent(GraphObject, TEXT("Signature"), Options.Path, TEXT("InvalidGraphSignature"), Signature, Result))
 	{
-		Graph.Signature = CloneJsonObject(*Signature);
+		Graph.Signature = CloneJsonObject(Signature);
 	}
 
 	TSet<FString> NodeIds;
