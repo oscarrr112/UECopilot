@@ -1107,6 +1107,87 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+struct FScopedRootedObject
+{
+	explicit FScopedRootedObject(UObject* InObject)
+		: Object(InObject)
+	{
+		if (Object)
+		{
+			Object->AddToRoot();
+		}
+	}
+
+	~FScopedRootedObject()
+	{
+		if (Object && Object->IsRooted())
+		{
+			Object->RemoveFromRoot();
+		}
+	}
+
+	UObject* Object = nullptr;
+};
+
+FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject,
+	UClass* EffectiveParentClass,
+	const TArray<FUBlueprintVariableSpec>& VariableSpecs)
+{
+	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+	const TSharedPtr<FJsonValue>* UbergraphPagesValue = BodyObject->Values.Find(TEXT("UbergraphPages"));
+	const UBlueprint* SourceBlueprint = Cast<UBlueprint>(Context.Asset);
+	if (!UbergraphPagesValue || !SourceBlueprint || !EffectiveParentClass)
+	{
+		return GraphRegionAdapter.ValidateRegions(Context, BodyObject);
+	}
+
+	const FName ValidationBlueprintName = MakeUniqueObjectName(
+		GetTransientPackage(),
+		UBlueprint::StaticClass(),
+		TEXT("AssetDocumentGraphValidationBlueprint"));
+	UBlueprint* ValidationBlueprint = FKismetEditorUtilities::CreateBlueprint(
+		EffectiveParentClass,
+		GetTransientPackage(),
+		ValidationBlueprintName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(),
+		TEXT("AssetDocumentGraphValidation"));
+	if (!ValidationBlueprint)
+	{
+		return BodyFailure(
+			TEXT("Failed to create staged UBlueprint for graph validation"),
+			TEXT("/Body/UbergraphPages"),
+			TEXT("CreateValidationBlueprintFailed"));
+	}
+
+	FScopedRootedObject RootedValidationBlueprint(ValidationBlueprint);
+	bool bVariablesChanged = false;
+	const FAssetDocumentCapabilityResult VariableApplyResult = ApplyVariables(ValidationBlueprint, VariableSpecs, bVariablesChanged);
+	if (!VariableApplyResult.bSuccess)
+	{
+		return VariableApplyResult;
+	}
+	if (bVariablesChanged)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ValidationBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(ValidationBlueprint);
+		if (ValidationBlueprint->Status == BS_Error)
+		{
+			return BodyFailure(
+				TEXT("Failed to compile staged UBlueprint variables for graph validation"),
+				TEXT("/Body/Variables"),
+				TEXT("BlueprintCompileFailed"));
+		}
+	}
+
+	FAssetDocumentCapabilityContext GraphContext = Context;
+	GraphContext.Asset = ValidationBlueprint;
+	return GraphRegionAdapter.ValidateRegions(GraphContext, BodyObject);
+}
+
 FAssetDocumentCapabilityResult ApplyInterfaces(UBlueprint* Blueprint, const TArray<FUBlueprintInterfaceSpec>& Interfaces, bool& bOutChanged)
 {
 	bOutChanged = false;
@@ -3436,13 +3517,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		}
 	}
 
-	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
-	const FAssetDocumentCapabilityResult GraphRegionResult = GraphRegionAdapter.ValidateRegions(Context, BodyObject);
-	if (!GraphRegionResult.bSuccess)
-	{
-		return GraphRegionResult;
-	}
-
 	TArray<FUBlueprintInterfaceSpec> InterfaceSpecs;
 	const FAssetDocumentCapabilityResult InterfaceResult = ParseInterfaceSpecs(BodyObject, InterfaceSpecs);
 	if (!InterfaceResult.bSuccess)
@@ -3455,6 +3529,36 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	if (!VariableResult.bSuccess)
 	{
 		return VariableResult;
+	}
+
+	UClass* DesiredParentClass = nullptr;
+	if (const TSharedPtr<FJsonValue>* ParentClassValue = BodyObject->Values.Find(TEXT("ParentClass")))
+	{
+		const FAssetDocumentCapabilityResult ParentClassResult = ResolveParentClass(*ParentClassValue, DesiredParentClass);
+		if (!ParentClassResult.bSuccess)
+		{
+			return ParentClassResult;
+		}
+	}
+	if (const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset))
+	{
+		DesiredParentClass = DesiredParentClass ? DesiredParentClass : Blueprint->ParentClass.Get();
+	}
+
+	if (DesiredParentClass)
+	{
+		const FAssetDocumentCapabilityResult ParentVariableResult = ValidateVariablesAgainstParentClass(DesiredParentClass, VariableSpecs);
+		if (!ParentVariableResult.bSuccess)
+		{
+			return ParentVariableResult;
+		}
+	}
+
+	const FAssetDocumentCapabilityResult GraphRegionResult =
+		ValidateGraphRegionsWithStagedVariables(Context, BodyObject, DesiredParentClass, VariableSpecs);
+	if (!GraphRegionResult.bSuccess)
+	{
+		return GraphRegionResult;
 	}
 
 	TArray<FUBlueprintComponentSpec> ComponentSpecs;
@@ -3475,15 +3579,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	if (HasOwnedSCSComponent(ComponentSpecs))
 	{
 		UClass* ParentClass = nullptr;
-		const TSharedPtr<FJsonValue>* ParentClassValue = BodyObject->Values.Find(TEXT("ParentClass"));
-		if (ParentClassValue)
-		{
-			const FAssetDocumentCapabilityResult ParentClassResult = ResolveParentClass(*ParentClassValue, ParentClass);
-			if (!ParentClassResult.bSuccess)
-			{
-				return ParentClassResult;
-			}
-		}
+		ParentClass = DesiredParentClass;
 		if (const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset))
 		{
 			ParentClass = ParentClass ? ParentClass : Blueprint->ParentClass.Get();
@@ -3504,16 +3600,6 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	bool bParentChangesExistingBlueprint = false;
 	if (ValidationBlueprint)
 	{
-		UClass* DesiredParentClass = nullptr;
-		const TSharedPtr<FJsonValue>* ParentClassValue = BodyObject->Values.Find(TEXT("ParentClass"));
-		if (ParentClassValue)
-		{
-			const FAssetDocumentCapabilityResult ParentClassResult = ResolveParentClass(*ParentClassValue, DesiredParentClass);
-			if (!ParentClassResult.bSuccess)
-			{
-				return ParentClassResult;
-			}
-		}
 		bParentChangesExistingBlueprint = DesiredParentClass && ValidationBlueprint->ParentClass.Get() != DesiredParentClass;
 	}
 

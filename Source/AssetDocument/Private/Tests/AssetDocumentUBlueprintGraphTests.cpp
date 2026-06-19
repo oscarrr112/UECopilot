@@ -707,6 +707,18 @@ TSharedRef<FJsonObject> MakeBeginPlayPrintStringBody(
 	return MakeBodyWithRegion(TEXT("UbergraphPages"), {Graph});
 }
 
+TSharedRef<FJsonObject> MakeIntVariableSpec(const FString& Name, const FString& DefaultValue = TEXT("0"))
+{
+	TSharedRef<FJsonObject> Type = MakeShared<FJsonObject>();
+	Type->SetStringField(TEXT("PinCategory"), UEdGraphSchema_K2::PC_Int.ToString());
+
+	TSharedRef<FJsonObject> Variable = MakeShared<FJsonObject>();
+	Variable->SetStringField(TEXT("Name"), Name);
+	Variable->SetObjectField(TEXT("Type"), Type);
+	Variable->SetStringField(TEXT("DefaultValue"), DefaultValue);
+	return Variable;
+}
+
 FAssetDocumentCapabilityResult ApplyBlueprintBody(UBlueprint* Blueprint, const TSharedRef<FJsonObject>& Body)
 {
 	FUBlueprintAssetDocumentCapability Capability;
@@ -1650,6 +1662,58 @@ bool FAssetDocumentUBlueprintGraphApplyUsesNodeAdaptersForMemberBindingTest::Run
 	TestFalse(TEXT("CallFunction member binding lives in node adapter"), Source.Contains(TEXT("FunctionReference.SetFromField")));
 	TestFalse(TEXT("Variable self binding lives in node adapter"), Source.Contains(TEXT("VariableReference.SetSelfMember")));
 	TestFalse(TEXT("Variable external binding lives in node adapter"), Source.Contains(TEXT("VariableReference.SetExternalMember")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyUsesStagedVariableReferencesTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.UsesStagedVariableReferences",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyUsesStagedVariableReferencesTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyStagedVariable"));
+	TestNotNull(TEXT("Transient actor Blueprint exists"), Blueprint);
+	if (!Blueprint)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false);
+	Body->SetArrayField(TEXT("Variables"), MakeJsonArray({MakeIntVariableSpec(TEXT("GraphCounter"), TEXT("7"))}));
+
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+		TEXT("GraphCounterGet"),
+		TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+		MakeMemberRef(TEXT("Self"), TEXT("GraphCounter")))));
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+		TEXT("GraphCounterSet"),
+		TEXT("/Script/BlueprintGraph.K2Node_VariableSet"),
+		MakeMemberRef(TEXT("Self"), TEXT("GraphCounter")))));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(Graph, TEXT("BeginPlay"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("GraphCounterSet"), UEdGraphSchema_K2::PN_Execute.ToString());
+	AppendLinkToGraph(Graph, TEXT("GraphCounterGet"), TEXT("GraphCounter"), TEXT("GraphCounterSet"), TEXT("GraphCounter"));
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestTrue(TEXT("Graph apply resolves same-document staged variable references"), ApplyResult.bSuccess);
+	if (!ApplyResult.bSuccess)
+	{
+		return false;
+	}
+
+	UEdGraph* EventGraph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("EventGraph exists after apply"), EventGraph);
+	TestTrue(TEXT("GraphCounter variable was created"), Blueprint->NewVariables.ContainsByPredicate([](const FBPVariableDescription& Variable)
+	{
+		return Variable.VarName == TEXT("GraphCounter");
+	}));
+	TestEqual(TEXT("Variable get was created"), CountGraphNodesByClass(EventGraph, UK2Node_VariableGet::StaticClass()), 1);
+	TestEqual(TEXT("Variable set was created"), CountGraphNodesByClass(EventGraph, UK2Node_VariableSet::StaticClass()), 1);
+	TestFalse(TEXT("Applied Blueprint compiles without error"), Blueprint->Status == BS_Error);
 	return true;
 }
 
