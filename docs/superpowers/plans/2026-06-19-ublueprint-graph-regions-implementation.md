@@ -543,7 +543,7 @@ git commit -m "feat(assetdoc): diff ublueprint event graphs"
 - Modify: `Source/AssetDocument/Private/Profiles/UBlueprintAssetDocumentCapability.cpp`
 - Test: `Source/AssetDocument/Private/Tests/AssetDocumentUBlueprintGraphTests.cpp`
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -552,7 +552,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Add failing apply tests**
+- [x] **Step 2: Add failing apply tests**
 
 Add tests:
 
@@ -608,7 +608,7 @@ Use sidecar shape:
 }
 ```
 
-- [ ] **Step 3: Implement staged apply**
+- [x] **Step 3: Implement staged apply**
 
 Apply order inside graph region:
 
@@ -627,7 +627,7 @@ Apply order inside graph region:
 
 Do not save assets on failed compile. If full rollback is not available yet, tests must prove failed preflight prevents mutation for invalid sidecar and compile failures are reported before save.
 
-- [ ] **Step 4: Run graph apply tests**
+- [x] **Step 4: Run graph apply tests**
 
 Run:
 
@@ -638,7 +638,7 @@ Run:
 
 Expected: graph apply tests pass.
 
-- [ ] **Step 5: Run focused UBlueprint regression tests**
+- [x] **Step 5: Run focused UBlueprint regression tests**
 
 Run:
 
@@ -648,7 +648,7 @@ Run:
 
 Expected: existing UBlueprint variables/components/class-default tests still pass.
 
-- [ ] **Step 6: Commit Task 6**
+- [x] **Step 6: Commit Task 6**
 
 Run:
 
