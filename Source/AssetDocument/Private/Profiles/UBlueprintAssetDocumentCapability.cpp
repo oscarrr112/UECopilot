@@ -3010,14 +3010,18 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	}
-	OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
+	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+	const FAssetDocumentCapabilityResult GraphExtractResult = GraphRegionAdapter.ExtractRegions(Context, OutBodyJson);
+	if (!GraphExtractResult.bSuccess)
+	{
+		return GraphExtractResult;
+	}
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("Timelines"), {});
 
 	if (Blueprint)
 	{
-		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("UbergraphPages"), Blueprint->UbergraphPages.Num());
 		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("FunctionGraphs"), Blueprint->FunctionGraphs.Num());
 		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("MacroGraphs"), Blueprint->MacroGraphs.Num());
 		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("Timelines"), Blueprint->Timelines.Num());

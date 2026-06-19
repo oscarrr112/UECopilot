@@ -5,8 +5,10 @@
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
 #include "Graphs/AssetDocumentGraphParser.h"
 #include "Graphs/AssetDocumentNodeAdapter.h"
+#include "Graphs/K2GraphAdapter.h"
 
 #include "Dom/JsonValue.h"
+#include "Engine/Blueprint.h"
 #include "UObject/Class.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -183,6 +185,48 @@ FAssetDocumentCapabilityResult UnsupportedGraphFailure(const TArray<FAssetDocume
 	return Result;
 }
 
+void MergeSkippedGraphEvidence(TSharedRef<FJsonObject>& OutBodyJson, const TArray<TSharedPtr<FJsonValue>>& SkippedNodes)
+{
+	if (SkippedNodes.IsEmpty())
+	{
+		return;
+	}
+
+	TSharedPtr<FJsonObject> Skipped;
+	const TSharedPtr<FJsonObject>* ExistingSkipped = nullptr;
+	if (OutBodyJson->TryGetObjectField(TEXT("_Skipped"), ExistingSkipped) && ExistingSkipped && ExistingSkipped->IsValid())
+	{
+		Skipped = *ExistingSkipped;
+	}
+	else
+	{
+		Skipped = MakeShared<FJsonObject>();
+		OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
+	}
+
+	TSharedPtr<FJsonObject> Graphs;
+	const TSharedPtr<FJsonObject>* ExistingGraphs = nullptr;
+	if (Skipped->TryGetObjectField(TEXT("Graphs"), ExistingGraphs) && ExistingGraphs && ExistingGraphs->IsValid())
+	{
+		Graphs = *ExistingGraphs;
+	}
+	else
+	{
+		Graphs = MakeShared<FJsonObject>();
+		Skipped->SetObjectField(TEXT("Graphs"), Graphs);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Nodes = SkippedNodes;
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	if (Graphs->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes)
+	{
+		Nodes.Append(*ExistingNodes);
+	}
+	Graphs->SetStringField(TEXT("Reason"), TEXT("UnsupportedGraphNodeClass"));
+	Graphs->SetNumberField(TEXT("Count"), Nodes.Num());
+	Graphs->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+}
+
 FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedPtr<FJsonValue>& Value)
@@ -220,7 +264,7 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 		return GraphDiagnosticsFailure(ResolveResult.Diagnostics);
 	}
 
-	const FAssetDocumentNodeAdapterRegistry CurrentTierRegistry;
+	const FAssetDocumentNodeAdapterRegistry CurrentTierRegistry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
 	TArray<FAssetDocumentUnsupportedNodeDiagnostic> UnsupportedDiagnostics;
 	for (int32 GraphIndex = 0; GraphIndex < ResolveResult.Graphs.Num(); ++GraphIndex)
 	{
@@ -241,16 +285,15 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 				continue;
 			}
 
-			if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
-			{
-				continue;
-			}
-
 			if (Node.Class == K2NodeCallFunctionClassPath)
 			{
 				const FMemberFunctionResolutionResult FunctionResolution = ResolveMemberFunction(Node.Member);
 				if (FunctionResolution.bResolved)
 				{
+					if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
+					{
+						continue;
+					}
 					UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
 						Node,
 						Path,
@@ -267,6 +310,11 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 						FunctionResolution.Reason,
 						FunctionResolution.SuggestedAction));
 				}
+				continue;
+			}
+
+			if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
+			{
 				continue;
 			}
 
@@ -294,4 +342,22 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ValidateRegions(
 {
 	const TSharedPtr<FJsonValue>* UbergraphPagesValue = BodyObject->Values.Find(TEXT("UbergraphPages"));
 	return ValidateUbergraphPages(Context, UbergraphPagesValue ? *UbergraphPagesValue : TSharedPtr<FJsonValue>());
+}
+
+FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ExtractRegions(
+	const FAssetDocumentCapabilityContext& Context,
+	TSharedRef<FJsonObject>& OutBodyJson) const
+{
+	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
+	if (!Blueprint)
+	{
+		OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
+	const FAssetDocumentK2GraphExtractResult ExtractResult = K2GraphAdapter.ExtractUbergraphPages(Blueprint);
+	OutBodyJson->SetField(TEXT("UbergraphPages"), FAssetDocumentGraphParser::WriteCanonicalGraphArray(ExtractResult.Graphs));
+	MergeSkippedGraphEvidence(OutBodyJson, ExtractResult.SkippedNodes);
+	return FAssetDocumentCapabilityResult::Success();
 }

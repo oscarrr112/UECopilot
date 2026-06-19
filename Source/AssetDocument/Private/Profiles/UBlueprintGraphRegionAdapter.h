@@ -10,4 +10,8 @@ public:
 	FAssetDocumentCapabilityResult ValidateRegions(
 		const FAssetDocumentCapabilityContext& Context,
 		const TSharedRef<FJsonObject>& BodyObject) const;
+
+	FAssetDocumentCapabilityResult ExtractRegions(
+		const FAssetDocumentCapabilityContext& Context,
+		TSharedRef<FJsonObject>& OutBodyJson) const;
 };
