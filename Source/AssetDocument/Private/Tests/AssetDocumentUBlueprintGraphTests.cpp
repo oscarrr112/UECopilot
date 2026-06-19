@@ -716,6 +716,42 @@ bool FAssetDocumentUBlueprintGraphExtractExtractsVariableGetSetAndSelfTest::RunT
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphExtractSkipsStaleVariableNodesTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphExtract.SkipsStaleVariableNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphExtractSkipsStaleVariableNodesTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphExtractStaleVars"));
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Blueprint || !Graph)
+	{
+		return false;
+	}
+
+	AddVariableGetNode(Blueprint, Graph, TEXT("DeletedCounter"), 0, 160);
+	AddVariableSetNode(Blueprint, Graph, TEXT("DeletedCounter"), 320, 160);
+
+	FAssetDocumentCapabilityResult ExtractResult;
+	const TSharedRef<FJsonObject> Body = ExtractBlueprintBody(Blueprint, ExtractResult);
+	TestTrue(TEXT("Graph extract succeeds with skipped stale variables"), ExtractResult.bSuccess);
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = GetUbergraphPages(Body);
+	if (Graphs && !Graphs->IsEmpty())
+	{
+		const TSharedPtr<FJsonObject> ExtractedGraph = (*Graphs)[0]->AsObject();
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		TestTrue(TEXT("Graph nodes field is readable"), ExtractedGraph->TryGetArrayField(TEXT("Nodes"), Nodes) && Nodes);
+		TestFalse(TEXT("Stale variable is not emitted as lossy MemberRef"), Nodes && FindNodeByMemberName(*Nodes, TEXT("DeletedCounter")).IsValid());
+	}
+
+	TestTrue(TEXT("Skipped graph evidence names stale variable get"), SkippedGraphsContainClass(Body, TEXT("/Script/BlueprintGraph.K2Node_VariableGet")));
+	TestTrue(TEXT("Skipped graph evidence names stale variable set"), SkippedGraphsContainClass(Body, TEXT("/Script/BlueprintGraph.K2Node_VariableSet")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentUBlueprintGraphExtractSkipsUnsupportedExistingNodesTest,
 	"AssetFactory.AssetDocument.UBlueprint.GraphExtract.SkipsUnsupportedExistingNodes",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

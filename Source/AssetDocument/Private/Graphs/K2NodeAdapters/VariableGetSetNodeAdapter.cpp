@@ -22,28 +22,34 @@ bool IsBlueprintVariable(const UBlueprint* Blueprint, FName VariableName)
 FString GetPropertyOwnerPath(const FProperty* Property)
 {
 	const UClass* OwnerClass = Property ? Property->GetOwnerClass() : nullptr;
-	return OwnerClass ? OwnerClass->GetPathName() : FString(TEXT("Self"));
+	return OwnerClass ? OwnerClass->GetPathName() : FString();
 }
 
-TSharedRef<FJsonObject> MakeVariableMemberRef(const UBlueprint* Blueprint, const UK2Node_Variable* Node)
+bool TryMakeVariableMemberRef(const UBlueprint* Blueprint, const UK2Node_Variable* Node, TSharedPtr<FJsonObject>& OutMember)
 {
 	const FName VariableName = Node ? Node->GetVarName() : NAME_None;
 	const FProperty* Property = Node ? Node->GetPropertyForVariable() : nullptr;
+	const bool bBlueprintVariable = IsBlueprintVariable(Blueprint, VariableName);
+	if (!bBlueprintVariable && !Property)
+	{
+		return false;
+	}
 
 	TSharedRef<FJsonObject> Member = MakeShared<FJsonObject>();
 	Member->SetStringField(TEXT("Kind"), TEXT("MemberRef"));
-	Member->SetStringField(TEXT("OwnerClass"), IsBlueprintVariable(Blueprint, VariableName) ? FString(TEXT("Self")) : GetPropertyOwnerPath(Property));
+	Member->SetStringField(TEXT("OwnerClass"), bBlueprintVariable ? FString(TEXT("Self")) : GetPropertyOwnerPath(Property));
 	Member->SetStringField(TEXT("Name"), VariableName.ToString());
 	const FGuid Guid = Node ? Node->VariableReference.GetMemberGuid() : FGuid();
 	if (Guid.IsValid())
 	{
 		Member->SetStringField(TEXT("Guid"), Guid.ToString(EGuidFormats::Digits));
 	}
-	if (IsBlueprintVariable(Blueprint, VariableName))
+	if (bBlueprintVariable)
 	{
 		Member->SetBoolField(TEXT("SelfContext"), true);
 	}
-	return Member;
+	OutMember = Member;
+	return true;
 }
 }
 
@@ -55,8 +61,7 @@ bool FAssetDocumentK2VariableGetNodeAdapter::ExtractNode(const UBlueprint* Bluep
 	}
 
 	OutNode.Capability = GetCapability();
-	OutNode.Member = MakeVariableMemberRef(Blueprint, Node);
-	return true;
+	return TryMakeVariableMemberRef(Blueprint, Node, OutNode.Member);
 }
 
 bool FAssetDocumentK2VariableSetNodeAdapter::ExtractNode(const UBlueprint* Blueprint, const UK2Node_VariableSet* Node, FAssetDocumentNodeSpec& OutNode) const
@@ -67,6 +72,5 @@ bool FAssetDocumentK2VariableSetNodeAdapter::ExtractNode(const UBlueprint* Bluep
 	}
 
 	OutNode.Capability = GetCapability();
-	OutNode.Member = MakeVariableMemberRef(Blueprint, Node);
-	return true;
+	return TryMakeVariableMemberRef(Blueprint, Node, OutNode.Member);
 }
