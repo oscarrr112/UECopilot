@@ -482,7 +482,7 @@ git commit -m "feat(assetdoc): extract ublueprint event graphs"
 - Modify: `Source/AssetDocument/Private/Graphs/K2GraphAdapter.*`
 - Test: `Source/AssetDocument/Private/Tests/AssetDocumentUBlueprintGraphTests.cpp`
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -491,7 +491,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Add failing graph diff tests**
+- [x] **Step 2: Add failing graph diff tests**
 
 Add tests:
 
@@ -502,7 +502,7 @@ Add tests:
 - `AssetFactory.AssetDocument.UBlueprint.GraphDiff.ReportsMissingLink`
 - `AssetFactory.AssetDocument.UBlueprint.GraphDiff.TreatsDefinitionRefAndInlineMemberRefAsEqual`
 
-- [ ] **Step 3: Implement UBlueprint graph diff integration**
+- [x] **Step 3: Implement UBlueprint graph diff integration**
 
 Rules:
 
@@ -512,7 +512,7 @@ Rules:
 - unsupported existing nodes produce `unsupported` entries rather than lossy diffs;
 - missing sidecar `UbergraphPages` means empty authoritative graph user content.
 
-- [ ] **Step 4: Run graph diff tests**
+- [x] **Step 4: Run graph diff tests**
 
 Run:
 
@@ -523,7 +523,7 @@ Run:
 
 Expected: graph diff tests pass.
 
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 
 Run:
 
