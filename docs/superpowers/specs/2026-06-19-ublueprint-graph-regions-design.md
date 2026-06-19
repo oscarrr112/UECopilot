@@ -71,10 +71,10 @@ Graph support is split into four layers:
    - Produces narrow JSON path diagnostics.
    - Does not know concrete K2 node behavior.
 
-2. `GraphRegionPolicy`
-   - Connects `Body.UbergraphPages` / `FunctionGraphs` / `MacroGraphs` to `RebuildGraphRegion` apply mode.
-   - Defines identity rule, default source, comparison rule, reducer mode, and after-apply hooks.
-   - Keeps graph support aligned with existing `RegionPolicy` / `DefaultReducer` / `AuthoritativeApplyAdapter` direction.
+2. Ordinary `RegionPolicy`
+   - Graph regions use the existing `RegionPolicy` model with `ApplyMode: RebuildGraphRegion`.
+   - The policy defines identity rule, default source, comparison rule, reducer mode, and after-apply hooks.
+   - Any graph-specific policy text in this spec is a preset/section of the common policy model, not a new parallel runtime system.
 
 3. `K2GraphAdapter`
    - Creates or locates `UEdGraph` instances through UE editor APIs.
@@ -149,8 +149,14 @@ Graph regions share the same `GraphSpec` shape. A minimal EventGraph example:
         ],
         "Links": [
           {
-            "From": "BeginPlay.then",
-            "To": "Print.execute"
+            "From": {
+              "Node": "BeginPlay",
+              "Pin": "then"
+            },
+            "To": {
+              "Node": "Print",
+              "Pin": "execute"
+            }
           }
         ]
       }
@@ -204,6 +210,16 @@ Validation rules:
 - Unused definitions are allowed only when the top-level AssetDocument policy already allows reusable fragments; otherwise diff may report them as extra.
 - Circular `DefinitionRef` chains fail with `CircularDefinitionReference`.
 - A graph node may inline a small ref object or use `DefinitionRef`; both canonicalize to the same resolved semantic value.
+
+Canonical and diff rules:
+
+- Graph semantic comparison resolves `DefinitionRef` before comparing nodes, pins, links, signatures, and timelines.
+- Inline refs and equivalent `DefinitionRef` values compare equal inside managed graph regions.
+- Extract must not opportunistically hoist simple graph refs into `Definitions`. For the first graph implementation, extract emits inline `ClassRef`, `MemberRef`, `AssetRef`, and `PinType` unless the source sidecar already exists and the sync operation is explicitly preserving authoring style.
+- A future extractor may hoist large reusable payloads only after that definition kind has a deterministic id rule in this spec, for example `TimelineCurve.<TimelineName>.<TrackName>` for timeline curves.
+- Diff paths under `/Definitions/<DefinitionId>` are used for definition table authoring issues: duplicate/invalid definitions, unused top-level fragments when disallowed, or changed reusable definitions that are intentionally managed as definitions.
+- A current asset whose extracted graph has an inline ref must not report `/Definitions/<DefinitionId>` missing merely because the desired sidecar used a `DefinitionRef`; the graph semantic diff compares the resolved value.
+- Definition ids are authoring ids. They must be stable, unique within `Definitions`, and use `^[A-Za-z_][A-Za-z0-9_.:-]*$`.
 
 ---
 
@@ -260,8 +276,10 @@ Canonical node shape:
 Rules:
 
 - `Id` is the sidecar identity within one graph. It must be unique, stable, and human-editable.
+- `Id` must use `^[A-Za-z_][A-Za-z0-9_-]*$`. This keeps link addressing, diagnostics, and agent edits unambiguous.
 - `Class` is the primary UE node identity. It is resolved dynamically and drives adapter lookup.
 - `Capability` is an optional semantic alias for diagnostics/templates. It must not become an independent source of behavior when `Class` is present.
+- Apply/extract dispatch must be determined by the resolved `Class` and registered adapter capability. Omitting or changing `Capability` must not change behavior except for validation diagnostics.
 - `NodeGuid` is UE identity evidence. It is optional for authored input. Extract includes it when UE provides a stable value. Apply uses `Id` as sidecar identity and may preserve `NodeGuid` on update when safe.
 - `Member` is required only for node classes whose adapter declares a reflected member requirement.
 - `PinOverrides` is sparse. It contains only authored pin defaults, dynamic pin declarations, or pin metadata that cannot be reconstructed from node class/member reflection.
@@ -293,6 +311,7 @@ Pin overrides are intentionally sparse:
 Rules:
 
 - `Pin` is the link address inside one node. For ordinary pins it should equal UE `PinName`. Dynamic pins may use a stable sidecar id when UE display name is not unique.
+- `Pin` must use `^[A-Za-z_][A-Za-z0-9_-]*$`. If a UE pin name cannot satisfy this, the adapter must map it to a stable sidecar pin id and keep the UE display/name evidence in adapter-owned metadata.
 - `Direction` is optional for ordinary reflected pins because it can be reconstructed from the allocated UE pin. It is required for dynamic pins.
 - `Type` uses `FEdGraphPinType` shape or `DefinitionRef` to a `PinType`.
 - Default fields are authoritative only for input pins when the pin is not linked.
@@ -308,16 +327,7 @@ Extract rules:
 
 ### 6.4 LinkSpec
 
-Canonical compact link shape:
-
-```json
-{
-  "From": "BeginPlay.then",
-  "To": "Print.execute"
-}
-```
-
-Expanded form is also accepted and canonicalized:
+Canonical link shape:
 
 ```json
 {
@@ -332,10 +342,21 @@ Expanded form is also accepted and canonicalized:
 }
 ```
 
+Compact form is accepted only as input sugar when both ids satisfy the node/pin id regex:
+
+```json
+{
+  "From": "BeginPlay.then",
+  "To": "Print.execute"
+}
+```
+
 Rules:
 
 - Links are directed from output pin to input pin.
 - Both pins must resolve after node allocation and pin reconstruction.
+- Serializer and extract output must use the expanded object shape.
+- Compact input containing ambiguous ids fails with `InvalidGraphLinkEndpointSyntax`.
 - Duplicate links are rejected with `DuplicateGraphLink`.
 - Type-incompatible links are rejected before mutation when UE schema can validate them.
 - Missing link means remove that connection.
@@ -392,24 +413,26 @@ Adapter code may include the minimum UE headers needed for the node classes it a
 First implementation should support `Body.UbergraphPages` through these adapter capabilities:
 
 - Event node adapter
-  - Initial UE class: `/Script/BlueprintGraph.K2Node_Event`
+  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_Event`
   - Required `MemberRef`.
   - Event function resolves by owner class plus function name.
   - Initial smoke events may include `Actor.ReceiveBeginPlay` and `Actor.ReceiveTick`, but implementation must not be limited by a hard-coded event-name whitelist if UE reflection resolves the event safely.
 - Call function adapter
-  - Initial UE class: `/Script/BlueprintGraph.K2Node_CallFunction`
+  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_CallFunction`
   - Required `MemberRef`.
   - Supports ordinary callable functions resolved from reflected `UFunction`.
   - Function-specific pin shape comes from UE allocation after binding the `UFunction`.
 - Variable get/set adapters
-  - Initial UE classes: `/Script/BlueprintGraph.K2Node_VariableGet`, `/Script/BlueprintGraph.K2Node_VariableSet`
+  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_VariableGet`, `/Script/BlueprintGraph.K2Node_VariableSet`
   - Required `MemberRef`.
   - Variable/property resolves from Blueprint variables, parent class `FProperty`, component vars, or staged component evidence.
 - Self adapter
-  - Initial UE class: `/Script/BlueprintGraph.K2Node_Self`
+  - Initial adapter coverage: `/Script/BlueprintGraph.K2Node_Self`
   - No member ref.
 
 Tier 1 may extract unsupported existing node classes as `_Skipped.Graphs` evidence. Apply of a managed graph containing unsupported node classes must fail unless those nodes are absent because the sidecar intentionally deletes them.
+
+These class paths are registry coverage for the first implementation tier. GraphCore and graph parsers must not depend on this list.
 
 ### 7.3 Capability Boundary
 
@@ -451,7 +474,7 @@ Support expansion should add adapter capability, not branchy graph logic. Exampl
 
 - Missing timeline means delete it.
 - Existing graph nodes that reference a deleted timeline must also be deleted or rejected before mutation. The implementation plan must choose one behavior per step:
-  - First timeline step may reject deletion when graph references exist.
+  - First timeline step may reject deletion when graph references exist as an implementation-stage limitation, with a deferred-fields entry and `UnresolvedTimelineReference` or a narrower diagnostic.
   - Full timeline step should reconcile graph nodes in the same staged apply.
 
 ---
@@ -614,7 +637,7 @@ Extract produces canonical graph specs:
 - Nodes sorted by UE node order, with `NodeGuid` fallback for deterministic output when UE order changes.
 - Pin overrides emitted only for non-baseline authored defaults, dynamic pins, or non-reconstructable authoring metadata.
 - Links sorted by source node id, source pin id, target node id, target pin id.
-- Repeated refs may be hoisted into `Definitions` when doing so improves stability or avoids large repeated payloads.
+- Extract must follow the definition canonical rules in section 5. It must not opportunistically hoist simple refs into `Definitions`.
 - Supported node classes extract fully through adapters.
 - Unsupported existing node classes are reported in `_Skipped.Graphs` with count and node class names. Once a graph region is marked fully managed for a tier, unsupported nodes in that tier should make extract report incomplete evidence rather than pretending full roundtrip.
 
@@ -647,6 +670,8 @@ Diff statuses:
 
 Missing supported graph region fields mean empty authoritative state, consistent with the rest of `UBlueprint` Body semantics.
 
+Path tokens must use JSON Pointer escaping. The link path token is diagnostic display only; the expanded `LinkSpec` object is authoritative and must be used for parsing.
+
 ---
 
 ## 15. Validation Diagnostics
@@ -661,14 +686,17 @@ Required diagnostic codes:
 - `CircularDefinitionReference`: definition refs form a cycle.
 - `UnresolvedDefinitionReference`: definition ref target does not exist.
 - `DuplicateGraphNodeId`: duplicate node identity in one graph.
+- `InvalidGraphNodeId`: node id does not match the sidecar id regex.
 - `UnresolvedGraphNodeClass`: node `Class` cannot be loaded.
 - `UnsupportedGraphNodeClass`: resolved node class has no adapter for this tier.
 - `InvalidGraphNodeCapability`: optional `Capability` conflicts with the resolved node adapter.
 - `MissingGraphMemberReference`: required member ref is missing.
 - `UnresolvedGraphMemberReference`: member ref cannot be resolved through reflection or staged Blueprint regions.
 - `InvalidGraphPin`: pin shape or pin direction is invalid.
+- `InvalidGraphPinId`: pin id does not match the sidecar id regex.
 - `InvalidGraphPinDefault`: authored pin default cannot be applied.
 - `DuplicateGraphLink`: duplicate link.
+- `InvalidGraphLinkEndpointSyntax`: compact link syntax is ambiguous or malformed.
 - `UnresolvedGraphLinkEndpoint`: link node/pin endpoint does not exist after node reconstruction.
 - `InvalidGraphLinkType`: UE graph schema rejects the link.
 - `InvalidFunctionSignature`: function signature and graph entry/result nodes conflict.
