@@ -472,7 +472,6 @@ bool FAssetDocumentUBlueprintUnsupportedGraphProtectionTest::RunTest(const FStri
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	const TArray<FString> ProtectedRegions = {
-		TEXT("UbergraphPages"),
 		TEXT("FunctionGraphs"),
 		TEXT("MacroGraphs"),
 		TEXT("Timelines"),

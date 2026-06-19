@@ -3,6 +3,7 @@
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "Profiles/UBlueprintGraphRegionAdapter.h"
 
 #include "Utils/PropertySetterUtils.h"
 
@@ -37,8 +38,7 @@ bool IsKnownBodyKey(const FString& BodyKey)
 
 bool IsProtectedRegion(const FString& BodyKey)
 {
-	return BodyKey == TEXT("UbergraphPages")
-		|| BodyKey == TEXT("FunctionGraphs")
+	return BodyKey == TEXT("FunctionGraphs")
 		|| BodyKey == TEXT("MacroGraphs")
 		|| BodyKey == TEXT("Timelines");
 }
@@ -2606,7 +2606,7 @@ FName FUBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FUBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("UBlueprintBody"), TEXT("UBlueprintAuthoritativeRegions")};
+	return {TEXT("UBlueprintBody"), TEXT("UBlueprintAuthoritativeRegions"), TEXT("UBlueprintGraphRegionAdapter")};
 }
 
 int32 FUBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -2632,7 +2632,7 @@ TSharedRef<FJsonObject> FUBlueprintAssetDocumentCapability::GetSchemaHint() cons
 	Schema->SetStringField(TEXT("Variables"), TEXT("array<{Name, Type, DefaultValue, Flags, Category, Tooltip}>"));
 	Schema->SetStringField(TEXT("Components"), TEXT("array<{Key:{Name,OwnerClass}, Scope, Class, AttachTo, Root, Properties}>"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object"));
-	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array unsupported until graph region implementation"));
+	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array<GraphSpec> validated by GraphCore; apply adapters deferred"));
 	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array unsupported until graph region implementation"));
 	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array unsupported until graph region implementation"));
 	Schema->SetStringField(TEXT("Timelines"), TEXT("array unsupported until timeline region implementation"));
@@ -3404,6 +3404,13 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 				return ParentClassResult;
 			}
 		}
+	}
+
+	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+	const FAssetDocumentCapabilityResult GraphRegionResult = GraphRegionAdapter.ValidateRegions(Context, BodyObject);
+	if (!GraphRegionResult.bSuccess)
+	{
+		return GraphRegionResult;
 	}
 
 	TArray<FUBlueprintInterfaceSpec> InterfaceSpecs;
