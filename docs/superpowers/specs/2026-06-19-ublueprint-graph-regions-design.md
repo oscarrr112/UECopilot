@@ -219,7 +219,7 @@ Graph regions 可以通过以下形状引用顶层 `Definitions`：
 - 未来 extractor 只有在本 spec 为该 definition kind 定义 deterministic id rule 后，才能 hoist 大型 reusable payload。例如 timeline curves 可使用 `TimelineCurve.<TimelineName>.<TrackName>`。
 - `/Definitions/<DefinitionId>` diff path 只用于 definition table 作者问题：duplicate/invalid definitions、policy 不允许时的 unused top-level fragments，或明确作为 definition 管理的 reusable definitions 发生变化。
 - 如果目标 sidecar 使用 `DefinitionRef`，而当前 asset extract 得到 inline ref，不得仅因为缺少 `/Definitions/<DefinitionId>` 报 missing；graph semantic diff 比较 resolved value。
-- Definition ids 是 authoring ids。它们必须在 `Definitions` 内稳定、唯一，并符合 `^[A-Za-z_][A-Za-z0-9_.:-]*$`。
+- Definition ids 是 authoring ids。它们必须在 `Definitions` 内稳定、唯一、agent-friendly，并符合 `^[A-Za-z_][A-Za-z0-9_.:-]*$`；它们不要求适合人工手写。
 
 ---
 
@@ -275,7 +275,7 @@ Canonical node 形状：
 
 规则：
 
-- `Id` 是一个 graph 内的 sidecar identity。它必须唯一、稳定，并适合人工编辑。
+- `Id` 是一个 graph 内的 sidecar identity。它必须唯一、稳定、agent-friendly，并且可由 extract/apply 规则稳定生成；它不要求适合人工手写。
 - `Id` 必须符合 `^[A-Za-z_][A-Za-z0-9_-]*$`，以保证 link addressing、diagnostics 和 agent edits 不产生歧义。
 - `Class` 是主要 UE node identity。它动态解析，并驱动 adapter lookup。
 - `Capability` 是可选 semantic alias，仅用于 diagnostics/templates。存在 `Class` 时，它不得成为独立行为来源。
