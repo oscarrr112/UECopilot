@@ -104,7 +104,7 @@
 - Create: `Source/AssetDocument/Private/Graphs/AssetDocumentNodeAdapter.cpp`
 - Test: `Source/AssetDocument/Private/Tests/AssetDocumentGraphCoreTests.cpp`
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -115,7 +115,7 @@ git status --short
 
 Expected: clean status and non-empty `TASK_BASE`.
 
-- [ ] **Step 2: Add failing GraphCore parser tests**
+- [x] **Step 2: Add failing GraphCore parser tests**
 
 Create `AssetDocumentGraphCoreTests.cpp` with automation tests named:
 
@@ -158,7 +158,7 @@ Run:
 
 Expected: compile or tests fail because GraphCore APIs do not exist.
 
-- [ ] **Step 3: Implement minimal GraphCore model and parser**
+- [x] **Step 3: Implement minimal GraphCore model and parser**
 
 Implement:
 
@@ -187,7 +187,7 @@ Rules:
 - compact endpoint sugar parses only when `Node.Pin` has exactly one dot and both tokens match the id regex;
 - canonical serializer always writes expanded link object shape.
 
-- [ ] **Step 4: Add adapter registry interface without K2 inventory**
+- [x] **Step 4: Add adapter registry interface without K2 inventory**
 
 In `AssetDocumentNodeAdapter.*`, define:
 
@@ -198,13 +198,13 @@ In `AssetDocumentNodeAdapter.*`, define:
 
 Task 1 registry only needs register/find by resolved class path or `UClass*`; it must not include K2 node adapter implementations yet.
 
-- [ ] **Step 5: Run GraphCore tests**
+- [x] **Step 5: Run GraphCore tests**
 
 Run the Task 1 UBT and automation commands again.
 
 Expected: `AssetFactory.AssetDocument.GraphCore` passes.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 Run:
 
@@ -225,7 +225,7 @@ git commit -m "feat(assetdoc): add graph core parser"
 - Modify: `Source/AssetDocument/Private/Graphs/AssetDocumentGraphTypes.h/.cpp`
 - Modify: `Source/AssetDocument/Private/Tests/AssetDocumentGraphCoreTests.cpp`
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -234,7 +234,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Add failing definition and diff tests**
+- [x] **Step 2: Add failing definition and diff tests**
 
 Add automation tests:
 
@@ -262,7 +262,7 @@ Expected diagnostics:
 - `UnresolvedDefinitionReference`
 - `UnknownDefinitionKind`
 
-- [ ] **Step 3: Implement definition resolver**
+- [x] **Step 3: Implement definition resolver**
 
 Implement support for these definition kinds:
 
@@ -279,7 +279,7 @@ Rules:
 - inline refs and equivalent `DefinitionRef` resolve to the same canonical JSON for semantic comparison;
 - extractor style is not changed here: no opportunistic hoisting into `Definitions`.
 
-- [ ] **Step 4: Implement graph diff helper**
+- [x] **Step 4: Implement graph diff helper**
 
 Implement comparison for:
 
@@ -289,7 +289,7 @@ Implement comparison for:
 - link missing/extra under `/Body/UbergraphPages/<GraphName>/Links/<FromNode>:<FromPin>-><ToNode>:<ToPin>`;
 - unsupported status passthrough when extract reports incomplete evidence.
 
-- [ ] **Step 5: Run GraphCore tests**
+- [x] **Step 5: Run GraphCore tests**
 
 Run:
 
@@ -300,7 +300,7 @@ Run:
 
 Expected: all `GraphCore` tests pass.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 Run:
 
