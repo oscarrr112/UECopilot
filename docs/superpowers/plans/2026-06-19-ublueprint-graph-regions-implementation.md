@@ -409,7 +409,7 @@ git commit -m "feat(assetdoc): validate ublueprint graph regions"
 - Test: `Source/AssetDocument/Private/Tests/AssetDocumentUBlueprintGraphTests.cpp`
 - Modify: `Source/AssetDocument/AssetDocument.Build.cs` only if compile proves a missing module dependency.
 
-- [ ] **Step 1: Record task base**
+- [x] **Step 1: Record task base**
 
 Run:
 
@@ -418,7 +418,7 @@ $env:TASK_BASE = (git rev-parse HEAD).Trim()
 git status --short
 ```
 
-- [ ] **Step 2: Add failing extract tests**
+- [x] **Step 2: Add failing extract tests**
 
 Add tests:
 
@@ -429,7 +429,7 @@ Add tests:
 
 Create test Blueprints using UE APIs, not by importing a raw graph dump.
 
-- [ ] **Step 3: Implement registry registration for Tier 1 adapters**
+- [x] **Step 3: Implement registry registration for Tier 1 adapters**
 
 Register adapters for resolved node classes:
 
@@ -441,7 +441,7 @@ Register adapters for resolved node classes:
 
 This list lives only in UBlueprint/K2 adapter registration, not in `GraphCore`.
 
-- [ ] **Step 4: Implement extract for Tier 1 adapters**
+- [x] **Step 4: Implement extract for Tier 1 adapters**
 
 Adapter extract rules:
 
@@ -452,7 +452,7 @@ Adapter extract rules:
 - all links serialize as expanded `LinkSpec` objects;
 - unsupported existing nodes are reported in `_Skipped.Graphs` evidence and diff status `unsupported`.
 
-- [ ] **Step 5: Run extract tests**
+- [x] **Step 5: Run extract tests**
 
 Run:
 
@@ -463,7 +463,7 @@ Run:
 
 Expected: focused graph extract tests pass.
 
-- [ ] **Step 6: Commit Task 4**
+- [x] **Step 6: Commit Task 4**
 
 Run:
 
