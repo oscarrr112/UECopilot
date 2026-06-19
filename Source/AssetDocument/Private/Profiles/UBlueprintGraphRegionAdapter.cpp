@@ -28,9 +28,27 @@ FAssetDocumentCapabilityResult InvalidRegionTypeFailure(const FString& RegionNam
 		TEXT("InvalidGraphRegionType"));
 }
 
-FAssetDocumentCapabilityResult GraphDiagnosticFailure(const FAssetDocumentGraphDiagnostic& Diagnostic)
+FAssetDocumentCapabilityResult GraphDiagnosticsFailure(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
 {
-	return GraphFailure(Diagnostic.Message, Diagnostic.Path, Diagnostic.Code);
+	if (Diagnostics.IsEmpty())
+	{
+		return GraphFailure(TEXT("Graph region validation failed"), UbergraphPagesPath, TEXT("InvalidGraphRegion"));
+	}
+
+	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
+		Diagnostics[0].Message,
+		Diagnostics[0].Path,
+		Diagnostics[0].Code);
+	Result.Diagnostics.Reset();
+	for (const FAssetDocumentGraphDiagnostic& GraphDiagnostic : Diagnostics)
+	{
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = GraphDiagnostic.Path;
+		Diagnostic.Code = GraphDiagnostic.Code;
+		Diagnostic.Message = GraphDiagnostic.Message;
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return Result;
 }
 
 TSharedPtr<FJsonObject> CloneJsonObject(const TSharedPtr<FJsonObject>& Object)
@@ -48,32 +66,74 @@ UClass* ResolveClass(const FString& ClassPath)
 	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 }
 
-bool TryResolveMemberFunction(const TSharedPtr<FJsonObject>& Member)
+struct FMemberFunctionResolutionResult
 {
+	bool bResolved = false;
+	FString Code;
+	FString Reason;
+	FString SuggestedAction;
+};
+
+FMemberFunctionResolutionResult ResolveMemberFunction(const TSharedPtr<FJsonObject>& Member)
+{
+	FMemberFunctionResolutionResult Result;
 	if (!Member.IsValid())
 	{
-		return false;
+		Result.Code = TEXT("InvalidGraphMemberReference");
+		Result.Reason = TEXT("K2Node_CallFunction requires a MemberRef object with OwnerClass and Name");
+		Result.SuggestedAction = TEXT("add a valid MemberRef for the function or remove the call function node from the managed graph");
+		return Result;
 	}
 
 	FString Kind;
 	if (!Member->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("MemberRef"))
 	{
-		return false;
+		Result.Code = TEXT("InvalidGraphMemberReference");
+		Result.Reason = TEXT("K2Node_CallFunction Member must be a MemberRef");
+		Result.SuggestedAction = TEXT("change Member.Kind to MemberRef and provide OwnerClass plus Name");
+		return Result;
 	}
 
 	FString OwnerClassPath;
 	FString FunctionName;
 	if (!Member->TryGetStringField(TEXT("OwnerClass"), OwnerClassPath)
-		|| !Member->TryGetStringField(TEXT("Name"), FunctionName)
 		|| OwnerClassPath.IsEmpty()
-		|| FunctionName.IsEmpty()
-		|| OwnerClassPath == TEXT("Self"))
+		|| !Member->TryGetStringField(TEXT("Name"), FunctionName)
+		|| FunctionName.IsEmpty())
 	{
-		return false;
+		Result.Code = TEXT("InvalidGraphMemberReference");
+		Result.Reason = TEXT("K2Node_CallFunction MemberRef must include non-empty OwnerClass and Name");
+		Result.SuggestedAction = TEXT("fix the MemberRef OwnerClass and Name fields before graph apply validation");
+		return Result;
+	}
+
+	if (OwnerClassPath == TEXT("Self"))
+	{
+		Result.Code = TEXT("UnresolvedGraphFunction");
+		Result.Reason = TEXT("K2Node_CallFunction MemberRef OwnerClass 'Self' cannot be resolved in the current graph validation tier");
+		Result.SuggestedAction = TEXT("use an explicit reflected OwnerClass in MemberRef or wait for staged Self resolution support");
+		return Result;
 	}
 
 	UClass* OwnerClass = ResolveClass(OwnerClassPath);
-	return OwnerClass && OwnerClass->FindFunctionByName(FName(*FunctionName)) != nullptr;
+	if (!OwnerClass)
+	{
+		Result.Code = TEXT("UnresolvedGraphFunction");
+		Result.Reason = FString::Printf(TEXT("K2Node_CallFunction MemberRef OwnerClass '%s' could not be loaded"), *OwnerClassPath);
+		Result.SuggestedAction = TEXT("fix the MemberRef OwnerClass path or remove the function node from the managed graph");
+		return Result;
+	}
+
+	if (!OwnerClass->FindFunctionByName(FName(*FunctionName)))
+	{
+		Result.Code = TEXT("UnresolvedGraphFunction");
+		Result.Reason = FString::Printf(TEXT("K2Node_CallFunction MemberRef '%s.%s' does not resolve to a reflected UFunction"), *OwnerClassPath, *FunctionName);
+		Result.SuggestedAction = TEXT("fix the MemberRef function Name or remove the function node from the managed graph");
+		return Result;
+	}
+
+	Result.bResolved = true;
+	return Result;
 }
 
 FAssetDocumentUnsupportedNodeDiagnostic MakeUnsupportedNodeDiagnostic(
@@ -94,17 +154,32 @@ FAssetDocumentUnsupportedNodeDiagnostic MakeUnsupportedNodeDiagnostic(
 	return Diagnostic;
 }
 
-FAssetDocumentCapabilityResult UnsupportedGraphFailure(const FAssetDocumentUnsupportedNodeDiagnostic& Unsupported)
+FAssetDocumentCapabilityResult UnsupportedGraphFailure(const TArray<FAssetDocumentUnsupportedNodeDiagnostic>& UnsupportedDiagnostics)
 {
-	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
-		FString::Printf(TEXT("%s at %s: %s"), *Unsupported.Code, *Unsupported.Path, *Unsupported.Reason),
-		Unsupported.Path,
-		Unsupported.Code);
+	if (UnsupportedDiagnostics.IsEmpty())
+	{
+		return GraphFailure(TEXT("Graph region validation failed"), UbergraphPagesPath, TEXT("InvalidGraphRegion"));
+	}
 
-	TArray<TSharedPtr<FJsonValue>> UnsupportedDiagnostics;
-	UnsupportedDiagnostics.Add(MakeShared<FJsonValueObject>(Unsupported.ToJsonObject()));
+	const FAssetDocumentUnsupportedNodeDiagnostic& FirstUnsupported = UnsupportedDiagnostics[0];
+	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("%s at %s: %s"), *FirstUnsupported.Code, *FirstUnsupported.Path, *FirstUnsupported.Reason),
+		FirstUnsupported.Path,
+		FirstUnsupported.Code);
+	Result.Diagnostics.Reset();
+
+	TArray<TSharedPtr<FJsonValue>> UnsupportedPayload;
+	for (const FAssetDocumentUnsupportedNodeDiagnostic& Unsupported : UnsupportedDiagnostics)
+	{
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = Unsupported.Path;
+		Diagnostic.Code = Unsupported.Code;
+		Diagnostic.Message = FString::Printf(TEXT("%s at %s: %s"), *Unsupported.Code, *Unsupported.Path, *Unsupported.Reason);
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+		UnsupportedPayload.Add(MakeShared<FJsonValueObject>(Unsupported.ToJsonObject()));
+	}
 	Result.Payload = MakeShared<FJsonObject>();
-	Result.Payload->SetArrayField(TEXT("UnsupportedGraphDiagnostics"), MoveTemp(UnsupportedDiagnostics));
+	Result.Payload->SetArrayField(TEXT("UnsupportedGraphDiagnostics"), MoveTemp(UnsupportedPayload));
 	return Result;
 }
 
@@ -132,7 +207,7 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	FAssetDocumentGraphParseResult ParseResult = FAssetDocumentGraphParser::ParseGraphArray(GraphValues, ParseOptions);
 	if (!ParseResult.IsValid())
 	{
-		return GraphDiagnosticFailure(ParseResult.Diagnostics[0]);
+		return GraphDiagnosticsFailure(ParseResult.Diagnostics);
 	}
 
 	FAssetDocumentGraphDefinitionResolveOptions ResolveOptions;
@@ -142,10 +217,11 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 		FAssetDocumentGraphDefinitionResolver::ResolveGraphArray(ParseResult.Graphs, Definitions, ResolveOptions);
 	if (!ResolveResult.IsValid())
 	{
-		return GraphDiagnosticFailure(ResolveResult.Diagnostics[0]);
+		return GraphDiagnosticsFailure(ResolveResult.Diagnostics);
 	}
 
 	const FAssetDocumentNodeAdapterRegistry CurrentTierRegistry;
+	TArray<FAssetDocumentUnsupportedNodeDiagnostic> UnsupportedDiagnostics;
 	for (int32 GraphIndex = 0; GraphIndex < ResolveResult.Graphs.Num(); ++GraphIndex)
 	{
 		const FAssetDocumentGraphSpec& Graph = ResolveResult.Graphs[GraphIndex];
@@ -156,10 +232,13 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 			UClass* NodeClass = ResolveClass(Node.Class);
 			if (!NodeClass)
 			{
-				return GraphFailure(
-					FString::Printf(TEXT("Failed to resolve graph node class '%s'"), *Node.Class),
-					Path / TEXT("Class"),
-					TEXT("UnresolvedGraphNodeClass"));
+				UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
+					Node,
+					Path,
+					TEXT("UnresolvedGraphNodeClass"),
+					FString::Printf(TEXT("graph node class '%s' could not be loaded"), *Node.Class),
+					TEXT("fix the node Class path or remove the node from the managed graph")));
+				continue;
 			}
 
 			if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
@@ -167,23 +246,42 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 				continue;
 			}
 
-			if (Node.Class == K2NodeCallFunctionClassPath && TryResolveMemberFunction(Node.Member))
+			if (Node.Class == K2NodeCallFunctionClassPath)
 			{
-				return UnsupportedGraphFailure(MakeUnsupportedNodeDiagnostic(
-					Node,
-					Path,
-					TEXT("UnsupportedGraphFunction"),
-					TEXT("reflected function resolves, but the current tier has no function adapter for graph apply validation"),
-					TEXT("add a thin K2Node_CallFunction adapter for this function pattern or remove the function node from the managed graph")));
+				const FMemberFunctionResolutionResult FunctionResolution = ResolveMemberFunction(Node.Member);
+				if (FunctionResolution.bResolved)
+				{
+					UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
+						Node,
+						Path,
+						TEXT("UnsupportedGraphFunction"),
+						TEXT("reflected function resolves, but the current tier has no function adapter for graph apply validation"),
+						TEXT("add a thin K2Node_CallFunction adapter for this function pattern or remove the function node from the managed graph")));
+				}
+				else
+				{
+					UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
+						Node,
+						Path,
+						FunctionResolution.Code,
+						FunctionResolution.Reason,
+						FunctionResolution.SuggestedAction));
+				}
+				continue;
 			}
 
-			return UnsupportedGraphFailure(MakeUnsupportedNodeDiagnostic(
+			UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
 				Node,
 				Path,
 				TEXT("UnsupportedGraphNodeClass"),
 				TEXT("node class has no registered AssetDocument adapter in the current tier"),
 				TEXT("add a thin node adapter for this class or remove the node from the managed graph")));
 		}
+	}
+
+	if (!UnsupportedDiagnostics.IsEmpty())
+	{
+		return UnsupportedGraphFailure(UnsupportedDiagnostics);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();

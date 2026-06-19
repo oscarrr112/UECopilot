@@ -109,6 +109,19 @@ TSharedPtr<FJsonObject> GetFirstUnsupportedGraphDiagnostic(const FAssetDocumentC
 	return (*Diagnostics)[0].IsValid() ? (*Diagnostics)[0]->AsObject() : nullptr;
 }
 
+int32 GetUnsupportedGraphDiagnosticCount(const FAssetDocumentCapabilityResult& Result)
+{
+	if (!Result.Payload.IsValid())
+	{
+		return 0;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
+	return Result.Payload->TryGetArrayField(TEXT("UnsupportedGraphDiagnostics"), Diagnostics) && Diagnostics
+		? Diagnostics->Num()
+		: 0;
+}
+
 bool FallbackHasActionableFields(const TSharedPtr<FJsonObject>& Fallback)
 {
 	if (!Fallback.IsValid())
@@ -150,6 +163,32 @@ bool FAssetDocumentUBlueprintGraphValidationAcceptsTier1ShapeBeforeApplyTest::Ru
 	TestFalse(TEXT("Valid graph shape reaches current-tier unsupported fallback"), Result.bSuccess);
 	TestFalse(TEXT("Graph shape is not rejected by old protected-region guard"), ResultHasDiagnosticCode(Result, TEXT("UnsupportedUBlueprintRegion")));
 	TestTrue(TEXT("Current tier has no node adapter"), ResultHasDiagnostic(Result, TEXT("/Body/UbergraphPages/0/Nodes/0"), TEXT("UnsupportedGraphNodeClass")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphValidationPreservesMultipleParserDiagnosticsTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.PreservesMultipleParserDiagnostics",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphValidationPreservesMultipleParserDiagnosticsTest::RunTest(const FString&)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> InvalidGraph = MakeShared<FJsonObject>();
+	InvalidGraph->SetStringField(TEXT("Unexpected"), TEXT("value"));
+	InvalidGraph->SetArrayField(TEXT("Nodes"), {});
+	InvalidGraph->SetArrayField(TEXT("Links"), {});
+
+	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(TEXT("UbergraphPages"), {InvalidGraph});
+	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
+	TestFalse(TEXT("Invalid graph shape fails validation"), Result.bSuccess);
+	TestTrue(TEXT("All graph parser diagnostics are preserved"), Result.Diagnostics.Num() >= 2);
+	TestTrue(TEXT("MissingGraphName diagnostic is preserved"), ResultHasDiagnosticCode(Result, TEXT("MissingGraphName")));
+	TestTrue(TEXT("MissingGraphSchema diagnostic is preserved"), ResultHasDiagnosticCode(Result, TEXT("MissingGraphSchema")));
+	TestTrue(TEXT("UnknownGraphField diagnostic is preserved"), ResultHasDiagnosticCode(Result, TEXT("UnknownGraphField")));
 	return true;
 }
 
@@ -245,6 +284,32 @@ bool FAssetDocumentUBlueprintGraphValidationUnsupportedNodeHasActionableDiagnost
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphValidationMultipleUnsupportedNodesHaveActionableDiagnosticsTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.MultipleUnsupportedNodesHaveActionableDiagnostics",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphValidationMultipleUnsupportedNodesHaveActionableDiagnosticsTest::RunTest(const FString&)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
+		TEXT("UbergraphPages"),
+		{MakeEventGraph({
+			MakeGraphNode(TEXT("BranchA"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse")),
+			MakeGraphNode(TEXT("BranchB"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))
+		})});
+
+	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
+	TestFalse(TEXT("Unsupported node classes fail validation"), Result.bSuccess);
+	TestTrue(TEXT("First unsupported node diagnostic is preserved"), ResultHasDiagnostic(Result, TEXT("/Body/UbergraphPages/0/Nodes/0"), TEXT("UnsupportedGraphNodeClass")));
+	TestTrue(TEXT("Second unsupported node diagnostic is preserved"), ResultHasDiagnostic(Result, TEXT("/Body/UbergraphPages/0/Nodes/1"), TEXT("UnsupportedGraphNodeClass")));
+	TestEqual(TEXT("Fallback payload includes both unsupported nodes"), GetUnsupportedGraphDiagnosticCount(Result), 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentUBlueprintGraphValidationUnsupportedFunctionHasActionableDiagnosticTest,
 	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.UnsupportedFunctionHasActionableDiagnostic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -278,6 +343,42 @@ bool FAssetDocumentUBlueprintGraphValidationUnsupportedFunctionHasActionableDiag
 		TestTrue(TEXT("Fallback includes member object"), Fallback->TryGetObjectField(TEXT("Member"), Member) && Member && Member->IsValid());
 		TestTrue(TEXT("Fallback reason mentions current tier"), Fallback->GetStringField(TEXT("Reason")).Contains(TEXT("current tier")));
 		TestFalse(TEXT("Fallback suggested action is not empty"), Fallback->GetStringField(TEXT("SuggestedAction")).IsEmpty());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphValidationUnresolvedFunctionHasActionableDiagnosticTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.UnresolvedFunctionHasActionableDiagnostic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphValidationUnresolvedFunctionHasActionableDiagnosticTest::RunTest(const FString&)
+{
+	const FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
+		TEXT("UbergraphPages"),
+		{MakeEventGraph({
+			MakeGraphNode(
+				TEXT("MissingFunction"),
+				TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+				MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("FunctionThatDoesNotExist")))
+		})});
+
+	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
+	TestFalse(TEXT("Unresolved function member fails validation"), Result.bSuccess);
+	TestTrue(TEXT("Unresolved function uses precise diagnostic code"), ResultHasDiagnostic(Result, TEXT("/Body/UbergraphPages/0/Nodes/0"), TEXT("UnresolvedGraphFunction")));
+	TestFalse(TEXT("Unresolved function is not treated as unsupported node class"), ResultHasDiagnosticCode(Result, TEXT("UnsupportedGraphNodeClass")));
+
+	const TSharedPtr<FJsonObject> Fallback = GetFirstUnsupportedGraphDiagnostic(Result);
+	TestTrue(TEXT("Unresolved function fallback payload has actionable fields"), FallbackHasActionableFields(Fallback));
+	if (Fallback.IsValid())
+	{
+		TestEqual(TEXT("Fallback code"), Fallback->GetStringField(TEXT("Code")), FString(TEXT("UnresolvedGraphFunction")));
+		TestTrue(TEXT("Fallback reason mentions MemberRef"), Fallback->GetStringField(TEXT("Reason")).Contains(TEXT("MemberRef")));
+		TestTrue(TEXT("Fallback suggested action mentions MemberRef"), Fallback->GetStringField(TEXT("SuggestedAction")).Contains(TEXT("MemberRef")));
 	}
 	return true;
 }
