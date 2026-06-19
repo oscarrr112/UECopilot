@@ -422,6 +422,45 @@ bool HasNonUnchangedGraphDiffEntry(const TArray<TSharedPtr<FJsonValue>>& Entries
 	return false;
 }
 
+struct FDiffRoutingBuckets
+{
+	int32 Changed = 0;
+	int32 Unchanged = 0;
+	int32 Skipped = 0;
+	int32 Failed = 0;
+};
+
+FDiffRoutingBuckets RouteLikeAssetDocumentService(const TArray<TSharedPtr<FJsonValue>>& Entries)
+{
+	FDiffRoutingBuckets Buckets;
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Status;
+		if (!EntryObject.IsValid() || !EntryObject->TryGetStringField(TEXT("status"), Status))
+		{
+			++Buckets.Failed;
+		}
+		else if (Status == TEXT("changed"))
+		{
+			++Buckets.Changed;
+		}
+		else if (Status == TEXT("unchanged"))
+		{
+			++Buckets.Unchanged;
+		}
+		else if (Status == TEXT("skipped"))
+		{
+			++Buckets.Skipped;
+		}
+		else
+		{
+			++Buckets.Failed;
+		}
+	}
+	return Buckets;
+}
+
 FAssetDocumentCapabilityResult DiffBlueprintBody(
 	UBlueprint* Blueprint,
 	const TSharedRef<FJsonObject>& DesiredBody,
@@ -1110,7 +1149,8 @@ bool FAssetDocumentUBlueprintGraphDiffReportsMissingNodeTest::RunTest(const FStr
 	TestTrue(TEXT("Diff reports missing PrintString node"), MissingNode.IsValid());
 	if (MissingNode.IsValid())
 	{
-		TestEqual(TEXT("Missing node status"), MissingNode->GetStringField(TEXT("status")), FString(TEXT("missing")));
+		TestEqual(TEXT("Missing node uses public changed status"), MissingNode->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Missing node keeps semantic change"), MissingNode->GetStringField(TEXT("change")), FString(TEXT("missing")));
 	}
 	return true;
 }
@@ -1148,7 +1188,8 @@ bool FAssetDocumentUBlueprintGraphDiffReportsExtraNodeTest::RunTest(const FStrin
 	TestTrue(TEXT("Diff reports extra PrintString node"), ExtraNode.IsValid());
 	if (ExtraNode.IsValid())
 	{
-		TestEqual(TEXT("Extra node status"), ExtraNode->GetStringField(TEXT("status")), FString(TEXT("extra")));
+		TestEqual(TEXT("Extra node uses public changed status"), ExtraNode->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Extra node keeps semantic change"), ExtraNode->GetStringField(TEXT("change")), FString(TEXT("extra")));
 	}
 	return true;
 }
@@ -1227,8 +1268,72 @@ bool FAssetDocumentUBlueprintGraphDiffReportsMissingLinkTest::RunTest(const FStr
 	TestTrue(TEXT("Diff reports missing execution link"), MissingLink.IsValid());
 	if (MissingLink.IsValid())
 	{
-		TestEqual(TEXT("Missing link status"), MissingLink->GetStringField(TEXT("status")), FString(TEXT("missing")));
+		TestEqual(TEXT("Missing link uses public changed status"), MissingLink->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Missing link keeps semantic change"), MissingLink->GetStringField(TEXT("change")), FString(TEXT("missing")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphDiffUsesServiceCompatibleStatusesTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphDiff.UsesServiceCompatibleStatuses",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphDiffUsesServiceCompatibleStatusesTest::RunTest(const FString&)
+{
+	{
+		UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffRoutingMissing"));
+		UEdGraph* Graph = GetEventGraph(Blueprint);
+		TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+		if (!Graph)
+		{
+			return false;
+		}
+		AddBeginPlayNode(Graph);
+
+		FAssetDocumentCapabilityResult ExtractResult;
+		const TSharedRef<FJsonObject> DesiredBody = ExtractBlueprintBody(Blueprint, ExtractResult);
+		TestTrue(TEXT("Graph extract succeeds"), ExtractResult.bSuccess);
+		RemoveExtractOnlyEvidence(DesiredBody);
+		const TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(DesiredBody, TEXT("EventGraph"));
+		const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+		TestTrue(TEXT("Desired graph has nodes"), DesiredGraph.IsValid() && DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+		TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+		Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+			TEXT("PrintString"),
+			TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+			MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")))));
+		DesiredGraph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+		TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
+		const FDiffRoutingBuckets Routed = RouteLikeAssetDocumentService(DiffEntries);
+		TestTrue(TEXT("Missing graph node routes to changed bucket"), Routed.Changed > 0);
+		TestEqual(TEXT("Missing graph node does not route to failed bucket"), Routed.Failed, 0);
+	}
+
+	{
+		UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphDiffRoutingUnsupported"));
+		UEdGraph* Graph = GetEventGraph(Blueprint);
+		TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+		if (!Graph)
+		{
+			return false;
+		}
+		AddUnsupportedBranchNode(Graph, 320, 0);
+
+		TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+		DesiredBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
+		TestTrue(TEXT("Unsupported graph diff succeeds"), DiffResult.bSuccess);
+		const FDiffRoutingBuckets Routed = RouteLikeAssetDocumentService(DiffEntries);
+		TestTrue(TEXT("Unsupported graph evidence routes to skipped bucket"), Routed.Skipped > 0);
+		TestEqual(TEXT("Unsupported graph evidence does not route to failed bucket"), Routed.Failed, 0);
+	}
+
 	return true;
 }
 

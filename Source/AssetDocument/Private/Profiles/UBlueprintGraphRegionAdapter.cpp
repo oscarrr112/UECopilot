@@ -234,7 +234,8 @@ TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
 	const TSharedPtr<FJsonValue>& Current,
 	const TSharedPtr<FJsonValue>& Desired,
 	const FString& Change = FString(),
-	const FString& Message = FString())
+	const FString& Message = FString(),
+	const FString& Code = FString())
 {
 	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("path"), Path);
@@ -247,6 +248,10 @@ TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
 	{
 		Entry->SetStringField(TEXT("message"), Message);
 	}
+	if (!Code.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("code"), Code);
+	}
 	Entry->SetField(TEXT("current"), Current.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Current) : MakeShared<FJsonValueNull>());
 	Entry->SetField(TEXT("desired"), Desired.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Desired) : MakeShared<FJsonValueNull>());
 	return Entry;
@@ -254,14 +259,18 @@ TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
 
 TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
 {
-	const FString Change = GraphEntry.Status == TEXT("unchanged") ? FString() : GraphEntry.Status;
+	const bool bUnsupported = GraphEntry.Status == TEXT("unsupported");
+	const bool bUnchanged = GraphEntry.Status == TEXT("unchanged");
+	const FString PublicStatus = bUnsupported ? FString(TEXT("skipped")) : (bUnchanged ? FString(TEXT("unchanged")) : FString(TEXT("changed")));
+	const FString Change = bUnchanged ? FString() : GraphEntry.Status;
 	return MakeCapabilityDiffEntry(
 		GraphEntry.Path,
-		GraphEntry.Status,
+		PublicStatus,
 		GraphEntry.Current,
 		GraphEntry.Desired,
 		Change,
-		GraphEntry.Message);
+		GraphEntry.Message,
+		bUnsupported ? FString(TEXT("UnsupportedGraphDiff")) : FString());
 }
 
 FString GraphPathFromSkippedNode(const TSharedPtr<FJsonObject>& SkippedNode)
@@ -299,13 +308,19 @@ void AppendSkippedGraphDiffEntries(
 	for (const TSharedPtr<FJsonValue>& SkippedValue : SkippedNodes)
 	{
 		const TSharedPtr<FJsonObject> SkippedNode = SkippedValue.IsValid() ? SkippedValue->AsObject() : nullptr;
+		FString Code = TEXT("UnsupportedGraphNodeClass");
+		if (SkippedNode.IsValid())
+		{
+			SkippedNode->TryGetStringField(TEXT("Reason"), Code);
+		}
 		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(
 			GraphPathFromSkippedNode(SkippedNode),
-			TEXT("unsupported"),
+			TEXT("skipped"),
 			SkippedValue,
 			nullptr,
 			TEXT("unsupported"),
-			SkippedNodeMessage(SkippedNode))));
+			SkippedNodeMessage(SkippedNode),
+			Code)));
 	}
 }
 
