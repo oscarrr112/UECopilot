@@ -202,12 +202,21 @@ bool TryParseEndpointObject(
 		return false;
 	}
 
-	if (!IsSidecarId(OutEndpoint.Node) || !IsSidecarId(OutEndpoint.Pin))
+	if (!IsSidecarId(OutEndpoint.Node))
+	{
+		Result.AddDiagnostic(
+			TEXT("InvalidGraphNodeId"),
+			JoinPath(Path, TEXT("Node")),
+			TEXT("Expanded link endpoint node id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
+		return false;
+	}
+
+	if (!IsSidecarId(OutEndpoint.Pin))
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphPinId"),
-			Path,
-			TEXT("Expanded link endpoint node and pin ids must match the sidecar id syntax."));
+			JoinPath(Path, TEXT("Pin")),
+			TEXT("Expanded link endpoint pin id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
 	return true;
@@ -232,12 +241,21 @@ bool TryParseCompactEndpoint(
 
 	OutEndpoint.Node = Parts[0];
 	OutEndpoint.Pin = Parts[1];
-	if (!IsSidecarId(OutEndpoint.Node) || !IsSidecarId(OutEndpoint.Pin))
+	if (!IsSidecarId(OutEndpoint.Node))
 	{
 		Result.AddDiagnostic(
-			TEXT("InvalidGraphLinkEndpointSyntax"),
+			TEXT("InvalidGraphNodeId"),
 			Path,
-			TEXT("Compact link endpoint node and pin ids must match the sidecar id syntax."));
+			TEXT("Compact link endpoint node id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
+		return false;
+	}
+
+	if (!IsSidecarId(OutEndpoint.Pin))
+	{
+		Result.AddDiagnostic(
+			TEXT("InvalidGraphPinId"),
+			Path,
+			TEXT("Compact link endpoint pin id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
 	return true;

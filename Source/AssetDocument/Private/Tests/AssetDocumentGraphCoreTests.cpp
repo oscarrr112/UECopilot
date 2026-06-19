@@ -220,6 +220,96 @@ bool FAssetDocumentGraphCoreAcceptCompactLinkInputAsSugarTest::RunTest(const FSt
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest,
+	"AssetFactory.AssetDocument.GraphCore.RejectInvalidLinkEndpointIds",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> ExpandedInvalidNodeGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    { "Id": "BeginPlay", "Class": "/Script/BlueprintGraph.K2Node_Event" },
+    { "Id": "Print", "Class": "/Script/BlueprintGraph.K2Node_CallFunction" }
+  ],
+  "Links": [
+    { "From": { "Node": "1BeginPlay", "Pin": "then" }, "To": { "Node": "Print", "Pin": "execute" } }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult ExpandedInvalidNodeResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(ExpandedInvalidNodeGraph.ToSharedRef()) });
+	TestFalse(TEXT("Expanded endpoint with invalid node token fails"), ExpandedInvalidNodeResult.IsValid());
+	TestTrue(
+		TEXT("Expanded endpoint invalid node token uses InvalidGraphNodeId"),
+		HasDiagnosticCode(ExpandedInvalidNodeResult, TEXT("InvalidGraphNodeId")));
+
+	const TSharedPtr<FJsonObject> ExpandedInvalidPinGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    { "Id": "BeginPlay", "Class": "/Script/BlueprintGraph.K2Node_Event" },
+    { "Id": "Print", "Class": "/Script/BlueprintGraph.K2Node_CallFunction" }
+  ],
+  "Links": [
+    { "From": { "Node": "BeginPlay", "Pin": "1then" }, "To": { "Node": "Print", "Pin": "execute" } }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult ExpandedInvalidPinResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(ExpandedInvalidPinGraph.ToSharedRef()) });
+	TestFalse(TEXT("Expanded endpoint with invalid pin token fails"), ExpandedInvalidPinResult.IsValid());
+	TestTrue(
+		TEXT("Expanded endpoint invalid pin token uses InvalidGraphPinId"),
+		HasDiagnosticCode(ExpandedInvalidPinResult, TEXT("InvalidGraphPinId")));
+
+	const TSharedPtr<FJsonObject> CompactInvalidNodeGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    { "Id": "BeginPlay", "Class": "/Script/BlueprintGraph.K2Node_Event" },
+    { "Id": "Print", "Class": "/Script/BlueprintGraph.K2Node_CallFunction" }
+  ],
+  "Links": [
+    { "From": "1BeginPlay.then", "To": "Print.execute" }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult CompactInvalidNodeResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(CompactInvalidNodeGraph.ToSharedRef()) });
+	TestFalse(TEXT("Compact endpoint with invalid node token fails"), CompactInvalidNodeResult.IsValid());
+	TestTrue(
+		TEXT("Compact endpoint invalid node token uses InvalidGraphNodeId"),
+		HasDiagnosticCode(CompactInvalidNodeResult, TEXT("InvalidGraphNodeId")));
+
+	const TSharedPtr<FJsonObject> CompactInvalidPinGraph = ParseJsonObject(TEXT(R"JSON(
+{
+  "Name": "EventGraph",
+  "Schema": "/Script/BlueprintGraph.EdGraphSchema_K2",
+  "Nodes": [
+    { "Id": "BeginPlay", "Class": "/Script/BlueprintGraph.K2Node_Event" },
+    { "Id": "Print", "Class": "/Script/BlueprintGraph.K2Node_CallFunction" }
+  ],
+  "Links": [
+    { "From": "BeginPlay.1then", "To": "Print.execute" }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult CompactInvalidPinResult =
+		ParseGraphs({ MakeShared<FJsonValueObject>(CompactInvalidPinGraph.ToSharedRef()) });
+	TestFalse(TEXT("Compact endpoint with invalid pin token fails"), CompactInvalidPinResult.IsValid());
+	TestTrue(
+		TEXT("Compact endpoint invalid pin token uses InvalidGraphPinId"),
+		HasDiagnosticCode(CompactInvalidPinResult, TEXT("InvalidGraphPinId")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentGraphCoreRejectUnknownGraphFieldTest,
 	"AssetFactory.AssetDocument.GraphCore.RejectUnknownGraphField",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
