@@ -54,6 +54,10 @@ public:
 		const UBlueprint* Blueprint,
 		const UEdGraphNode* Node,
 		const FAssetDocumentNodeSpec& NodeSpec) const;
+
+	virtual FAssetDocumentCapabilityResult CanRepresentExistingNode(
+		const FAssetDocumentNodeApplyContext& Context,
+		const UEdGraphNode* Node) const;
 };
 
 class FAssetDocumentNodeAdapterRegistry

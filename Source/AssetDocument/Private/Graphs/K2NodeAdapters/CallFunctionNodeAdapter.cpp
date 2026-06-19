@@ -316,6 +316,35 @@ bool FAssetDocumentK2CallFunctionNodeAdapter::DoesNodeMatchSpec(
 	return DesiredFunction && CurrentFunction == DesiredFunction;
 }
 
+FAssetDocumentCapabilityResult FAssetDocumentK2CallFunctionNodeAdapter::CanRepresentExistingNode(
+	const FAssetDocumentNodeApplyContext& Context,
+	const UEdGraphNode* Node) const
+{
+	const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+	if (!CallNode)
+	{
+		return FAssetDocumentCapabilityResult::Failure(
+			TEXT("Existing graph node is not a K2 call function node"),
+			Context.NodePath,
+			TEXT("UnsupportedGraphNodeClass"));
+	}
+
+	UFunction* Function = CallNode->GetTargetFunction();
+	if (!Function)
+	{
+		Function = CallNode->FunctionReference.ResolveMember<UFunction>(
+			Context.Blueprint ? Context.Blueprint->SkeletonGeneratedClass : nullptr,
+			true);
+	}
+
+	FString UnsupportedReason;
+	if (!IsSupportedTier1Function(Function, UnsupportedReason))
+	{
+		return UnsupportedFunctionFailure(Context, FAssetDocumentNodeSpec(), Function, UnsupportedReason);
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 bool FAssetDocumentK2CallFunctionNodeAdapter::ExtractNode(const UBlueprint* Blueprint, const UK2Node_CallFunction* Node, FAssetDocumentNodeSpec& OutNode) const
 {
 	if (!Node)

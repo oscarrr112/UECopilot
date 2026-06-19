@@ -1988,6 +1988,34 @@ bool FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedLatentCallFunctionTest:
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsDeletingUnsupportedLatentCallFunctionTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsDeletingUnsupportedLatentCallFunction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsDeletingUnsupportedLatentCallFunctionTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyDeleteUnsupportedLatent"));
+	TestTrue(TEXT("Initial graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	UK2Node_CallFunction* DelayNode = AddK2Node<UK2Node_CallFunction>(Graph, 640, 0);
+	UFunction* DelayFunction = UKismetSystemLibrary::StaticClass()->FindFunctionByName(TEXT("Delay"));
+	TestNotNull(TEXT("Delay function resolves"), DelayFunction);
+	if (DelayNode && DelayFunction)
+	{
+		DelayNode->SetFromFunction(DelayFunction);
+		DelayNode->AllocateDefaultPins();
+	}
+	TestEqual(TEXT("Existing Delay node was added"), CountGraphNodesByMemberName(Graph, TEXT("Delay")), 1);
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody());
+	TestFalse(TEXT("Apply rejects deleting unsupported latent call function"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Deleting unsupported latent call reports unsupported function"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnsupportedGraphFunction")));
+	TestEqual(TEXT("Rejected apply preserves Delay node"), CountGraphNodesByMemberName(GetEventGraph(Blueprint), TEXT("Delay")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedPinDefaultObjectTest,
 	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsUnsupportedPinDefaultObject",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

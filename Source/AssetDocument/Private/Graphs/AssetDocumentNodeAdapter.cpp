@@ -32,6 +32,20 @@ bool IAssetDocumentNodeAdapter::DoesNodeMatchSpec(
 	return Node && Node->GetClass()->GetPathName() == NodeSpec.Class;
 }
 
+FAssetDocumentCapabilityResult IAssetDocumentNodeAdapter::CanRepresentExistingNode(
+	const FAssetDocumentNodeApplyContext& Context,
+	const UEdGraphNode* Node) const
+{
+	if (Node && Node->GetClass()->GetPathName() == GetClassPath())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	return FAssetDocumentCapabilityResult::Failure(
+		FString::Printf(TEXT("Existing graph node class '%s' is not represented by adapter '%s'"), *GetClassPathName(Node ? Node->GetClass() : nullptr), *GetClassPath()),
+		Context.NodePath,
+		TEXT("UnsupportedGraphNodeClass"));
+}
+
 TSharedRef<FJsonObject> FAssetDocumentUnsupportedNodeDiagnostic::ToJsonObject() const
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();

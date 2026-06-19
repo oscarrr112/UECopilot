@@ -67,16 +67,16 @@ unsupported graph content 不输出 raw UE graph dump。当前 fallback diagnost
 结果：exit 0；`Result: Succeeded`。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.GraphCore;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/GraphCoreFixFinalCodex"
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.GraphCore;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/GraphCoreAfterHook"
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/GraphCoreFixFinalCodex/index.json` 记录 `succeeded=17`、`failed=0`、`notRun=0`。
+结果：exit 0；`C:/AVH1/Saved/AutomationReports/GraphCoreAfterHook/index.json` 记录 `succeeded=17`、`failed=0`、`notRun=0`。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintGraphFixFinalCodex"
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinalAfterHook"
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/UBlueprintGraphFixFinalCodex/index.json` 记录 `succeeded=56`、`failed=0`、`notRun=0`。
+结果：exit 0；`C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinalAfterHook/index.json` 记录 `succeeded=57`、`failed=0`、`notRun=0`。
 
 ```powershell
 Push-Location MCP; npm test; Pop-Location
@@ -116,7 +116,7 @@ Review 后已修复的阻塞项：
 
 - graph apply 失败路径调整为在 components / class defaults 写入前执行，并在 graph 内部 apply failure 时恢复 graph snapshot，避免外层 Body 写入被半应用。
 - successful apply 删除现有 graph 内容前会拒绝删除当前 Tier 1 无法表示的 existing node/graph，并返回 `UnsupportedGraphNodeClass`。
-- `K2Node_CallFunction` 通过 UFunction metadata / pin FProperty 反射做保守能力检查，对 latent、custom thunk、dynamic/wildcard/container 相关函数和 unsupported pin default 返回 `UnsupportedGraphFunction` / `UnsupportedGraphPinDefault`。
+- `K2Node_CallFunction` 通过 UFunction metadata / pin FProperty 反射做保守能力检查，对 latent、custom thunk、dynamic/wildcard/container 相关函数和 unsupported pin default 返回 `UnsupportedGraphFunction` / `UnsupportedGraphPinDefault`；删除 existing call-function node 前也会复用同一函数级能力检查，避免把现有 unsupported latent node 当作普通 Tier 1 call node 静默删掉。
 
 ## Known Risks
 

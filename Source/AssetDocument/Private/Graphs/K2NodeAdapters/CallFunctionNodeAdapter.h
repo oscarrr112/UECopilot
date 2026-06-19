@@ -20,6 +20,9 @@ public:
 		const UBlueprint* Blueprint,
 		const UEdGraphNode* Node,
 		const FAssetDocumentNodeSpec& NodeSpec) const override;
+	virtual FAssetDocumentCapabilityResult CanRepresentExistingNode(
+		const FAssetDocumentNodeApplyContext& Context,
+		const UEdGraphNode* Node) const override;
 
 	bool ExtractNode(const UBlueprint* Blueprint, const UK2Node_CallFunction* Node, FAssetDocumentNodeSpec& OutNode) const;
 };

@@ -474,6 +474,7 @@ FString ExistingNodePath(const UEdGraph* Graph, const UEdGraphNode* Node)
 }
 
 FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
+	UBlueprint* Blueprint,
 	const FAssetDocumentNodeAdapterRegistry& Registry,
 	const UEdGraph* Graph,
 	const UEdGraphNode* Node)
@@ -483,7 +484,8 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	if (!Registry.FindAdapter(Node->GetClass()).IsValid())
+	const TSharedPtr<IAssetDocumentNodeAdapter> Adapter = Registry.FindAdapter(Node->GetClass());
+	if (!Adapter.IsValid())
 	{
 		return GraphFailure(
 			FString::Printf(
@@ -492,10 +494,16 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
 			ExistingNodePath(Graph, Node),
 			TEXT("UnsupportedGraphNodeClass"));
 	}
-	return FAssetDocumentCapabilityResult::Success();
+
+	FAssetDocumentNodeApplyContext Context;
+	Context.Blueprint = Blueprint;
+	Context.GraphPath = ExistingGraphPath(Graph);
+	Context.NodePath = ExistingNodePath(Graph, Node);
+	return Adapter->CanRepresentExistingNode(Context, Node);
 }
 
 FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
+	UBlueprint* Blueprint,
 	const FAssetDocumentNodeAdapterRegistry& Registry,
 	const UEdGraph* Graph)
 {
@@ -514,7 +522,7 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
 
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
-		const FAssetDocumentCapabilityResult NodeResult = PreflightDeleteExistingNode(Registry, Graph, Node);
+		const FAssetDocumentCapabilityResult NodeResult = PreflightDeleteExistingNode(Blueprint, Registry, Graph, Node);
 		if (!NodeResult.bSuccess)
 		{
 			return NodeResult;
@@ -594,7 +602,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 
 		if (ExistingGraph == FBlueprintEditorUtils::FindEventGraph(Blueprint))
 		{
-			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Registry, ExistingGraph);
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, ExistingGraph);
 			if (!DeleteResult.bSuccess)
 			{
 				return DeleteResult;
@@ -610,7 +618,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		}
 		else
 		{
-			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Registry, ExistingGraph);
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, ExistingGraph);
 			if (!DeleteResult.bSuccess)
 			{
 				return DeleteResult;
@@ -677,7 +685,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		{
 			if (ExistingNode && !UsedExistingNodes.Contains(ExistingNode))
 			{
-				const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Registry, Graph, ExistingNode);
+				const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Blueprint, Registry, Graph, ExistingNode);
 				if (!DeleteResult.bSuccess)
 				{
 					return DeleteResult;
