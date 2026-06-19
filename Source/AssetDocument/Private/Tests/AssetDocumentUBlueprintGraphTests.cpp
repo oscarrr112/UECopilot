@@ -509,6 +509,26 @@ FString GetNodeIdByMemberName(const TSharedPtr<FJsonObject>& Graph, const FStrin
 	return Node.IsValid() && Node->TryGetStringField(TEXT("Id"), Id) ? Id : FString();
 }
 
+TSharedPtr<FJsonObject> FindNodeById(const TSharedPtr<FJsonObject>& Graph, const FString& NodeId)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Id;
+		if (Node.IsValid() && Node->TryGetStringField(TEXT("Id"), Id) && Id == NodeId)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
+}
+
 bool RemoveNodeByMemberName(const TSharedPtr<FJsonObject>& Graph, const FString& MemberName)
 {
 	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
@@ -696,6 +716,24 @@ FAssetDocumentCapabilityResult ApplyBlueprintBody(UBlueprint* Blueprint, const T
 	return Capability.Apply(Context, MakeBodyValue(Body));
 }
 
+int32 CountGraphNodesByClass(UEdGraph* Graph, UClass* NodeClass)
+{
+	int32 Count = 0;
+	if (!Graph || !NodeClass)
+	{
+		return Count;
+	}
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->IsA(NodeClass))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
 int32 CountGraphNodesByMemberName(UEdGraph* Graph, const FString& MemberName)
 {
 	int32 Count = 0;
@@ -740,6 +778,20 @@ UK2Node_CallFunction* FindCallFunctionNodeByMemberName(UEdGraph* Graph, const FS
 		}
 	}
 	return nullptr;
+}
+
+double GetBlueprintInitialLifeSpan(UBlueprint* Blueprint)
+{
+	const UBlueprintGeneratedClass* GeneratedClass = Blueprint ? Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass) : nullptr;
+	const AActor* CDO = GeneratedClass ? Cast<AActor>(GeneratedClass->GetDefaultObject()) : nullptr;
+	return CDO ? CDO->InitialLifeSpan : 0.0;
+}
+
+void SetClassDefaultInitialLifeSpan(const TSharedRef<FJsonObject>& Body, double Value)
+{
+	TSharedRef<FJsonObject> ClassDefaults = MakeShared<FJsonObject>();
+	ClassDefaults->SetNumberField(TEXT("InitialLifeSpan"), Value);
+	Body->SetObjectField(TEXT("ClassDefaults"), ClassDefaults);
 }
 
 bool GraphHasLink(UEdGraph* Graph, const FName FromPinName, const FName ToPinName)
@@ -976,6 +1028,7 @@ bool FAssetDocumentUBlueprintGraphValidationSupportsTier1CallFunctionTest::RunTe
 {
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
+	Context.Asset = CreateTransientActorBlueprint(TEXT("BP_GraphValidationCallFunction"));
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
@@ -1002,6 +1055,7 @@ bool FAssetDocumentUBlueprintGraphValidationUnresolvedFunctionHasActionableDiagn
 {
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
+	Context.Asset = CreateTransientActorBlueprint(TEXT("BP_GraphValidationMissingFunction"));
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
@@ -1015,17 +1069,11 @@ bool FAssetDocumentUBlueprintGraphValidationUnresolvedFunctionHasActionableDiagn
 
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
 	TestFalse(TEXT("Unresolved function member fails validation"), Result.bSuccess);
-	TestTrue(TEXT("Unresolved function uses precise diagnostic code"), ResultHasDiagnostic(Result, TEXT("/Body/UbergraphPages/0/Nodes/0"), TEXT("UnresolvedGraphFunction")));
+	TestTrue(
+		TEXT("Unresolved function uses precise diagnostic code"),
+		ResultHasDiagnostic(Result, NodePath(TEXT("EventGraph"), TEXT("MissingFunction")) / TEXT("Member"), TEXT("UnresolvedGraphFunction")));
 	TestFalse(TEXT("Unresolved function is not treated as unsupported node class"), ResultHasDiagnosticCode(Result, TEXT("UnsupportedGraphNodeClass")));
-
-	const TSharedPtr<FJsonObject> Fallback = GetFirstUnsupportedGraphDiagnostic(Result);
-	TestTrue(TEXT("Unresolved function fallback payload has actionable fields"), FallbackHasActionableFields(Fallback));
-	if (Fallback.IsValid())
-	{
-		TestEqual(TEXT("Fallback code"), Fallback->GetStringField(TEXT("Code")), FString(TEXT("UnresolvedGraphFunction")));
-		TestTrue(TEXT("Fallback reason mentions MemberRef"), Fallback->GetStringField(TEXT("Reason")).Contains(TEXT("MemberRef")));
-		TestTrue(TEXT("Fallback suggested action mentions MemberRef"), Fallback->GetStringField(TEXT("SuggestedAction")).Contains(TEXT("MemberRef")));
-	}
+	TestTrue(TEXT("Unresolved function diagnostic mentions MemberRef"), Result.Message.Contains(TEXT("MemberRef")));
 	return true;
 }
 
@@ -1705,6 +1753,150 @@ bool FAssetDocumentUBlueprintGraphApplyCompileFailureDoesNotSavePartialGraphTest
 	{
 		TestEqual(TEXT("Rollback preserved existing pin default"), InStringPin->DefaultValue, FString(TEXT("Hello from AssetDocument")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyCompileFailureRollbackPreservesUnsupportedNodeTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.CompileFailureRollbackPreservesUnsupportedNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyCompileFailureRollbackPreservesUnsupportedNodeTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyCompileFailUnsupported"));
+	TestTrue(TEXT("Initial clean graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+
+	UEdGraph* EventGraph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("EventGraph exists before adding unsupported node"), EventGraph);
+	AddUnsupportedBranchNode(EventGraph, 640, 0);
+	const int32 UnsupportedCountBefore = CountGraphNodesByClass(EventGraph, UK2Node_IfThenElse::StaticClass());
+	TestEqual(TEXT("Unsupported branch node was added before failing apply"), UnsupportedCountBefore, 1);
+
+	TSharedRef<FJsonObject> BadBody = MakeBeginPlayPrintStringBody(TEXT("First"));
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(BadBody, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+		TEXT("BeginPlayDuplicate"),
+		TEXT("/Script/BlueprintGraph.K2Node_Event"),
+		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
+	Nodes.Add(MakeShared<FJsonValueObject>(DuplicateBeginPlay));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(Graph, TEXT("BeginPlayDuplicate"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Print"), UEdGraphSchema_K2::PN_Execute.ToString());
+
+	AddExpectedError(TEXT("Found more than one function with the same name ReceiveBeginPlay"), EAutomationExpectedErrorFlags::Contains, 1);
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, BadBody);
+	TestFalse(TEXT("Duplicate event compile failure rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Compile failure reports BlueprintCompileFailed"), ResultHasDiagnosticCode(ApplyResult, TEXT("BlueprintCompileFailed")));
+
+	EventGraph = GetEventGraph(Blueprint);
+	TestEqual(TEXT("Failed compile rollback preserves unsupported branch node"), CountGraphNodesByClass(EventGraph, UK2Node_IfThenElse::StaticClass()), UnsupportedCountBefore);
+	TestEqual(TEXT("Failed compile rollback removed duplicate BeginPlay"), CountGraphNodesByMemberName(EventGraph, TEXT("ReceiveBeginPlay")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyIgnoresStaleNodeGuidWithDifferentMemberTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.IgnoresStaleNodeGuidWithDifferentMember",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyIgnoresStaleNodeGuidWithDifferentMemberTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyStaleNodeGuid"));
+	TestTrue(TEXT("Initial graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	UK2Node_CallFunction* ExistingPrintNode = FindCallFunctionNodeByMemberName(Graph, TEXT("PrintString"));
+	TestNotNull(TEXT("Existing PrintString node exists"), ExistingPrintNode);
+	const FGuid StaleGuid = ExistingPrintNode ? ExistingPrintNode->NodeGuid : FGuid();
+
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false);
+	TSharedPtr<FJsonObject> DesiredGraph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Desired graph has nodes"), DesiredGraph.IsValid() && DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+
+	TSharedRef<FJsonObject> LogString = MakeGraphNode(
+		TEXT("Log"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("LogString")));
+	LogString->SetStringField(TEXT("NodeGuid"), StaleGuid.ToString(EGuidFormats::Digits));
+	TSharedRef<FJsonObject> PinOverride = MakeShared<FJsonObject>();
+	PinOverride->SetStringField(TEXT("Pin"), TEXT("InString"));
+	PinOverride->SetStringField(TEXT("DefaultValue"), TEXT("Log through reflected function"));
+	LogString->SetArrayField(TEXT("PinOverrides"), MakeJsonArray({PinOverride}));
+	Nodes.Add(MakeShared<FJsonValueObject>(LogString));
+	DesiredGraph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(DesiredGraph, TEXT("BeginPlay"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Log"), UEdGraphSchema_K2::PN_Execute.ToString());
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestTrue(TEXT("Graph apply succeeds with stale NodeGuid ignored"), ApplyResult.bSuccess);
+
+	Graph = GetEventGraph(Blueprint);
+	UK2Node_CallFunction* LogNode = FindCallFunctionNodeByMemberName(Graph, TEXT("LogString"));
+	TestNotNull(TEXT("LogString node was created"), LogNode);
+	if (LogNode)
+	{
+		TestNotEqual(TEXT("Stale NodeGuid was not reused for a semantically different node"), LogNode->NodeGuid, StaleGuid);
+	}
+	TestEqual(TEXT("Omitted PrintString node is not rebound into LogString"), CountGraphNodesByMemberName(Graph, TEXT("PrintString")), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsInvalidEventMemberBeforeBodyMutationTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsInvalidEventMemberBeforeBodyMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsInvalidEventMemberBeforeBodyMutationTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyInvalidEventMember"));
+	const double InitialLifeSpanBefore = GetBlueprintInitialLifeSpan(Blueprint);
+
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false);
+	SetClassDefaultInitialLifeSpan(Body, 42.0);
+	const TSharedPtr<FJsonObject> Graph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TSharedPtr<FJsonObject> BeginPlay = FindNodeById(Graph, TEXT("BeginPlay"));
+	TestTrue(TEXT("BeginPlay sidecar node exists"), BeginPlay.IsValid());
+	if (BeginPlay.IsValid())
+	{
+		BeginPlay->SetObjectField(TEXT("Member"), MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveDoesNotExist")));
+	}
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestFalse(TEXT("Invalid event member rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Invalid event member reports unresolved member diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnresolvedGraphMemberReference")));
+	TestEqual(TEXT("Invalid graph member failed before ClassDefaults mutation"), GetBlueprintInitialLifeSpan(Blueprint), InitialLifeSpanBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsInvalidVariableMemberBeforeBodyMutationTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsInvalidVariableMemberBeforeBodyMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsInvalidVariableMemberBeforeBodyMutationTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyInvalidVariableMember"));
+	const double InitialLifeSpanBefore = GetBlueprintInitialLifeSpan(Blueprint);
+
+	TSharedRef<FJsonObject> Body = MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false);
+	SetClassDefaultInitialLifeSpan(Body, 42.0);
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(Body, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+		TEXT("MissingVariableGet"),
+		TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+		MakeMemberRef(TEXT("Self"), TEXT("MissingVariable")))));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, Body);
+	TestFalse(TEXT("Invalid variable member rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Invalid variable member reports unresolved member diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnresolvedGraphMemberReference")));
+	TestEqual(TEXT("Invalid graph member failed before ClassDefaults mutation"), GetBlueprintInitialLifeSpan(Blueprint), InitialLifeSpanBefore);
 	return true;
 }
 

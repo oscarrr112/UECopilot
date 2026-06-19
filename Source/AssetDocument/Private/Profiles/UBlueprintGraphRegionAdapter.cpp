@@ -16,7 +16,6 @@
 namespace
 {
 constexpr const TCHAR* UbergraphPagesPath = TEXT("/Body/UbergraphPages");
-constexpr const TCHAR* K2NodeCallFunctionClassPath = TEXT("/Script/BlueprintGraph.K2Node_CallFunction");
 
 FAssetDocumentCapabilityResult GraphFailure(const FString& Message, const FString& Path, const FString& Code)
 {
@@ -67,76 +66,6 @@ FString NodePath(int32 GraphIndex, int32 NodeIndex)
 UClass* ResolveClass(const FString& ClassPath)
 {
 	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
-}
-
-struct FMemberFunctionResolutionResult
-{
-	bool bResolved = false;
-	FString Code;
-	FString Reason;
-	FString SuggestedAction;
-};
-
-FMemberFunctionResolutionResult ResolveMemberFunction(const TSharedPtr<FJsonObject>& Member)
-{
-	FMemberFunctionResolutionResult Result;
-	if (!Member.IsValid())
-	{
-		Result.Code = TEXT("InvalidGraphMemberReference");
-		Result.Reason = TEXT("K2Node_CallFunction requires a MemberRef object with OwnerClass and Name");
-		Result.SuggestedAction = TEXT("add a valid MemberRef for the function or remove the call function node from the managed graph");
-		return Result;
-	}
-
-	FString Kind;
-	if (!Member->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("MemberRef"))
-	{
-		Result.Code = TEXT("InvalidGraphMemberReference");
-		Result.Reason = TEXT("K2Node_CallFunction Member must be a MemberRef");
-		Result.SuggestedAction = TEXT("change Member.Kind to MemberRef and provide OwnerClass plus Name");
-		return Result;
-	}
-
-	FString OwnerClassPath;
-	FString FunctionName;
-	if (!Member->TryGetStringField(TEXT("OwnerClass"), OwnerClassPath)
-		|| OwnerClassPath.IsEmpty()
-		|| !Member->TryGetStringField(TEXT("Name"), FunctionName)
-		|| FunctionName.IsEmpty())
-	{
-		Result.Code = TEXT("InvalidGraphMemberReference");
-		Result.Reason = TEXT("K2Node_CallFunction MemberRef must include non-empty OwnerClass and Name");
-		Result.SuggestedAction = TEXT("fix the MemberRef OwnerClass and Name fields before graph apply validation");
-		return Result;
-	}
-
-	if (OwnerClassPath == TEXT("Self"))
-	{
-		Result.Code = TEXT("UnresolvedGraphFunction");
-		Result.Reason = TEXT("K2Node_CallFunction MemberRef OwnerClass 'Self' cannot be resolved in the current graph validation tier");
-		Result.SuggestedAction = TEXT("use an explicit reflected OwnerClass in MemberRef or wait for staged Self resolution support");
-		return Result;
-	}
-
-	UClass* OwnerClass = ResolveClass(OwnerClassPath);
-	if (!OwnerClass)
-	{
-		Result.Code = TEXT("UnresolvedGraphFunction");
-		Result.Reason = FString::Printf(TEXT("K2Node_CallFunction MemberRef OwnerClass '%s' could not be loaded"), *OwnerClassPath);
-		Result.SuggestedAction = TEXT("fix the MemberRef OwnerClass path or remove the function node from the managed graph");
-		return Result;
-	}
-
-	if (!OwnerClass->FindFunctionByName(FName(*FunctionName)))
-	{
-		Result.Code = TEXT("UnresolvedGraphFunction");
-		Result.Reason = FString::Printf(TEXT("K2Node_CallFunction MemberRef '%s.%s' does not resolve to a reflected UFunction"), *OwnerClassPath, *FunctionName);
-		Result.SuggestedAction = TEXT("fix the MemberRef function Name or remove the function node from the managed graph");
-		return Result;
-	}
-
-	Result.bResolved = true;
-	return Result;
 }
 
 FAssetDocumentUnsupportedNodeDiagnostic MakeUnsupportedNodeDiagnostic(
@@ -437,34 +366,6 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 				continue;
 			}
 
-			if (Node.Class == K2NodeCallFunctionClassPath)
-			{
-				const FMemberFunctionResolutionResult FunctionResolution = ResolveMemberFunction(Node.Member);
-				if (FunctionResolution.bResolved)
-				{
-					if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
-					{
-						continue;
-					}
-					UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
-						Node,
-						Path,
-						TEXT("UnsupportedGraphFunction"),
-						TEXT("reflected function resolves, but the current tier has no function adapter for graph apply validation"),
-						TEXT("add a thin K2Node_CallFunction adapter for this function pattern or remove the function node from the managed graph")));
-				}
-				else
-				{
-					UnsupportedDiagnostics.Add(MakeUnsupportedNodeDiagnostic(
-						Node,
-						Path,
-						FunctionResolution.Code,
-						FunctionResolution.Reason,
-						FunctionResolution.SuggestedAction));
-				}
-				continue;
-			}
-
 			if (CurrentTierRegistry.FindAdapter(NodeClass).IsValid())
 			{
 				continue;
@@ -482,6 +383,14 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	if (!UnsupportedDiagnostics.IsEmpty())
 	{
 		return UnsupportedGraphFailure(UnsupportedDiagnostics);
+	}
+
+	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
+	const FAssetDocumentCapabilityResult PreflightResult =
+		K2GraphAdapter.PreflightUbergraphPages(Cast<UBlueprint>(Context.Asset), ResolveResult.Graphs);
+	if (!PreflightResult.bSuccess)
+	{
+		return PreflightResult;
 	}
 
 	return FAssetDocumentCapabilityResult::Success();

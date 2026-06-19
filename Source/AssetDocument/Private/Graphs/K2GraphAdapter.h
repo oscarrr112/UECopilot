@@ -27,6 +27,7 @@ public:
 	static FAssetDocumentNodeAdapterRegistry CreateTier1NodeAdapterRegistry();
 
 	FAssetDocumentK2GraphExtractResult ExtractUbergraphPages(const UBlueprint* Blueprint) const;
+	FAssetDocumentCapabilityResult PreflightUbergraphPages(UBlueprint* Blueprint, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
 	FAssetDocumentK2GraphApplyResult ApplyUbergraphPages(UBlueprint* Blueprint, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
 
 private:

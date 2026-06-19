@@ -263,7 +263,10 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 	}
 
 	const FAssetDocumentNodeAdapterRegistry Registry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
-	UEdGraph* TempGraph = NewObject<UEdGraph>(Blueprint ? static_cast<UObject*>(Blueprint) : GetTransientPackage(), NAME_None, RF_Transient);
+	UBlueprint* TransientPreflightBlueprint = Blueprint ? nullptr : NewObject<UBlueprint>(GetTransientPackage(), NAME_None, RF_Transient);
+	UBlueprint* PreflightBlueprint = Blueprint ? Blueprint : TransientPreflightBlueprint;
+	UObject* TempGraphOuter = PreflightBlueprint ? static_cast<UObject*>(PreflightBlueprint) : nullptr;
+	UEdGraph* TempGraph = NewObject<UEdGraph>(TempGraphOuter ? TempGraphOuter : GetTransientPackage(), NAME_None, RF_Transient);
 	TempGraph->Schema = OutSchemaClass;
 	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(TempGraph->GetSchema());
 	if (!Schema)
@@ -293,7 +296,7 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 
 		UEdGraphNode* TempNode = NewObject<UEdGraphNode>(TempGraph, NodeClass, NAME_None, RF_Transient);
 		TempGraph->AddNode(TempNode, false, false);
-		const FAssetDocumentCapabilityResult ConfigureResult = ConfigureNodeWithAdapter(Blueprint, *Adapter, TempNode, GraphSpec, NodeSpec);
+		const FAssetDocumentCapabilityResult ConfigureResult = ConfigureNodeWithAdapter(PreflightBlueprint, *Adapter, TempNode, GraphSpec, NodeSpec);
 		if (!ConfigureResult.bSuccess)
 		{
 			return ConfigureResult;
@@ -376,8 +379,11 @@ UEdGraphNode* FindReusableNode(
 			{
 				if (Node && !UsedNodes.Contains(Node) && Node->NodeGuid == DesiredGuid)
 				{
-					UsedNodes.Add(Node);
-					return Node;
+					if (NodeMatchesMemberSpec(Blueprint, Registry, Node, NodeSpec))
+					{
+						UsedNodes.Add(Node);
+						return Node;
+					}
 				}
 			}
 		}
@@ -515,6 +521,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 			{
 				UClass* NodeClass = NodeClasses ? NodeClasses->FindRef(NodeSpec.Id) : nullptr;
 				Node = NewObject<UEdGraphNode>(Graph, NodeClass, NAME_None, RF_Transactional);
+				Node->CreateNewGuid();
 				Graph->AddNode(Node, true, false);
 				UsedExistingNodes.Add(Node);
 				bOutChanged = true;
@@ -553,6 +560,80 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 
 	return FAssetDocumentCapabilityResult::Success();
 }
+
+class FLosslessUbergraphPagesSnapshot
+{
+public:
+	FLosslessUbergraphPagesSnapshot() = default;
+	FLosslessUbergraphPagesSnapshot(const FLosslessUbergraphPagesSnapshot&) = delete;
+	FLosslessUbergraphPagesSnapshot& operator=(const FLosslessUbergraphPagesSnapshot&) = delete;
+
+	~FLosslessUbergraphPagesSnapshot()
+	{
+		if (SnapshotBlueprint)
+		{
+			SnapshotBlueprint->RemoveFromRoot();
+		}
+	}
+
+	bool Capture(const UBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return false;
+		}
+
+		const FName SnapshotName = MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("AssetDocumentGraphSnapshot"));
+		SnapshotBlueprint = DuplicateObject<UBlueprint>(Blueprint, GetTransientPackage(), SnapshotName);
+		if (!SnapshotBlueprint)
+		{
+			return false;
+		}
+		SnapshotBlueprint->SetFlags(RF_Transient);
+		SnapshotBlueprint->AddToRoot();
+		SnapshotGraphs = SnapshotBlueprint->UbergraphPages;
+		return true;
+	}
+
+	bool Restore(UBlueprint* Blueprint) const
+	{
+		if (!Blueprint || !SnapshotBlueprint)
+		{
+			return false;
+		}
+
+		for (UEdGraph* ExistingGraph : TArray<UEdGraph*>(Blueprint->UbergraphPages))
+		{
+			if (ExistingGraph)
+			{
+				ExistingGraph->Modify();
+				ExistingGraph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
+			}
+		}
+		Blueprint->UbergraphPages.Reset();
+
+		for (UEdGraph* SnapshotGraph : SnapshotGraphs)
+		{
+			if (!SnapshotGraph)
+			{
+				Blueprint->UbergraphPages.Add(nullptr);
+				continue;
+			}
+
+			UEdGraph* RestoredGraph = DuplicateObject<UEdGraph>(SnapshotGraph, Blueprint, SnapshotGraph->GetFName());
+			if (!RestoredGraph)
+			{
+				return false;
+			}
+			Blueprint->UbergraphPages.Add(RestoredGraph);
+		}
+		return true;
+	}
+
+private:
+	UBlueprint* SnapshotBlueprint = nullptr;
+	TArray<UEdGraph*> SnapshotGraphs;
+};
 
 FString SanitizeSidecarId(const FString& Value, const FString& Fallback)
 {
@@ -704,6 +785,24 @@ FAssetDocumentNodeAdapterRegistry FAssetDocumentK2GraphAdapter::CreateTier1NodeA
 	return Registry;
 }
 
+FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightUbergraphPages(
+	UBlueprint* Blueprint,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
+{
+	for (const FAssetDocumentGraphSpec& GraphSpec : DesiredGraphs)
+	{
+		UClass* SchemaClass = nullptr;
+		TMap<FString, UClass*> NodeClasses;
+		const FAssetDocumentCapabilityResult PreflightResult = PreflightGraphSpec(Blueprint, GraphSpec, SchemaClass, NodeClasses);
+		if (!PreflightResult.bSuccess)
+		{
+			return PreflightResult;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractUbergraphPages(const UBlueprint* Blueprint) const
 {
 	FAssetDocumentK2GraphExtractResult Result;
@@ -797,7 +896,16 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 		return ApplyResult;
 	}
 
-	const FAssetDocumentK2GraphExtractResult Snapshot = ExtractUbergraphPages(Blueprint);
+	FLosslessUbergraphPagesSnapshot Snapshot;
+	if (!Snapshot.Capture(Blueprint))
+	{
+		ApplyResult.Result = GraphFailure(
+			TEXT("Failed to snapshot UBlueprint graph state before applying graph regions"),
+			UbergraphPagesPath,
+			TEXT("GraphSnapshotFailed"));
+		return ApplyResult;
+	}
+
 	bool bChanged = false;
 	ApplyResult.Result = ApplyGraphsNoCompile(Blueprint, DesiredGraphs, bChanged);
 	if (!ApplyResult.Result.bSuccess)
@@ -811,8 +919,7 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 		FKismetEditorUtilities::CompileBlueprint(Blueprint);
 		if (Blueprint->Status == BS_Error)
 		{
-			bool bRollbackChanged = false;
-			ApplyGraphsNoCompile(Blueprint, Snapshot.Graphs, bRollbackChanged);
+			Snapshot.Restore(Blueprint);
 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 			FKismetEditorUtilities::CompileBlueprint(Blueprint);
 			ApplyResult.Result = GraphFailure(

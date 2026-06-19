@@ -91,7 +91,7 @@ FAssetDocumentCapabilityResult UnresolvedMemberFailure(const FAssetDocumentNodeA
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph node '%s' MemberRef could not be resolved"), *Node.Id),
 		Context.NodePath / TEXT("Member"),
-		TEXT("UnresolvedGraphMemberReference"));
+		TEXT("UnresolvedGraphFunction"));
 }
 
 bool HasAuthoredDefault(const UEdGraphPin* Pin)
@@ -194,7 +194,6 @@ FAssetDocumentCapabilityResult FAssetDocumentK2CallFunctionNodeAdapter::Configur
 	}
 
 	CallNode->SetFromFunction(Function);
-	CallNode->FunctionReference.SetFromField<UFunction>(Function, false);
 	return FAssetDocumentCapabilityResult::Success();
 }
 
