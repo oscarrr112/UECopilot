@@ -22,6 +22,11 @@
 #include "Serialization/JsonSerializer.h"
 #include "UObject/UnrealType.h"
 
+FAssetDocumentCapabilityResult ApplyUBlueprintGraphRegions(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	bool& bOutChanged);
+
 namespace
 {
 bool IsKnownBodyKey(const FString& BodyKey)
@@ -2897,6 +2902,17 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsApplyResult);
 		}
+	}
+
+	{
+		bool bGraphChanged = false;
+		const FAssetDocumentCapabilityResult GraphApplyResult =
+			ApplyUBlueprintGraphRegions(Context, BodyObject.ToSharedRef(), bGraphChanged);
+		if (!GraphApplyResult.bSuccess)
+		{
+			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, GraphApplyResult);
+		}
+		bChanged |= bGraphChanged;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied UBlueprint Body"));

@@ -353,6 +353,32 @@ FAssetDocumentCapabilityResult ParseDesiredUbergraphPages(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ParseAndResolveDesiredUbergraphPages(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<FAssetDocumentGraphSpec>& OutGraphs)
+{
+	TArray<FAssetDocumentGraphSpec> ParsedGraphs;
+	const FAssetDocumentCapabilityResult ParseResult = ParseDesiredUbergraphPages(DesiredBody, ParsedGraphs);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	FAssetDocumentGraphDefinitionResolveOptions ResolveOptions;
+	ResolveOptions.GraphsPath = UbergraphPagesPath;
+	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
+	FAssetDocumentGraphDefinitionResolveResult ResolveResult =
+		FAssetDocumentGraphDefinitionResolver::ResolveGraphArray(ParsedGraphs, Definitions, ResolveOptions);
+	if (!ResolveResult.IsValid())
+	{
+		return GraphDiagnosticsFailure(ResolveResult.Diagnostics);
+	}
+
+	OutGraphs = MoveTemp(ResolveResult.Graphs);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedPtr<FJsonValue>& Value)
@@ -518,4 +544,30 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::DiffRegions(
 
 	AppendSkippedGraphDiffEntries(CurrentExtract.SkippedNodes, OutDiffEntries);
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed UBlueprint graph regions"));
+}
+
+FAssetDocumentCapabilityResult ApplyUBlueprintGraphRegions(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
+	if (!Blueprint)
+	{
+		return GraphFailure(TEXT("UBlueprint graph apply requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+	const FAssetDocumentCapabilityResult DesiredParseResult =
+		ParseAndResolveDesiredUbergraphPages(Context, DesiredBody, DesiredGraphs);
+	if (!DesiredParseResult.bSuccess)
+	{
+		return DesiredParseResult;
+	}
+
+	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
+	const FAssetDocumentK2GraphApplyResult ApplyResult = K2GraphAdapter.ApplyUbergraphPages(Blueprint, DesiredGraphs);
+	bOutChanged = ApplyResult.bChanged;
+	return ApplyResult.Result;
 }

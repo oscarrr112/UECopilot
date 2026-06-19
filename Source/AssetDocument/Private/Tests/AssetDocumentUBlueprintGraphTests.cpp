@@ -604,6 +604,170 @@ void AddLinkToGraph(
 	Graph->SetArrayField(TEXT("Links"), MakeJsonArray({Link}));
 }
 
+void AppendLinkToGraph(
+	const TSharedPtr<FJsonObject>& Graph,
+	const FString& FromNode,
+	const FString& FromPin,
+	const FString& ToNode,
+	const FString& ToPin)
+{
+	if (!Graph.IsValid())
+	{
+		return;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ExistingLinks = nullptr;
+	TArray<TSharedPtr<FJsonValue>> Links;
+	if (Graph->TryGetArrayField(TEXT("Links"), ExistingLinks) && ExistingLinks)
+	{
+		Links = *ExistingLinks;
+	}
+
+	TSharedRef<FJsonObject> From = MakeShared<FJsonObject>();
+	From->SetStringField(TEXT("Node"), FromNode);
+	From->SetStringField(TEXT("Pin"), FromPin);
+
+	TSharedRef<FJsonObject> To = MakeShared<FJsonObject>();
+	To->SetStringField(TEXT("Node"), ToNode);
+	To->SetStringField(TEXT("Pin"), ToPin);
+
+	TSharedRef<FJsonObject> Link = MakeShared<FJsonObject>();
+	Link->SetObjectField(TEXT("From"), From);
+	Link->SetObjectField(TEXT("To"), To);
+	Links.Add(MakeShared<FJsonValueObject>(Link));
+	Graph->SetArrayField(TEXT("Links"), MoveTemp(Links));
+}
+
+TSharedRef<FJsonObject> MakeBeginPlayPrintStringBody(
+	const FString& PrintDefault = TEXT("Hello from AssetDocument"),
+	bool bIncludePrint = true,
+	bool bIncludeLink = true,
+	const FString& FromPin = UEdGraphSchema_K2::PN_Then.ToString(),
+	const FString& ToPin = UEdGraphSchema_K2::PN_Execute.ToString())
+{
+	TSharedRef<FJsonObject> BeginPlay = MakeGraphNode(
+		TEXT("BeginPlay"),
+		TEXT("/Script/BlueprintGraph.K2Node_Event"),
+		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(BeginPlay));
+
+	if (bIncludePrint)
+	{
+		TSharedRef<FJsonObject> Print = MakeGraphNode(
+			TEXT("Print"),
+			TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+			MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")));
+		TSharedRef<FJsonObject> PinOverride = MakeShared<FJsonObject>();
+		PinOverride->SetStringField(TEXT("Pin"), TEXT("InString"));
+		PinOverride->SetStringField(TEXT("DefaultValue"), PrintDefault);
+		Print->SetArrayField(TEXT("PinOverrides"), MakeJsonArray({PinOverride}));
+
+		TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+		Position->SetNumberField(TEXT("X"), 320.0);
+		Position->SetNumberField(TEXT("Y"), 0.0);
+		Print->SetObjectField(TEXT("Position"), Position);
+
+		Nodes.Add(MakeShared<FJsonValueObject>(Print));
+	}
+
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), TEXT("EventGraph"));
+	Graph->SetStringField(TEXT("Schema"), TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	Graph->SetArrayField(TEXT("Links"), {});
+	if (bIncludePrint && bIncludeLink)
+	{
+		AddLinkToGraph(Graph, TEXT("BeginPlay"), FromPin, TEXT("Print"), ToPin);
+	}
+
+	return MakeBodyWithRegion(TEXT("UbergraphPages"), {Graph});
+}
+
+FAssetDocumentCapabilityResult ApplyBlueprintBody(UBlueprint* Blueprint, const TSharedRef<FJsonObject>& Body)
+{
+	FUBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = Blueprint;
+	Context.AssetClass = UBlueprint::StaticClass();
+	return Capability.Apply(Context, MakeBodyValue(Body));
+}
+
+int32 CountGraphNodesByMemberName(UEdGraph* Graph, const FString& MemberName)
+{
+	int32 Count = 0;
+	if (!Graph)
+	{
+		return Count;
+	}
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (const UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+		{
+			if (EventNode->GetFunctionName().ToString() == MemberName)
+			{
+				++Count;
+			}
+		}
+		else if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+		{
+			if (CallNode->GetFunctionName().ToString() == MemberName)
+			{
+				++Count;
+			}
+		}
+	}
+	return Count;
+}
+
+UK2Node_CallFunction* FindCallFunctionNodeByMemberName(UEdGraph* Graph, const FString& MemberName)
+{
+	if (!Graph)
+	{
+		return nullptr;
+	}
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+		if (CallNode && CallNode->GetFunctionName().ToString() == MemberName)
+		{
+			return CallNode;
+		}
+	}
+	return nullptr;
+}
+
+bool GraphHasLink(UEdGraph* Graph, const FName FromPinName, const FName ToPinName)
+{
+	if (!Graph)
+	{
+		return false;
+	}
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output || Pin->PinName != FromPinName)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (LinkedPin && LinkedPin->PinName == ToPinName)
+				{
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
 FString GraphPath(const FString& GraphName)
 {
 	return FString::Printf(TEXT("/Body/UbergraphPages/%s"), *GraphName);
@@ -1377,6 +1541,147 @@ bool FAssetDocumentUBlueprintGraphDiffTreatsDefinitionRefAndInlineMemberRefAsEqu
 		TestEqual(TEXT("DefinitionRef and inline MemberRef compare unchanged"), PrintNodeDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
 	}
 	TestFalse(TEXT("DefinitionRef desired has no changed graph diff entries"), HasNonUnchangedGraphDiffEntry(DiffEntries));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyCreatesBeginPlayPrintStringTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.CreatesBeginPlayPrintString",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyCreatesBeginPlayPrintStringTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyCreate"));
+	TestNotNull(TEXT("Transient actor Blueprint exists"), Blueprint);
+	if (!Blueprint)
+	{
+		return false;
+	}
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody());
+	TestTrue(TEXT("Graph apply succeeds"), ApplyResult.bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestNotNull(TEXT("EventGraph exists after apply"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("BeginPlay node was created"), CountGraphNodesByMemberName(Graph, TEXT("ReceiveBeginPlay")), 1);
+	UK2Node_CallFunction* PrintNode = FindCallFunctionNodeByMemberName(Graph, TEXT("PrintString"));
+	TestNotNull(TEXT("PrintString node was created through reflected UFunction lookup"), PrintNode);
+	UEdGraphPin* InStringPin = PrintNode ? PrintNode->FindPin(TEXT("InString")) : nullptr;
+	TestNotNull(TEXT("PrintString InString pin exists"), InStringPin);
+	if (InStringPin)
+	{
+		TestEqual(TEXT("Authored pin default was applied"), InStringPin->DefaultValue, FString(TEXT("Hello from AssetDocument")));
+	}
+	TestTrue(TEXT("BeginPlay exec pin links to PrintString execute pin"), GraphHasLink(Graph, UEdGraphSchema_K2::PN_Then, UEdGraphSchema_K2::PN_Execute));
+	TestFalse(TEXT("Applied Blueprint compiles without error"), Blueprint->Status == BS_Error);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyUpdatesPinDefaultTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.UpdatesPinDefault",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyUpdatesPinDefaultTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyUpdatePin"));
+	TestTrue(TEXT("Initial graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody(TEXT("Initial"))).bSuccess);
+	TestTrue(TEXT("Updated graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody(TEXT("Updated"))).bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	UK2Node_CallFunction* PrintNode = FindCallFunctionNodeByMemberName(Graph, TEXT("PrintString"));
+	UEdGraphPin* InStringPin = PrintNode ? PrintNode->FindPin(TEXT("InString")) : nullptr;
+	TestNotNull(TEXT("Updated PrintString InString pin exists"), InStringPin);
+	if (InStringPin)
+	{
+		TestEqual(TEXT("Pin default changed in-place from sidecar"), InStringPin->DefaultValue, FString(TEXT("Updated")));
+	}
+	TestEqual(TEXT("Apply reused sidecar node identity instead of duplicating PrintString"), CountGraphNodesByMemberName(Graph, TEXT("PrintString")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyDeletesOmittedNodeAndLinkTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.DeletesOmittedNodeAndLink",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyDeletesOmittedNodeAndLinkTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyDelete"));
+	TestTrue(TEXT("Initial graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+	TestTrue(TEXT("Omitting PrintString apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false)).bSuccess);
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestEqual(TEXT("Omitted PrintString node is deleted"), CountGraphNodesByMemberName(Graph, TEXT("PrintString")), 0);
+	TestFalse(TEXT("Omitted execution link is deleted"), GraphHasLink(Graph, UEdGraphSchema_K2::PN_Then, UEdGraphSchema_K2::PN_Execute));
+	TestEqual(TEXT("Remaining BeginPlay node is preserved"), CountGraphNodesByMemberName(Graph, TEXT("ReceiveBeginPlay")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyRejectsInvalidLinkBeforeMutationTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.RejectsInvalidLinkBeforeMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyRejectsInvalidLinkBeforeMutationTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyInvalidLink"));
+	TestTrue(TEXT("Initial BeginPlay-only graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody(TEXT("Ignored"), false, false)).bSuccess);
+
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(
+		Blueprint,
+		MakeBeginPlayPrintStringBody(TEXT("ShouldNotAppear"), true, true, TEXT("NotARealPin"), UEdGraphSchema_K2::PN_Execute.ToString()));
+	TestFalse(TEXT("Invalid link endpoint rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Invalid link reports endpoint diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnresolvedGraphLinkEndpoint")));
+
+	UEdGraph* Graph = GetEventGraph(Blueprint);
+	TestEqual(TEXT("Invalid link rejection did not create PrintString"), CountGraphNodesByMemberName(Graph, TEXT("PrintString")), 0);
+	TestEqual(TEXT("Invalid link rejection preserved original BeginPlay"), CountGraphNodesByMemberName(Graph, TEXT("ReceiveBeginPlay")), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyCompileFailureDoesNotSavePartialGraphTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.CompileFailureDoesNotSavePartialGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyCompileFailureDoesNotSavePartialGraphTest::RunTest(const FString&)
+{
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_GraphApplyCompileFail"));
+	TestTrue(TEXT("Initial clean graph apply succeeds"), ApplyBlueprintBody(Blueprint, MakeBeginPlayPrintStringBody()).bSuccess);
+
+	TSharedRef<FJsonObject> BadBody = MakeBeginPlayPrintStringBody(TEXT("First"));
+	TSharedPtr<FJsonObject> Graph = FindGraphByName(BadBody, TEXT("EventGraph"));
+	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
+	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
+	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
+	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+		TEXT("BeginPlayDuplicate"),
+		TEXT("/Script/BlueprintGraph.K2Node_Event"),
+		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
+	Nodes.Add(MakeShared<FJsonValueObject>(DuplicateBeginPlay));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	AppendLinkToGraph(Graph, TEXT("BeginPlayDuplicate"), UEdGraphSchema_K2::PN_Then.ToString(), TEXT("Print"), UEdGraphSchema_K2::PN_Execute.ToString());
+
+	AddExpectedError(TEXT("Found more than one function with the same name ReceiveBeginPlay"), EAutomationExpectedErrorFlags::Contains, 1);
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyBlueprintBody(Blueprint, BadBody);
+	TestFalse(TEXT("Duplicate event compile failure rejects apply"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Compile failure reports BlueprintCompileFailed"), ResultHasDiagnosticCode(ApplyResult, TEXT("BlueprintCompileFailed")));
+
+	UEdGraph* EventGraph = GetEventGraph(Blueprint);
+	TestEqual(TEXT("Failed compile rollback removed duplicate BeginPlay"), CountGraphNodesByMemberName(EventGraph, TEXT("ReceiveBeginPlay")), 1);
+	UK2Node_CallFunction* PrintNode = FindCallFunctionNodeByMemberName(EventGraph, TEXT("PrintString"));
+	UEdGraphPin* InStringPin = PrintNode ? PrintNode->FindPin(TEXT("InString")) : nullptr;
+	TestNotNull(TEXT("Rollback preserved existing PrintString node"), PrintNode);
+	if (InStringPin)
+	{
+		TestEqual(TEXT("Rollback preserved existing pin default"), InStringPin->DefaultValue, FString(TEXT("Hello from AssetDocument")));
+	}
 	return true;
 }
 
