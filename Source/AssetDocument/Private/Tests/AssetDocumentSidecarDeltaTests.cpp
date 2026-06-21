@@ -108,6 +108,35 @@ bool FAssetDocumentSidecarDeltaHashIgnoresSkippedTest::RunTest(const FString& Pa
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentSidecarDeltaHashAcceptsSourceKindTest,
+	"AssetDocument.SidecarDelta.HashAcceptsSourceKind",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentSidecarDeltaHashAcceptsSourceKindTest::RunTest(const FString& Parameters)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Blend"), MakeShared<FJsonObject>());
+
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetObjectField(TEXT("Body"), Body);
+
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Blend"));
+	const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+		Document,
+		Policy,
+		EAssetDocumentRegionCanonicalizeSource::SidecarAuthored);
+	const FString EvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+		Document,
+		Policy,
+		EAssetDocumentRegionCanonicalizeSource::AssetEvidence);
+
+	TestFalse(TEXT("Sidecar hash is initialized"), SidecarHash.IsEmpty());
+	TestEqual(TEXT("Default source kinds hash equally"), SidecarHash, EvidenceHash);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentSidecarDeltaSetCreatesIntermediateObjectTest,
 	"AssetDocument.SidecarDelta.SetCreatesIntermediateObject",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

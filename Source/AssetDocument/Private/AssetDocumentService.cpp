@@ -468,13 +468,21 @@ bool TryWriteApplyFileSyncState(
 	bool bUpdatedAnyRegion = false;
 	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
 	{
-		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(SourceDocument.ToSharedRef(), Policy);
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			SourceDocument.ToSharedRef(),
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored,
+			AppliedAsset->GetClass());
 		if (SidecarHash.IsEmpty())
 		{
 			continue;
 		}
 
-		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(EvidenceDocument, Policy);
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			EvidenceDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence,
+			AppliedAsset->GetClass());
 		if (AssetEvidenceHash.IsEmpty())
 		{
 			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash is empty for region '%s'"), *Policy.RegionId.ToString());
@@ -937,7 +945,11 @@ FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
 			return Result;
 		}
 
-		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(EvidenceDocument, Policy);
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			EvidenceDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence,
+			Asset->GetClass());
 		if (AssetEvidenceHash.IsEmpty())
 		{
 			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
@@ -956,7 +968,11 @@ FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
 			return Result;
 		}
 
-		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(StagedDocument, Policy);
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			StagedDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored,
+			Asset->GetClass());
 		if (SidecarHash.IsEmpty())
 		{
 			FAssetDocumentResult Result = FAssetDocumentResult::Failure(

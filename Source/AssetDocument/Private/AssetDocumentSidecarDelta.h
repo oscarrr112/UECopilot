@@ -3,6 +3,7 @@
 #pragma once
 
 #include "AssetDocumentPolicy.h"
+#include "AssetDocumentRegionCanonicalizer.h"
 
 #include "CoreMinimal.h"
 #include "Dom/JsonValue.h"
@@ -28,5 +29,10 @@ public:
 
 	// Unset regions hash to an empty string; present and explicit-empty regions hash their canonical JSON value.
 	static FString HashSidecarRegion(const TSharedRef<FJsonObject>& DocumentJson, const FAssetDocumentRegionPolicy& Policy);
+	static FString HashSidecarRegion(
+		const TSharedRef<FJsonObject>& DocumentJson,
+		const FAssetDocumentRegionPolicy& Policy,
+		EAssetDocumentRegionCanonicalizeSource Source,
+		UClass* AssetClass = nullptr);
 	static bool IsExplicitEmptyRegion(const TSharedPtr<FJsonValue>& Value, const FAssetDocumentRegionPolicy& Policy);
 };

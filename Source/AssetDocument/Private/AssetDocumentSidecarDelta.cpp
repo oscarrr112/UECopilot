@@ -2,8 +2,6 @@
 
 #include "AssetDocumentSidecarDelta.h"
 
-#include "AssetDocumentCanonicalJson.h"
-
 #include "Dom/JsonObject.h"
 
 namespace
@@ -171,13 +169,26 @@ FString FAssetDocumentSidecarDelta::HashSidecarRegion(
 	const TSharedRef<FJsonObject>& DocumentJson,
 	const FAssetDocumentRegionPolicy& Policy)
 {
+	return HashSidecarRegion(DocumentJson, Policy, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored);
+}
+
+FString FAssetDocumentSidecarDelta::HashSidecarRegion(
+	const TSharedRef<FJsonObject>& DocumentJson,
+	const FAssetDocumentRegionPolicy& Policy,
+	EAssetDocumentRegionCanonicalizeSource Source,
+	UClass* AssetClass)
+{
 	const FAssetDocumentSidecarRegionValue Region = FindRegionValue(DocumentJson, Policy);
 	if (Region.State == EAssetDocumentSidecarRegionState::Unset)
 	{
 		return FString();
 	}
 
-	return FAssetDocumentCanonicalJson::HashJsonValue(Region.Value, &Policy);
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = Source;
+	Context.AssetClass = AssetClass;
+	return FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, Region.Value);
 }
 
 bool FAssetDocumentSidecarDelta::IsExplicitEmptyRegion(
