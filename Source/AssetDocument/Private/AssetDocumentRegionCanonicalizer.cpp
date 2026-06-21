@@ -45,6 +45,11 @@ bool IsGeneratedObjectIdentityField(const FString& FieldName)
 
 bool IsGeneratedObjectIdentityValue(const FString& Value)
 {
+	if (Value.StartsWith(TEXT("/Game/"), ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+
 	return Value.Contains(TEXT("/Engine/Transient"), ESearchCase::IgnoreCase)
 		|| Value.Contains(TEXT("TransientPackage"), ESearchCase::IgnoreCase)
 		|| Value.Contains(TEXT("REINST_"), ESearchCase::CaseSensitive)

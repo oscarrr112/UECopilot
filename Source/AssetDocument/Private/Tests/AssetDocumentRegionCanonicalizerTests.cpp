@@ -319,30 +319,100 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesDiagno
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsSemanticFieldsTest,
-	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsSemanticFields",
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameTestObjectPathSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsGameTestObjectPathSemantic",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsSemanticFieldsTest::RunTest(const FString& Parameters)
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameTestObjectPathSemanticTest::RunTest(const FString& Parameters)
 {
 	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
 
 	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
-	First->SetStringField(TEXT("Name"), TEXT("AuthoredNameA"));
-	First->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotify"));
-	First->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/Test/AuthoredRefPoseA.AuthoredRefPoseA"));
-	First->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/AuthoredObjectPathA.AuthoredObjectPathA"));
+	First->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/SKEL_Foo.SKEL_Foo"));
 
 	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
-	Second->SetStringField(TEXT("Name"), TEXT("AuthoredNameB"));
-	Second->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
-	Second->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/Test/AuthoredRefPoseB.AuthoredRefPoseB"));
-	Second->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/AuthoredObjectPathB.AuthoredObjectPathB"));
+	Second->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/SKEL_Bar.SKEL_Bar"));
 
 	TestNotEqual(
-		TEXT("Semantic fields and authored asset refs remain hash-significant"),
+		TEXT("/Game/Test ObjectPath remains hash-significant"),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameAssetDocumentTestsObjectPathSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsGameAssetDocumentTestsObjectPathSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameAssetDocumentTestsObjectPathSemanticTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("ObjectPath"), TEXT("/Game/AssetDocumentTests/REINST_Foo.REINST_Foo"));
+
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("ObjectPath"), TEXT("/Game/AssetDocumentTests/REINST_Bar.REINST_Bar"));
+
+	TestNotEqual(
+		TEXT("/Game/AssetDocumentTests ObjectPath remains hash-significant"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsAssetRefLikeFieldsSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsAssetRefLikeFieldsSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsAssetRefLikeFieldsSemanticTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/AssetDocumentTests/REINST_RefPoseA.REINST_RefPoseA"));
+
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/AssetDocumentTests/REINST_RefPoseB.REINST_RefPoseB"));
+
+	TestNotEqual(
+		TEXT("Asset-ref-like fields remain hash-significant"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsNameAndClassSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsNameAndClassSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsNameAndClassSemanticTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> FirstName = MakeShared<FJsonObject>();
+	FirstName->SetStringField(TEXT("Name"), TEXT("AuthoredNameA"));
+	TSharedRef<FJsonObject> SecondName = MakeShared<FJsonObject>();
+	SecondName->SetStringField(TEXT("Name"), TEXT("AuthoredNameB"));
+	TestNotEqual(
+		TEXT("Name remains hash-significant"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(FirstName)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(SecondName)));
+
+	TSharedRef<FJsonObject> FirstClass = MakeShared<FJsonObject>();
+	FirstClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotify"));
+	TSharedRef<FJsonObject> SecondClass = MakeShared<FJsonObject>();
+	SecondClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	TestNotEqual(
+		TEXT("Class remains hash-significant"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(FirstClass)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(SecondClass)));
 
 	return true;
 }
