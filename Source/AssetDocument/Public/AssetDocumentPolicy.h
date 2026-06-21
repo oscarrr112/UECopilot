@@ -80,6 +80,7 @@ struct ASSETDOCUMENT_API FAssetDocumentRegionPolicy
 	TSet<FString> ExtractOnlyFields;
 	TSet<FString> ExplicitDeleteValues;
 	TOptional<FName> ExtensionHookName;
+	FName CanonicalizerHookName;
 };
 
 struct ASSETDOCUMENT_API FAssetDocumentRegionPolicyPreset
@@ -103,4 +104,5 @@ struct ASSETDOCUMENT_API FAssetDocumentRegionPolicyOverride
 	TOptional<TSet<FString>> ExtractOnlyFields;
 	TOptional<TSet<FString>> ExplicitDeleteValues;
 	TOptional<FName> ExtensionHookName;
+	TOptional<FName> CanonicalizerHookName;
 };

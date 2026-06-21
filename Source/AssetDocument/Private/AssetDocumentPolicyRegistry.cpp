@@ -287,6 +287,10 @@ bool FAssetDocumentPolicyRegistry::ExpandPreset(
 	{
 		OutPolicy.ExtensionHookName = Override.ExtensionHookName.GetValue();
 	}
+	if (Override.CanonicalizerHookName.IsSet())
+	{
+		OutPolicy.CanonicalizerHookName = Override.CanonicalizerHookName.GetValue();
+	}
 	if (OutPolicy.ApplyMode == EAssetDocumentApplyMode::ExtensionHook
 		&& (!OutPolicy.ExtensionHookName.IsSet() || OutPolicy.ExtensionHookName.GetValue().IsNone()))
 	{
@@ -343,6 +347,10 @@ TSharedRef<FJsonObject> FAssetDocumentPolicyRegistry::ExportPolicyToJson(const F
 	if (Policy.ExtensionHookName.IsSet())
 	{
 		Json->SetStringField(TEXT("ExtensionHookName"), Policy.ExtensionHookName.GetValue().ToString());
+	}
+	if (!Policy.CanonicalizerHookName.IsNone())
+	{
+		Json->SetStringField(TEXT("CanonicalizerHookName"), Policy.CanonicalizerHookName.ToString());
 	}
 
 	return Json;

@@ -231,6 +231,7 @@ bool FAssetDocumentPolicyJsonExportTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("JSON omits empty ExtractOnlyFields"), Json->HasField(TEXT("ExtractOnlyFields")));
 	TestFalse(TEXT("JSON omits empty ExplicitDeleteValues"), Json->HasField(TEXT("ExplicitDeleteValues")));
 	TestFalse(TEXT("JSON omits unset ExtensionHookName"), Json->HasField(TEXT("ExtensionHookName")));
+	TestFalse(TEXT("JSON omits unset CanonicalizerHookName"), Json->HasField(TEXT("CanonicalizerHookName")));
 	TestFalse(TEXT("JSON omits preset expansion scratch fields"), Json->HasField(TEXT("PresetName")));
 
 	FAssetDocumentRegionPolicyPreset Preset;
@@ -248,6 +249,31 @@ bool FAssetDocumentPolicyJsonExportTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Preset defaults omit empty RegionId"), (*Defaults)->HasField(TEXT("RegionId")));
 		TestFalse(TEXT("Preset defaults omit empty BodyPath"), (*Defaults)->HasField(TEXT("BodyPath")));
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPolicyCanonicalizerHookExpandsAndExportsTest,
+	"AssetDocument.Policy.CanonicalizerHookExpandsAndExports",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPolicyCanonicalizerHookExpandsAndExportsTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicyPreset Preset;
+	TestTrue(TEXT("ManagedRegion preset exists"), FindPreset(FAssetDocumentPolicyRegistry::GetBuiltinPresets(), TEXT("ManagedRegion"), Preset));
+
+	FAssetDocumentRegionPolicyOverride Override;
+	Override.RegionId = TEXT("Body.UbergraphPages");
+	Override.BodyPath = TEXT("Body.UbergraphPages");
+	Override.CanonicalizerHookName = TEXT("UBlueprintGraph");
+
+	FAssetDocumentRegionPolicy Policy;
+	TestTrue(TEXT("Preset expands with canonicalizer hook"), FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, Policy));
+	TestEqual(TEXT("Expanded policy stores canonicalizer hook"), Policy.CanonicalizerHookName, FName(TEXT("UBlueprintGraph")));
+
+	const TSharedRef<FJsonObject> Exported = FAssetDocumentPolicyRegistry::ExportPolicyToJson(Policy);
+	TestEqual(TEXT("Exported policy includes canonicalizer hook"), Exported->GetStringField(TEXT("CanonicalizerHookName")), FString(TEXT("UBlueprintGraph")));
 
 	return true;
 }
