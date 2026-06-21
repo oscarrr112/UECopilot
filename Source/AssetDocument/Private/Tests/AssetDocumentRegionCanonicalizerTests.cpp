@@ -16,6 +16,116 @@ TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
+
+TSharedPtr<FJsonObject> MakeGraphMember(const TCHAR* Kind, const TCHAR* OwnerClass, const TCHAR* Name)
+{
+	TSharedPtr<FJsonObject> Member = MakeShared<FJsonObject>();
+	Member->SetStringField(TEXT("Kind"), Kind);
+	Member->SetStringField(TEXT("OwnerClass"), OwnerClass);
+	Member->SetStringField(TEXT("Name"), Name);
+	return Member;
+}
+
+TSharedPtr<FJsonObject> MakeGraphPosition(double X, double Y)
+{
+	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), X);
+	Position->SetNumberField(TEXT("Y"), Y);
+	return Position;
+}
+
+TSharedPtr<FJsonObject> MakeGraphPinOverride(const TCHAR* Pin, const TCHAR* Direction, const TCHAR* DefaultValue)
+{
+	TSharedPtr<FJsonObject> PinOverride = MakeShared<FJsonObject>();
+	PinOverride->SetStringField(TEXT("Pin"), Pin);
+	PinOverride->SetStringField(TEXT("Direction"), Direction);
+	PinOverride->SetStringField(TEXT("DefaultValue"), DefaultValue);
+	return PinOverride;
+}
+
+TSharedPtr<FJsonObject> MakeGraphNode(
+	const TCHAR* Id,
+	const TCHAR* Class,
+	TSharedPtr<FJsonObject> Member,
+	const TCHAR* NodeGuid = nullptr,
+	const TCHAR* Capability = nullptr)
+{
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), Id);
+	Node->SetStringField(TEXT("Class"), Class);
+	if (Member.IsValid())
+	{
+		Node->SetObjectField(TEXT("Member"), Member);
+	}
+	if (NodeGuid)
+	{
+		Node->SetStringField(TEXT("NodeGuid"), NodeGuid);
+	}
+	if (Capability)
+	{
+		Node->SetStringField(TEXT("Capability"), Capability);
+	}
+	Node->SetObjectField(TEXT("Position"), MakeGraphPosition(160.0, 320.0));
+	Node->SetStringField(TEXT("Comment"), TEXT("keep authored comment"));
+
+	TArray<TSharedPtr<FJsonValue>> PinOverrides;
+	PinOverrides.Add(MakeObjectValue(MakeGraphPinOverride(TEXT("Message"), TEXT("Input"), TEXT("Hello")).ToSharedRef()));
+	Node->SetArrayField(TEXT("PinOverrides"), MoveTemp(PinOverrides));
+	return Node;
+}
+
+TSharedPtr<FJsonObject> MakeGraphEndpoint(const TCHAR* Node, const TCHAR* Pin)
+{
+	TSharedPtr<FJsonObject> Endpoint = MakeShared<FJsonObject>();
+	Endpoint->SetStringField(TEXT("Node"), Node);
+	Endpoint->SetStringField(TEXT("Pin"), Pin);
+	return Endpoint;
+}
+
+TSharedPtr<FJsonObject> MakeGraphLink(const TCHAR* FromNode, const TCHAR* FromPin, const TCHAR* ToNode, const TCHAR* ToPin)
+{
+	TSharedPtr<FJsonObject> Link = MakeShared<FJsonObject>();
+	Link->SetObjectField(TEXT("From"), MakeGraphEndpoint(FromNode, FromPin));
+	Link->SetObjectField(TEXT("To"), MakeGraphEndpoint(ToNode, ToPin));
+	return Link;
+}
+
+TSharedPtr<FJsonValue> MakeGraphRegionValue(
+	const TCHAR* EventNodeId,
+	const TCHAR* CallNodeId,
+	bool bIncludeGeneratedMetadata)
+{
+	TSharedPtr<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), TEXT("EventGraph"));
+	Graph->SetStringField(TEXT("Schema"), TEXT("K2"));
+	if (bIncludeGeneratedMetadata)
+	{
+		Graph->SetStringField(TEXT("GraphGuid"), TEXT("E0B14B7C4E0F4F0BA0E5E4D600000001"));
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeObjectValue(MakeGraphNode(
+		EventNodeId,
+		TEXT("/Script/BlueprintGraph.K2Node_Event"),
+		MakeGraphMember(TEXT("Event"), TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")),
+		bIncludeGeneratedMetadata ? TEXT("E0B14B7C4E0F4F0BA0E5E4D600000002") : nullptr,
+		bIncludeGeneratedMetadata ? TEXT("Event") : nullptr).ToSharedRef()));
+	Nodes.Add(MakeObjectValue(MakeGraphNode(
+		CallNodeId,
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMember(TEXT("Function"), TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")),
+		bIncludeGeneratedMetadata ? TEXT("E0B14B7C4E0F4F0BA0E5E4D600000003") : nullptr,
+		bIncludeGeneratedMetadata ? TEXT("CallFunction") : nullptr).ToSharedRef()));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+
+	TArray<TSharedPtr<FJsonValue>> Links;
+	Links.Add(MakeObjectValue(MakeGraphLink(EventNodeId, TEXT("Then"), CallNodeId, TEXT("execute")).ToSharedRef()));
+	Graph->SetArrayField(TEXT("Links"), MoveTemp(Links));
+
+	TArray<TSharedPtr<FJsonValue>> Graphs;
+	Graphs.Add(MakeObjectValue(Graph.ToSharedRef()));
+	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -80,6 +190,44 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 		TestTrue(TEXT("Writeback preserves ordinary value"), Writeback->AsObject()->HasField(TEXT("Value")));
 		TestEqual(TEXT("Writeback preserves authored value"), Writeback->AsObject()->GetNumberField(TEXT("Value")), 1.0);
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerGraphIgnoresGeneratedMetadataTest,
+	"AssetDocument.RegionCanonicalizer.Graph.IgnoresGeneratedMetadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerGraphIgnoresGeneratedMetadataTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = TEXT("Body.UbergraphPages");
+	Policy.BodyPath = TEXT("Body.UbergraphPages");
+	Policy.RegionKind = EAssetDocumentRegionKind::Graph;
+	Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
+
+	FAssetDocumentRegionCanonicalizeContext SidecarContext;
+	SidecarContext.Policy = &Policy;
+	SidecarContext.Source = EAssetDocumentRegionCanonicalizeSource::SidecarAuthored;
+
+	FAssetDocumentRegionCanonicalizeContext EvidenceContext;
+	EvidenceContext.Policy = &Policy;
+	EvidenceContext.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
+
+	const TSharedPtr<FJsonValue> SidecarGraph = MakeGraphRegionValue(
+		TEXT("event_beginplay"),
+		TEXT("print_string"),
+		false);
+	const TSharedPtr<FJsonValue> EvidenceGraph = MakeGraphRegionValue(
+		TEXT("K2Node_Event_0"),
+		TEXT("K2Node_CallFunction_0"),
+		true);
+
+	TestEqual(
+		TEXT("Generated graph metadata and semantic node ids hash equally"),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(SidecarContext, SidecarGraph),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(EvidenceContext, EvidenceGraph));
 
 	return true;
 }

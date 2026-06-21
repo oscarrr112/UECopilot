@@ -132,6 +132,7 @@ TArray<FAssetDocumentRegionPolicy> FUBlueprintAssetDocumentProfile::GetRegionPol
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.UbergraphPages"), EAssetDocumentRegionKind::Graph, {TEXT("UbergraphPages")}, Policy))
 	{
+		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy))

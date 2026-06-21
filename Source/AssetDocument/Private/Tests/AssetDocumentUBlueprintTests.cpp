@@ -413,6 +413,29 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	TestNotNull(TEXT("Variables has region policy"), FindPolicyByRegionId(Policies, TEXT("Body.Variables")));
 	TestNotNull(TEXT("Components has region policy"), FindPolicyByRegionId(Policies, TEXT("Body.Components")));
 	TestNotNull(TEXT("ClassDefaults has region policy"), FindPolicyByRegionId(Policies, TEXT("Body.ClassDefaults")));
+	const FAssetDocumentRegionPolicy* UbergraphPolicy = FindPolicyByRegionId(Policies, TEXT("Body.UbergraphPages"));
+	TestNotNull(TEXT("UbergraphPages has region policy"), UbergraphPolicy);
+	if (UbergraphPolicy)
+	{
+		TestEqual(TEXT("UbergraphPages uses graph canonicalizer"), UbergraphPolicy->CanonicalizerHookName, FName(TEXT("UBlueprintGraph")));
+	}
+
+	const TArray<FName> DeferredGraphRegionIds = {
+		TEXT("Body.FunctionGraphs"),
+		TEXT("Body.MacroGraphs"),
+		TEXT("Body.Timelines"),
+	};
+	for (const FName& DeferredGraphRegionId : DeferredGraphRegionIds)
+	{
+		const FAssetDocumentRegionPolicy* DeferredGraphPolicy = FindPolicyByRegionId(Policies, DeferredGraphRegionId);
+		TestNotNull(FString::Printf(TEXT("%s has region policy"), *DeferredGraphRegionId.ToString()), DeferredGraphPolicy);
+		if (DeferredGraphPolicy)
+		{
+			TestTrue(
+				FString::Printf(TEXT("%s keeps identity canonicalizer"), *DeferredGraphRegionId.ToString()),
+				DeferredGraphPolicy->CanonicalizerHookName.IsNone());
+		}
+	}
 
 	FAssetDocumentModule::Get();
 	FAssetDocumentService Service;
