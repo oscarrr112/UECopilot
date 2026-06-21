@@ -14,7 +14,8 @@ bool MakeRegionPolicy(
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
 	TArray<FString> ManagedUePropertyPaths,
-	FAssetDocumentRegionPolicy& OutPolicy)
+	FAssetDocumentRegionPolicy& OutPolicy,
+	FName CanonicalizerHookName = NAME_None)
 {
 	FAssetDocumentRegionPolicyPreset Preset;
 	if (!FAssetDocumentPolicyRegistry::GetBuiltinPreset(PresetName, Preset))
@@ -29,6 +30,10 @@ bool MakeRegionPolicy(
 	if (ManagedUePropertyPaths.Num() > 0)
 	{
 		Override.ManagedUePropertyPaths = MoveTemp(ManagedUePropertyPaths);
+	}
+	if (!CanonicalizerHookName.IsNone())
+	{
+		Override.CanonicalizerHookName = CanonicalizerHookName;
 	}
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
@@ -130,7 +135,8 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 		TEXT("Body.Additive"),
 		EAssetDocumentRegionKind::Object,
 		{TEXT("AdditiveAnimType"), TEXT("RefPoseType"), TEXT("RefFrameIndex"), TEXT("RefPoseSeq")},
-		Policy))
+		Policy,
+		TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
@@ -148,35 +154,36 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 		TEXT("Body.Compression"),
 		EAssetDocumentRegionKind::Object,
 		{TEXT("CompressionErrorThresholdScale"), TEXT("BoneCompressionSettings"), TEXT("CurveCompressionSettings"), TEXT("bDoNotOverrideCompression")},
-		Policy))
+		Policy,
+		TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Curves"), EAssetDocumentRegionKind::Array, {TEXT("RawCurveData")}, Policy))
+	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Curves"), EAssetDocumentRegionKind::Array, {TEXT("RawCurveData")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Notifies"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Notifies"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.SyncMarkers"), EAssetDocumentRegionKind::Timeline, {TEXT("AuthoredSyncMarkers")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.SyncMarkers"), EAssetDocumentRegionKind::Timeline, {TEXT("AuthoredSyncMarkers")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Metadata"), EAssetDocumentRegionKind::Array, {TEXT("MetaData")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Metadata"), EAssetDocumentRegionKind::Array, {TEXT("MetaData")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.AssetUserData"), EAssetDocumentRegionKind::Array, {TEXT("AssetUserData")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.AssetUserData"), EAssetDocumentRegionKind::Array, {TEXT("AssetUserData")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}

@@ -83,6 +83,8 @@
 - 现有 `AssetDocumentService.cpp` 中的 `IsAnimSequencePostApplyCanonicalDivergenceRegion()` 可以作为历史兼容存在到 RegionCanonicalizer 第一版实现前。
 - 不允许继续向该 helper 添加新的 asset class 或 region id。
 
+2026-06-22 更新：RegionCanonicalizer v1 已将 AnimSequence post-apply divergence 从 `AssetDocumentService.cpp` 的 class/region if-list 迁移到 profile policy 的 `CanonicalizerHookName = "AnimSequencePostApply"`。后续不得恢复 service-level divergence exception；新的等价归一必须进入 policy hook 对应的 canonicalizer strategy，并用 focused test 或 evidence diff 约束语义边界。
+
 触发后续架构升级的条件：
 
 - 任何新 region 想复用同类 “hash differs but accept anyway” 逻辑；
@@ -182,4 +184,3 @@
 - 是否混淆了 hash form 和 sidecar writeback form；
 - 是否把 unsupported content canonicalize 成了 equal；
 - 是否更新了本维护文件中的 trigger 状态。
-

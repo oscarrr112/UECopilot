@@ -879,6 +879,43 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 		TestTrue(TEXT("Body.NotifyStates intentionally owns Notifies"), PolicyContainsManagedPath(NotifyStatesPolicy, TEXT("Notifies")));
 	}
 
+	const TArray<FName> PostApplyCanonicalizedRegions = {
+		TEXT("Body.Additive"),
+		TEXT("Body.Compression"),
+		TEXT("Body.Curves"),
+		TEXT("Body.Notifies"),
+		TEXT("Body.NotifyStates"),
+		TEXT("Body.NotifyTracks"),
+		TEXT("Body.SyncMarkers"),
+		TEXT("Body.Metadata"),
+		TEXT("Body.AssetUserData"),
+	};
+	for (const FName& RegionId : PostApplyCanonicalizedRegions)
+	{
+		const FAssetDocumentRegionPolicy* RegionPolicy = FindPolicyByRegionId(Policies, RegionId);
+		TestNotNull(FString::Printf(TEXT("%s policy exists"), *RegionId.ToString()), RegionPolicy);
+		if (RegionPolicy)
+		{
+			TestEqual(FString::Printf(TEXT("%s uses AnimSequencePostApply canonicalizer"), *RegionId.ToString()), RegionPolicy->CanonicalizerHookName, FName(TEXT("AnimSequencePostApply")));
+		}
+	}
+
+	const TArray<FName> StrictRegions = {
+		TEXT("Body.References"),
+		TEXT("Body.Preview"),
+		TEXT("Body.Playback"),
+		TEXT("Body.RootMotion"),
+	};
+	for (const FName& RegionId : StrictRegions)
+	{
+		const FAssetDocumentRegionPolicy* RegionPolicy = FindPolicyByRegionId(Policies, RegionId);
+		TestNotNull(FString::Printf(TEXT("%s policy exists"), *RegionId.ToString()), RegionPolicy);
+		if (RegionPolicy)
+		{
+			TestTrue(FString::Printf(TEXT("%s has no canonicalizer hook"), *RegionId.ToString()), RegionPolicy->CanonicalizerHookName.IsNone());
+		}
+	}
+
 	const IAssetDocumentCapability* BodyAdapter = Profile.ResolveBodyAdapter(TEXT("Body"));
 	if (BodyAdapter)
 	{
@@ -2281,17 +2318,6 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 	}
 	if (SyncRegionsObject && SyncRegionsObject->IsValid())
 	{
-		const TSet<FString> AllowedPostApplyCanonicalDivergenceRegions = {
-			TEXT("Body.Additive"),
-			TEXT("Body.Compression"),
-			TEXT("Body.Curves"),
-			TEXT("Body.Notifies"),
-			TEXT("Body.NotifyStates"),
-			TEXT("Body.NotifyTracks"),
-			TEXT("Body.SyncMarkers"),
-			TEXT("Body.Metadata"),
-			TEXT("Body.AssetUserData"),
-		};
 		for (const FString& Section : ExpectedBodySections)
 		{
 			const FString RegionId = FString::Printf(TEXT("Body.%s"), *Section);
@@ -2306,10 +2332,7 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 			const FString AssetEvidenceHash = (*RegionSyncObject)->GetStringField(TEXT("assetEvidenceHash"));
 			TestFalse(FString::Printf(TEXT("%s sync sidecar hash is initialized"), *RegionId), SidecarHash.IsEmpty());
 			TestFalse(FString::Printf(TEXT("%s sync asset evidence hash is initialized"), *RegionId), AssetEvidenceHash.IsEmpty());
-			if (!AllowedPostApplyCanonicalDivergenceRegions.Contains(RegionId))
-			{
-				TestEqual(FString::Printf(TEXT("%s strict sync hashes match"), *RegionId), SidecarHash, AssetEvidenceHash);
-			}
+			TestEqual(FString::Printf(TEXT("%s canonical sync hashes match"), *RegionId), SidecarHash, AssetEvidenceHash);
 		}
 	}
 

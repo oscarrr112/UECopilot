@@ -33,6 +33,172 @@ const IAssetDocumentRegionCanonicalizationStrategy& GetIdentityStrategy()
 	return Strategy;
 }
 
+bool IsGeneratedObjectIdentityField(const FString& FieldName)
+{
+	return FieldName == TEXT("ObjectPath")
+		|| FieldName == TEXT("ObjectName")
+		|| FieldName == TEXT("Outer")
+		|| FieldName == TEXT("Package")
+		|| FieldName == TEXT("ClassGeneratedBy")
+		|| FieldName == TEXT("SkeletonGeneratedClass");
+}
+
+bool IsGeneratedObjectIdentityValue(const FString& Value)
+{
+	return Value.Contains(TEXT("/Engine/Transient"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("/Temp/"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("/Game/AssetDocumentSmoke/"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("/Game/AssetDocumentTests/"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("/Game/Test/"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("TransientPackage"), ESearchCase::IgnoreCase)
+		|| Value.Contains(TEXT("REINST_"), ESearchCase::CaseSensitive)
+		|| Value.Contains(TEXT("SKEL_"), ESearchCase::CaseSensitive)
+		|| Value.Contains(TEXT("TRASHCLASS_"), ESearchCase::CaseSensitive)
+		|| Value.Contains(TEXT("PLACEHOLDER-CLASS"), ESearchCase::CaseSensitive);
+}
+
+FString NormalizeGeneratedObjectIdentityValue(const FString& FieldName, const FString& Value)
+{
+	if (!IsGeneratedObjectIdentityField(FieldName) || !IsGeneratedObjectIdentityValue(Value))
+	{
+		return Value;
+	}
+
+	return FString::Printf(TEXT("<generated-object-identity:%s>"), *FieldName);
+}
+
+void NormalizeGeneratedObjectPathFields(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return;
+	}
+
+	if (Value->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		if (!Object.IsValid())
+		{
+			return;
+		}
+
+		TArray<FString> FieldNames;
+		Object->Values.GenerateKeyArray(FieldNames);
+		for (const FString& FieldName : FieldNames)
+		{
+			TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+			if (!FieldValue || !FieldValue->IsValid())
+			{
+				continue;
+			}
+
+			if ((*FieldValue)->Type == EJson::String)
+			{
+				const FString NormalizedValue = NormalizeGeneratedObjectIdentityValue(FieldName, (*FieldValue)->AsString());
+				if (NormalizedValue != (*FieldValue)->AsString())
+				{
+					Object->SetStringField(FieldName, NormalizedValue);
+				}
+				continue;
+			}
+
+			NormalizeGeneratedObjectPathFields(*FieldValue);
+		}
+		return;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+		{
+			NormalizeGeneratedObjectPathFields(Entry);
+		}
+	}
+}
+
+bool IsGeneratedDiagnosticContainerField(const FString& FieldName)
+{
+	return FieldName.StartsWith(TEXT("_"))
+		|| FieldName == TEXT("Diagnostics")
+		|| FieldName == TEXT("GeneratedDiagnostics")
+		|| FieldName == TEXT("UnsupportedGraphDiagnostics")
+		|| FieldName == TEXT("ValidationDiagnostics")
+		|| FieldName == TEXT("ProjectionMetrics");
+}
+
+bool IsEmptyJsonContainer(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return false;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		return Value->AsArray().Num() == 0;
+	}
+
+	if (Value->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		return Object.IsValid() && Object->Values.Num() == 0;
+	}
+
+	return false;
+}
+
+void NormalizeEmptyGeneratedContainers(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+		{
+			NormalizeEmptyGeneratedContainers(Entry);
+		}
+		return;
+	}
+
+	if (Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TArray<FString> FieldNames;
+	Object->Values.GenerateKeyArray(FieldNames);
+
+	TArray<FString> FieldsToRemove;
+	for (const FString& FieldName : FieldNames)
+	{
+		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (!FieldValue || !FieldValue->IsValid())
+		{
+			continue;
+		}
+
+		NormalizeEmptyGeneratedContainers(*FieldValue);
+		if (IsGeneratedDiagnosticContainerField(FieldName) && IsEmptyJsonContainer(*FieldValue))
+		{
+			FieldsToRemove.Add(FieldName);
+		}
+	}
+
+	for (const FString& FieldName : FieldsToRemove)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
 FString MakeGraphNodeSemanticKey(const FAssetDocumentNodeSpec& Node)
 {
 	FString MemberJson;
@@ -162,9 +328,37 @@ const IAssetDocumentRegionCanonicalizationStrategy& GetUBlueprintGraphStrategy()
 	return Strategy;
 }
 
+class FAssetDocumentAnimSequencePostApplyCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
+{
+public:
+	virtual TSharedPtr<FJsonValue> CanonicalizeForHash(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = GetIdentityStrategy().CanonicalizeForHash(Context, RegionValue);
+		NormalizeGeneratedObjectPathFields(CanonicalValue);
+		NormalizeEmptyGeneratedContainers(CanonicalValue);
+		return CanonicalValue;
+	}
+
+	virtual TSharedPtr<FJsonValue> CanonicalizeForSidecarWriteback(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		return GetIdentityStrategy().CanonicalizeForSidecarWriteback(Context, RegionValue);
+	}
+};
+
+const IAssetDocumentRegionCanonicalizationStrategy& GetAnimSequencePostApplyStrategy()
+{
+	static FAssetDocumentAnimSequencePostApplyCanonicalizationStrategy Strategy;
+	return Strategy;
+}
+
 const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*>& GetBuiltinCanonicalizerStrategies()
 {
 	static const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*> Strategies = {
+		{FName(TEXT("AnimSequencePostApply")), &GetAnimSequencePostApplyStrategy()},
 		{FName(TEXT("UBlueprintGraph")), &GetUBlueprintGraphStrategy()},
 	};
 	return Strategies;
