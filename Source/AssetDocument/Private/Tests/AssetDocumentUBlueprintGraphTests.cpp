@@ -1,5 +1,7 @@
 // Copyright ProjectRPG. All Rights Reserved.
 
+#include "AssetDocumentService.h"
+#include "AssetDocumentSidecar.h"
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 
 #include "Dom/JsonValue.h"
@@ -19,9 +21,13 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "HAL/FileManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -705,6 +711,72 @@ TSharedRef<FJsonObject> MakeBeginPlayPrintStringBody(
 	}
 
 	return MakeBodyWithRegion(TEXT("UbergraphPages"), {Graph});
+}
+
+TSharedPtr<FJsonObject> MakeUBlueprintGraphSidecarDocument(const FString& Target, const TSharedRef<FJsonObject>& Body)
+{
+	if (!Body->HasField(TEXT("ImplementedInterfaces")))
+	{
+		Body->SetArrayField(TEXT("ImplementedInterfaces"), {});
+	}
+	if (!Body->HasField(TEXT("Variables")))
+	{
+		Body->SetArrayField(TEXT("Variables"), {});
+	}
+	if (!Body->HasField(TEXT("Components")))
+	{
+		Body->SetArrayField(TEXT("Components"), {});
+	}
+	if (!Body->HasField(TEXT("ClassDefaults")))
+	{
+		Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	}
+	if (!Body->HasField(TEXT("FunctionGraphs")))
+	{
+		Body->SetArrayField(TEXT("FunctionGraphs"), {});
+	}
+	if (!Body->HasField(TEXT("MacroGraphs")))
+	{
+		Body->SetArrayField(TEXT("MacroGraphs"), {});
+	}
+	if (!Body->HasField(TEXT("Timelines")))
+	{
+		Body->SetArrayField(TEXT("Timelines"), {});
+	}
+
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.Blueprint"));
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Body"), Body);
+	return Document;
+}
+
+FString MakeUniqueBlueprintTarget(const TCHAR* Prefix)
+{
+	return FString::Printf(
+		TEXT("/Game/AssetDocumentTests/%s_%s"),
+		Prefix,
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
+}
+
+FString MakeObjectPathFromTarget(const FString& Target)
+{
+	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+}
+
+bool WriteJsonObjectToFile(TSharedPtr<FJsonObject> Document, const FString& FilePath)
+{
+	FString JsonText;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
+	if (!Document.IsValid() || !FJsonSerializer::Serialize(Document.ToSharedRef(), Writer))
+	{
+		return false;
+	}
+	return FFileHelper::SaveStringToFile(JsonText, *FilePath);
 }
 
 TSharedRef<FJsonObject> MakeIntVariableSpec(const FString& Name, const FString& DefaultValue = TEXT("0"))
@@ -2094,6 +2166,76 @@ bool FAssetDocumentUBlueprintGraphApplyRejectsInvalidVariableMemberBeforeBodyMut
 	TestFalse(TEXT("Invalid variable member rejects apply"), ApplyResult.bSuccess);
 	TestTrue(TEXT("Invalid variable member reports unresolved member diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("UnresolvedGraphMemberReference")));
 	TestEqual(TEXT("Invalid graph member failed before ClassDefaults mutation"), GetBlueprintInitialLifeSpan(Blueprint), InitialLifeSpanBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentUBlueprintGraphApplyFileWritesSyncStateForGeneratedMetadataOnlyDiffTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphApply.ApplyFileWritesSyncStateForGeneratedMetadataOnlyDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentUBlueprintGraphApplyFileWritesSyncStateForGeneratedMetadataOnlyDiffTest::RunTest(const FString&)
+{
+	FAssetDocumentService Service;
+	const FString Target = MakeUniqueBlueprintTarget(TEXT("BP_GraphApplyFileSync"));
+	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+	TestTrue(TEXT("Creates graph ApplyFile sidecar directory"), IFileManager::Get().MakeDirectory(*FPaths::GetPath(SidecarPath), true));
+
+	TSharedPtr<FJsonObject> Document = MakeUBlueprintGraphSidecarDocument(
+		Target,
+		MakeBeginPlayPrintStringBody(TEXT("Hello from graph apply-file sync"), true, true));
+	if (!TestTrue(TEXT("Graph ApplyFile sidecar writes"), WriteJsonObjectToFile(Document, SidecarPath)))
+	{
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest Request;
+	Request.FilePath = SidecarPath;
+	Request.bSaveAsset = true;
+	Request.bAllowSidecarRewrite = true;
+	const FAssetDocumentResult Result = Service.ApplyFile(Request);
+
+	TestTrue(TEXT("ApplyFile succeeds for generated-metadata-only UBlueprint graph sidecar"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+		return false;
+	}
+	TestTrue(TEXT("ApplyFile writes UBlueprint graph sidecar sync state"), Result.bWroteSidecar);
+	TestTrue(TEXT("ApplyFile returns payload"), Result.Payload.IsValid());
+	if (Result.Payload.IsValid())
+	{
+		TestFalse(TEXT("ApplyFile does not skip UBlueprint graph sidecar sync update"), Result.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
+	}
+
+	TSharedPtr<FJsonObject> ReloadedDocument;
+	FString LoadError;
+	TestTrue(TEXT("ApplyFile reloads synced UBlueprint graph sidecar"), FAssetDocumentSidecar::LoadJsonFile(SidecarPath, ReloadedDocument, LoadError));
+	if (!ReloadedDocument.IsValid())
+	{
+		AddError(LoadError);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	const TSharedPtr<FJsonObject>* UbergraphPagesRegion = nullptr;
+	TestTrue(TEXT("ApplyFile writes _meta"), ReloadedDocument->TryGetObjectField(TEXT("_meta"), Meta));
+	if (Meta && Meta->IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes _meta.sync"), (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+	}
+	if (Sync && Sync->IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes _meta.sync.regions"), (*Sync)->TryGetObjectField(TEXT("regions"), Regions));
+	}
+	if (Regions && Regions->IsValid())
+	{
+		TestTrue(TEXT("ApplyFile writes Body.UbergraphPages sync region"), (*Regions)->TryGetObjectField(TEXT("Body.UbergraphPages"), UbergraphPagesRegion));
+	}
+
+	TestNotNull(TEXT("ApplyFile-created UBlueprint loads"), LoadObject<UBlueprint>(nullptr, *MakeObjectPathFromTarget(Target)));
 	return true;
 }
 

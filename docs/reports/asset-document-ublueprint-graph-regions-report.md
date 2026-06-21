@@ -120,7 +120,7 @@ Review 后已修复的阻塞项：
 
 ## Known Risks
 
-- HTTP apply payload 仍返回 `sidecar_sync_update_skipped=true`，原因是 `Post-apply asset evidence hash differs for region 'Body.UbergraphPages'`。当前 smoke 会证明语义 graph diff 无 unexpected changed/failed/skipped entries，但 sidecar sync evidence canonicalization 仍是后续风险。
-- Sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，file diff 会产生 metadata-only changed entries。HTTP smoke 已对这些 generated metadata 做归一化过滤，但这也说明后续需要决定它们是否应由 sidecar sync 自动回写或由 diff 默认忽略。
+- `RegionCanonicalizer` 已通过 `UBlueprintGraph` hook 将 generated graph metadata 归一化到可比较 hash form；sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，apply-file sync rewrite 现在应写入 `_meta.sync.regions.Body.UbergraphPages`，不再接受 sync skip。
+- HTTP smoke 已在 apply-file 成功后拒绝 `sidecar_sync_update_skipped` payload，并继续验证语义 graph diff 无 unexpected changed/failed/skipped entries。
 - Apply 输入中 agent-friendly node ids 可能在 extract 中被 canonical member-based ids 替换；当前 smoke 使用可 roundtrip 的 `ReceiveBeginPlay` / `PrintString` ids，并检查 semantic member names。
-- `FunctionGraphs`、`MacroGraphs`、`Timelines` 仍未实现；任何非空 sidecar 内容应继续明确失败或报告 unsupported。
+- 更深层 graph semantic identity 仍需后续收敛，包括复杂重命名/重绑定场景、非 Tier 1 adapters、复杂 pin default/object canonicalization，以及 `FunctionGraphs`、`MacroGraphs`、`Timelines`；任何这些未实现区域的非空 sidecar 内容应继续明确失败或报告 unsupported。

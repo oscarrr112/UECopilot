@@ -274,6 +274,8 @@ def main() -> int:
             ),
             "apply-file",
         )
+        if apply_payload.get("sidecar_sync_update_skipped") is True:
+            raise RuntimeError(f"apply-file skipped sidecar sync update: {json.dumps(apply_payload, indent=2)}")
 
         extract_payload = assert_success(
             request_json(
