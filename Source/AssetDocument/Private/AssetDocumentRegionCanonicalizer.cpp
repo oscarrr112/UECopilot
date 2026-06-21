@@ -46,10 +46,6 @@ bool IsGeneratedObjectIdentityField(const FString& FieldName)
 bool IsGeneratedObjectIdentityValue(const FString& Value)
 {
 	return Value.Contains(TEXT("/Engine/Transient"), ESearchCase::IgnoreCase)
-		|| Value.Contains(TEXT("/Temp/"), ESearchCase::IgnoreCase)
-		|| Value.Contains(TEXT("/Game/AssetDocumentSmoke/"), ESearchCase::IgnoreCase)
-		|| Value.Contains(TEXT("/Game/AssetDocumentTests/"), ESearchCase::IgnoreCase)
-		|| Value.Contains(TEXT("/Game/Test/"), ESearchCase::IgnoreCase)
 		|| Value.Contains(TEXT("TransientPackage"), ESearchCase::IgnoreCase)
 		|| Value.Contains(TEXT("REINST_"), ESearchCase::CaseSensitive)
 		|| Value.Contains(TEXT("SKEL_"), ESearchCase::CaseSensitive)
@@ -65,6 +61,11 @@ FString NormalizeGeneratedObjectIdentityValue(const FString& FieldName, const FS
 	}
 
 	return FString::Printf(TEXT("<generated-object-identity:%s>"), *FieldName);
+}
+
+bool IsAuthoredPropertiesSubtree(const FString& FieldName)
+{
+	return FieldName == TEXT("Properties");
 }
 
 void NormalizeGeneratedObjectPathFields(const TSharedPtr<FJsonValue>& Value)
@@ -86,6 +87,11 @@ void NormalizeGeneratedObjectPathFields(const TSharedPtr<FJsonValue>& Value)
 		Object->Values.GenerateKeyArray(FieldNames);
 		for (const FString& FieldName : FieldNames)
 		{
+			if (IsAuthoredPropertiesSubtree(FieldName))
+			{
+				continue;
+			}
+
 			TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
 			if (!FieldValue || !FieldValue->IsValid())
 			{
@@ -119,7 +125,6 @@ void NormalizeGeneratedObjectPathFields(const TSharedPtr<FJsonValue>& Value)
 bool IsGeneratedDiagnosticContainerField(const FString& FieldName)
 {
 	return FieldName.StartsWith(TEXT("_"))
-		|| FieldName == TEXT("Diagnostics")
 		|| FieldName == TEXT("GeneratedDiagnostics")
 		|| FieldName == TEXT("UnsupportedGraphDiagnostics")
 		|| FieldName == TEXT("ValidationDiagnostics")
@@ -180,6 +185,11 @@ void NormalizeEmptyGeneratedContainers(const TSharedPtr<FJsonValue>& Value)
 	TArray<FString> FieldsToRemove;
 	for (const FString& FieldName : FieldNames)
 	{
+		if (IsAuthoredPropertiesSubtree(FieldName))
+		{
+			continue;
+		}
+
 		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
 		if (!FieldValue || !FieldValue->IsValid())
 		{

@@ -126,6 +126,25 @@ TSharedPtr<FJsonValue> MakeGraphRegionValue(
 	Graphs.Add(MakeObjectValue(Graph.ToSharedRef()));
 	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
 }
+
+FAssetDocumentRegionPolicy MakeAnimSequencePostApplyPolicy()
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = TEXT("Body.Metadata");
+	Policy.BodyPath = TEXT("Body.Metadata");
+	Policy.CanonicalizerHookName = TEXT("AnimSequencePostApply");
+	return Policy;
+}
+
+FString HashAnimSequencePostApplyRegion(
+	const FAssetDocumentRegionPolicy& Policy,
+	const TSharedPtr<FJsonValue>& Value)
+{
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
+	return FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, Value);
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -190,6 +209,140 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 		TestTrue(TEXT("Writeback preserves ordinary value"), Writeback->AsObject()->HasField(TEXT("Value")));
 		TestEqual(TEXT("Writeback preserves authored value"), Writeback->AsObject()->GetNumberField(TEXT("Value")), 1.0);
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesGeneratedIdentityTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesGeneratedIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesGeneratedIdentityTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("ObjectPath"), TEXT("/Engine/Transient.REINST_TestAnimSequence_C_1"));
+	First->SetStringField(TEXT("Kind"), TEXT("GeneratedDiagnostic"));
+
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("ObjectPath"), TEXT("/Engine/Transient.REINST_TestAnimSequence_C_2"));
+	Second->SetStringField(TEXT("Kind"), TEXT("GeneratedDiagnostic"));
+
+	TestEqual(
+		TEXT("Generated object identity fields hash equally"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesGeneratedEmptyContainersTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.RemovesGeneratedEmptyContainers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesGeneratedEmptyContainersTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> Baseline = MakeShared<FJsonObject>();
+	Baseline->SetStringField(TEXT("Name"), TEXT("GeneratedContainerProbe"));
+
+	TSharedRef<FJsonObject> WithGeneratedContainers = MakeShared<FJsonObject>();
+	WithGeneratedContainers->SetStringField(TEXT("Name"), TEXT("GeneratedContainerProbe"));
+	WithGeneratedContainers->SetObjectField(TEXT("_ProjectionMetrics"), MakeShared<FJsonObject>());
+	WithGeneratedContainers->SetArrayField(TEXT("_Generated"), TArray<TSharedPtr<FJsonValue>>());
+
+	TestEqual(
+		TEXT("Empty generated diagnostic containers hash equally"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Baseline)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithGeneratedContainers)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesObjectPathSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsPropertiesObjectPathSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesObjectPathSemanticTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> FirstProperties = MakeShared<FJsonObject>();
+	FirstProperties->SetStringField(TEXT("ObjectPath"), TEXT("/Engine/Transient.REINST_AuthoredPath_A"));
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetObjectField(TEXT("Properties"), FirstProperties);
+
+	TSharedRef<FJsonObject> SecondProperties = MakeShared<FJsonObject>();
+	SecondProperties->SetStringField(TEXT("ObjectPath"), TEXT("/Engine/Transient.REINST_AuthoredPath_B"));
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetObjectField(TEXT("Properties"), SecondProperties);
+
+	TestNotEqual(
+		TEXT("Properties.ObjectPath remains semantic"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesDiagnosticsSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsPropertiesDiagnosticsSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesDiagnosticsSemanticTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> WithoutDiagnosticsProperties = MakeShared<FJsonObject>();
+	WithoutDiagnosticsProperties->SetStringField(TEXT("Value"), TEXT("Authored"));
+	TSharedRef<FJsonObject> WithoutDiagnostics = MakeShared<FJsonObject>();
+	WithoutDiagnostics->SetObjectField(TEXT("Properties"), WithoutDiagnosticsProperties);
+
+	TSharedRef<FJsonObject> WithDiagnosticsProperties = MakeShared<FJsonObject>();
+	WithDiagnosticsProperties->SetStringField(TEXT("Value"), TEXT("Authored"));
+	WithDiagnosticsProperties->SetArrayField(TEXT("Diagnostics"), TArray<TSharedPtr<FJsonValue>>());
+	TSharedRef<FJsonObject> WithDiagnostics = MakeShared<FJsonObject>();
+	WithDiagnostics->SetObjectField(TEXT("Properties"), WithDiagnosticsProperties);
+
+	TestNotEqual(
+		TEXT("Properties.Diagnostics remains semantic"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithoutDiagnostics)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithDiagnostics)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsSemanticFieldsTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsSemanticFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsSemanticFieldsTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("Name"), TEXT("AuthoredNameA"));
+	First->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotify"));
+	First->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/Test/AuthoredRefPoseA.AuthoredRefPoseA"));
+	First->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/AuthoredObjectPathA.AuthoredObjectPathA"));
+
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("Name"), TEXT("AuthoredNameB"));
+	Second->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	Second->SetStringField(TEXT("RefPoseSeq"), TEXT("/Game/Test/AuthoredRefPoseB.AuthoredRefPoseB"));
+	Second->SetStringField(TEXT("ObjectPath"), TEXT("/Game/Test/AuthoredObjectPathB.AuthoredObjectPathB"));
+
+	TestNotEqual(
+		TEXT("Semantic fields and authored asset refs remain hash-significant"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
 
 	return true;
 }
