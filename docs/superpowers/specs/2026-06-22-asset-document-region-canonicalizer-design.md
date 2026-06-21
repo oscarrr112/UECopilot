@@ -151,6 +151,8 @@ SidecarSyncEngine
 
 当前 `AssetDocumentService.cpp` 中存在 AnimSequence post-apply divergence hardcoded exception：精确 class path `/Script/Engine.AnimSequence` 加 region id 列表。
 
+长期维护触发条件记录在 `docs/superpowers/specs/asset-document-deferred-fields/2026-06-22-region-canonicalizer.md`。后续 task/review 不应只依赖本 spec 正文判断何时升级。
+
 本设计要求后续 implementation plan 将它作为迁移目标：
 
 - 删除或收敛 `IsAnimSequencePostApplyCanonicalDivergenceRegion()` 的扩展趋势。
