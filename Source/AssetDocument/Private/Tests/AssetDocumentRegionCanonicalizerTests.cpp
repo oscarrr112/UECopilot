@@ -389,6 +389,43 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesProjectDefault
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsExtendedDefaultAssetRefsSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsExtendedDefaultAssetRefsSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsExtendedDefaultAssetRefsSemanticTest::RunTest(const FString& Parameters)
+{
+	const UObject* DefaultBoneCompressionSettings = FAnimationUtils::GetDefaultAnimationBoneCompressionSettings();
+	TestNotNull(TEXT("Default bone compression settings exist"), DefaultBoneCompressionSettings);
+	if (!DefaultBoneCompressionSettings)
+	{
+		return false;
+	}
+
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.Compression");
+	Policy.BodyPath = TEXT("Body.Compression");
+	Policy.ManagedUePropertyPaths = {TEXT("BoneCompressionSettings")};
+
+	TSharedRef<FJsonObject> Authored = MakeShared<FJsonObject>();
+	Authored->SetBoolField(TEXT("bDoNotOverrideCompression"), true);
+
+	TSharedRef<FJsonObject> ExtendedAssetRef = MakeAssetRefObject(DefaultBoneCompressionSettings);
+	ExtendedAssetRef->SetStringField(TEXT("Note"), TEXT("AuthoredMetadata"));
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	Extracted->SetBoolField(TEXT("bDoNotOverrideCompression"), true);
+	Extracted->SetObjectField(TEXT("BoneCompressionSettings"), ExtendedAssetRef);
+
+	TestNotEqual(
+		TEXT("Default AssetRef objects with authored extension fields remain semantic"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesCurveArraysTest,
 	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesCurveArrays",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -425,6 +462,7 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineFlo
 	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
 	Policy.RegionId = TEXT("Body.NotifyStates");
 	Policy.BodyPath = TEXT("Body.NotifyStates");
+	Policy.RegionKind = EAssetDocumentRegionKind::Timeline;
 
 	TSharedRef<FJsonObject> AuthoredNotifyState = MakeShared<FJsonObject>();
 	AuthoredNotifyState->SetStringField(TEXT("Name"), TEXT("Window"));
@@ -454,6 +492,7 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArr
 	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
 	Policy.RegionId = TEXT("Body.SyncMarkers");
 	Policy.BodyPath = TEXT("Body.SyncMarkers");
+	Policy.RegionKind = EAssetDocumentRegionKind::Timeline;
 
 	TSharedRef<FJsonObject> AuthoredRight = MakeShared<FJsonObject>();
 	AuthoredRight->SetStringField(TEXT("Name"), TEXT("RightFoot"));
@@ -473,6 +512,48 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArr
 		TEXT("Timeline arrays hash independently of post-apply sort order"),
 		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(AuthoredRight), MakeObjectValue(AuthoredLeft)}), UAnimSequence::StaticClass()),
 		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(ExtractedLeft), MakeObjectValue(ExtractedRight)}), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArrayTieBreakerTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesTimelineArrayTieBreaker",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArrayTieBreakerTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.NotifyStates");
+	Policy.BodyPath = TEXT("Body.NotifyStates");
+	Policy.RegionKind = EAssetDocumentRegionKind::Timeline;
+
+	TSharedRef<FJsonObject> FirstShort = MakeShared<FJsonObject>();
+	FirstShort->SetStringField(TEXT("Name"), TEXT("Window"));
+	FirstShort->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	FirstShort->SetNumberField(TEXT("Time"), 0.25);
+	FirstShort->SetNumberField(TEXT("Duration"), 0.1);
+	TSharedRef<FJsonObject> FirstLong = MakeShared<FJsonObject>();
+	FirstLong->SetStringField(TEXT("Name"), TEXT("Window"));
+	FirstLong->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	FirstLong->SetNumberField(TEXT("Time"), 0.25);
+	FirstLong->SetNumberField(TEXT("Duration"), 0.5);
+
+	TSharedRef<FJsonObject> SecondLong = MakeShared<FJsonObject>();
+	SecondLong->SetStringField(TEXT("Name"), TEXT("Window"));
+	SecondLong->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	SecondLong->SetNumberField(TEXT("Time"), static_cast<float>(0.25));
+	SecondLong->SetNumberField(TEXT("Duration"), static_cast<float>(0.5));
+	TSharedRef<FJsonObject> SecondShort = MakeShared<FJsonObject>();
+	SecondShort->SetStringField(TEXT("Name"), TEXT("Window"));
+	SecondShort->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
+	SecondShort->SetNumberField(TEXT("Time"), static_cast<float>(0.25));
+	SecondShort->SetNumberField(TEXT("Duration"), static_cast<float>(0.1));
+
+	TestEqual(
+		TEXT("Timeline sort uses a deterministic semantic tie-breaker"),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(FirstShort), MakeObjectValue(FirstLong)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(SecondLong), MakeObjectValue(SecondShort)}), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -500,6 +581,40 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesObject
 		TEXT("Properties.ObjectPath remains semantic"),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesTimeSemanticTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.KeepsPropertiesTimeSemantic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesTimeSemanticTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.Metadata");
+	Policy.BodyPath = TEXT("Body.Metadata");
+	Policy.RegionKind = EAssetDocumentRegionKind::Array;
+
+	TSharedRef<FJsonObject> FirstProperties = MakeShared<FJsonObject>();
+	FirstProperties->SetNumberField(TEXT("Time"), 1.00000001);
+	FirstProperties->SetNumberField(TEXT("Duration"), 2.00000001);
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("Name"), TEXT("AuthoredMetadata"));
+	First->SetObjectField(TEXT("Properties"), FirstProperties);
+
+	TSharedRef<FJsonObject> SecondProperties = MakeShared<FJsonObject>();
+	SecondProperties->SetNumberField(TEXT("Time"), 1.00000002);
+	SecondProperties->SetNumberField(TEXT("Duration"), 2.00000002);
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("Name"), TEXT("AuthoredMetadata"));
+	Second->SetObjectField(TEXT("Properties"), SecondProperties);
+
+	TestNotEqual(
+		TEXT("Non-timeline Properties.Time and Properties.Duration remain semantic"),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(First)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(Second)}), UAnimSequence::StaticClass()));
 
 	return true;
 }

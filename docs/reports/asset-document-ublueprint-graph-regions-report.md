@@ -84,6 +84,37 @@ unsupported graph content 不输出 raw UE graph dump。当前 fallback diagnost
 
 结果：通过，`succeeded=58`、`failed=0`、`notRun=0`。
 
+Review 后针对 `AnimSequencePostApply` canonicalizer 边界又补了一轮窄修和验证：
+
+- timeline `Time` / `Duration` 归一化只在 `RegionKind == Timeline` 的 region 执行，并跳过 authored `Properties` 子树，避免 `Body.Metadata` / `Body.AssetUserData` 的用户对象属性被误降精度。
+- curve array 归一化只在 `Body.Curves` 执行。
+- timeline array sort 在 `Time`、`Name` 后使用 normalized canonical JSON 作为稳定 tie-breaker。
+- 默认 `AssetRef` 只有纯 `{Kind, Path}` shape 才会作为可省略默认引用移除；带 authored extension field 的 ref 继续参与 hash。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload
+```
+
+结果：通过，`Result: Succeeded`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetDocument.RegionCanonicalizer;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/RegionCanonicalizerAfterReviewFix2"
+```
+
+结果：通过，`succeeded=21`、`failed=0`、`notRun=0`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.AnimSequence;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/AnimSequenceAfterReviewFix"
+```
+
+结果：通过，`succeeded=4`、`failed=0`、`notRun=0`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/UBlueprintAfterReviewFix"
+```
+
+结果：通过，`succeeded=58`、`failed=0`、`notRun=0`。
+
 ```powershell
 & "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetDocument.SidecarDelta;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/SidecarDeltaAfterCanonicalizerFix"
 ```

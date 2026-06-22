@@ -334,6 +334,13 @@ bool IsDefaultObjectAssetRef(
 		return false;
 	}
 
+	if (FieldObject->Values.Num() != 2
+		|| !FieldObject->HasField(TEXT("Kind"))
+		|| !FieldObject->HasField(TEXT("Path")))
+	{
+		return false;
+	}
+
 	FString Kind;
 	FString Path;
 	if (!FieldObject->TryGetStringField(TEXT("Kind"), Kind)
@@ -536,6 +543,11 @@ bool IsAnimTimelineFloatField(const FString& FieldName)
 		|| FieldName == TEXT("Duration");
 }
 
+bool IsPropertiesSubtree(const FString& FieldName)
+{
+	return FieldName == TEXT("Properties");
+}
+
 void NormalizeAnimTimelineNumericFields(const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid())
@@ -579,8 +591,25 @@ void NormalizeAnimTimelineNumericFields(const TSharedPtr<FJsonValue>& Value)
 			continue;
 		}
 
+		if (IsPropertiesSubtree(FieldName))
+		{
+			continue;
+		}
+
 		NormalizeAnimTimelineNumericFields(*FieldValue);
 	}
+}
+
+FString MakeCanonicalObjectSortKey(const TSharedPtr<FJsonObject>& Object)
+{
+	if (!Object.IsValid())
+	{
+		return FString();
+	}
+
+	return FAssetDocumentCanonicalJson::WriteCanonicalJson(
+		MakeShared<FJsonValueObject>(CloneJsonObjectPreservingShape(Object.ToSharedRef())),
+		nullptr);
 }
 
 void NormalizeAnimTimelineArrayOrder(const TSharedPtr<FJsonValue>& Value)
@@ -614,15 +643,32 @@ void NormalizeAnimTimelineArrayOrder(const TSharedPtr<FJsonValue>& Value)
 		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
 		const double LeftTime = LeftObject.IsValid() ? LeftObject->GetNumberField(TEXT("Time")) : 0.0;
 		const double RightTime = RightObject.IsValid() ? RightObject->GetNumberField(TEXT("Time")) : 0.0;
-		if (!FMath::IsNearlyEqual(LeftTime, RightTime))
+		if (LeftTime != RightTime)
 		{
 			return LeftTime < RightTime;
 		}
 
 		const FString LeftName = LeftObject.IsValid() ? LeftObject->GetStringField(TEXT("Name")) : FString();
 		const FString RightName = RightObject.IsValid() ? RightObject->GetStringField(TEXT("Name")) : FString();
-		return LeftName < RightName;
+		if (LeftName != RightName)
+		{
+			return LeftName < RightName;
+		}
+
+		return MakeCanonicalObjectSortKey(LeftObject) < MakeCanonicalObjectSortKey(RightObject);
 	});
+}
+
+bool IsAnimCurveRegion(const FAssetDocumentRegionPolicy* Policy)
+{
+	return Policy
+		&& (Policy->BodyPath == TEXT("Body.Curves")
+			|| Policy->RegionId == FName(TEXT("Body.Curves")));
+}
+
+bool IsAnimTimelineRegion(const FAssetDocumentRegionPolicy* Policy)
+{
+	return Policy && Policy->RegionKind == EAssetDocumentRegionKind::Timeline;
 }
 
 FString MakeGraphNodeSemanticKey(const FAssetDocumentNodeSpec& Node)
@@ -777,9 +823,15 @@ public:
 		NormalizeEmptyGeneratedContainers(CanonicalValue);
 		NormalizeManagedNumericFields(Context, CanonicalValue);
 		NormalizeDefaultObjectReferenceFields(Context, CanonicalValue);
-		NormalizeAnimCurveArrayForHash(CanonicalValue);
-		NormalizeAnimTimelineNumericFields(CanonicalValue);
-		NormalizeAnimTimelineArrayOrder(CanonicalValue);
+		if (IsAnimCurveRegion(Context.Policy))
+		{
+			NormalizeAnimCurveArrayForHash(CanonicalValue);
+		}
+		if (IsAnimTimelineRegion(Context.Policy))
+		{
+			NormalizeAnimTimelineNumericFields(CanonicalValue);
+			NormalizeAnimTimelineArrayOrder(CanonicalValue);
+		}
 		return CanonicalValue;
 	}
 
