@@ -2252,6 +2252,11 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 	TestTrue(TEXT("ApplyFile writes AnimSequence sidecar sync state"), ApplyFileResult.bWroteSidecar);
 	if (ApplyFileResult.Payload.IsValid())
 	{
+		FString SkipReason;
+		if (ApplyFileResult.Payload->TryGetStringField(TEXT("sidecar_sync_update_skip_reason"), SkipReason))
+		{
+			AddError(FString::Printf(TEXT("AnimSequence sidecar sync update skip reason: %s"), *SkipReason));
+		}
 		TestFalse(TEXT("ApplyFile does not skip AnimSequence sidecar sync update"), ApplyFileResult.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
 	}
 	if (!ApplyFileResult.IsSuccess())

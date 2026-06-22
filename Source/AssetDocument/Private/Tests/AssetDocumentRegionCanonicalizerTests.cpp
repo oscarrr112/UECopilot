@@ -4,6 +4,10 @@
 #include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentPolicy.h"
 
+#include "Animation/AnimBoneCompressionSettings.h"
+#include "Animation/AnimCurveCompressionSettings.h"
+#include "Animation/AnimSequence.h"
+#include "AnimationUtils.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "Misc/AutomationTest.h"
@@ -167,12 +171,36 @@ FAssetDocumentRegionPolicy MakeAnimSequencePostApplyPolicy()
 
 FString HashAnimSequencePostApplyRegion(
 	const FAssetDocumentRegionPolicy& Policy,
-	const TSharedPtr<FJsonValue>& Value)
+	const TSharedPtr<FJsonValue>& Value,
+	UClass* AssetClass = nullptr)
 {
 	FAssetDocumentRegionCanonicalizeContext Context;
 	Context.Policy = &Policy;
 	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
+	Context.AssetClass = AssetClass;
 	return FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, Value);
+}
+
+TSharedRef<FJsonObject> MakeAssetRefObject(const UObject* Object)
+{
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), Object ? Object->GetPathName() : TEXT(""));
+	return AssetRef;
+}
+
+TSharedPtr<FJsonValue> MakeCurveObjectValue(const TCHAR* Name, const TCHAR* InterpMode, double Value)
+{
+	TSharedRef<FJsonObject> Key = MakeShared<FJsonObject>();
+	Key->SetNumberField(TEXT("Time"), 0.5);
+	Key->SetNumberField(TEXT("Value"), Value);
+	Key->SetStringField(TEXT("InterpMode"), InterpMode);
+
+	TSharedRef<FJsonObject> Curve = MakeShared<FJsonObject>();
+	Curve->SetStringField(TEXT("Name"), Name);
+	Curve->SetStringField(TEXT("CurveType"), TEXT("Float"));
+	Curve->SetArrayField(TEXT("Keys"), {MakeObjectValue(Key)});
+	return MakeObjectValue(Curve);
 }
 }
 
@@ -236,7 +264,7 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 	TestTrue(TEXT("Writeback remains object"), Writeback.IsValid() && Writeback->Type == EJson::Object);
 	if (Writeback.IsValid() && Writeback->Type == EJson::Object)
 	{
-		TestFalse(TEXT("Writeback returns cloned object"), Writeback->AsObject().Get() == Object.Get());
+		TestFalse(TEXT("Writeback returns cloned object"), Writeback->AsObject().Get() == &Object.Get());
 		TestTrue(TEXT("Writeback preserves ordinary value"), Writeback->AsObject()->HasField(TEXT("Value")));
 		TestEqual(TEXT("Writeback preserves authored value"), Writeback->AsObject()->GetNumberField(TEXT("Value")), 1.0);
 		TestTrue(TEXT("Writeback preserves authored _meta"), Writeback->AsObject()->HasField(TEXT("_meta")));
@@ -293,6 +321,158 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesGeneratedEmpty
 		TEXT("Empty generated diagnostic containers hash equally"),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Baseline)),
 		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithGeneratedContainers)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesManagedFloatPrecisionTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesManagedFloatPrecision",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesManagedFloatPrecisionTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.Compression");
+	Policy.BodyPath = TEXT("Body.Compression");
+	Policy.ManagedUePropertyPaths = {TEXT("CompressionErrorThresholdScale")};
+
+	TSharedRef<FJsonObject> Authored = MakeShared<FJsonObject>();
+	Authored->SetNumberField(TEXT("CompressionErrorThresholdScale"), 0.42);
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	Extracted->SetNumberField(TEXT("CompressionErrorThresholdScale"), static_cast<float>(0.42));
+
+	TestEqual(
+		TEXT("Managed float fields hash at reflected property precision"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesProjectDefaultAssetRefsTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.RemovesProjectDefaultAssetRefs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesProjectDefaultAssetRefsTest::RunTest(const FString& Parameters)
+{
+	const UObject* DefaultBoneCompressionSettings = FAnimationUtils::GetDefaultAnimationBoneCompressionSettings();
+	const UObject* DefaultCurveCompressionSettings = FAnimationUtils::GetDefaultAnimationCurveCompressionSettings();
+	TestNotNull(TEXT("Default bone compression settings exist"), DefaultBoneCompressionSettings);
+	TestNotNull(TEXT("Default curve compression settings exist"), DefaultCurveCompressionSettings);
+	if (!DefaultBoneCompressionSettings || !DefaultCurveCompressionSettings)
+	{
+		return false;
+	}
+
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.Compression");
+	Policy.BodyPath = TEXT("Body.Compression");
+	Policy.ManagedUePropertyPaths = {TEXT("BoneCompressionSettings"), TEXT("CurveCompressionSettings")};
+
+	TSharedRef<FJsonObject> Authored = MakeShared<FJsonObject>();
+	Authored->SetBoolField(TEXT("bDoNotOverrideCompression"), true);
+
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	Extracted->SetBoolField(TEXT("bDoNotOverrideCompression"), true);
+	Extracted->SetObjectField(TEXT("BoneCompressionSettings"), MakeAssetRefObject(DefaultBoneCompressionSettings));
+	Extracted->SetObjectField(TEXT("CurveCompressionSettings"), MakeAssetRefObject(DefaultCurveCompressionSettings));
+
+	TestEqual(
+		TEXT("Project default compression asset refs hash like omitted default-diff fields"),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesCurveArraysTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesCurveArrays",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesCurveArraysTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.Curves");
+	Policy.BodyPath = TEXT("Body.Curves");
+
+	TArray<TSharedPtr<FJsonValue>> AuthoredCurves;
+	AuthoredCurves.Add(MakeCurveObjectValue(TEXT("Speed"), TEXT("Linear"), 100.0));
+	AuthoredCurves.Add(MakeCurveObjectValue(TEXT("Lean"), TEXT("Linear"), 1.0));
+
+	TArray<TSharedPtr<FJsonValue>> ExtractedCurves;
+	ExtractedCurves.Add(MakeCurveObjectValue(TEXT("lean"), TEXT("RCIM_Linear"), 1.0));
+	ExtractedCurves.Add(MakeCurveObjectValue(TEXT("speed"), TEXT("RCIM_Linear"), 100.0));
+
+	TestEqual(
+		TEXT("Curve name case, rich-curve enum prefix, and array order are normalized"),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(AuthoredCurves), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(ExtractedCurves), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineFloatFieldsTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesTimelineFloatFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineFloatFieldsTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.NotifyStates");
+	Policy.BodyPath = TEXT("Body.NotifyStates");
+
+	TSharedRef<FJsonObject> AuthoredNotifyState = MakeShared<FJsonObject>();
+	AuthoredNotifyState->SetStringField(TEXT("Name"), TEXT("Window"));
+	AuthoredNotifyState->SetNumberField(TEXT("Time"), 0.2);
+	AuthoredNotifyState->SetNumberField(TEXT("Duration"), 0.3);
+
+	TSharedRef<FJsonObject> ExtractedNotifyState = MakeShared<FJsonObject>();
+	ExtractedNotifyState->SetStringField(TEXT("Name"), TEXT("Window"));
+	ExtractedNotifyState->SetNumberField(TEXT("Time"), static_cast<float>(0.2));
+	ExtractedNotifyState->SetNumberField(TEXT("Duration"), static_cast<float>(0.3));
+
+	TestEqual(
+		TEXT("Timeline Time and Duration fields hash at reflected float precision"),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(AuthoredNotifyState)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(ExtractedNotifyState)}), UAnimSequence::StaticClass()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArrayOrderTest,
+	"AssetDocument.RegionCanonicalizer.AnimSequencePostApply.NormalizesTimelineArrayOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArrayOrderTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy = MakeAnimSequencePostApplyPolicy();
+	Policy.RegionId = TEXT("Body.SyncMarkers");
+	Policy.BodyPath = TEXT("Body.SyncMarkers");
+
+	TSharedRef<FJsonObject> AuthoredRight = MakeShared<FJsonObject>();
+	AuthoredRight->SetStringField(TEXT("Name"), TEXT("RightFoot"));
+	AuthoredRight->SetNumberField(TEXT("Time"), 0.6);
+	TSharedRef<FJsonObject> AuthoredLeft = MakeShared<FJsonObject>();
+	AuthoredLeft->SetStringField(TEXT("Name"), TEXT("LeftFoot"));
+	AuthoredLeft->SetNumberField(TEXT("Time"), 0.1);
+
+	TSharedRef<FJsonObject> ExtractedLeft = MakeShared<FJsonObject>();
+	ExtractedLeft->SetStringField(TEXT("Name"), TEXT("LeftFoot"));
+	ExtractedLeft->SetNumberField(TEXT("Time"), static_cast<float>(0.1));
+	TSharedRef<FJsonObject> ExtractedRight = MakeShared<FJsonObject>();
+	ExtractedRight->SetStringField(TEXT("Name"), TEXT("RightFoot"));
+	ExtractedRight->SetNumberField(TEXT("Time"), static_cast<float>(0.6));
+
+	TestEqual(
+		TEXT("Timeline arrays hash independently of post-apply sort order"),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(AuthoredRight), MakeObjectValue(AuthoredLeft)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(ExtractedLeft), MakeObjectValue(ExtractedRight)}), UAnimSequence::StaticClass()));
 
 	return true;
 }

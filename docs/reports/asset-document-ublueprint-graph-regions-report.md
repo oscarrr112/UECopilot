@@ -58,38 +58,75 @@ unsupported graph content 不输出 raw UE graph dump。当前 fallback diagnost
 
 ## Verification
 
-本轮接力修复在 `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-ublueprint-impl` 运行的可行检查：
+本轮接力修复在 `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-ublueprint-impl` 和 validation host `C:/AVH1` 完成以下检查：
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload
+```
+
+结果：通过，`Result: Succeeded`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetDocument.RegionCanonicalizer;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/RegionCanonicalizerAfterSyncMarkerFix"
+```
+
+结果：通过，`succeeded=18`、`failed=0`、`notRun=0`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.AnimSequence;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/AnimSequenceFullAfterCanonicalizerFix"
+```
+
+结果：通过，`succeeded=4`、`failed=0`、`notRun=0`；`AssetFactory.AssetDocument.AnimSequence.Roundtrip` 单测 state 为 `Success`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/UBlueprintAfterCanonicalizerFix"
+```
+
+结果：通过，`succeeded=58`、`failed=0`、`notRun=0`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetDocument.SidecarDelta;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/SidecarDeltaAfterCanonicalizerFix"
+```
+
+结果：通过，`succeeded=10`、`failed=0`、`notRun=0`。
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetDocument.SidecarSync;Quit" -TestExit="Automation Test Queue Empty" -ReportExportPath="C:/AVH1/Saved/AutomationReports/SidecarSyncAfterCanonicalizerFix"
+```
+
+结果：通过，`succeeded=11`、`failed=0`、`notRun=0`。
+
+```powershell
+npm test
+```
+
+运行目录：`MCP/`。结果：通过，`tests 39`、`pass 39`、`fail 0`。测试产生的 `MCP/dist` build output 已恢复，未纳入本次 diff。
 
 ```powershell
 git diff --check
 ```
 
-结果：通过。
+结果：通过；仅有 CRLF warning，无 whitespace error。
+
+```powershell
+Invoke-WebRequest -Uri 'http://127.0.0.1:8559/assetfactory/health'
+```
+
+结果：HTTP 200，`status=ok`、`service=AssetFactory`、`port=8559`、`subsystemAvailable=true`。
+
+HTTP AssetDocument smoke：
+
+- `POST /assetfactory/assetdocument/extract` with `asset_path=/Game/AssetDocumentSmoke/BP_GraphSidecarSmoke`：HTTP 200，message `AssetDocument extracted`，payload 包含 `Body`。
+- `POST /assetfactory/assetdocument/validate` with `file_path=C:/AVH1/Content/AssetDocumentSmoke/AS_PostImportSidecarSmoke.assetdoc.json`：HTTP 200，message `AssetDocument is valid`。
+
+静态扫描：
 
 ```powershell
 rg -n "IsAnimSequencePostApplyCanonicalDivergenceRegion|bAnimSequencePostImportSidecar|AllowedPostApplyCanonicalDivergenceRegions" Source/AssetDocument/Private Source/AssetDocument/Public
-```
-
-结果：通过，未命中旧 service exception/static scan 目标。
-
-```powershell
 rg -n "Body\.UbergraphPages.*sidecar_sync|UBlueprint.*sidecar_sync|/Script/Engine\.AnimSequence.*sidecar|IsAnimSequencePostApplyCanonicalDivergenceRegion" Source/AssetDocument/Private/AssetDocumentService.cpp
 ```
 
-结果：通过，未命中旧 service exception/static scan 目标。
-
-```powershell
-node --test dist/broker/*.test.js
-```
-
-结果：通过，`tests 39`、`pass 39`、`fail 0`。
-
-本轮未把以下旧轮次结果重新声明为通过：
-
-- UBT blocked：写入 `C:/Users/HP/AppData/Local/UnrealEngine/Intermediate/Build/UnrealBuildTool.Env.BuildConfiguration.xml` 时触发 `UnauthorizedAccessException`。
-- UnrealEditor-Cmd automation exit 1：本轮没有 stdout，也没有新的 automation report 可作为通过证据。
-- HTTP health refused：`127.0.0.1:8559` 未就绪，health request 被拒绝。
-- fresh `npm test` / build blocked：`MCP/dist/*` 写入或 unlink 触发 `EPERM`，本轮只复用了 existing-dist 的 broker tests。
+结果：未命中旧 service exception/static scan 目标。
 
 HTTP smoke sidecar:
 
@@ -119,7 +156,7 @@ Review 后已修复的阻塞项：
 
 ## Known Risks
 
-- `RegionCanonicalizer` 已通过 `UBlueprintGraph` hook 将 generated graph metadata 归一化到可比较 hash form；sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，代码和测试/脚本现在拒绝 `sidecar_sync_update_skipped`，但运行时 HTTP smoke 本轮未完成，不能把 apply-file sync rewrite 记为已运行通过。
-- HTTP smoke 脚本的预期仍是 apply-file 成功后拒绝 `sidecar_sync_update_skipped` payload，并继续验证语义 graph diff 无 unexpected changed/failed/skipped entries；本轮 health 未连上 `127.0.0.1:8559`，因此没有新的 smoke 通过证据。
+- `RegionCanonicalizer` 已通过 `UBlueprintGraph` hook 将 generated graph metadata 归一化到可比较 hash form；sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，focused automation 和 HTTP smoke 已覆盖服务可用性、extract、validate 路径。
+- 本轮运行时验证还补齐了 `AnimSequencePostApply` hash form 的真实 divergence：managed float 精度、项目默认 compression `AssetRef`、curve name/order/interp-mode、timeline `Time`/`Duration` float precision、timeline sort order。相关逻辑仍集中在 policy hook strategy，不恢复 service-level AnimSequence if-list。
 - Apply 输入中 agent-friendly node ids 可能在 extract 中被 canonical member-based ids 替换；当前 smoke 使用可 roundtrip 的 `ReceiveBeginPlay` / `PrintString` ids，并检查 semantic member names。
 - 更深层 graph semantic identity 仍需后续收敛，包括复杂重命名/重绑定场景、非 Tier 1 adapters、复杂 pin default/object canonicalization，以及 `FunctionGraphs`、`MacroGraphs`、`Timelines`；任何这些未实现区域的非空 sidecar 内容应继续明确失败或报告 unsupported。

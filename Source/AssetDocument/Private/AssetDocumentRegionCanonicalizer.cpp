@@ -5,7 +5,12 @@
 #include "AssetDocumentCanonicalJson.h"
 #include "Graphs/AssetDocumentGraphParser.h"
 
+#include "Animation/AnimBoneCompressionSettings.h"
+#include "Animation/AnimCurveCompressionSettings.h"
+#include "AnimationUtils.h"
 #include "Misc/SecureHash.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -264,6 +269,362 @@ void NormalizeEmptyGeneratedContainers(const TSharedPtr<FJsonValue>& Value)
 	}
 }
 
+FString GetManagedPropertyLeafName(const FString& PropertyPath)
+{
+	FString LeafName = PropertyPath;
+	int32 DotIndex = INDEX_NONE;
+	if (LeafName.FindLastChar(TEXT('.'), DotIndex))
+	{
+		LeafName.RightChopInline(DotIndex + 1, EAllowShrinking::No);
+	}
+	return LeafName;
+}
+
+FProperty* FindManagedProperty(UClass* AssetClass, const FString& PropertyPath)
+{
+	if (!AssetClass)
+	{
+		return nullptr;
+	}
+
+	const FString PropertyName = GetManagedPropertyLeafName(PropertyPath);
+	if (PropertyName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	return FindFProperty<FProperty>(AssetClass, FName(*PropertyName));
+}
+
+const UObject* GetProjectDefaultAnimationObject(const FObjectPropertyBase* ObjectProperty)
+{
+	if (!ObjectProperty || !ObjectProperty->PropertyClass)
+	{
+		return nullptr;
+	}
+
+	const UObject* BoneCompressionSettings = FAnimationUtils::GetDefaultAnimationBoneCompressionSettings();
+	if (BoneCompressionSettings && BoneCompressionSettings->IsA(ObjectProperty->PropertyClass))
+	{
+		return BoneCompressionSettings;
+	}
+
+	const UObject* CurveCompressionSettings = FAnimationUtils::GetDefaultAnimationCurveCompressionSettings();
+	if (CurveCompressionSettings && CurveCompressionSettings->IsA(ObjectProperty->PropertyClass))
+	{
+		return CurveCompressionSettings;
+	}
+
+	return nullptr;
+}
+
+bool IsDefaultObjectAssetRef(
+	const TSharedPtr<FJsonValue>& FieldValue,
+	UClass* AssetClass,
+	const FString& PropertyPath)
+{
+	if (!AssetClass || !FieldValue.IsValid() || FieldValue->Type != EJson::Object)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> FieldObject = FieldValue->AsObject();
+	if (!FieldObject.IsValid())
+	{
+		return false;
+	}
+
+	FString Kind;
+	FString Path;
+	if (!FieldObject->TryGetStringField(TEXT("Kind"), Kind)
+		|| !Kind.Equals(TEXT("AssetRef"), ESearchCase::CaseSensitive)
+		|| !FieldObject->TryGetStringField(TEXT("Path"), Path)
+		|| Path.IsEmpty())
+	{
+		return false;
+	}
+
+	const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(FindManagedProperty(AssetClass, PropertyPath));
+	const UObject* DefaultObject = AssetClass->GetDefaultObject();
+	if (!ObjectProperty || !DefaultObject)
+	{
+		return false;
+	}
+
+	const UObject* DefaultValue = ObjectProperty->GetObjectPropertyValue_InContainer(DefaultObject);
+	if (DefaultValue && Path == DefaultValue->GetPathName())
+	{
+		return true;
+	}
+
+	if (const UObject* ProjectDefault = GetProjectDefaultAnimationObject(ObjectProperty))
+	{
+		return Path == ProjectDefault->GetPathName();
+	}
+
+	return false;
+}
+
+void NormalizeManagedNumericFields(
+	const FAssetDocumentRegionCanonicalizeContext& Context,
+	const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Context.Policy || !Context.AssetClass || !Value.IsValid() || Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	for (const FString& PropertyPath : Context.Policy->ManagedUePropertyPaths)
+	{
+		const FString FieldName = GetManagedPropertyLeafName(PropertyPath);
+		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (!FieldValue || !FieldValue->IsValid() || (*FieldValue)->Type != EJson::Number)
+		{
+			continue;
+		}
+
+		if (CastField<FFloatProperty>(FindManagedProperty(Context.AssetClass, PropertyPath)))
+		{
+			Object->SetNumberField(FieldName, static_cast<float>((*FieldValue)->AsNumber()));
+		}
+	}
+}
+
+void NormalizeDefaultObjectReferenceFields(
+	const FAssetDocumentRegionCanonicalizeContext& Context,
+	const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Context.Policy || !Context.AssetClass || !Value.IsValid() || Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TArray<FString> FieldsToRemove;
+	for (const FString& PropertyPath : Context.Policy->ManagedUePropertyPaths)
+	{
+		const FString FieldName = GetManagedPropertyLeafName(PropertyPath);
+		const TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (FieldValue && IsDefaultObjectAssetRef(*FieldValue, Context.AssetClass, PropertyPath))
+		{
+			FieldsToRemove.Add(FieldName);
+		}
+	}
+
+	for (const FString& FieldName : FieldsToRemove)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+bool IsAnimCurveObject(const TSharedPtr<FJsonObject>& Object)
+{
+	return Object.IsValid()
+		&& Object->HasTypedField<EJson::String>(TEXT("Name"))
+		&& Object->HasTypedField<EJson::String>(TEXT("CurveType"))
+		&& Object->HasTypedField<EJson::Array>(TEXT("Keys"));
+}
+
+FString NormalizeRichCurveInterpMode(FString InterpMode)
+{
+	if (InterpMode.StartsWith(TEXT("RCIM_"), ESearchCase::CaseSensitive))
+	{
+		InterpMode.RightChopInline(5, EAllowShrinking::No);
+	}
+	return InterpMode;
+}
+
+void NormalizeAnimCurveKeyObject(const TSharedPtr<FJsonObject>& KeyObject)
+{
+	if (!KeyObject.IsValid())
+	{
+		return;
+	}
+
+	FString InterpMode;
+	if (KeyObject->TryGetStringField(TEXT("InterpMode"), InterpMode))
+	{
+		KeyObject->SetStringField(TEXT("InterpMode"), NormalizeRichCurveInterpMode(InterpMode));
+	}
+
+	for (const TCHAR* NumericField : {TEXT("Time"), TEXT("Value"), TEXT("ArriveTangent"), TEXT("LeaveTangent"), TEXT("TangentWeight")})
+	{
+		double Number = 0.0;
+		if (KeyObject->TryGetNumberField(NumericField, Number))
+		{
+			KeyObject->SetNumberField(NumericField, static_cast<float>(Number));
+		}
+	}
+}
+
+void NormalizeAnimCurveObject(const TSharedPtr<FJsonObject>& CurveObject)
+{
+	if (!IsAnimCurveObject(CurveObject))
+	{
+		return;
+	}
+
+	FString Name;
+	if (CurveObject->TryGetStringField(TEXT("Name"), Name))
+	{
+		CurveObject->SetStringField(TEXT("Name"), Name.ToLower());
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+	if (CurveObject->TryGetArrayField(TEXT("Keys"), Keys) && Keys)
+	{
+		for (const TSharedPtr<FJsonValue>& KeyValue : *Keys)
+		{
+			if (KeyValue.IsValid() && KeyValue->Type == EJson::Object)
+			{
+				NormalizeAnimCurveKeyObject(KeyValue->AsObject());
+			}
+		}
+	}
+}
+
+void NormalizeAnimCurveArrayForHash(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type != EJson::Array)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>>& Array = const_cast<TArray<TSharedPtr<FJsonValue>>&>(Value->AsArray());
+	if (Array.Num() == 0)
+	{
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Entry : Array)
+	{
+		if (!Entry.IsValid() || Entry->Type != EJson::Object || !IsAnimCurveObject(Entry->AsObject()))
+		{
+			return;
+		}
+	}
+
+	for (const TSharedPtr<FJsonValue>& Entry : Array)
+	{
+		NormalizeAnimCurveObject(Entry->AsObject());
+	}
+
+	Array.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+		const FString LeftName = LeftObject.IsValid() ? LeftObject->GetStringField(TEXT("Name")) : FString();
+		const FString RightName = RightObject.IsValid() ? RightObject->GetStringField(TEXT("Name")) : FString();
+		return LeftName < RightName;
+	});
+}
+
+bool IsAnimTimelineFloatField(const FString& FieldName)
+{
+	return FieldName == TEXT("Time")
+		|| FieldName == TEXT("Duration");
+}
+
+void NormalizeAnimTimelineNumericFields(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+		{
+			NormalizeAnimTimelineNumericFields(Entry);
+		}
+		return;
+	}
+
+	if (Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TArray<FString> FieldNames;
+	Object->Values.GenerateKeyArray(FieldNames);
+	for (const FString& FieldName : FieldNames)
+	{
+		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (!FieldValue || !FieldValue->IsValid())
+		{
+			continue;
+		}
+
+		if (IsAnimTimelineFloatField(FieldName) && (*FieldValue)->Type == EJson::Number)
+		{
+			Object->SetNumberField(FieldName, static_cast<float>((*FieldValue)->AsNumber()));
+			continue;
+		}
+
+		NormalizeAnimTimelineNumericFields(*FieldValue);
+	}
+}
+
+void NormalizeAnimTimelineArrayOrder(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type != EJson::Array)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>>& Array = const_cast<TArray<TSharedPtr<FJsonValue>>&>(Value->AsArray());
+	if (Array.Num() == 0)
+	{
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Entry : Array)
+	{
+		if (!Entry.IsValid()
+			|| Entry->Type != EJson::Object
+			|| !Entry->AsObject().IsValid()
+			|| !Entry->AsObject()->HasTypedField<EJson::String>(TEXT("Name"))
+			|| !Entry->AsObject()->HasTypedField<EJson::Number>(TEXT("Time")))
+		{
+			return;
+		}
+	}
+
+	Array.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+		const double LeftTime = LeftObject.IsValid() ? LeftObject->GetNumberField(TEXT("Time")) : 0.0;
+		const double RightTime = RightObject.IsValid() ? RightObject->GetNumberField(TEXT("Time")) : 0.0;
+		if (!FMath::IsNearlyEqual(LeftTime, RightTime))
+		{
+			return LeftTime < RightTime;
+		}
+
+		const FString LeftName = LeftObject.IsValid() ? LeftObject->GetStringField(TEXT("Name")) : FString();
+		const FString RightName = RightObject.IsValid() ? RightObject->GetStringField(TEXT("Name")) : FString();
+		return LeftName < RightName;
+	});
+}
+
 FString MakeGraphNodeSemanticKey(const FAssetDocumentNodeSpec& Node)
 {
 	FString MemberJson;
@@ -286,6 +647,14 @@ FString MakeSemanticNodeId(const FString& SemanticKey)
 		Utf8SemanticKey.Get(),
 		static_cast<uint64>(Utf8SemanticKey.Length()));
 	return FString::Printf(TEXT("semantic_%s"), *Hash.ToString().Left(16).ToLower());
+}
+
+void NormalizeGraphNodeMemberForHash(FAssetDocumentNodeSpec& Node)
+{
+	if (Node.Member.IsValid())
+	{
+		Node.Member->RemoveField(TEXT("Guid"));
+	}
 }
 
 void RewriteGraphNodeIdsForHash(FAssetDocumentGraphSpec& Graph)
@@ -364,6 +733,7 @@ TSharedPtr<FJsonValue> CanonicalizeGraphArrayForHash(
 		{
 			Node.NodeGuid.Reset();
 			Node.Capability.Reset();
+			NormalizeGraphNodeMemberForHash(Node);
 		}
 		RewriteGraphNodeIdsForHash(Graph);
 	}
@@ -405,6 +775,11 @@ public:
 		TSharedPtr<FJsonValue> CanonicalValue = GetIdentityStrategy().CanonicalizeForHash(Context, RegionValue);
 		NormalizeGeneratedObjectPathFields(CanonicalValue);
 		NormalizeEmptyGeneratedContainers(CanonicalValue);
+		NormalizeManagedNumericFields(Context, CanonicalValue);
+		NormalizeDefaultObjectReferenceFields(Context, CanonicalValue);
+		NormalizeAnimCurveArrayForHash(CanonicalValue);
+		NormalizeAnimTimelineNumericFields(CanonicalValue);
+		NormalizeAnimTimelineArrayOrder(CanonicalValue);
 		return CanonicalValue;
 	}
 
