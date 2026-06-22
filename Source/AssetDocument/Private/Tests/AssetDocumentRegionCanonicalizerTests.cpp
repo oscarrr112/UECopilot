@@ -26,6 +26,19 @@ TSharedPtr<FJsonObject> MakeGraphMember(const TCHAR* Kind, const TCHAR* OwnerCla
 	return Member;
 }
 
+TSharedPtr<FJsonObject> MakeGraphMemberWithClassAndGuid(const TCHAR* Class, const TCHAR* Name, const TCHAR* Guid)
+{
+	TSharedPtr<FJsonObject> Member = MakeShared<FJsonObject>();
+	Member->SetStringField(TEXT("Kind"), TEXT("Function"));
+	Member->SetStringField(TEXT("Class"), Class);
+	Member->SetStringField(TEXT("Name"), Name);
+	if (Guid)
+	{
+		Member->SetStringField(TEXT("Guid"), Guid);
+	}
+	return Member;
+}
+
 TSharedPtr<FJsonObject> MakeGraphPosition(double X, double Y)
 {
 	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
@@ -127,6 +140,22 @@ TSharedPtr<FJsonValue> MakeGraphRegionValue(
 	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
 }
 
+TSharedPtr<FJsonValue> MakeSingleNodeGraphRegionValue(TSharedPtr<FJsonObject> Node)
+{
+	TSharedPtr<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), TEXT("EventGraph"));
+	Graph->SetStringField(TEXT("Schema"), TEXT("K2"));
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeObjectValue(Node.ToSharedRef()));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	Graph->SetArrayField(TEXT("Links"), TArray<TSharedPtr<FJsonValue>>());
+
+	TArray<TSharedPtr<FJsonValue>> Graphs;
+	Graphs.Add(MakeObjectValue(Graph.ToSharedRef()));
+	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
+}
+
 FAssetDocumentRegionPolicy MakeAnimSequencePostApplyPolicy()
 {
 	FAssetDocumentRegionPolicy Policy;
@@ -197,6 +226,7 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetNumberField(TEXT("Value"), 1.0);
 	Object->SetStringField(TEXT("_meta"), TEXT("diagnostic"));
+	Object->SetObjectField(TEXT("_Skipped"), MakeShared<FJsonObject>());
 
 	FAssetDocumentRegionCanonicalizeContext Context;
 	Context.Policy = &Policy;
@@ -206,8 +236,12 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 	TestTrue(TEXT("Writeback remains object"), Writeback.IsValid() && Writeback->Type == EJson::Object);
 	if (Writeback.IsValid() && Writeback->Type == EJson::Object)
 	{
+		TestFalse(TEXT("Writeback returns cloned object"), Writeback->AsObject().Get() == Object.Get());
 		TestTrue(TEXT("Writeback preserves ordinary value"), Writeback->AsObject()->HasField(TEXT("Value")));
 		TestEqual(TEXT("Writeback preserves authored value"), Writeback->AsObject()->GetNumberField(TEXT("Value")), 1.0);
+		TestTrue(TEXT("Writeback preserves authored _meta"), Writeback->AsObject()->HasField(TEXT("_meta")));
+		TestEqual(TEXT("Writeback preserves authored _meta value"), Writeback->AsObject()->GetStringField(TEXT("_meta")), FString(TEXT("diagnostic")));
+		TestTrue(TEXT("Writeback preserves authored _Skipped"), Writeback->AsObject()->HasTypedField<EJson::Object>(TEXT("_Skipped")));
 	}
 
 	return true;
@@ -451,6 +485,90 @@ bool FAssetDocumentRegionCanonicalizerGraphIgnoresGeneratedMetadataTest::RunTest
 		TEXT("Generated graph metadata and semantic node ids hash equally"),
 		FAssetDocumentRegionCanonicalizer::HashRegionValue(SidecarContext, SidecarGraph),
 		FAssetDocumentRegionCanonicalizer::HashRegionValue(EvidenceContext, EvidenceGraph));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerGraphIgnoresMemberGuidTest,
+	"AssetDocument.RegionCanonicalizer.Graph.IgnoresMemberGuid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerGraphIgnoresMemberGuidTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = TEXT("Body.UbergraphPages");
+	Policy.BodyPath = TEXT("Body.UbergraphPages");
+	Policy.RegionKind = EAssetDocumentRegionKind::Graph;
+	Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
+
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
+
+	TSharedPtr<FJsonObject> WithoutGuidNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), nullptr));
+	TSharedPtr<FJsonObject> WithGuidNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
+	TSharedPtr<FJsonObject> WithDifferentGuidNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("22222222222222222222222222222222")));
+
+	TestEqual(
+		TEXT("Member.Guid omission hashes equally"),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(WithoutGuidNode)),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(WithGuidNode)));
+	TestEqual(
+		TEXT("Member.Guid differences hash equally"),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(WithGuidNode)),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(WithDifferentGuidNode)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerGraphKeepsMemberSemanticsTest,
+	"AssetDocument.RegionCanonicalizer.Graph.KeepsMemberSemantics",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerGraphKeepsMemberSemanticsTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = TEXT("Body.UbergraphPages");
+	Policy.BodyPath = TEXT("Body.UbergraphPages");
+	Policy.RegionKind = EAssetDocumentRegionKind::Graph;
+	Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
+
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
+
+	TSharedPtr<FJsonObject> BaselineNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
+	TSharedPtr<FJsonObject> DifferentNameNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("Delay"), TEXT("11111111111111111111111111111111")));
+	TSharedPtr<FJsonObject> DifferentClassNode = MakeGraphNode(
+		TEXT("print_string"),
+		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.GameplayStatics"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
+
+	TestNotEqual(
+		TEXT("Member.Name remains hash-significant"),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(BaselineNode)),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(DifferentNameNode)));
+	TestNotEqual(
+		TEXT("Member.Class remains hash-significant"),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(BaselineNode)),
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeSingleNodeGraphRegionValue(DifferentClassNode)));
 
 	return true;
 }

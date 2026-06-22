@@ -1,6 +1,6 @@
 # UBlueprint AssetDocument Graph Regions Final Report
 
-日期：2026-06-20
+日期：2026-06-22
 
 ## 分支与 worktree
 
@@ -58,39 +58,38 @@ unsupported graph content 不输出 raw UE graph dump。当前 fallback diagnost
 
 ## Verification
 
-在 `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-ublueprint-impl` 运行：
+本轮接力修复在 `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-ublueprint-impl` 运行的可行检查：
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload
+git diff --check
 ```
 
-结果：exit 0；`Result: Succeeded`。
+结果：通过。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.GraphCore;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/GraphCoreAfterHook"
+rg -n "IsAnimSequencePostApplyCanonicalDivergenceRegion|bAnimSequencePostImportSidecar|AllowedPostApplyCanonicalDivergenceRegions" Source/AssetDocument/Private Source/AssetDocument/Public
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/GraphCoreAfterHook/index.json` 记录 `succeeded=17`、`failed=0`、`notRun=0`。
+结果：通过，未命中旧 service exception/static scan 目标。
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/AVH1/AVH1.uproject" -Unattended -NullRHI -ExecCmds="Automation RunTests AssetFactory.AssetDocument.UBlueprint;Quit" -TestExit="Automation Test Queue Empty" -ReportOutputPath="C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinalAfterHook"
+rg -n "Body\.UbergraphPages.*sidecar_sync|UBlueprint.*sidecar_sync|/Script/Engine\.AnimSequence.*sidecar|IsAnimSequencePostApplyCanonicalDivergenceRegion" Source/AssetDocument/Private/AssetDocumentService.cpp
 ```
 
-结果：exit 0；`C:/AVH1/Saved/AutomationReports/UBlueprintGraphFinalAfterHook/index.json` 记录 `succeeded=57`、`failed=0`、`notRun=0`。
+结果：通过，未命中旧 service exception/static scan 目标。
 
 ```powershell
-Push-Location MCP; npm test; Pop-Location
+node --test dist/broker/*.test.js
 ```
 
-结果：exit 0；Node test runner 记录 `tests 39`、`pass 39`、`fail 0`。`npm test` 生成的 `MCP/dist` 构建噪声已恢复，未纳入本 task diff。
+结果：通过，`tests 39`、`pass 39`、`fail 0`。
 
-```powershell
-Start-Process -FilePath "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" -ArgumentList "`"C:/AVH1/AVH1.uproject`"" -PassThru -WindowStyle Hidden
-Invoke-RestMethod -Uri http://127.0.0.1:8559/assetfactory/health
-python docs/superpowers/verification/asset_document_ublueprint_graph_http_smoke.py --base-url http://127.0.0.1:8559
-```
+本轮未把以下旧轮次结果重新声明为通过：
 
-结果：health 返回 `status=ok`、`service=AssetFactory`、`port=8559`；smoke exit 0。脚本需要一个已运行的 editor HTTP server，随后完成 `/assetfactory/assetdocument/apply-file` -> `/assetfactory/assetdocument/extract` -> `/assetfactory/assetdocument/diff`。
+- UBT blocked：写入 `C:/Users/HP/AppData/Local/UnrealEngine/Intermediate/Build/UnrealBuildTool.Env.BuildConfiguration.xml` 时触发 `UnauthorizedAccessException`。
+- UnrealEditor-Cmd automation exit 1：本轮没有 stdout，也没有新的 automation report 可作为通过证据。
+- HTTP health refused：`127.0.0.1:8559` 未就绪，health request 被拒绝。
+- fresh `npm test` / build blocked：`MCP/dist/*` 写入或 unlink 触发 `EPERM`，本轮只复用了 existing-dist 的 broker tests。
 
 HTTP smoke sidecar:
 
@@ -120,7 +119,7 @@ Review 后已修复的阻塞项：
 
 ## Known Risks
 
-- `RegionCanonicalizer` 已通过 `UBlueprintGraph` hook 将 generated graph metadata 归一化到可比较 hash form；sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，apply-file sync rewrite 现在应写入 `_meta.sync.regions.Body.UbergraphPages`，不再接受 sync skip。
-- HTTP smoke 已在 apply-file 成功后拒绝 `sidecar_sync_update_skipped` payload，并继续验证语义 graph diff 无 unexpected changed/failed/skipped entries。
+- `RegionCanonicalizer` 已通过 `UBlueprintGraph` hook 将 generated graph metadata 归一化到可比较 hash form；sparse sidecar 不写 `GraphGuid`、`NodeGuid`、`Capability` 时，代码和测试/脚本现在拒绝 `sidecar_sync_update_skipped`，但运行时 HTTP smoke 本轮未完成，不能把 apply-file sync rewrite 记为已运行通过。
+- HTTP smoke 脚本的预期仍是 apply-file 成功后拒绝 `sidecar_sync_update_skipped` payload，并继续验证语义 graph diff 无 unexpected changed/failed/skipped entries；本轮 health 未连上 `127.0.0.1:8559`，因此没有新的 smoke 通过证据。
 - Apply 输入中 agent-friendly node ids 可能在 extract 中被 canonical member-based ids 替换；当前 smoke 使用可 roundtrip 的 `ReceiveBeginPlay` / `PrintString` ids，并检查 semantic member names。
 - 更深层 graph semantic identity 仍需后续收敛，包括复杂重命名/重绑定场景、非 Tier 1 adapters、复杂 pin default/object canonicalization，以及 `FunctionGraphs`、`MacroGraphs`、`Timelines`；任何这些未实现区域的非空 sidecar 内容应继续明确失败或报告 unsupported。

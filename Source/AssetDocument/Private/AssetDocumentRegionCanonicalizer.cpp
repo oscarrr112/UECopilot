@@ -9,6 +9,56 @@
 
 namespace
 {
+TSharedPtr<FJsonValue> CloneJsonValuePreservingShape(const TSharedPtr<FJsonValue>& Value);
+
+TSharedRef<FJsonObject> CloneJsonObjectPreservingShape(const TSharedRef<FJsonObject>& Object)
+{
+	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		Clone->SetField(Pair.Key, CloneJsonValuePreservingShape(Pair.Value));
+	}
+	return Clone;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValuePreservingShape(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type == EJson::Null || Value->Type == EJson::None)
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::String:
+		return MakeShared<FJsonValueString>(Value->AsString());
+	case EJson::Number:
+		return MakeShared<FJsonValueNumber>(Value->AsNumber());
+	case EJson::Boolean:
+		return MakeShared<FJsonValueBoolean>(Value->AsBool());
+	case EJson::Array:
+		{
+			TArray<TSharedPtr<FJsonValue>> ClonedArray;
+			for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+			{
+				ClonedArray.Add(CloneJsonValuePreservingShape(Entry));
+			}
+			return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
+		}
+	case EJson::Object:
+		{
+			const TSharedPtr<FJsonObject> Object = Value->AsObject();
+			if (Object.IsValid())
+			{
+				return MakeShared<FJsonValueObject>(CloneJsonObjectPreservingShape(Object.ToSharedRef()));
+			}
+			return MakeShared<FJsonValueNull>();
+		}
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
 class FAssetDocumentIdentityRegionCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
 {
 public:
@@ -23,7 +73,7 @@ public:
 		const FAssetDocumentRegionCanonicalizeContext&,
 		const TSharedPtr<FJsonValue>& RegionValue) const override
 	{
-		return FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(RegionValue);
+		return CloneJsonValuePreservingShape(RegionValue);
 	}
 };
 
@@ -219,8 +269,10 @@ FString MakeGraphNodeSemanticKey(const FAssetDocumentNodeSpec& Node)
 	FString MemberJson;
 	if (Node.Member.IsValid())
 	{
+		const TSharedRef<FJsonObject> MemberForHash = CloneJsonObjectPreservingShape(Node.Member.ToSharedRef());
+		MemberForHash->RemoveField(TEXT("Guid"));
 		MemberJson = FAssetDocumentCanonicalJson::WriteCanonicalJson(
-			MakeShared<FJsonValueObject>(Node.Member.ToSharedRef()),
+			MakeShared<FJsonValueObject>(MemberForHash),
 			nullptr);
 	}
 
