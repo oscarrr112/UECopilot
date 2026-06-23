@@ -1649,19 +1649,6 @@ FAssetDocumentCapabilityResult ApplyInterfaces(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-void RestoreWidgetBlueprintInterfaces(UWidgetBlueprint* WidgetBlueprint, const TArray<FBPInterfaceDescription>& PreviousInterfaces)
-{
-	if (!WidgetBlueprint)
-	{
-		return;
-	}
-
-	WidgetBlueprint->Modify();
-	WidgetBlueprint->ImplementedInterfaces = PreviousInterfaces;
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
-	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-}
-
 void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, TArray<FUnsupportedCurrentRegion>& OutRegions)
 {
 	OutRegions.Reset();
@@ -2357,28 +2344,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	}
 
 	bool bChanged = false;
-	const TArray<FBPInterfaceDescription> PreviousInterfaces = WidgetBlueprint->ImplementedInterfaces;
-	auto ReturnInterfaceFailure = [&PreviousInterfaces, WidgetBlueprint](const FAssetDocumentCapabilityResult& FailureResult)
-	{
-		RestoreWidgetBlueprintInterfaces(WidgetBlueprint, PreviousInterfaces);
-		return FailureResult;
-	};
-
-	bool bInterfacesChanged = false;
-	const FAssetDocumentCapabilityResult InterfaceApplyResult =
-		ApplyInterfaces(WidgetBlueprint, InterfaceSpecs, bInterfacesChanged);
-	if (!InterfaceApplyResult.bSuccess)
-	{
-		return ReturnInterfaceFailure(InterfaceApplyResult);
-	}
-	bChanged |= bInterfacesChanged;
-
 	bool bWidgetTreeChanged = false;
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
 		FWidgetBlueprintTreeAdapter::Apply(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr, &bWidgetTreeChanged);
 	if (!WidgetTreeResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(WidgetTreeResult);
+		return WidgetTreeResult;
 	}
 	bChanged |= bWidgetTreeChanged;
 
@@ -2407,7 +2378,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed")));
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed"));
 		}
 	}
 	else
@@ -2420,25 +2391,25 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintGraphAdapter().ApplyRegions(Context, BodyObject.ToSharedRef(), bGraphsChanged);
 	if (!GraphApplyResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(GraphApplyResult);
+		return GraphApplyResult;
 	}
 	bChanged |= bGraphsChanged;
 
 	const FAssetDocumentCapabilityResult VariableDefaultsResult = ApplyVariableDefaultsToGeneratedClass(WidgetBlueprint, VariableSpecs);
 	if (!VariableDefaultsResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(VariableDefaultsResult);
+		return VariableDefaultsResult;
 	}
 
 	const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(WidgetBlueprint, ClassDefaults);
 	if (!ClassDefaultsPreflightResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(ClassDefaultsPreflightResult);
+		return ClassDefaultsPreflightResult;
 	}
 	const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = ApplyClassDefaults(WidgetBlueprint, ClassDefaults);
 	if (!ClassDefaultsApplyResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(ClassDefaultsApplyResult);
+		return ClassDefaultsApplyResult;
 	}
 
 	bool bBindingsChanged = false;
@@ -2446,14 +2417,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintBindingAdapter::Apply(WidgetBlueprint, BindingsValue ? *BindingsValue : nullptr, &bBindingsChanged);
 	if (!BindingsApplyResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(BindingsApplyResult);
+		return BindingsApplyResult;
 	}
 	if (bBindingsChanged)
 	{
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Bindings"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed")));
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Bindings"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed"));
 		}
 	}
 
@@ -2462,7 +2433,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintAnimationAdapter::Apply(WidgetBlueprint, AnimationsValue ? *AnimationsValue : nullptr, &bAnimationsChanged);
 	if (!AnimationsApplyResult.bSuccess)
 	{
-		return ReturnInterfaceFailure(AnimationsApplyResult);
+		return AnimationsApplyResult;
 	}
 	if (bAnimationsChanged)
 	{
@@ -2470,9 +2441,27 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Animations"), TEXT("/Body/Animations"), TEXT("WidgetBlueprintCompileFailed")));
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Animations"), TEXT("/Body/Animations"), TEXT("WidgetBlueprintCompileFailed"));
 		}
 	}
+
+	bool bInterfacesChanged = false;
+	const FAssetDocumentCapabilityResult InterfaceApplyResult =
+		ApplyInterfaces(WidgetBlueprint, InterfaceSpecs, bInterfacesChanged);
+	if (!InterfaceApplyResult.bSuccess)
+	{
+		return InterfaceApplyResult;
+	}
+	if (bInterfacesChanged)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+		if (WidgetBlueprint->Status == BS_Error)
+		{
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.ImplementedInterfaces"), TEXT("/Body/ImplementedInterfaces"), TEXT("WidgetBlueprintCompileFailed"));
+		}
+	}
+	bChanged |= bInterfacesChanged;
 
 #if WITH_EDITORONLY_DATA
 	if (Palette.IsValid())

@@ -3521,6 +3521,57 @@ bool FAssetDocumentWidgetBlueprintInvalidImplementedInterfaceRejectsTest::RunTes
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintImplementedInterfacesFailedApplyLeavesNoResidueTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.FailedApplyLeavesNoResidue",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintImplementedInterfacesFailedApplyLeavesNoResidueTest::RunTest(const FString&)
+{
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InterfaceFailureNoResidue"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeDefaultWidgetBlueprintBody();
+	SetGraphRegion(InitialBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial interface rollback fixture applies"), InitialResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
+	TestNotNull(TEXT("EventGraph exists before unsupported-node injection"), EventGraph);
+	if (!EventGraph)
+	{
+		return false;
+	}
+
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph, UK2Node_IfThenElse::StaticClass(), NAME_None, RF_Transactional);
+	Branch->CreateNewGuid();
+	Branch->NodePosX = 640;
+	Branch->NodePosY = 0;
+	EventGraph->AddNode(Branch, true, false);
+	Branch->AllocateDefaultPins();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+
+	TSharedRef<FJsonObject> InterfaceBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InterfaceBody, {MakeImplementedInterface(InterfacePath)});
+	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InterfaceBody)));
+	TestFalse(TEXT("Apply that adds an interface and deletes unsupported current graph is rejected"), FailedResult.IsSuccess());
+	TestTrue(TEXT("Rejected apply reports unsupported graph diagnostic"), ResultHasDiagnosticCode(FailedResult, TEXT("UnsupportedGraphNodeClass")));
+
+	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
+	TestFalse(TEXT("Rejected apply does not leave implemented interface"), WidgetBlueprintImplementsInterface(AfterFailureBlueprint, InterfaceClass));
+	TestEqual(TEXT("Rejected apply does not leave interface-created function graphs"), AfterFailureBlueprint ? AfterFailureBlueprint->FunctionGraphs.Num() : -1, 0);
+	TestTrue(TEXT("Rejected apply preserves unsupported current graph"), GraphHasConcreteNodeClass(FindWidgetBlueprintGraphByName(AfterFailureBlueprint, TEXT("EventGraph")), UK2Node_IfThenElse::StaticClass()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintApplyFileCanonicalWritebackTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.ApplyFileCanonicalWriteback",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
