@@ -4,6 +4,7 @@
 
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonValue.h"
+#include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Serialization/JsonSerializer.h"
@@ -21,6 +22,7 @@ struct FParsedWidgetBinding
 	FName Function;
 	TArray<FName> SourcePath;
 	FGuid MemberGuid;
+	FString JsonPath;
 };
 
 FAssetDocumentCapabilityResult BindingFailure(const FString& Message, const FString& Path, const FString& Code)
@@ -148,6 +150,7 @@ FAssetDocumentCapabilityResult ParseBindingSpecs(
 
 		const TSharedPtr<FJsonObject> BindingObject = Bindings[BindingIndex]->AsObject();
 		FParsedWidgetBinding Spec;
+		Spec.JsonPath = BindingPath;
 		FString WidgetName;
 		FString PropertyName;
 		FString KindString;
@@ -298,7 +301,7 @@ FAssetDocumentCapabilityResult ResolvePropertyPath(
 		{
 			return BindingFailure(
 				FString::Printf(TEXT("Binding source path segment '%s' does not exist"), *Spec.SourcePath[SegmentIndex].ToString()),
-				TEXT("/Body/Bindings"),
+				FString::Printf(TEXT("%s/SourcePath/%d"), *Spec.JsonPath, SegmentIndex),
 				TEXT("InvalidBindingSourcePath"));
 		}
 		OutChain.Add(FFieldVariant(Property));
@@ -309,7 +312,7 @@ FAssetDocumentCapabilityResult ResolvePropertyPath(
 			{
 				return BindingFailure(
 					FString::Printf(TEXT("Binding source path segment '%s' cannot contain child segments"), *Spec.SourcePath[SegmentIndex].ToString()),
-					TEXT("/Body/Bindings"),
+					FString::Printf(TEXT("%s/SourcePath/%d"), *Spec.JsonPath, SegmentIndex),
 					TEXT("InvalidBindingSourcePath"));
 			}
 		}
@@ -325,7 +328,7 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 {
 	if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
 	{
-		return BindingFailure(TEXT("WidgetBlueprint WidgetTree is required for bindings"), TEXT("/Body/Bindings"), TEXT("MissingWidgetTree"));
+		return BindingFailure(TEXT("WidgetBlueprint WidgetTree is required for bindings"), Spec.JsonPath, TEXT("MissingWidgetTree"));
 	}
 
 	UWidget* TargetWidget = WidgetBlueprint->WidgetTree->FindWidget(Spec.Widget);
@@ -333,7 +336,7 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 	{
 		return BindingFailure(
 			FString::Printf(TEXT("Binding target widget '%s' does not exist"), *Spec.Widget.ToString()),
-			TEXT("/Body/Bindings"),
+			Spec.JsonPath / TEXT("Widget"),
 			TEXT("MissingBindingWidget"));
 	}
 
@@ -342,7 +345,7 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 	{
 		return BindingFailure(
 			FString::Printf(TEXT("Binding target property '%s.%s' has no supported delegate"), *Spec.Widget.ToString(), *Spec.Property.ToString()),
-			TEXT("/Body/Bindings"),
+			Spec.JsonPath / TEXT("Property"),
 			TEXT("MissingBindingDelegate"));
 	}
 
@@ -359,8 +362,27 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 		{
 			return BindingFailure(
 				FString::Printf(TEXT("Binding function '%s' does not exist"), *Spec.Function.ToString()),
-				TEXT("/Body/Bindings"),
+				Spec.JsonPath / TEXT("Function"),
 				TEXT("MissingBindingFunction"));
+		}
+		if (Spec.MemberGuid.IsValid())
+		{
+			FName FunctionNameFromGuid = NAME_None;
+			if (WidgetBlueprint->SkeletonGeneratedClass)
+			{
+				FunctionNameFromGuid = UBlueprint::GetFieldNameFromClassByGuid<UFunction>(WidgetBlueprint->SkeletonGeneratedClass, Spec.MemberGuid);
+			}
+			if (FunctionNameFromGuid.IsNone() && WidgetBlueprint->GeneratedClass)
+			{
+				FunctionNameFromGuid = UBlueprint::GetFieldNameFromClassByGuid<UFunction>(WidgetBlueprint->GeneratedClass, Spec.MemberGuid);
+			}
+			if (FunctionNameFromGuid.IsNone() || FunctionNameFromGuid != Spec.Function)
+			{
+				return BindingFailure(
+					FString::Printf(TEXT("Binding MemberGuid does not resolve to function '%s'"), *Spec.Function.ToString()),
+					Spec.JsonPath / TEXT("MemberGuid"),
+					TEXT("MismatchedBindingMemberGuid"));
+			}
 		}
 
 		OutBinding.FunctionName = Spec.Function;
@@ -372,7 +394,7 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 		{
 			return BindingFailure(
 				FString::Printf(TEXT("Binding function '%s' is not compatible with '%s.%s'"), *Spec.Function.ToString(), *Spec.Widget.ToString(), *Spec.Property.ToString()),
-				TEXT("/Body/Bindings"),
+				Spec.JsonPath / TEXT("Function"),
 				TEXT("InvalidBindingFunctionSignature"));
 		}
 	}
@@ -391,7 +413,7 @@ FAssetDocumentCapabilityResult BuildEditorBinding(
 		{
 			return BindingFailure(
 				FString::Printf(TEXT("Binding source path is not compatible with '%s.%s': %s"), *Spec.Widget.ToString(), *Spec.Property.ToString(), *ValidationError.ToString()),
-				TEXT("/Body/Bindings"),
+				Spec.JsonPath / TEXT("SourcePath"),
 				TEXT("InvalidBindingSourcePath"));
 		}
 	}
@@ -453,12 +475,51 @@ FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 	FJsonSerializer::Serialize(Value.IsValid() ? Value.ToSharedRef() : MakeShared<FJsonValueNull>(), TEXT(""), Writer);
 	return JsonText;
 }
+
+FAssetDocumentCapabilityResult BuildDesiredBindings(
+	UWidgetBlueprint* WidgetBlueprint,
+	const TSharedPtr<FJsonValue>& BindingsJson,
+	TArray<FDelegateEditorBinding>& OutBindings)
+{
+	OutBindings.Reset();
+
+	TArray<FParsedWidgetBinding> Specs;
+	FAssetDocumentCapabilityResult ParseResult = ParseBindingSpecs(BindingsJson, Specs);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	for (const FParsedWidgetBinding& Spec : Specs)
+	{
+		FDelegateEditorBinding Binding;
+		const FAssetDocumentCapabilityResult BuildResult = BuildEditorBinding(WidgetBlueprint, Spec, Binding);
+		if (!BuildResult.bSuccess)
+		{
+			return BuildResult;
+		}
+		OutBindings.Add(MoveTemp(Binding));
+	}
+	SortEditorBindings(OutBindings);
+	return FAssetDocumentCapabilityResult::Success();
+}
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintBindingAdapter::Validate(const TSharedPtr<FJsonValue>& BindingsJson)
 {
 	TArray<FParsedWidgetBinding> Specs;
 	return ParseBindingSpecs(BindingsJson, Specs);
+}
+
+FAssetDocumentCapabilityResult FWidgetBlueprintBindingAdapter::Preflight(UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& BindingsJson)
+{
+	TArray<FDelegateEditorBinding> DesiredBindings;
+	const FAssetDocumentCapabilityResult BuildResult = BuildDesiredBindings(WidgetBlueprint, BindingsJson, DesiredBindings);
+	if (!BuildResult.bSuccess)
+	{
+		return BuildResult;
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Preflighted WidgetBlueprint Bindings"));
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintBindingAdapter::Apply(UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& BindingsJson, bool* bOutChanged)
@@ -468,25 +529,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintBindingAdapter::Apply(UWidgetBlue
 		*bOutChanged = false;
 	}
 
-	TArray<FParsedWidgetBinding> Specs;
-	FAssetDocumentCapabilityResult ParseResult = ParseBindingSpecs(BindingsJson, Specs);
-	if (!ParseResult.bSuccess)
-	{
-		return ParseResult;
-	}
-
 	TArray<FDelegateEditorBinding> DesiredBindings;
-	for (const FParsedWidgetBinding& Spec : Specs)
+	const FAssetDocumentCapabilityResult BuildResult = BuildDesiredBindings(WidgetBlueprint, BindingsJson, DesiredBindings);
+	if (!BuildResult.bSuccess)
 	{
-		FDelegateEditorBinding Binding;
-		const FAssetDocumentCapabilityResult BuildResult = BuildEditorBinding(WidgetBlueprint, Spec, Binding);
-		if (!BuildResult.bSuccess)
-		{
-			return BuildResult;
-		}
-		DesiredBindings.Add(MoveTemp(Binding));
+		return BuildResult;
 	}
-	SortEditorBindings(DesiredBindings);
 
 #if WITH_EDITORONLY_DATA
 	const FString CurrentComparable = JsonValueToComparableString(BindingsToJsonValue(WidgetBlueprint ? WidgetBlueprint->Bindings : TArray<FDelegateEditorBinding>()));

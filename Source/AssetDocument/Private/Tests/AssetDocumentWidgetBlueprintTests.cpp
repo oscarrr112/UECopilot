@@ -157,6 +157,14 @@ bool ResultHasDiagnosticCode(const FAssetDocumentResult& Result, const FString& 
 	});
 }
 
+bool ResultHasDiagnosticPath(const FAssetDocumentResult& Result, const FString& ExpectedPath)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedPath](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == ExpectedPath;
+	});
+}
+
 bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Payload)
 {
 	if (!Payload.IsValid())
@@ -286,6 +294,25 @@ TArray<TSharedPtr<FJsonValue>> GetExtractedBindings(const FAssetDocumentResult& 
 		return *Bindings;
 	}
 	return Empty;
+}
+
+UObject* GetWidgetBlueprintCDO(const UWidgetBlueprint* WidgetBlueprint)
+{
+	return WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? WidgetBlueprint->GeneratedClass->GetDefaultObject(false)
+		: nullptr;
+}
+
+bool GetGeneratedBoolDefault(const UWidgetBlueprint* WidgetBlueprint, FName PropertyName, bool& OutValue)
+{
+	UObject* CDO = GetWidgetBlueprintCDO(WidgetBlueprint);
+	FBoolProperty* Property = CDO ? FindFProperty<FBoolProperty>(CDO->GetClass(), PropertyName) : nullptr;
+	if (!Property)
+	{
+		return false;
+	}
+	OutValue = Property->GetPropertyValue_InContainer(CDO);
+	return true;
 }
 }
 
@@ -1024,6 +1051,21 @@ bool FAssetDocumentWidgetBlueprintBindingsFunctionRoundTripTest::RunTest(const F
 			TestEqual(TEXT("Binding kind is Function"), Binding.Kind, EBindingKind::Function);
 			TestEqual(TEXT("Binding function is preserved"), Binding.FunctionName, FName(TEXT("GetDisplayText")));
 		}
+
+		const UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass);
+		TestNotNull(TEXT("Runtime generated class exists"), GeneratedClass);
+		if (GeneratedClass)
+		{
+			TestEqual(TEXT("One runtime binding is emitted"), GeneratedClass->Bindings.Num(), 1);
+			if (GeneratedClass->Bindings.Num() == 1)
+			{
+				const FDelegateRuntimeBinding& RuntimeBinding = GeneratedClass->Bindings[0];
+				TestEqual(TEXT("Runtime binding object name"), RuntimeBinding.ObjectName, FString(TEXT("TitleText")));
+				TestEqual(TEXT("Runtime binding target property"), RuntimeBinding.PropertyName, FName(TEXT("Text")));
+				TestEqual(TEXT("Runtime binding kind is Function"), RuntimeBinding.Kind, EBindingKind::Function);
+				TestEqual(TEXT("Runtime binding function"), RuntimeBinding.FunctionName, FName(TEXT("GetDisplayText")));
+			}
+		}
 	}
 
 	FAssetDocumentExtractRequest ExtractRequest;
@@ -1082,6 +1124,21 @@ bool FAssetDocumentWidgetBlueprintBindingsPropertyRoundTripTest::RunTest(const F
 			TestEqual(TEXT("Property binding target property is Text"), Binding.PropertyName, FName(TEXT("Text")));
 			TestEqual(TEXT("Binding kind is Property"), Binding.Kind, EBindingKind::Property);
 			TestFalse(TEXT("Property binding uses SourcePath"), Binding.SourcePath.IsEmpty());
+		}
+
+		const UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass);
+		TestNotNull(TEXT("Runtime generated class exists"), GeneratedClass);
+		if (GeneratedClass)
+		{
+			TestEqual(TEXT("One runtime property binding is emitted"), GeneratedClass->Bindings.Num(), 1);
+			if (GeneratedClass->Bindings.Num() == 1)
+			{
+				const FDelegateRuntimeBinding& RuntimeBinding = GeneratedClass->Bindings[0];
+				TestEqual(TEXT("Runtime property binding object name"), RuntimeBinding.ObjectName, FString(TEXT("TitleText")));
+				TestEqual(TEXT("Runtime property binding target property"), RuntimeBinding.PropertyName, FName(TEXT("Text")));
+				TestEqual(TEXT("Runtime binding kind is Property"), RuntimeBinding.Kind, EBindingKind::Property);
+				TestTrue(TEXT("Runtime property binding source path is valid"), RuntimeBinding.SourcePath.IsValid());
+			}
 		}
 	}
 
@@ -1205,6 +1262,84 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsDuplicateTargetTest::RunTest(co
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Duplicate binding target rejects apply"), Result.IsSuccess());
 	TestTrue(TEXT("Duplicate binding target diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("DuplicateBindingTarget")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsInvalidPreflightPreservesExistingAssetTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.InvalidPreflightPreservesExistingAsset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsInvalidPreflightPreservesExistingAssetTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsInvalidPreflightPreserves"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	InitialBody->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bIsFocusable"), true);
+	InitialBody->GetObjectField(TEXT("WidgetTree"))->GetObjectField(TEXT("RootWidget"))->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Original title"));
+	SetBindings(InitialBody, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial valid binding fixture applies"), InitialResult.IsSuccess());
+
+	UWidgetBlueprint* InitialBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("Initial WidgetBlueprint loads"), InitialBlueprint);
+	if (!InitialBlueprint)
+	{
+		return false;
+	}
+
+	bool bInitialFocusable = false;
+	TestTrue(TEXT("Initial bIsFocusable can be read"), GetGeneratedBoolDefault(InitialBlueprint, TEXT("bIsFocusable"), bInitialFocusable));
+	TestTrue(TEXT("Initial bIsFocusable is true"), bInitialFocusable);
+
+	UTextBlock* InitialTitleText = InitialBlueprint->WidgetTree ? Cast<UTextBlock>(InitialBlueprint->WidgetTree->FindWidget(TEXT("TitleText"))) : nullptr;
+	TestNotNull(TEXT("Initial TitleText exists"), InitialTitleText);
+	TestEqual(TEXT("Initial TitleText text"), InitialTitleText ? InitialTitleText->GetText().ToString() : FString(), FString(TEXT("Original title")));
+
+	TSharedRef<FJsonObject> InvalidBody = MakeBindingFixtureBody();
+	InvalidBody->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bIsFocusable"), false);
+	InvalidBody->GetObjectField(TEXT("WidgetTree"))->GetObjectField(TEXT("RootWidget"))->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Mutated title"));
+	SetBindings(InvalidBody, {MakeFunctionBinding(TEXT("MissingText"), TEXT("Text"), TEXT("GetDisplayText"))});
+	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Invalid binding rejects apply"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Invalid binding reports missing widget"), ResultHasDiagnosticCode(InvalidResult, TEXT("MissingBindingWidget")));
+	TestTrue(TEXT("Invalid binding diagnostic points at widget field"), ResultHasDiagnosticPath(InvalidResult, TEXT("/Body/Bindings/0/Widget")));
+
+	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint still loads after failed apply"), AfterFailureBlueprint);
+	if (AfterFailureBlueprint)
+	{
+		bool bAfterFailureFocusable = false;
+		TestTrue(TEXT("After-failure bIsFocusable can be read"), GetGeneratedBoolDefault(AfterFailureBlueprint, TEXT("bIsFocusable"), bAfterFailureFocusable));
+		TestTrue(TEXT("After-failure bIsFocusable remains true"), bAfterFailureFocusable);
+
+		UTextBlock* AfterFailureTitleText = AfterFailureBlueprint->WidgetTree ? Cast<UTextBlock>(AfterFailureBlueprint->WidgetTree->FindWidget(TEXT("TitleText"))) : nullptr;
+		TestNotNull(TEXT("After-failure TitleText still exists"), AfterFailureTitleText);
+		TestEqual(TEXT("After-failure TitleText text remains unchanged"), AfterFailureTitleText ? AfterFailureTitleText->GetText().ToString() : FString(), FString(TEXT("Original title")));
+		TestEqual(TEXT("After-failure binding remains original"), AfterFailureBlueprint->Bindings.Num(), 1);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsRejectsMismatchedMemberGuidTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.RejectsMismatchedMemberGuid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsRejectsMismatchedMemberGuidTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsRejectsMismatchedGuid"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	TSharedPtr<FJsonObject> Binding = MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"));
+	Binding->SetStringField(TEXT("MemberGuid"), TEXT("11111111-2222-3333-4444-555555555555"));
+	SetBindings(Body, {Binding});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Mismatched function MemberGuid rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Mismatched function MemberGuid diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MismatchedBindingMemberGuid")));
+	TestTrue(TEXT("Mismatched function MemberGuid diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Bindings/0/MemberGuid")));
 	return true;
 }
 
