@@ -3,6 +3,8 @@
 #include "AssetDocumentLifecycle.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -10,6 +12,8 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
 #include "UObject/GarbageCollection.h"
+#include "WidgetBlueprint.h"
+#include "WidgetBlueprintFactory.h"
 
 bool FAssetDocumentLifecycle::TryParseAction(const FString& ActionName, EAssetDocumentLifecycleAction& OutAction, FString& OutError)
 {
@@ -50,6 +54,12 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (ExistingAsset && Class == UBlueprint::StaticClass() && ExistingAsset->GetClass() != UBlueprint::StaticClass())
 	{
 		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UBlueprint asset"), *Result.ObjectPath);
+		return Result;
+	}
+
+	if (ExistingAsset && Class == UWidgetBlueprint::StaticClass() && ExistingAsset->GetClass() != UWidgetBlueprint::StaticClass())
+	{
+		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UWidgetBlueprint asset"), *Result.ObjectPath);
 		return Result;
 	}
 
@@ -94,6 +104,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (Class == UBlueprint::StaticClass())
 	{
 		return CreateBlueprintAsset(Target, Package, AssetName, Document);
+	}
+
+	if (Class == UWidgetBlueprint::StaticClass())
+	{
+		return CreateWidgetBlueprintAsset(Target, Package, AssetName, Document);
 	}
 
 	UObject* NewAsset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
@@ -199,6 +214,22 @@ bool FAssetDocumentLifecycle::TryResolveBlueprintParentClass(const TSharedPtr<FJ
 	return true;
 }
 
+bool FAssetDocumentLifecycle::TryResolveWidgetBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError)
+{
+	if (!TryResolveBlueprintParentClass(Document, OutParentClass, OutError))
+	{
+		return false;
+	}
+
+	if (!OutParentClass->IsChildOf(UUserWidget::StaticClass()))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UUserWidget subclass"), *OutParentClass->GetName());
+		return false;
+	}
+
+	return true;
+}
+
 FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
 {
 	FAssetDocumentLifecycleResult Result;
@@ -235,6 +266,60 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(cons
 	FAssetRegistryModule::AssetCreated(Blueprint);
 
 	Result.Asset = Blueprint;
+	Result.bCreated = true;
+	return Result;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateWidgetBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+
+	UClass* ParentClass = nullptr;
+	if (!TryResolveWidgetBlueprintParentClass(Document, ParentClass, Result.Error))
+	{
+		return Result;
+	}
+
+	UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
+	Factory->BlueprintType = BPTYPE_Normal;
+	Factory->ParentClass = ParentClass;
+
+	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Factory->FactoryCreateNew(
+		UWidgetBlueprint::StaticClass(),
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone,
+		nullptr,
+		GWarn));
+	if (!WidgetBlueprint)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create WidgetBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->RootWidget = nullptr;
+		WidgetBlueprint->WidgetTree->NamedSlotBindings.Empty();
+	}
+	WidgetBlueprint->Bindings.Empty();
+	WidgetBlueprint->Animations.Empty();
+#endif
+
+	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+	if (WidgetBlueprint->Status == BS_Error)
+	{
+		Result.Asset = WidgetBlueprint;
+		Result.bCreated = true;
+		Result.Error = FString::Printf(TEXT("Failed to compile WidgetBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FAssetRegistryModule::AssetCreated(WidgetBlueprint);
+
+	Result.Asset = WidgetBlueprint;
 	Result.bCreated = true;
 	return Result;
 }

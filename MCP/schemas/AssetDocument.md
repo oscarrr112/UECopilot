@@ -306,6 +306,60 @@ Example:
 }
 ```
 
+## WidgetBlueprint Profile
+
+The `/Script/UMGEditor.WidgetBlueprint` profile represents exact `UWidgetBlueprint` assets through AssetDocument only. It does not use the legacy `WidgetBlueprint` generator schema, does not accept `AssetType: "WidgetBlueprint"`, and does not require a WidgetBlueprint-specific MCP tool.
+
+The profile owns these canonical `Body` keys:
+
+- `ParentClass`: required `ClassRef` resolving to a `UUserWidget` subclass. The default is `/Script/UMG.UserWidget`.
+- `ImplementedInterfaces`: authoritative array of implemented interface refs. Task 1 accepts only empty arrays until the WidgetBlueprint interface adapter lands.
+- `Variables`: authoritative array for non-widget Blueprint variables. Task 1 accepts only empty arrays.
+- `ClassDefaults`: generated `UUserWidget` CDO default deltas. Task 1 accepts only an empty object.
+- `WidgetTree`: object for `RootWidget` and `NamedSlotBindings`. Task 1 accepts `{ "RootWidget": null, "NamedSlotBindings": {} }` or an empty object.
+- `Bindings`: authoritative `UWidgetBlueprint::Bindings` array. Task 1 accepts only empty arrays.
+- `Animations`: authoritative package-owned `UWidgetAnimation` array. Task 1 accepts only empty arrays.
+- `UbergraphPages`, `FunctionGraphs`, and `MacroGraphs`: WidgetBlueprint graph regions using the UBlueprint graph model. Task 1 accepts only empty arrays and exposes `UBlueprintGraph` policy hooks for the graph regions.
+- `Palette`: stable palette metadata. Task 1 accepts only an empty object.
+- `EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags. Task 1 accepts only an empty object.
+- `WidgetVariableGuids`: stable widget/animation variable GUID map. Task 1 accepts only an empty object.
+
+Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected.
+
+Minimal empty WidgetBlueprint sidecar:
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/UI/WBP_Empty",
+  "Class": "/Script/UMGEditor.WidgetBlueprint",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "ParentClass": {
+      "Kind": "ClassRef",
+      "Class": "/Script/UMG.UserWidget"
+    },
+    "ImplementedInterfaces": [],
+    "Variables": [],
+    "ClassDefaults": {},
+    "WidgetTree": {
+      "RootWidget": null,
+      "NamedSlotBindings": {}
+    },
+    "Bindings": [],
+    "Animations": [],
+    "UbergraphPages": [],
+    "FunctionGraphs": [],
+    "MacroGraphs": [],
+    "Palette": {},
+    "EditorOptions": {},
+    "WidgetVariableGuids": {}
+  }
+}
+```
+
 ## Legacy Reflected Apply Shape
 
 The current reflected apply, validate, diff, extract, and sidecar file routes still use the legacy GenericAsset sidecar shape:

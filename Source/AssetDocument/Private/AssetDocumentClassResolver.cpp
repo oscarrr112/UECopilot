@@ -8,6 +8,7 @@
 #include "Engine/World.h"
 #include "Materials/Material.h"
 #include "UObject/Package.h"
+#include "WidgetBlueprint.h"
 
 bool FAssetDocumentClassResolver::ResolveClass(const FString& ClassName, UClass*& OutClass, FString& OutError)
 {
@@ -73,7 +74,7 @@ bool FAssetDocumentClassResolver::ValidateResolvedClass(UClass* Class, FString& 
 		return false;
 	}
 
-	if (Class->IsChildOf(UBlueprint::StaticClass()) && Class != UBlueprint::StaticClass())
+	if (Class->IsChildOf(UBlueprint::StaticClass()) && Class != UBlueprint::StaticClass() && Class != UWidgetBlueprint::StaticClass())
 	{
 		OutError = FString::Printf(TEXT("Resolved class '%s' is a Blueprint-derived asset class that requires an exact AssetDocument profile"), *Class->GetName());
 		return false;

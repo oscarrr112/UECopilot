@@ -25,7 +25,9 @@ public class AssetDocument : ModuleRules
 			"AssetTools",
 			"BlueprintGraph",
 			"DirectoryWatcher",
-			"Projects"
+			"Projects",
+			"UMG",
+			"UMGEditor"
 		});
 	}
 }
