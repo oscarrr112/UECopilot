@@ -21,11 +21,15 @@
 #include "K2Node_IfThenElse.h"
 #include "K2Node_Tunnel.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 #include "MovieScene.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "Test/TestUserWidget.h"
 #include "Tracks/MovieSceneBoolTrack.h"
 #include "Tracks/MovieSceneFloatTrack.h"
@@ -105,6 +109,38 @@ static TSharedPtr<FJsonObject> MakeWidgetBlueprintDocument(const FString& Target
 	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
 	Document->SetObjectField(TEXT("Body"), Body);
 	return Document;
+}
+
+bool WriteJsonDocumentToFile(FAutomationTestBase* Test, const FString& FilePath, const TSharedPtr<FJsonObject>& Document)
+{
+	if (!Document.IsValid())
+	{
+		Test->AddError(TEXT("Cannot write invalid JSON document"));
+		return false;
+	}
+
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(FilePath), true);
+	FString Json;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Json);
+	if (!FJsonSerializer::Serialize(Document.ToSharedRef(), Writer))
+	{
+		Test->AddError(TEXT("Failed to serialize JSON document"));
+		return false;
+	}
+	if (!FFileHelper::SaveStringToFile(Json, *FilePath))
+	{
+		Test->AddError(FString::Printf(TEXT("Failed to write JSON document to %s"), *FilePath));
+		return false;
+	}
+	return true;
+}
+
+FString MakeProjectSidecarPathForTarget(const FString& Target)
+{
+	return FPaths::Combine(
+		FPaths::ProjectContentDir(),
+		TEXT("AssetDocumentTests"),
+		FString::Printf(TEXT("%s.assetdoc.json"), *FPackageName::GetLongPackageAssetName(Target)));
 }
 
 static TSharedRef<FJsonObject> MakeWidgetNode(const FString& Name, const FString& ClassPath)
@@ -495,6 +531,35 @@ void SetGraphRegion(TSharedRef<FJsonObject> Body, const TCHAR* RegionName, std::
 	Body->SetArrayField(RegionName, GraphValues);
 }
 
+TSharedRef<FJsonObject> MakeIntegratedWidgetBlueprintBody()
+{
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	Body->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bIsFocusable"), true);
+	Body->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Category"), TEXT("AssetDocument Smoke"));
+	Body->GetObjectField(TEXT("EditorOptions"))->SetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext"), true);
+	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	SetGraphRegion(Body, TEXT("FunctionGraphs"), {
+		MakeGraph(
+			TEXT("InspectTitle"),
+			TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	return Body;
+}
+
 TArray<TSharedPtr<FJsonValue>> GetExtractedBindings(const FAssetDocumentResult& ExtractResult)
 {
 	TArray<TSharedPtr<FJsonValue>> Empty;
@@ -581,6 +646,40 @@ bool ExtractedBodySkippedGraphContainsClass(const FAssetDocumentResult& ExtractR
 		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() && NodeValue->Type == EJson::Object ? NodeValue->AsObject() : nullptr;
 		FString NodeClass;
 		if (Node.IsValid() && Node->TryGetStringField(TEXT("Class"), NodeClass) && NodeClass == ClassPath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& Expected)
+{
+	if (!Values)
+	{
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		if (Value.IsValid() && Value->Type == EJson::String && Value->AsString() == Expected)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool RegionPoliciesContain(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& ExpectedRegionId)
+{
+	if (!Values)
+	{
+		return false;
+	}
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+		FString RegionId;
+		if (Object.IsValid() && Object->TryGetStringField(TEXT("RegionId"), RegionId) && RegionId == ExpectedRegionId)
 		{
 			return true;
 		}
@@ -3204,6 +3303,247 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsDuplicateNamesTest::RunTest(c
 	{
 		TestNotNull(TEXT("Existing RootCanvas survives duplicate-name apply"), WidgetBlueprint->WidgetTree->FindWidget(TEXT("RootCanvas")));
 		TestNull(TEXT("DuplicateName is not half-applied"), WidgetBlueprint->WidgetTree->FindWidget(TEXT("DuplicateName")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintFullApplyExtractDiffTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.FullApplyExtractDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintFullApplyExtractDiffTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_FullApplyExtractDiff"));
+	TSharedRef<FJsonObject> Body = MakeIntegratedWidgetBlueprintBody();
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Full WidgetBlueprint apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Full WidgetBlueprint apply succeeds"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Full WidgetBlueprint extract succeeds"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	TestTrue(TEXT("Extracted Body exists"), ExtractedBody.IsValid());
+	if (ExtractedBody.IsValid())
+	{
+		for (const FName& BodyKey : FWidgetBlueprintAssetDocumentCapability::GetCanonicalBodyKeys())
+		{
+			TestTrue(FString::Printf(TEXT("Extracted Body contains %s"), *BodyKey.ToString()), ExtractedBody->HasField(BodyKey.ToString()));
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Bindings = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Animations = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* FunctionGraphs = nullptr;
+		TestTrue(TEXT("Extracted Body.Bindings has one entry"), ExtractedBody->TryGetArrayField(TEXT("Bindings"), Bindings) && Bindings && Bindings->Num() == 1);
+		TestTrue(TEXT("Extracted Body.Animations has one entry"), ExtractedBody->TryGetArrayField(TEXT("Animations"), Animations) && Animations && Animations->Num() == 1);
+		TestTrue(TEXT("Extracted Body.FunctionGraphs has one entry"), ExtractedBody->TryGetArrayField(TEXT("FunctionGraphs"), FunctionGraphs) && FunctionGraphs && FunctionGraphs->Num() == 1);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Full WidgetBlueprint diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Full WidgetBlueprint diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintApplyFileCanonicalWritebackTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ApplyFileCanonicalWriteback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintApplyFileCanonicalWritebackTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_ApplyFileCanonicalWriteback"));
+	TSharedRef<FJsonObject> Body = MakeIntegratedWidgetBlueprintBody();
+	Body->RemoveField(TEXT("WidgetVariableGuids"));
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FString SidecarPath = MakeProjectSidecarPathForTarget(Target);
+	if (!WriteJsonDocumentToFile(this, SidecarPath, Document))
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = false;
+	const FAssetDocumentResult ApplyFileResult = Service.ApplyFile(ApplyFileRequest);
+	if (!ApplyFileResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("WidgetBlueprint ApplyFile failed: %s"), *ApplyFileResult.Message));
+	}
+	TestTrue(TEXT("WidgetBlueprint ApplyFile succeeds"), ApplyFileResult.IsSuccess());
+	TestTrue(TEXT("WidgetBlueprint ApplyFile writes sidecar sync state"), ApplyFileResult.bWroteSidecar);
+	if (ApplyFileResult.Payload.IsValid())
+	{
+		FString SkipReason;
+		if (ApplyFileResult.Payload->TryGetStringField(TEXT("sidecar_sync_update_skip_reason"), SkipReason))
+		{
+			AddError(FString::Printf(TEXT("WidgetBlueprint ApplyFile sidecar sync update skipped: %s"), *SkipReason));
+		}
+		TestFalse(TEXT("ApplyFile does not skip WidgetBlueprint sidecar sync update"), ApplyFileResult.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
+	}
+
+	FString RewrittenJson;
+	TestTrue(TEXT("ApplyFile sidecar remains readable"), FFileHelper::LoadFileToString(RewrittenJson, *SidecarPath));
+	TestTrue(TEXT("ApplyFile writes sync metadata"), RewrittenJson.Contains(TEXT("\"sync\"")));
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after ApplyFile"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* ExtractedGuids = nullptr;
+	TestTrue(
+		TEXT("Extract canonicalizes generated WidgetVariableGuids"),
+		ExtractedBody.IsValid()
+			&& ExtractedBody->TryGetObjectField(TEXT("WidgetVariableGuids"), ExtractedGuids)
+			&& ExtractedGuids
+			&& (*ExtractedGuids)->HasField(TEXT("TitleText"))
+			&& (*ExtractedGuids)->HasField(TEXT("Intro")));
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds with omitted WidgetVariableGuids"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Generated WidgetVariableGuids do not create unexpected changes"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintOmittedRegionsAreAuthoritativeTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.OmittedRegionsAreAuthoritative",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintOmittedRegionsAreAuthoritativeTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_OmittedRegionsAreAuthoritative"));
+	FAssetDocumentService Service;
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeIntegratedWidgetBlueprintBody())));
+	TestTrue(TEXT("Initial full WidgetBlueprint apply succeeds"), InitialResult.IsSuccess());
+	if (!InitialResult.IsSuccess())
+	{
+		AddError(InitialResult.Message);
+		return false;
+	}
+
+	TSharedRef<FJsonObject> ResetBody = MakeDefaultWidgetBlueprintBody();
+	const FAssetDocumentResult ResetResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ResetBody)));
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Reset WidgetBlueprint apply failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Reset WidgetBlueprint apply succeeds"), ResetResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads after reset"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestNull(TEXT("Omitted WidgetTree root deletes root widget"), WidgetBlueprint->WidgetTree ? WidgetBlueprint->WidgetTree->RootWidget : nullptr);
+		TestEqual(TEXT("Omitted Bindings clears UE bindings"), WidgetBlueprint->Bindings.Num(), 0);
+		TestEqual(TEXT("Omitted Animations clears owned animations"), WidgetBlueprint->Animations.Num(), 0);
+		TestTrue(TEXT("Omitted Palette resets PaletteCategory"), WidgetBlueprint->PaletteCategory.IsEmpty());
+		TestFalse(TEXT("Omitted EditorOptions resets bCanCallInitializedWithoutPlayerContext"), WidgetBlueprint->bCanCallInitializedWithoutPlayerContext);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, ResetBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after authoritative reset"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Authoritative reset diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintApplyFailureRollsBackTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ApplyFailureRollsBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintApplyFailureRollsBackTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_ApplyFailureRollsBack"));
+	FAssetDocumentService Service;
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeIntegratedWidgetBlueprintBody())));
+	TestTrue(TEXT("Initial full WidgetBlueprint apply succeeds"), InitialResult.IsSuccess());
+	if (!InitialResult.IsSuccess())
+	{
+		AddError(InitialResult.Message);
+		return false;
+	}
+
+	TSharedRef<FJsonObject> InvalidBody = MakeIntegratedWidgetBlueprintBody();
+	InvalidBody->SetObjectField(TEXT("ParentClass"), MakeClassRef(TEXT("/Script/Engine.Actor")));
+	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Invalid full WidgetBlueprint apply fails"), FailedResult.IsSuccess());
+	TestTrue(TEXT("Invalid parent diagnostic is reported"), ResultHasDiagnosticCode(FailedResult, TEXT("InvalidParentClass")));
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads after failed apply"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Failed apply preserves parent class"), WidgetBlueprint->ParentClass.Get(), UTestUserWidget::StaticClass());
+		TestNotNull(TEXT("Failed apply preserves TitleText"), WidgetBlueprint->WidgetTree ? WidgetBlueprint->WidgetTree->FindWidget(TEXT("TitleText")) : nullptr);
+		TestEqual(TEXT("Failed apply preserves binding count"), WidgetBlueprint->Bindings.Num(), 1);
+		TestEqual(TEXT("Failed apply preserves animation count"), WidgetBlueprint->Animations.Num(), 1);
+		TestEqual(TEXT("Failed apply preserves palette category"), WidgetBlueprint->PaletteCategory, FString(TEXT("AssetDocument Smoke")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintProfileInspectionListsAllRegionsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ProfileInspectionListsAllRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintProfileInspectionListsAllRegionsTest::RunTest(const FString&)
+{
+	FAssetDocumentService Service;
+	FAssetDocumentProfileRequest Request;
+	Request.ClassOrAsset = TEXT("/Script/UMGEditor.WidgetBlueprint");
+	const FAssetDocumentResult Result = Service.InspectProfile(Request);
+	TestTrue(TEXT("WidgetBlueprint profile inspection succeeds"), Result.IsSuccess());
+	TestTrue(TEXT("Profile payload exists"), Result.Payload.IsValid());
+	if (!Result.Payload.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Profile class is WidgetBlueprint"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/UMGEditor.WidgetBlueprint")));
+	const TArray<TSharedPtr<FJsonValue>>* BodySections = nullptr;
+	TestTrue(TEXT("Profile exposes BodySections"), Result.Payload->TryGetArrayField(TEXT("BodySections"), BodySections));
+	for (const FName& BodyKey : FWidgetBlueprintAssetDocumentCapability::GetCanonicalBodyKeys())
+	{
+		TestTrue(
+			FString::Printf(TEXT("Profile BodySections contains %s"), *BodyKey.ToString()),
+			JsonArrayContainsString(BodySections, BodyKey.ToString()));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+	TestTrue(TEXT("Profile exposes RegionPolicies"), Result.Payload->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+	for (const FString& RegionId : {
+		TEXT("Body.WidgetTree"),
+		TEXT("Body.Bindings"),
+		TEXT("Body.Animations"),
+		TEXT("Body.UbergraphPages"),
+		TEXT("Body.FunctionGraphs"),
+		TEXT("Body.MacroGraphs"),
+		TEXT("Body.Palette"),
+		TEXT("Body.EditorOptions"),
+		TEXT("Body.WidgetVariableGuids")
+	})
+	{
+		TestTrue(FString::Printf(TEXT("Profile RegionPolicies contains %s"), *RegionId), RegionPoliciesContain(RegionPolicies, RegionId));
 	}
 	return true;
 }

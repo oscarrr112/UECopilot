@@ -190,9 +190,17 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
 			/validate_asset_document/,
 			/diff_asset_document/,
 			/file watcher/i,
+			/\/Script\/UMGEditor\.WidgetBlueprint/,
+			/Body\.WidgetTree/,
+			/Body\.Bindings/,
+			/Body\.Animations/,
+			/FunctionGraphs/,
+			/WidgetVariableGuids/,
+			/UnsupportedWidgetAnimationTrack/,
 		]) {
 			assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
 		}
+		assert.doesNotMatch(text, /"AssetType"\s*:\s*"WidgetBlueprint"/, "AssetDocument schema should not present generator-only WidgetBlueprint AssetType input");
 	});
 });
 

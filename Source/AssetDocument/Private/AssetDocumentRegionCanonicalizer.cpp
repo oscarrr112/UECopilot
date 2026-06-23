@@ -695,6 +695,14 @@ FString MakeSemanticNodeId(const FString& SemanticKey)
 	return FString::Printf(TEXT("semantic_%s"), *Hash.ToString().Left(16).ToLower());
 }
 
+void NormalizeGraphSchemaForHash(FAssetDocumentGraphSpec& Graph)
+{
+	if (Graph.Schema == TEXT("/Script/UMGEditor.WidgetGraphSchema"))
+	{
+		Graph.Schema = TEXT("/Script/BlueprintGraph.EdGraphSchema_K2");
+	}
+}
+
 void NormalizeGraphNodeMemberForHash(FAssetDocumentNodeSpec& Node)
 {
 	if (Node.Member.IsValid())
@@ -774,6 +782,7 @@ TSharedPtr<FJsonValue> CanonicalizeGraphArrayForHash(
 
 	for (FAssetDocumentGraphSpec& Graph : ParseResult.Graphs)
 	{
+		NormalizeGraphSchemaForHash(Graph);
 		Graph.GraphGuid.Reset();
 		for (FAssetDocumentNodeSpec& Node : Graph.Nodes)
 		{

@@ -312,19 +312,19 @@ The `/Script/UMGEditor.WidgetBlueprint` profile represents exact `UWidgetBluepri
 
 The profile owns these canonical `Body` keys:
 
-- `ParentClass`: required `ClassRef` resolving to a `UUserWidget` subclass. The default is `/Script/UMG.UserWidget`.
-- `ImplementedInterfaces`: authoritative array of implemented interface refs. The current adapter accepts only empty arrays until the WidgetBlueprint interface adapter lands.
-- `Variables`: authoritative array for non-widget Blueprint variables. The current adapter accepts only empty arrays.
-- `ClassDefaults`: generated `UUserWidget` CDO default deltas. The current adapter accepts only an empty object.
-- `WidgetTree`: authoritative object for `RootWidget` and `NamedSlotBindings`. Non-empty widget trees are supported through widget node `Name`, `Class`, `IsVariable`, `VariableName`, `Properties`, `Slot`, and `Children` fields; explicit `Body.WidgetTree: null` is invalid, while `WidgetTree.RootWidget: null` is valid.
-- `Bindings`: authoritative `UWidgetBlueprint::Bindings` array. The current adapter accepts only empty arrays.
-- `Animations`: authoritative package-owned `UWidgetAnimation` array. The current adapter accepts only empty arrays.
-- `UbergraphPages`, `FunctionGraphs`, and `MacroGraphs`: WidgetBlueprint graph regions using the UBlueprint graph model. The current adapter accepts only empty arrays and exposes `UBlueprintGraph` policy hooks for the graph regions.
-- `Palette`: stable palette metadata. The current adapter accepts only an empty object.
-- `EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags. The current adapter accepts only an empty object.
-- `WidgetVariableGuids`: stable widget/animation variable GUID map. The current adapter accepts only an empty object.
+- `Body.ParentClass`: required `ClassRef` resolving to a `UUserWidget` subclass. The default is `/Script/UMG.UserWidget`.
+- `Body.ImplementedInterfaces`: authoritative array of implemented interface refs. WidgetBlueprint currently validates the region shape and keeps unsupported authored interface content as an explicit diagnostic rather than silently preserving existing state.
+- `Body.Variables`: authoritative array for non-widget Blueprint variables using the UBlueprint variable shape. Widget variables generated from `Body.WidgetTree` are owned by `WidgetTree` entries and must not be duplicated here.
+- `Body.ClassDefaults`: generated `UUserWidget` CDO default deltas. Missing properties restore the parent/default CDO value.
+- `Body.WidgetTree`: authoritative object for `RootWidget` and `NamedSlotBindings`. Non-empty widget trees are supported through widget node `Name`, `Class`, `IsVariable`, `VariableName`, `Properties`, `Slot`, and `Children` fields; explicit `Body.WidgetTree: null` is invalid, while `WidgetTree.RootWidget: null` is valid.
+- `Body.Bindings`: authoritative `UWidgetBlueprint::Bindings` array. Function and property bindings are supported through `Widget`, `Property`, `Kind`, `Function`, and `SourcePath` fields. Missing bindings remove existing UE bindings.
+- `Body.Animations`: authoritative package-owned `UWidgetAnimation` array. Supported authored data includes animation `Name`, `FrameRate`, `PlaybackRange`, widget-bound float tracks, transform tracks/channels, and keys. Missing animations, tracks, channels, or keys remove the corresponding owned data.
+- `Body.UbergraphPages`, `Body.FunctionGraphs`, and `Body.MacroGraphs`: WidgetBlueprint graph regions using the UBlueprint graph model. Widget graph schemas are canonicalized with the standard K2 graph model for sync hashing. Unsupported authored node families fail preflight before graph deletion, and unsupported existing nodes are reported as extract/diff diagnostics.
+- `Body.Palette`: stable palette metadata, currently `Category`.
+- `Body.EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags, currently `bCanCallInitializedWithoutPlayerContext`.
+- `Body.WidgetVariableGuids`: stable widget/animation variable GUID map. Omitted entries for generated widget or animation variables are regenerated deterministically and canonicalized through extract/diff/sync.
 
-Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected. Applying a document to an existing WidgetBlueprint that already has non-empty unsupported current regions such as `Bindings` or `Animations` also fails with `UnsupportedWidgetBlueprintRegion` so unsupported current content is not cleared. Extract and diff surface extract-only `_Skipped.UnsupportedWidgetBlueprintRegions` evidence for those current unsupported regions.
+All listed regions are authoritative. Omitted managed entries mean delete, clear override, or restore baseline; they do not mean "preserve the current `.uasset` value." Remaining unsupported WidgetBlueprint families, such as unimplemented MovieScene track types or graph node classes, return explicit diagnostics like `UnsupportedWidgetAnimationTrack` or graph unsupported-node diagnostics. They are not silently preserved or treated as successful complete diffs. Unknown `Body` keys are rejected.
 
 Minimal empty WidgetBlueprint sidecar:
 
