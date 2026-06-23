@@ -313,18 +313,18 @@ The `/Script/UMGEditor.WidgetBlueprint` profile represents exact `UWidgetBluepri
 The profile owns these canonical `Body` keys:
 
 - `ParentClass`: required `ClassRef` resolving to a `UUserWidget` subclass. The default is `/Script/UMG.UserWidget`.
-- `ImplementedInterfaces`: authoritative array of implemented interface refs. Task 1 accepts only empty arrays until the WidgetBlueprint interface adapter lands.
-- `Variables`: authoritative array for non-widget Blueprint variables. Task 1 accepts only empty arrays.
-- `ClassDefaults`: generated `UUserWidget` CDO default deltas. Task 1 accepts only an empty object.
-- `WidgetTree`: object for `RootWidget` and `NamedSlotBindings`. Task 1 accepts `{ "RootWidget": null, "NamedSlotBindings": {} }` or an empty object.
-- `Bindings`: authoritative `UWidgetBlueprint::Bindings` array. Task 1 accepts only empty arrays.
-- `Animations`: authoritative package-owned `UWidgetAnimation` array. Task 1 accepts only empty arrays.
-- `UbergraphPages`, `FunctionGraphs`, and `MacroGraphs`: WidgetBlueprint graph regions using the UBlueprint graph model. Task 1 accepts only empty arrays and exposes `UBlueprintGraph` policy hooks for the graph regions.
-- `Palette`: stable palette metadata. Task 1 accepts only an empty object.
-- `EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags. Task 1 accepts only an empty object.
-- `WidgetVariableGuids`: stable widget/animation variable GUID map. Task 1 accepts only an empty object.
+- `ImplementedInterfaces`: authoritative array of implemented interface refs. The current adapter accepts only empty arrays until the WidgetBlueprint interface adapter lands.
+- `Variables`: authoritative array for non-widget Blueprint variables. The current adapter accepts only empty arrays.
+- `ClassDefaults`: generated `UUserWidget` CDO default deltas. The current adapter accepts only an empty object.
+- `WidgetTree`: authoritative object for `RootWidget` and `NamedSlotBindings`. Non-empty widget trees are supported through widget node `Name`, `Class`, `IsVariable`, `VariableName`, `Properties`, `Slot`, and `Children` fields; explicit `Body.WidgetTree: null` is invalid, while `WidgetTree.RootWidget: null` is valid.
+- `Bindings`: authoritative `UWidgetBlueprint::Bindings` array. The current adapter accepts only empty arrays.
+- `Animations`: authoritative package-owned `UWidgetAnimation` array. The current adapter accepts only empty arrays.
+- `UbergraphPages`, `FunctionGraphs`, and `MacroGraphs`: WidgetBlueprint graph regions using the UBlueprint graph model. The current adapter accepts only empty arrays and exposes `UBlueprintGraph` policy hooks for the graph regions.
+- `Palette`: stable palette metadata. The current adapter accepts only an empty object.
+- `EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags. The current adapter accepts only an empty object.
+- `WidgetVariableGuids`: stable widget/animation variable GUID map. The current adapter accepts only an empty object.
 
-Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected. During Task 1, applying an empty/default document to an existing WidgetBlueprint that already has non-empty `WidgetTree`, `Bindings`, or `Animations` also fails with `UnsupportedWidgetBlueprintRegion` so unsupported current content is not cleared. Extract and diff surface extract-only `_Skipped.UnsupportedWidgetBlueprintRegions` evidence for those current unsupported regions.
+Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected. Applying a document to an existing WidgetBlueprint that already has non-empty unsupported current regions such as `Bindings` or `Animations` also fails with `UnsupportedWidgetBlueprintRegion` so unsupported current content is not cleared. Extract and diff surface extract-only `_Skipped.UnsupportedWidgetBlueprintRegions` evidence for those current unsupported regions.
 
 Minimal empty WidgetBlueprint sidecar:
 

@@ -85,6 +85,24 @@ TSharedPtr<FJsonValue> CloneJsonValue(TSharedPtr<FJsonValue> Value)
 	return Value;
 }
 
+FString DiffArrayPathToken(TSharedPtr<FJsonValue> Current, TSharedPtr<FJsonValue> Desired, int32 Index)
+{
+	auto ExtractName = [](TSharedPtr<FJsonValue> Value, FString& OutName)
+	{
+		return Value.IsValid()
+			&& Value->Type == EJson::Object
+			&& Value->AsObject()->TryGetStringField(TEXT("Name"), OutName)
+			&& !OutName.IsEmpty();
+	};
+
+	FString Name;
+	if (ExtractName(Desired, Name) || ExtractName(Current, Name))
+	{
+		return EscapePathToken(Name);
+	}
+	return FString::FromInt(Index);
+}
+
 void AddRecursiveDiffEntries(
 	TArray<TSharedPtr<FJsonValue>>& Entries,
 	const FString& Path,
@@ -131,11 +149,13 @@ void AddRecursiveDiffEntries(
 		const int32 MaxCount = FMath::Max(CurrentArray.Num(), DesiredArray.Num());
 		for (int32 Index = 0; Index < MaxCount; ++Index)
 		{
+			const TSharedPtr<FJsonValue> CurrentChild = CurrentArray.IsValidIndex(Index) ? CurrentArray[Index] : MakeShared<FJsonValueNull>();
+			const TSharedPtr<FJsonValue> DesiredChild = DesiredArray.IsValidIndex(Index) ? DesiredArray[Index] : MakeShared<FJsonValueNull>();
 			AddRecursiveDiffEntries(
 				Entries,
-				FString::Printf(TEXT("%s/%d"), *Path, Index),
-				CurrentArray.IsValidIndex(Index) ? CurrentArray[Index] : MakeShared<FJsonValueNull>(),
-				DesiredArray.IsValidIndex(Index) ? DesiredArray[Index] : MakeShared<FJsonValueNull>());
+				FString::Printf(TEXT("%s/%s"), *Path, *DiffArrayPathToken(CurrentChild, DesiredChild, Index)),
+				CurrentChild,
+				DesiredChild);
 		}
 		return;
 	}
@@ -204,7 +224,24 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 	}
 
 	NodeObject->TryGetBoolField(TEXT("IsVariable"), OutNode.bIsVariable);
-	NodeObject->TryGetStringField(TEXT("VariableName"), OutNode.VariableName);
+	const bool bHasVariableName = NodeObject->TryGetStringField(TEXT("VariableName"), OutNode.VariableName);
+	if (bHasVariableName)
+	{
+		if (!OutNode.bIsVariable)
+		{
+			return TreeFailure(
+				TEXT("Widget VariableName requires IsVariable=true"),
+				NodePath(Path, TEXT("VariableName")),
+				TEXT("UnsupportedWidgetVariableName"));
+		}
+		if (OutNode.VariableName.IsEmpty() || OutNode.VariableName != Name)
+		{
+			return TreeFailure(
+				TEXT("Widget VariableName must match Name until variable renaming is supported"),
+				NodePath(Path, TEXT("VariableName")),
+				TEXT("UnsupportedWidgetVariableName"));
+		}
+	}
 
 	if (const TSharedPtr<FJsonValue>* PropertiesValue = NodeObject->Values.Find(TEXT("Properties")))
 	{
@@ -974,20 +1011,29 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Apply(UWidgetBluepri
 	{
 		return ChangeResult;
 	}
-
-	if (!WidgetBlueprint->WidgetTree)
+	if (!bChanged)
 	{
-		WidgetBlueprint->WidgetTree = NewObject<UWidgetTree>(WidgetBlueprint, TEXT("WidgetTree"), RF_Transactional);
+		return FAssetDocumentCapabilityResult::Success(TEXT("WidgetTree unchanged"));
 	}
 
-	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeTree(WidgetBlueprint->WidgetTree, Spec);
+	const FName ReplacementTreeName = MakeUniqueObjectName(WidgetBlueprint, UWidgetTree::StaticClass(), TEXT("WidgetTree"));
+	UWidgetTree* ReplacementTree = NewObject<UWidgetTree>(WidgetBlueprint, ReplacementTreeName, RF_Transactional);
+	if (!ReplacementTree)
+	{
+		return TreeFailure(TEXT("Failed to create replacement WidgetTree"), TEXT("/Body/WidgetTree"), TEXT("WidgetTreeMaterializationFailed"));
+	}
+
+	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeTree(ReplacementTree, Spec);
 	if (!MaterializeResult.bSuccess)
 	{
 		return MaterializeResult;
 	}
+
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->WidgetTree = ReplacementTree;
 	if (bOutChanged)
 	{
-		*bOutChanged = bChanged;
+		*bOutChanged = true;
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied WidgetTree"));
 }

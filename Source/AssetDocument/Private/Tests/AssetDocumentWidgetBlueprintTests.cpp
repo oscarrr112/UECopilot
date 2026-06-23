@@ -717,6 +717,124 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeSingleContentWidgetRoundtripTest::Ru
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeNoOpApplyPreservesRootTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.NoOpApplyPreservesRoot",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeNoOpApplyPreservesRootTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_WidgetTreeNoOpApplyPreservesRoot"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(Root)));
+
+	const FAssetDocumentResult FirstResult = Service.Apply(MakeApplyFileRequest(Document));
+	TestTrue(TEXT("Initial WidgetTree apply succeeds"), FirstResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads after initial apply"), WidgetBlueprint);
+	UWidget* RootBefore = WidgetBlueprint && WidgetBlueprint->WidgetTree ? WidgetBlueprint->WidgetTree->RootWidget : nullptr;
+	TestNotNull(TEXT("Initial root widget exists"), RootBefore);
+
+	const FAssetDocumentResult SecondResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!SecondResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Second identical WidgetTree apply failed: %s"), *SecondResult.Message));
+	}
+	TestTrue(TEXT("Second identical WidgetTree apply succeeds"), SecondResult.IsSuccess());
+
+	UWidgetBlueprint* ReloadedWidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UWidget* RootAfter = ReloadedWidgetBlueprint && ReloadedWidgetBlueprint->WidgetTree ? ReloadedWidgetBlueprint->WidgetTree->RootWidget : nullptr;
+	TestEqual(TEXT("Identical WidgetTree apply preserves existing root object"), RootAfter, RootBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeVariableRoundtripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.VariableRoundtrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeVariableRoundtripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_WidgetTreeVariableRoundtrip"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	TSharedRef<FJsonObject> TitleText = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	TitleText->SetBoolField(TEXT("IsVariable"), true);
+	TitleText->SetStringField(TEXT("VariableName"), TEXT("TitleText"));
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeShared<FJsonValueObject>(TitleText));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(Root)));
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Variable WidgetTree apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Variable WidgetTree apply succeeds"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after variable WidgetTree apply"), ExtractResult.IsSuccess());
+	if (ExtractResult.Payload.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+		if (ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody) && ExtractedBody && ExtractedBody->IsValid())
+		{
+			const TSharedPtr<FJsonObject>* ExtractedWidgetTree = nullptr;
+			if ((*ExtractedBody)->TryGetObjectField(TEXT("WidgetTree"), ExtractedWidgetTree) && ExtractedWidgetTree && ExtractedWidgetTree->IsValid())
+			{
+				const TSharedPtr<FJsonObject>* ExtractedRoot = nullptr;
+				if ((*ExtractedWidgetTree)->TryGetObjectField(TEXT("RootWidget"), ExtractedRoot) && ExtractedRoot && ExtractedRoot->IsValid())
+				{
+					TestFalse(TEXT("Non-variable root omits VariableName"), (*ExtractedRoot)->HasField(TEXT("VariableName")));
+					const TArray<TSharedPtr<FJsonValue>>* ExtractedChildren = nullptr;
+					if ((*ExtractedRoot)->TryGetArrayField(TEXT("Children"), ExtractedChildren))
+					{
+						TestEqual(TEXT("Root has one extracted child"), ExtractedChildren->Num(), 1);
+						if (ExtractedChildren->IsValidIndex(0) && (*ExtractedChildren)[0].IsValid() && (*ExtractedChildren)[0]->Type == EJson::Object)
+						{
+							const TSharedPtr<FJsonObject> ExtractedChild = (*ExtractedChildren)[0]->AsObject();
+							TestTrue(TEXT("Variable child extracts IsVariable"), ExtractedChild->GetBoolField(TEXT("IsVariable")));
+							TestEqual(TEXT("VariableName roundtrips as widget name"), ExtractedChild->GetStringField(TEXT("VariableName")), FString(TEXT("TitleText")));
+						}
+					}
+				}
+			}
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after variable WidgetTree apply"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Variable WidgetTree is unchanged after roundtrip"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeRejectsMismatchedVariableNameTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.RejectsMismatchedVariableName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsMismatchedVariableNameTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_WidgetTreeRejectsMismatchedVariableName"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	Root->SetBoolField(TEXT("IsVariable"), true);
+	Root->SetStringField(TEXT("VariableName"), TEXT("RenamedRoot"));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(Root)))));
+	TestFalse(TEXT("Mismatched VariableName rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Mismatched VariableName diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("UnsupportedWidgetVariableName")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintWidgetTreeRejectsInvalidClassTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.RejectsInvalidClass",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

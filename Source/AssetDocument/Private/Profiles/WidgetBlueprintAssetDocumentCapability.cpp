@@ -268,14 +268,14 @@ void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, T
 	{
 		OutRegions.Add({
 			TEXT("/Body/Bindings"),
-			TEXT("Existing WidgetBlueprint has non-empty Bindings that Task 1 cannot safely apply or diff")
+			TEXT("Existing WidgetBlueprint has non-empty Bindings that the current AssetDocument adapter cannot safely apply or diff")
 		});
 	}
 	if (WidgetBlueprint->Animations.Num() > 0)
 	{
 		OutRegions.Add({
 			TEXT("/Body/Animations"),
-			TEXT("Existing WidgetBlueprint has non-empty Animations that Task 1 cannot safely apply or diff")
+			TEXT("Existing WidgetBlueprint has non-empty Animations that the current AssetDocument adapter cannot safely apply or diff")
 		});
 	}
 #endif
@@ -291,7 +291,7 @@ FAssetDocumentCapabilityResult FailOnUnsupportedCurrentRegions(const UWidgetBlue
 	}
 
 	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
-		TEXT("Existing WidgetBlueprint contains unsupported non-empty regions for Task 1"),
+		TEXT("Existing WidgetBlueprint contains unsupported non-empty regions"),
 		UnsupportedRegions[0].Path,
 		TEXT("UnsupportedWidgetBlueprintRegion"));
 	Result.Diagnostics.Reset();
@@ -497,8 +497,8 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 
 	if (bChanged)
 	{
-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint);
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
