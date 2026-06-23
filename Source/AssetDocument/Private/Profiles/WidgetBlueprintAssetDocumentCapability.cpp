@@ -4,6 +4,7 @@
 
 #include "AssetDocumentPropertyAdapter.h"
 #include "Profiles/WidgetBlueprintBindingAdapter.h"
+#include "Profiles/WidgetBlueprintGraphAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
@@ -31,6 +32,13 @@ bool IsKnownBodyKey(const FString& BodyKey)
 		}
 	}
 	return false;
+}
+
+bool IsGraphBodyKey(const FString& BodyKey)
+{
+	return BodyKey == TEXT("UbergraphPages")
+		|| BodyKey == TEXT("FunctionGraphs")
+		|| BodyKey == TEXT("MacroGraphs");
 }
 
 FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
@@ -1514,8 +1522,10 @@ bool HasBindingEntries(const TSharedPtr<FJsonValue>& BindingsJson)
 }
 
 FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
+	const FAssetDocumentCapabilityContext& SourceContext,
 	const FString& TargetAssetPath,
 	UClass* ParentClass,
+	const TSharedRef<FJsonObject>& DesiredBody,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
@@ -1591,6 +1601,17 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 	if (!ClassDefaultsApplyResult.bSuccess)
 	{
 		return ClassDefaultsApplyResult;
+	}
+
+	FAssetDocumentCapabilityContext ScratchContext = SourceContext;
+	ScratchContext.Asset = ValidationBlueprint;
+	ScratchContext.AssetClass = UWidgetBlueprint::StaticClass();
+	bool bScratchGraphsChanged = false;
+	const FAssetDocumentCapabilityResult GraphApplyResult =
+		FWidgetBlueprintGraphAdapter().ApplyRegions(ScratchContext, DesiredBody, bScratchGraphsChanged);
+	if (!GraphApplyResult.bSuccess)
+	{
+		return GraphApplyResult;
 	}
 
 	return FWidgetBlueprintBindingAdapter::Preflight(ValidationBlueprint, BindingsJson);
@@ -1693,9 +1714,9 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentCapability::GetSchemaHint()
 	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:WidgetNode|null, NamedSlotBindings:map<string, WidgetNode>}"));
 	Schema->SetStringField(TEXT("Bindings"), TEXT("array of {Widget:string, Property:string, Kind:Function|Property, Function?:string, SourcePath?:string[]}"));
 	Schema->SetStringField(TEXT("Animations"), TEXT("array empty until WidgetBlueprint animation adapter lands"));
-	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
-	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
-	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
+	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array of UBlueprintGraph objects"));
+	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array of UBlueprintGraph objects"));
+	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array of UBlueprintGraph objects"));
 	Schema->SetStringField(TEXT("Palette"), TEXT("object {Category:string}"));
 	Schema->SetStringField(TEXT("EditorOptions"), TEXT("object {bCanCallInitializedWithoutPlayerContext:bool}"));
 	Schema->SetStringField(TEXT("WidgetVariableGuids"), TEXT("object map variable name to GUID string"));
@@ -1781,8 +1802,10 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 
 	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
 	const FAssetDocumentCapabilityResult BindingPreflightResult = PreflightBindingsAgainstDesiredWidgetBlueprint(
+		Context,
 		Context.TargetAssetPath,
 		ParentClass,
+		BodyObject.ToSharedRef(),
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
 		VariableSpecs,
 		ParsedGuids,
@@ -1884,8 +1907,10 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
 	const FAssetDocumentCapabilityResult BindingPreflightResult = PreflightBindingsAgainstDesiredWidgetBlueprint(
+		Context,
 		Context.TargetAssetPath,
 		ParentClass,
+		BodyObject.ToSharedRef(),
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
 		VariableSpecs,
 		DesiredGuids,
@@ -1938,6 +1963,15 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	{
 		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint, Context.TargetAssetPath, DesiredGuids);
 	}
+
+	bool bGraphsChanged = false;
+	const FAssetDocumentCapabilityResult GraphApplyResult =
+		FWidgetBlueprintGraphAdapter().ApplyRegions(Context, BodyObject.ToSharedRef(), bGraphsChanged);
+	if (!GraphApplyResult.bSuccess)
+	{
+		return GraphApplyResult;
+	}
+	bChanged |= bGraphsChanged;
 
 	const FAssetDocumentCapabilityResult VariableDefaultsResult = ApplyVariableDefaultsToGeneratedClass(WidgetBlueprint, VariableSpecs);
 	if (!VariableDefaultsResult.bSuccess)
@@ -2037,9 +2071,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 	}
 	OutBodyJson->SetArrayField(TEXT("Bindings"), BindingValues);
 	OutBodyJson->SetArrayField(TEXT("Animations"), {});
-	OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
-	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
-	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
+	const FAssetDocumentCapabilityResult GraphExtractResult =
+		FWidgetBlueprintGraphAdapter().ExtractRegions(Context, OutBodyJson);
+	if (!GraphExtractResult.bSuccess)
+	{
+		return GraphExtractResult;
+	}
 	TSharedRef<FJsonObject> Palette = MakeShared<FJsonObject>();
 #if WITH_EDITORONLY_DATA
 	if (WidgetBlueprint && !WidgetBlueprint->PaletteCategory.IsEmpty())
@@ -2290,6 +2327,10 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 				return BindingsResult;
 			}
 		}
+		else if (IsGraphBodyKey(Pair.Key))
+		{
+			continue;
+		}
 		else
 		{
 			const FAssetDocumentCapabilityResult ArrayResult = RequireEmptyArray(Pair.Value, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Pair.Key);
@@ -2298,6 +2339,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 				return ArrayResult;
 			}
 		}
+	}
+
+	const FAssetDocumentCapabilityResult GraphValidateResult =
+		FWidgetBlueprintGraphAdapter().ValidateRegions(Context, BodyObject);
+	if (!GraphValidateResult.bSuccess)
+	{
+		return GraphValidateResult;
 	}
 
 	const FAssetDocumentCapabilityResult VariableConflictResult = ValidateVariableWidgetNameConflicts(BodyObject);

@@ -15,6 +15,8 @@
 #include "Engine/Blueprint.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Event.h"
+#include "K2Node_FunctionEntry.h"
+#include "K2Node_FunctionResult.h"
 #include "K2Node_Self.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
@@ -24,7 +26,75 @@
 
 namespace
 {
-constexpr const TCHAR* UbergraphPagesPath = TEXT("/Body/UbergraphPages");
+FString& ActiveGraphRegionPath()
+{
+	static FString Path(TEXT("/Body/UbergraphPages"));
+	return Path;
+}
+
+FString GetGraphRegionPath(EAssetDocumentK2GraphRegion Region)
+{
+	switch (Region)
+	{
+	case EAssetDocumentK2GraphRegion::FunctionGraphs:
+		return TEXT("/Body/FunctionGraphs");
+	case EAssetDocumentK2GraphRegion::MacroGraphs:
+		return TEXT("/Body/MacroGraphs");
+	case EAssetDocumentK2GraphRegion::UbergraphPages:
+	default:
+		return TEXT("/Body/UbergraphPages");
+	}
+}
+
+class FScopedGraphRegionPath
+{
+public:
+	explicit FScopedGraphRegionPath(EAssetDocumentK2GraphRegion Region)
+		: PreviousPath(ActiveGraphRegionPath())
+	{
+		ActiveGraphRegionPath() = GetGraphRegionPath(Region);
+	}
+
+	~FScopedGraphRegionPath()
+	{
+		ActiveGraphRegionPath() = PreviousPath;
+	}
+
+private:
+	FString PreviousPath;
+};
+
+using FBlueprintGraphArray = TArray<TObjectPtr<UEdGraph>>;
+
+FBlueprintGraphArray& GetMutableGraphArray(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region)
+{
+	check(Blueprint);
+	switch (Region)
+	{
+	case EAssetDocumentK2GraphRegion::FunctionGraphs:
+		return Blueprint->FunctionGraphs;
+	case EAssetDocumentK2GraphRegion::MacroGraphs:
+		return Blueprint->MacroGraphs;
+	case EAssetDocumentK2GraphRegion::UbergraphPages:
+	default:
+		return Blueprint->UbergraphPages;
+	}
+}
+
+const FBlueprintGraphArray& GetGraphArray(const UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region)
+{
+	check(Blueprint);
+	switch (Region)
+	{
+	case EAssetDocumentK2GraphRegion::FunctionGraphs:
+		return Blueprint->FunctionGraphs;
+	case EAssetDocumentK2GraphRegion::MacroGraphs:
+		return Blueprint->MacroGraphs;
+	case EAssetDocumentK2GraphRegion::UbergraphPages:
+	default:
+		return Blueprint->UbergraphPages;
+	}
+}
 
 FString GetClassPath(const UClass* Class)
 {
@@ -43,7 +113,7 @@ FString JoinPath(const FString& Left, const FString& Right)
 
 FString GraphPath(const FAssetDocumentGraphSpec& Graph)
 {
-	return JoinPath(UbergraphPagesPath, Graph.Name);
+	return JoinPath(ActiveGraphRegionPath(), Graph.Name);
 }
 
 FString NodePath(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentNodeSpec& Node)
@@ -373,14 +443,14 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 	return ValidateLinks(GraphSpec, Schema, TempNodesById);
 }
 
-UEdGraph* FindUbergraphPageByName(UBlueprint* Blueprint, const FString& GraphName)
+UEdGraph* FindGraphByName(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const FString& GraphName)
 {
 	if (!Blueprint)
 	{
 		return nullptr;
 	}
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	for (UEdGraph* Graph : GetMutableGraphArray(Blueprint, Region))
 	{
 		if (Graph && Graph->GetName() == GraphName)
 		{
@@ -390,9 +460,9 @@ UEdGraph* FindUbergraphPageByName(UBlueprint* Blueprint, const FString& GraphNam
 	return nullptr;
 }
 
-UEdGraph* FindOrCreateUbergraphPage(UBlueprint* Blueprint, const FAssetDocumentGraphSpec& GraphSpec, UClass* SchemaClass, bool& bOutChanged)
+UEdGraph* FindOrCreateGraph(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const FAssetDocumentGraphSpec& GraphSpec, UClass* SchemaClass, bool& bOutChanged)
 {
-	UEdGraph* Graph = FindUbergraphPageByName(Blueprint, GraphSpec.Name);
+	UEdGraph* Graph = FindGraphByName(Blueprint, Region, GraphSpec.Name);
 	if (Graph)
 	{
 		return Graph;
@@ -403,7 +473,22 @@ UEdGraph* FindOrCreateUbergraphPage(UBlueprint* Blueprint, const FAssetDocumentG
 		FName(*GraphSpec.Name),
 		UEdGraph::StaticClass(),
 		SchemaClass);
-	FBlueprintEditorUtils::AddUbergraphPage(Blueprint, Graph);
+	if (Region == EAssetDocumentK2GraphRegion::UbergraphPages)
+	{
+		FBlueprintEditorUtils::AddUbergraphPage(Blueprint, Graph);
+	}
+	else if (Region == EAssetDocumentK2GraphRegion::FunctionGraphs)
+	{
+		FBlueprintEditorUtils::AddFunctionGraph<UFunction>(Blueprint, Graph, false, nullptr);
+		if (const UEdGraphSchema* Schema = Graph->GetSchema())
+		{
+			Schema->CreateDefaultNodesForGraph(*Graph);
+		}
+	}
+	else
+	{
+		GetMutableGraphArray(Blueprint, Region).Add(Graph);
+	}
 	bOutChanged = true;
 	return Graph;
 }
@@ -462,7 +547,7 @@ UEdGraphNode* FindReusableNode(
 
 FString ExistingGraphPath(const UEdGraph* Graph)
 {
-	return JoinPath(UbergraphPagesPath, Graph ? Graph->GetName() : FString(TEXT("UnknownGraph")));
+	return JoinPath(ActiveGraphRegionPath(), Graph ? Graph->GetName() : FString(TEXT("UnknownGraph")));
 }
 
 FString ExistingNodePath(const UEdGraph* Graph, const UEdGraphNode* Node)
@@ -531,6 +616,12 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+bool IsPreservedFrameworkNode(EAssetDocumentK2GraphRegion Region, const UEdGraphNode* Node)
+{
+	return Region == EAssetDocumentK2GraphRegion::FunctionGraphs
+		&& (Cast<UK2Node_FunctionEntry>(Node) || Cast<UK2Node_FunctionResult>(Node));
+}
+
 void BreakAllLinksForManagedNodes(const TMap<FString, UEdGraphNode*>& NodesById)
 {
 	for (const TPair<FString, UEdGraphNode*>& Pair : NodesById)
@@ -573,7 +664,11 @@ FAssetDocumentCapabilityResult CreateLinks(const FAssetDocumentGraphSpec& GraphS
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs, bool& bOutChanged)
+FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
+	UBlueprint* Blueprint,
+	EAssetDocumentK2GraphRegion Region,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs,
+	bool& bOutChanged)
 {
 	const FAssetDocumentNodeAdapterRegistry Registry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
 	TSet<FString> DesiredGraphNames;
@@ -593,14 +688,14 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		NodeClassesByGraph.Add(GraphSpec.Name, MoveTemp(NodeClasses));
 	}
 
-	for (UEdGraph* ExistingGraph : TArray<UEdGraph*>(Blueprint->UbergraphPages))
+	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(Blueprint, Region)))
 	{
 		if (!ExistingGraph || DesiredGraphNames.Contains(ExistingGraph->GetName()))
 		{
 			continue;
 		}
 
-		if (ExistingGraph == FBlueprintEditorUtils::FindEventGraph(Blueprint))
+		if (Region == EAssetDocumentK2GraphRegion::UbergraphPages && ExistingGraph == FBlueprintEditorUtils::FindEventGraph(Blueprint))
 		{
 			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, ExistingGraph);
 			if (!DeleteResult.bSuccess)
@@ -632,7 +727,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 	{
 		UClass* SchemaClass = SchemaClassesByGraph.FindRef(GraphSpec.Name);
 		bool bGraphChanged = false;
-		UEdGraph* Graph = FindOrCreateUbergraphPage(Blueprint, GraphSpec, SchemaClass, bGraphChanged);
+		UEdGraph* Graph = FindOrCreateGraph(Blueprint, Region, GraphSpec, SchemaClass, bGraphChanged);
 		bOutChanged |= bGraphChanged;
 		if (!Graph)
 		{
@@ -685,6 +780,10 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(UBlueprint* Blueprint, const
 		{
 			if (ExistingNode && !UsedExistingNodes.Contains(ExistingNode))
 			{
+				if (IsPreservedFrameworkNode(Region, ExistingNode))
+				{
+					continue;
+				}
 				const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Blueprint, Registry, Graph, ExistingNode);
 				if (!DeleteResult.bSuccess)
 				{
@@ -722,7 +821,7 @@ public:
 		}
 	}
 
-	bool Capture(const UBlueprint* Blueprint)
+	bool Capture(const UBlueprint* Blueprint, EAssetDocumentK2GraphRegion InRegion)
 	{
 		if (!Blueprint)
 		{
@@ -737,7 +836,8 @@ public:
 		}
 		SnapshotBlueprint->SetFlags(RF_Transient);
 		SnapshotBlueprint->AddToRoot();
-		SnapshotGraphs = SnapshotBlueprint->UbergraphPages;
+		Region = InRegion;
+		SnapshotGraphs = GetGraphArray(SnapshotBlueprint, Region);
 		return true;
 	}
 
@@ -748,7 +848,8 @@ public:
 			return false;
 		}
 
-		for (UEdGraph* ExistingGraph : TArray<UEdGraph*>(Blueprint->UbergraphPages))
+		FBlueprintGraphArray& TargetGraphs = GetMutableGraphArray(Blueprint, Region);
+		for (UEdGraph* ExistingGraph : FBlueprintGraphArray(TargetGraphs))
 		{
 			if (ExistingGraph)
 			{
@@ -756,13 +857,13 @@ public:
 				ExistingGraph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
 			}
 		}
-		Blueprint->UbergraphPages.Reset();
+		TargetGraphs.Reset();
 
 		for (UEdGraph* SnapshotGraph : SnapshotGraphs)
 		{
 			if (!SnapshotGraph)
 			{
-				Blueprint->UbergraphPages.Add(nullptr);
+				TargetGraphs.Add(nullptr);
 				continue;
 			}
 
@@ -771,14 +872,15 @@ public:
 			{
 				return false;
 			}
-			Blueprint->UbergraphPages.Add(RestoredGraph);
+			TargetGraphs.Add(RestoredGraph);
 		}
 		return true;
 	}
 
 private:
 	UBlueprint* SnapshotBlueprint = nullptr;
-	TArray<UEdGraph*> SnapshotGraphs;
+	FBlueprintGraphArray SnapshotGraphs;
+	EAssetDocumentK2GraphRegion Region = EAssetDocumentK2GraphRegion::UbergraphPages;
 };
 
 FString SanitizeSidecarId(const FString& Value, const FString& Fallback)
@@ -935,6 +1037,15 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightUbergraphP
 	UBlueprint* Blueprint,
 	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
 {
+	return PreflightGraphRegion(Blueprint, EAssetDocumentK2GraphRegion::UbergraphPages, DesiredGraphs);
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegion(
+	UBlueprint* Blueprint,
+	EAssetDocumentK2GraphRegion Region,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
+{
+	const FScopedGraphRegionPath ScopedRegion(Region);
 	for (const FAssetDocumentGraphSpec& GraphSpec : DesiredGraphs)
 	{
 		UClass* SchemaClass = nullptr;
@@ -951,13 +1062,19 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightUbergraphP
 
 FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractUbergraphPages(const UBlueprint* Blueprint) const
 {
+	return ExtractGraphRegion(Blueprint, EAssetDocumentK2GraphRegion::UbergraphPages);
+}
+
+FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractGraphRegion(const UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region) const
+{
 	FAssetDocumentK2GraphExtractResult Result;
 	if (!Blueprint)
 	{
 		return Result;
 	}
 
-	for (UEdGraph* Graph : Blueprint->UbergraphPages)
+	const FScopedGraphRegionPath ScopedRegion(Region);
+	for (UEdGraph* Graph : GetGraphArray(Blueprint, Region))
 	{
 		if (!Graph)
 		{
@@ -1032,6 +1149,14 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 	UBlueprint* Blueprint,
 	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
 {
+	return ApplyGraphRegion(Blueprint, EAssetDocumentK2GraphRegion::UbergraphPages, DesiredGraphs);
+}
+
+FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyGraphRegion(
+	UBlueprint* Blueprint,
+	EAssetDocumentK2GraphRegion Region,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
+{
 	FAssetDocumentK2GraphApplyResult ApplyResult;
 	if (!Blueprint)
 	{
@@ -1042,18 +1167,19 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 		return ApplyResult;
 	}
 
+	const FScopedGraphRegionPath ScopedRegion(Region);
 	FLosslessUbergraphPagesSnapshot Snapshot;
-	if (!Snapshot.Capture(Blueprint))
+	if (!Snapshot.Capture(Blueprint, Region))
 	{
 		ApplyResult.Result = GraphFailure(
 			TEXT("Failed to snapshot UBlueprint graph state before applying graph regions"),
-			UbergraphPagesPath,
+			ActiveGraphRegionPath(),
 			TEXT("GraphSnapshotFailed"));
 		return ApplyResult;
 	}
 
 	bool bChanged = false;
-	ApplyResult.Result = ApplyGraphsNoCompile(Blueprint, DesiredGraphs, bChanged);
+	ApplyResult.Result = ApplyGraphsNoCompile(Blueprint, Region, DesiredGraphs, bChanged);
 	if (!ApplyResult.Result.bSuccess)
 	{
 		Snapshot.Restore(Blueprint);
@@ -1073,7 +1199,7 @@ FAssetDocumentK2GraphApplyResult FAssetDocumentK2GraphAdapter::ApplyUbergraphPag
 			FKismetEditorUtilities::CompileBlueprint(Blueprint);
 			ApplyResult.Result = GraphFailure(
 				TEXT("Failed to compile UBlueprint after applying graph regions"),
-				UbergraphPagesPath,
+				ActiveGraphRegionPath(),
 				TEXT("BlueprintCompileFailed"));
 			return ApplyResult;
 		}

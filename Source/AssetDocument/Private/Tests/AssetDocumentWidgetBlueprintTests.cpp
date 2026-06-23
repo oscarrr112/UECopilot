@@ -16,6 +16,10 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraphSchema_K2.h"
+#include "K2Node_IfThenElse.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/Guid.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
@@ -279,6 +283,56 @@ void SetBindings(TSharedRef<FJsonObject> Body, std::initializer_list<TSharedPtr<
 	Body->SetArrayField(TEXT("Bindings"), BindingValues);
 }
 
+TSharedPtr<FJsonObject> MakeGraphMemberRef(const TCHAR* OwnerClass, const TCHAR* Name)
+{
+	TSharedPtr<FJsonObject> Member = MakeShared<FJsonObject>();
+	Member->SetStringField(TEXT("Kind"), TEXT("MemberRef"));
+	Member->SetStringField(TEXT("OwnerClass"), OwnerClass);
+	Member->SetStringField(TEXT("Name"), Name);
+	return Member;
+}
+
+TSharedPtr<FJsonObject> MakeGraphNode(const TCHAR* Id, const TCHAR* ClassPath, TSharedPtr<FJsonObject> Member = nullptr)
+{
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), Id);
+	Node->SetStringField(TEXT("Class"), ClassPath);
+	if (Member.IsValid())
+	{
+		Node->SetObjectField(TEXT("Member"), Member);
+	}
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 0);
+	Position->SetNumberField(TEXT("Y"), 0);
+	Node->SetObjectField(TEXT("Position"), Position);
+	return Node;
+}
+
+TSharedPtr<FJsonObject> MakeGraph(const TCHAR* Name, const TCHAR* Schema, std::initializer_list<TSharedPtr<FJsonObject>> Nodes)
+{
+	TSharedPtr<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), Name);
+	Graph->SetStringField(TEXT("Schema"), Schema);
+	TArray<TSharedPtr<FJsonValue>> NodeValues;
+	for (const TSharedPtr<FJsonObject>& Node : Nodes)
+	{
+		NodeValues.Add(MakeShared<FJsonValueObject>(Node.ToSharedRef()));
+	}
+	Graph->SetArrayField(TEXT("Nodes"), NodeValues);
+	Graph->SetArrayField(TEXT("Links"), {});
+	return Graph;
+}
+
+void SetGraphRegion(TSharedRef<FJsonObject> Body, const TCHAR* RegionName, std::initializer_list<TSharedPtr<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> GraphValues;
+	for (const TSharedPtr<FJsonObject>& Graph : Graphs)
+	{
+		GraphValues.Add(MakeShared<FJsonValueObject>(Graph.ToSharedRef()));
+	}
+	Body->SetArrayField(RegionName, GraphValues);
+}
+
 TArray<TSharedPtr<FJsonValue>> GetExtractedBindings(const FAssetDocumentResult& ExtractResult)
 {
 	TArray<TSharedPtr<FJsonValue>> Empty;
@@ -294,6 +348,99 @@ TArray<TSharedPtr<FJsonValue>> GetExtractedBindings(const FAssetDocumentResult& 
 		return *Bindings;
 	}
 	return Empty;
+}
+
+const TArray<TSharedPtr<FJsonValue>>* GetExtractedGraphRegion(const FAssetDocumentResult& ExtractResult, const TCHAR* RegionName)
+{
+	TSharedPtr<FJsonObject> Body = GetExtractedBody(ExtractResult);
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	return Body.IsValid() && Body->TryGetArrayField(RegionName, Graphs) ? Graphs : nullptr;
+}
+
+TSharedPtr<FJsonObject> FindExtractedGraph(const FAssetDocumentResult& ExtractResult, const TCHAR* RegionName, const TCHAR* GraphName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = GetExtractedGraphRegion(ExtractResult, RegionName);
+	if (!Graphs)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() && GraphValue->Type == EJson::Object ? GraphValue->AsObject() : nullptr;
+		FString Name;
+		if (Graph.IsValid() && Graph->TryGetStringField(TEXT("Name"), Name) && Name == GraphName)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+bool ExtractedGraphHasNodeClass(const TSharedPtr<FJsonObject>& Graph, const TCHAR* ClassPath)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() && NodeValue->Type == EJson::Object ? NodeValue->AsObject() : nullptr;
+		FString NodeClass;
+		if (Node.IsValid() && Node->TryGetStringField(TEXT("Class"), NodeClass) && NodeClass == ClassPath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool ExtractedBodySkippedGraphContainsClass(const FAssetDocumentResult& ExtractResult, const TCHAR* ClassPath)
+{
+	TSharedPtr<FJsonObject> Body = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* Skipped = nullptr;
+	const TSharedPtr<FJsonObject>* Graphs = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Body.IsValid()
+		|| !Body->TryGetObjectField(TEXT("_Skipped"), Skipped)
+		|| !Skipped
+		|| !(*Skipped)->TryGetObjectField(TEXT("Graphs"), Graphs)
+		|| !Graphs
+		|| !(*Graphs)->TryGetArrayField(TEXT("Nodes"), Nodes)
+		|| !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() && NodeValue->Type == EJson::Object ? NodeValue->AsObject() : nullptr;
+		FString NodeClass;
+		if (Node.IsValid() && Node->TryGetStringField(TEXT("Class"), NodeClass) && NodeClass == ClassPath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+UEdGraph* FindWidgetBlueprintGraphByName(const UWidgetBlueprint* WidgetBlueprint, const FString& GraphName)
+{
+	if (!WidgetBlueprint)
+	{
+		return nullptr;
+	}
+
+	for (UEdGraph* Graph : WidgetBlueprint->UbergraphPages)
+	{
+		if (Graph && Graph->GetName() == GraphName)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
 }
 
 UObject* GetWidgetBlueprintCDO(const UWidgetBlueprint* WidgetBlueprint)
@@ -1340,6 +1487,204 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsMismatchedMemberGuidTest::RunTe
 	TestFalse(TEXT("Mismatched function MemberGuid rejects apply"), Result.IsSuccess());
 	TestTrue(TEXT("Mismatched function MemberGuid diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MismatchedBindingMemberGuid")));
 	TestTrue(TEXT("Mismatched function MemberGuid diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Bindings/0/MemberGuid")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsFunctionGraphForBindingRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.FunctionGraphForBindingRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsFunctionGraphForBindingRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsFunctionBindingRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetGraphRegion(Body, TEXT("FunctionGraphs"), {
+		MakeGraph(
+			TEXT("PrepareDisplayTextBinding"),
+			TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("FunctionGraph binding apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Function graph used by binding applies"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after FunctionGraph binding apply"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("FunctionGraph extracts by name"), FindExtractedGraph(ExtractResult, TEXT("FunctionGraphs"), TEXT("PrepareDisplayTextBinding")).IsValid());
+	TestEqual(TEXT("Binding also extracts"), GetExtractedBindings(ExtractResult).Num(), 1);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsEventGraphRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.EventGraphRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsEventGraphRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsEventGraphRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{
+				MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self")),
+				MakeGraphNode(
+					TEXT("GetDisplayText"),
+					TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
+					MakeGraphMemberRef(TEXT("Self"), TEXT("GetDisplayText")))
+			})
+	});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("EventGraph apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Widget EventGraph applies"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after EventGraph apply"), ExtractResult.IsSuccess());
+	const TSharedPtr<FJsonObject> EventGraph = FindExtractedGraph(ExtractResult, TEXT("UbergraphPages"), TEXT("EventGraph"));
+	TestTrue(TEXT("EventGraph extracts"), EventGraph.IsValid());
+	TestTrue(TEXT("Self node extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_Self")));
+	TestTrue(TEXT("CallFunction node extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_CallFunction")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsAnimationEventNodeRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.AnimationEventNodeRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsAnimationEventNodeRoundTripTest::RunTest(const FString&)
+{
+	FWidgetBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("IntroStarted"), TEXT("/Script/UMGEditor.K2Node_WidgetAnimationEvent"))})
+	});
+
+	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyJsonValue(Body));
+	TestFalse(TEXT("Authored widget animation event is explicit unsupported in Task 5"), Result.bSuccess);
+	TestTrue(TEXT("Unsupported widget animation event uses graph diagnostic"), Result.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == TEXT("/Body/UbergraphPages/0/Nodes/0")
+			&& Diagnostic.Code == TEXT("UnsupportedGraphNodeClass");
+	}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsUnsupportedNodeRejectsApplyTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.UnsupportedNodeRejectsApply",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsUnsupportedNodeRejectsApplyTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsUnsupportedRejectsApply"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	SetGraphRegion(InitialBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial supported graph apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> InvalidBody = MakeBindingFixtureBody();
+	SetGraphRegion(InvalidBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Branch"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))})
+	});
+	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Unsupported graph node rejects apply"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Unsupported graph node diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
+	TestNotNull(TEXT("Existing EventGraph remains after rejected apply"), EventGraph);
+	TestTrue(TEXT("Existing Self node remains after rejected apply"), EventGraph && EventGraph->Nodes.ContainsByPredicate([](UEdGraphNode* Node)
+	{
+		return Node && Node->GetClass()->GetPathName() == TEXT("/Script/BlueprintGraph.K2Node_Self");
+	}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsExtractReportsUnsupportedNodesTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.ExtractReportsUnsupportedNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsExtractReportsUnsupportedNodesTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsExtractUnsupportedNodes"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestTrue(TEXT("Supported graph fixture applies"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
+	TestNotNull(TEXT("EventGraph exists before injecting unsupported node"), EventGraph);
+	if (!EventGraph)
+	{
+		return false;
+	}
+
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph, UK2Node_IfThenElse::StaticClass(), NAME_None, RF_Transactional);
+	Branch->CreateNewGuid();
+	Branch->NodePosX = 320;
+	Branch->NodePosY = 0;
+	EventGraph->AddNode(Branch, true, false);
+	Branch->AllocateDefaultPins();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds with unsupported graph node evidence"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Unsupported graph node is reported in skipped evidence"), ExtractedBodySkippedGraphContainsClass(ExtractResult, TEXT("/Script/BlueprintGraph.K2Node_IfThenElse")));
+	const TSharedPtr<FJsonObject> ExtractedEventGraph = FindExtractedGraph(ExtractResult, TEXT("UbergraphPages"), TEXT("EventGraph"));
+	TestTrue(TEXT("Supported nodes still extract"), ExtractedGraphHasNodeClass(ExtractedEventGraph, TEXT("/Script/BlueprintGraph.K2Node_Self")));
+	TestFalse(TEXT("Unsupported node is not emitted as lossy graph node"), ExtractedGraphHasNodeClass(ExtractedEventGraph, TEXT("/Script/BlueprintGraph.K2Node_IfThenElse")));
 	return true;
 }
 

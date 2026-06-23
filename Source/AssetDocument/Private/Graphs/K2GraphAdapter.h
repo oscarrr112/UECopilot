@@ -9,6 +9,13 @@
 class UBlueprint;
 class UEdGraphNode;
 
+enum class EAssetDocumentK2GraphRegion : uint8
+{
+	UbergraphPages,
+	FunctionGraphs,
+	MacroGraphs,
+};
+
 struct FAssetDocumentK2GraphExtractResult
 {
 	TArray<FAssetDocumentGraphSpec> Graphs;
@@ -25,6 +32,10 @@ class FAssetDocumentK2GraphAdapter
 {
 public:
 	static FAssetDocumentNodeAdapterRegistry CreateTier1NodeAdapterRegistry();
+
+	FAssetDocumentK2GraphExtractResult ExtractGraphRegion(const UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region) const;
+	FAssetDocumentCapabilityResult PreflightGraphRegion(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
+	FAssetDocumentK2GraphApplyResult ApplyGraphRegion(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
 
 	FAssetDocumentK2GraphExtractResult ExtractUbergraphPages(const UBlueprint* Blueprint) const;
 	FAssetDocumentCapabilityResult PreflightUbergraphPages(UBlueprint* Blueprint, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
