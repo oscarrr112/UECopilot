@@ -19,6 +19,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_IfThenElse.h"
+#include "K2Node_Tunnel.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/Guid.h"
 #include "Misc/AutomationTest.h"
@@ -184,6 +185,19 @@ bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Paylo
 		&& Failed
 		&& Changed->Num() == 0
 		&& Failed->Num() == 0;
+}
+
+bool DiffPayloadHasChangedEntries(const TSharedPtr<FJsonObject>& Payload)
+{
+	if (!Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	return Payload->TryGetArrayField(TEXT("changed"), Changed)
+		&& Changed
+		&& Changed->Num() > 0;
 }
 
 TSharedPtr<FJsonObject> GetExtractedBody(const FAssetDocumentResult& ExtractResult)
@@ -440,7 +454,29 @@ UEdGraph* FindWidgetBlueprintGraphByName(const UWidgetBlueprint* WidgetBlueprint
 			return Graph;
 		}
 	}
+	for (UEdGraph* Graph : WidgetBlueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetName() == GraphName)
+		{
+			return Graph;
+		}
+	}
+	for (UEdGraph* Graph : WidgetBlueprint->MacroGraphs)
+	{
+		if (Graph && Graph->GetName() == GraphName)
+		{
+			return Graph;
+		}
+	}
 	return nullptr;
+}
+
+bool GraphHasConcreteNodeClass(const UEdGraph* Graph, const UClass* NodeClass)
+{
+	return Graph && NodeClass && Graph->Nodes.ContainsByPredicate([NodeClass](const UEdGraphNode* Node)
+	{
+		return Node && Node->IsA(NodeClass);
+	});
 }
 
 UObject* GetWidgetBlueprintCDO(const UWidgetBlueprint* WidgetBlueprint)
@@ -1501,34 +1537,17 @@ bool FAssetDocumentWidgetBlueprintGraphsFunctionGraphForBindingRoundTripTest::Ru
 	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
 	SetGraphRegion(Body, TEXT("FunctionGraphs"), {
 		MakeGraph(
-			TEXT("PrepareDisplayTextBinding"),
+			TEXT("GetTitleFromAuthoredGraph"),
 			TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"),
 			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
 	});
-	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetTitleFromAuthoredGraph"))});
 
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
 	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
-	if (!ApplyResult.IsSuccess())
-	{
-		AddError(FString::Printf(TEXT("FunctionGraph binding apply failed: %s"), *ApplyResult.Message));
-	}
-	TestTrue(TEXT("Function graph used by binding applies"), ApplyResult.IsSuccess());
-
-	FAssetDocumentExtractRequest ExtractRequest;
-	ExtractRequest.AssetPath = Target;
-	ExtractRequest.bDiffOnly = true;
-	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
-	TestTrue(TEXT("Extract succeeds after FunctionGraph binding apply"), ExtractResult.IsSuccess());
-	TestTrue(TEXT("FunctionGraph extracts by name"), FindExtractedGraph(ExtractResult, TEXT("FunctionGraphs"), TEXT("PrepareDisplayTextBinding")).IsValid());
-	TestEqual(TEXT("Binding also extracts"), GetExtractedBindings(ExtractResult).Num(), 1);
-
-	FAssetDocumentDiffRequest DiffRequest;
-	DiffRequest.Document = Document;
-	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
-	TestTrue(TEXT("Diff succeeds after FunctionGraph roundtrip"), DiffResult.IsSuccess());
-	TestTrue(TEXT("FunctionGraph binding roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	TestFalse(TEXT("Binding to authored graph without supported signature rejects apply"), ApplyResult.IsSuccess());
+	TestTrue(TEXT("Unsupported authored binding function reports signature diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("InvalidBindingFunctionSignature")));
 	return true;
 }
 
@@ -1572,6 +1591,136 @@ bool FAssetDocumentWidgetBlueprintGraphsEventGraphRoundTripTest::RunTest(const F
 	TestTrue(TEXT("EventGraph extracts"), EventGraph.IsValid());
 	TestTrue(TEXT("Self node extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_Self")));
 	TestTrue(TEXT("CallFunction node extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_CallFunction")));
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after EventGraph roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("EventGraph roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+
+	TSharedRef<FJsonObject> ChangedBody = MakeBindingFixtureBody();
+	SetGraphRegion(ChangedBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	FAssetDocumentDiffRequest ChangedDiffRequest;
+	ChangedDiffRequest.Document = MakeWidgetBlueprintDocument(Target, ChangedBody);
+	const FAssetDocumentResult ChangedDiffResult = Service.Diff(ChangedDiffRequest);
+	TestTrue(TEXT("Changed EventGraph diff succeeds"), ChangedDiffResult.IsSuccess());
+	TestTrue(TEXT("Changed EventGraph reports semantic diff"), DiffPayloadHasChangedEntries(ChangedDiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsMacroGraphRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.MacroGraphRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsMacroGraphRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsMacroGraphRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetGraphRegion(Body, TEXT("MacroGraphs"), {
+		MakeGraph(
+			TEXT("FormatTitleMacro"),
+			TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("MacroGraph apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Widget MacroGraph applies"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* MacroGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("FormatTitleMacro"));
+	TestNotNull(TEXT("MacroGraph exists in WidgetBlueprint"), MacroGraph);
+	TestTrue(TEXT("MacroGraph keeps UE macro tunnel framework nodes"), GraphHasConcreteNodeClass(MacroGraph, UK2Node_Tunnel::StaticClass()));
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after MacroGraph apply"), ExtractResult.IsSuccess());
+	const TSharedPtr<FJsonObject> ExtractedMacroGraph = FindExtractedGraph(ExtractResult, TEXT("MacroGraphs"), TEXT("FormatTitleMacro"));
+	TestTrue(TEXT("MacroGraph extracts"), ExtractedMacroGraph.IsValid());
+	TestTrue(TEXT("MacroGraph self node extracts"), ExtractedGraphHasNodeClass(ExtractedMacroGraph, TEXT("/Script/BlueprintGraph.K2Node_Self")));
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after MacroGraph roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("MacroGraph roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+
+	TSharedRef<FJsonObject> ChangedBody = MakeBindingFixtureBody();
+	SetGraphRegion(ChangedBody, TEXT("MacroGraphs"), {
+		MakeGraph(TEXT("FormatTitleMacro"), TEXT("/Script/BlueprintGraph.EdGraphSchema_K2"), {})
+	});
+	FAssetDocumentDiffRequest ChangedDiffRequest;
+	ChangedDiffRequest.Document = MakeWidgetBlueprintDocument(Target, ChangedBody);
+	const FAssetDocumentResult ChangedDiffResult = Service.Diff(ChangedDiffRequest);
+	TestTrue(TEXT("Changed MacroGraph diff succeeds"), ChangedDiffResult.IsSuccess());
+	TestTrue(TEXT("Changed MacroGraph reports semantic diff"), DiffPayloadHasChangedEntries(ChangedDiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsUnsupportedExistingNodePreflightPreservesBodyTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.UnsupportedExistingNodePreflightPreservesBody",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsUnsupportedExistingNodePreflightPreservesBodyTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsUnsupportedPreflightPreservesBody"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialTitle = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	InitialTitle->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Original title"));
+	TSharedRef<FJsonObject> InitialBody = MakeWidgetTreeBody(MakeWidgetTree(InitialTitle));
+	SetGraphRegion(InitialBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial graph/body fixture applies"), InitialResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
+	TestNotNull(TEXT("EventGraph exists before injecting unsupported node"), EventGraph);
+	if (!EventGraph)
+	{
+		return false;
+	}
+
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph, UK2Node_IfThenElse::StaticClass(), NAME_None, RF_Transactional);
+	Branch->CreateNewGuid();
+	Branch->NodePosX = 320;
+	Branch->NodePosY = 0;
+	EventGraph->AddNode(Branch, true, false);
+	Branch->AllocateDefaultPins();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+
+	TSharedRef<FJsonObject> ChangedTitle = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	ChangedTitle->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Mutated title"));
+	TSharedRef<FJsonObject> InvalidBody = MakeWidgetTreeBody(MakeWidgetTree(ChangedTitle));
+	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Unsupported existing graph node rejects apply during preflight"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Unsupported existing graph node diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+
+	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UTextBlock* AfterFailureTitleText = AfterFailureBlueprint && AfterFailureBlueprint->WidgetTree
+		? Cast<UTextBlock>(AfterFailureBlueprint->WidgetTree->FindWidget(TEXT("TitleText")))
+		: nullptr;
+	TestNotNull(TEXT("TitleText still exists after rejected graph preflight"), AfterFailureTitleText);
+	TestEqual(TEXT("Body text remains unchanged after rejected graph preflight"), AfterFailureTitleText ? AfterFailureTitleText->GetText().ToString() : FString(), FString(TEXT("Original title")));
 	return true;
 }
 

@@ -18,6 +18,7 @@
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Self.h"
+#include "K2Node_Tunnel.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -487,7 +488,7 @@ UEdGraph* FindOrCreateGraph(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion R
 	}
 	else
 	{
-		GetMutableGraphArray(Blueprint, Region).Add(Graph);
+		FBlueprintEditorUtils::AddMacroGraph(Blueprint, Graph, true, nullptr);
 	}
 	bOutChanged = true;
 	return Graph;
@@ -625,8 +626,15 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
 
 bool IsPreservedFrameworkNode(EAssetDocumentK2GraphRegion Region, const UEdGraphNode* Node)
 {
-	return Region == EAssetDocumentK2GraphRegion::FunctionGraphs
-		&& (Cast<UK2Node_FunctionEntry>(Node) || Cast<UK2Node_FunctionResult>(Node));
+	if (Region == EAssetDocumentK2GraphRegion::FunctionGraphs)
+	{
+		return Cast<UK2Node_FunctionEntry>(Node) || Cast<UK2Node_FunctionResult>(Node);
+	}
+	if (Region == EAssetDocumentK2GraphRegion::MacroGraphs)
+	{
+		return Cast<UK2Node_Tunnel>(Node) != nullptr;
+	}
+	return false;
 }
 
 void BreakAllLinksForManagedNodes(const TMap<FString, UEdGraphNode*>& NodesById)
@@ -1053,6 +1061,8 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
 {
 	const FScopedGraphRegionPath ScopedRegion(Region);
+	const FAssetDocumentNodeAdapterRegistry Registry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
+	TSet<FString> DesiredGraphNames;
 	for (const FAssetDocumentGraphSpec& GraphSpec : DesiredGraphs)
 	{
 		UClass* SchemaClass = nullptr;
@@ -1061,6 +1071,62 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 		if (!PreflightResult.bSuccess)
 		{
 			return PreflightResult;
+		}
+		DesiredGraphNames.Add(GraphSpec.Name);
+	}
+
+	if (!Blueprint)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(Blueprint, Region)))
+	{
+		if (!ExistingGraph || DesiredGraphNames.Contains(ExistingGraph->GetName()))
+		{
+			continue;
+		}
+
+		const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, Region, ExistingGraph);
+		if (!DeleteResult.bSuccess)
+		{
+			return DeleteResult;
+		}
+	}
+
+	for (const FAssetDocumentGraphSpec& GraphSpec : DesiredGraphs)
+	{
+		UEdGraph* ExistingGraph = FindGraphByName(Blueprint, Region, GraphSpec.Name);
+		if (!ExistingGraph)
+		{
+			continue;
+		}
+
+		if (!Cast<UEdGraphSchema_K2>(ExistingGraph->GetSchema()))
+		{
+			return GraphFailure(
+				FString::Printf(TEXT("Existing graph '%s' does not use EdGraphSchema_K2 and cannot be overwritten by Tier 1 graph sidecar apply"), *ExistingGraph->GetName()),
+				ExistingGraphPath(ExistingGraph),
+				TEXT("InvalidGraphSchema"));
+		}
+
+		TSet<UEdGraphNode*> UsedExistingNodes;
+		for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+		{
+			FindReusableNode(Blueprint, Registry, ExistingGraph, NodeSpec, UsedExistingNodes);
+		}
+
+		for (const UEdGraphNode* ExistingNode : ExistingGraph->Nodes)
+		{
+			if (!ExistingNode || UsedExistingNodes.Contains(const_cast<UEdGraphNode*>(ExistingNode)) || IsPreservedFrameworkNode(Region, ExistingNode))
+			{
+				continue;
+			}
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Blueprint, Registry, ExistingGraph, ExistingNode);
+			if (!DeleteResult.bSuccess)
+			{
+				return DeleteResult;
+			}
 		}
 	}
 

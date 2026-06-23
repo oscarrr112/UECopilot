@@ -257,15 +257,49 @@ void MergeSkippedGraphEvidence(TSharedRef<FJsonObject>& OutBodyJson, const TArra
 	Graphs->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 }
 
-void NormalizeGraphIdentityForDiff(TArray<FAssetDocumentGraphSpec>& Graphs)
+bool IsSelfOwnerClassForDiff(const UBlueprint* Blueprint, const FString& OwnerClass)
+{
+	if (OwnerClass == TEXT("Self"))
+	{
+		return true;
+	}
+	return (Blueprint && Blueprint->GeneratedClass && OwnerClass == Blueprint->GeneratedClass->GetPathName())
+		|| (Blueprint && Blueprint->SkeletonGeneratedClass && OwnerClass == Blueprint->SkeletonGeneratedClass->GetPathName())
+		|| (Blueprint && Blueprint->ParentClass && OwnerClass == Blueprint->ParentClass->GetPathName());
+}
+
+void NormalizeMemberIdentityForDiff(FAssetDocumentNodeSpec& Node, const UBlueprint* Blueprint)
+{
+	if (!Node.Member.IsValid())
+	{
+		return;
+	}
+
+	FString Kind;
+	FString OwnerClass;
+	if (Node.Member->TryGetStringField(TEXT("Kind"), Kind)
+		&& Kind == TEXT("MemberRef")
+		&& Node.Member->TryGetStringField(TEXT("OwnerClass"), OwnerClass)
+		&& IsSelfOwnerClassForDiff(Blueprint, OwnerClass))
+	{
+		Node.Member->SetStringField(TEXT("OwnerClass"), TEXT("Self"));
+	}
+}
+
+void NormalizeGraphIdentityForDiff(TArray<FAssetDocumentGraphSpec>& Graphs, const UBlueprint* Blueprint)
 {
 	for (FAssetDocumentGraphSpec& Graph : Graphs)
 	{
 		Graph.GraphGuid.Reset();
+		if (Graph.Schema == TEXT("/Script/UMGEditor.WidgetGraphSchema"))
+		{
+			Graph.Schema = TEXT("/Script/BlueprintGraph.EdGraphSchema_K2");
+		}
 		for (FAssetDocumentNodeSpec& Node : Graph.Nodes)
 		{
 			Node.NodeGuid.Reset();
 			Node.Capability.Reset();
+			NormalizeMemberIdentityForDiff(Node, Blueprint);
 		}
 	}
 }
@@ -499,8 +533,8 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::DiffRegions(
 		const FAssetDocumentK2GraphExtractResult CurrentExtract =
 			K2GraphAdapter.ExtractGraphRegion(Cast<UBlueprint>(const_cast<UWidgetBlueprint*>(WidgetBlueprint)), Region.K2Region);
 		TArray<FAssetDocumentGraphSpec> CurrentGraphs = CurrentExtract.Graphs;
-		NormalizeGraphIdentityForDiff(DesiredGraphs);
-		NormalizeGraphIdentityForDiff(CurrentGraphs);
+		NormalizeGraphIdentityForDiff(DesiredGraphs, WidgetBlueprint);
+		NormalizeGraphIdentityForDiff(CurrentGraphs, WidgetBlueprint);
 
 		const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
 			FAssetDocumentGraphDiff::CompareUbergraphPages(DesiredGraphs, CurrentGraphs, Definitions);

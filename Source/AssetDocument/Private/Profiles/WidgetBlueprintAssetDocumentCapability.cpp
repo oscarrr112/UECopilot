@@ -1800,6 +1800,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		return VariableParseResult;
 	}
 
+	const FAssetDocumentCapabilityResult GraphPreflightResult =
+		FWidgetBlueprintGraphAdapter().PreflightRegions(Context, BodyObject.ToSharedRef());
+	if (!GraphPreflightResult.bSuccess)
+	{
+		return GraphPreflightResult;
+	}
+
 	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
 	const FAssetDocumentCapabilityResult BindingPreflightResult = PreflightBindingsAgainstDesiredWidgetBlueprint(
 		Context,
@@ -1902,6 +1909,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (!VariableParseResult.bSuccess)
 	{
 		return VariableParseResult;
+	}
+
+	const FAssetDocumentCapabilityResult GraphPreflightResult =
+		FWidgetBlueprintGraphAdapter().PreflightRegions(Context, BodyObject.ToSharedRef());
+	if (!GraphPreflightResult.bSuccess)
+	{
+		return GraphPreflightResult;
 	}
 
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
