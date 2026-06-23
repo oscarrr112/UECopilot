@@ -3,6 +3,7 @@
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "Profiles/WidgetBlueprintBindingAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
@@ -1468,13 +1469,6 @@ void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, T
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (WidgetBlueprint->Bindings.Num() > 0)
-	{
-		OutRegions.Add({
-			TEXT("/Body/Bindings"),
-			TEXT("Existing WidgetBlueprint has non-empty Bindings that the current AssetDocument adapter cannot safely apply or diff")
-		});
-	}
 	if (WidgetBlueprint->Animations.Num() > 0)
 	{
 		OutRegions.Add({
@@ -1579,7 +1573,7 @@ FName FWidgetBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FWidgetBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("WidgetBlueprintBody"), TEXT("WidgetBlueprintEmptyAssetContract")};
+	return {TEXT("WidgetBlueprintBody"), TEXT("WidgetBlueprintTree"), TEXT("WidgetBlueprintBindings"), TEXT("WidgetBlueprintEmptyAssetContract")};
 }
 
 int32 FWidgetBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -1605,7 +1599,7 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentCapability::GetSchemaHint()
 	Schema->SetStringField(TEXT("Variables"), TEXT("array of explicit Blueprint variables; names must not conflict with variable widgets"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object of reflected generated CDO default differences"));
 	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:WidgetNode|null, NamedSlotBindings:map<string, WidgetNode>}"));
-	Schema->SetStringField(TEXT("Bindings"), TEXT("array empty until WidgetBlueprint binding adapter lands"));
+	Schema->SetStringField(TEXT("Bindings"), TEXT("array of {Widget:string, Property:string, Kind:Function|Property, Function?:string, SourcePath?:string[]}"));
 	Schema->SetStringField(TEXT("Animations"), TEXT("array empty until WidgetBlueprint animation adapter lands"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
 	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
@@ -1656,6 +1650,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 	if (!WidgetTreeResult.bSuccess)
 	{
 		return WidgetTreeResult;
+	}
+
+	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
+	const FAssetDocumentCapabilityResult BindingsResult =
+		FWidgetBlueprintBindingAdapter::Validate(BindingsValue ? *BindingsValue : nullptr);
+	if (!BindingsResult.bSuccess)
+	{
+		return BindingsResult;
 	}
 
 	TSharedPtr<FJsonObject> ClassDefaults;
@@ -1835,6 +1837,23 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		return ClassDefaultsApplyResult;
 	}
 
+	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
+	bool bBindingsChanged = false;
+	const FAssetDocumentCapabilityResult BindingsApplyResult =
+		FWidgetBlueprintBindingAdapter::Apply(WidgetBlueprint, BindingsValue ? *BindingsValue : nullptr, &bBindingsChanged);
+	if (!BindingsApplyResult.bSuccess)
+	{
+		return BindingsApplyResult;
+	}
+	if (bBindingsChanged)
+	{
+		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+		if (WidgetBlueprint->Status == BS_Error)
+		{
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Bindings"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed"));
+		}
+	}
+
 #if WITH_EDITORONLY_DATA
 	if (Palette.IsValid())
 	{
@@ -1892,7 +1911,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 		return WidgetTreeResult;
 	}
 	OutBodyJson->SetObjectField(TEXT("WidgetTree"), WidgetTreeJson);
-	OutBodyJson->SetArrayField(TEXT("Bindings"), {});
+	TArray<TSharedPtr<FJsonValue>> BindingValues;
+	const FAssetDocumentCapabilityResult BindingsResult = FWidgetBlueprintBindingAdapter::Extract(WidgetBlueprint, BindingValues);
+	if (!BindingsResult.bSuccess)
+	{
+		return BindingsResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("Bindings"), BindingValues);
 	OutBodyJson->SetArrayField(TEXT("Animations"), {});
 	OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
@@ -1984,6 +2009,22 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 			{
 				return WidgetTreeDiffResult;
 			}
+		}
+		else if (BodyKey == TEXT("Bindings"))
+		{
+			TSharedPtr<FJsonValue> CanonicalDesiredBindings;
+			const FAssetDocumentCapabilityResult BindingsDesiredResult = FWidgetBlueprintBindingAdapter::CanonicalizeDesired(
+				Desired ? *Desired : nullptr,
+				CanonicalDesiredBindings);
+			if (!BindingsDesiredResult.bSuccess)
+			{
+				return BindingsDesiredResult;
+			}
+			DesiredValue = CanonicalDesiredBindings;
+			const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
+				? TEXT("unchanged")
+				: TEXT("changed");
+			AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
 		}
 		else
 		{
@@ -2121,6 +2162,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 			if (!VariableParseResult.bSuccess)
 			{
 				return VariableParseResult;
+			}
+		}
+		else if (Pair.Key == TEXT("Bindings"))
+		{
+			const FAssetDocumentCapabilityResult BindingsResult = FWidgetBlueprintBindingAdapter::Validate(Pair.Value);
+			if (!BindingsResult.bSuccess)
+			{
+				return BindingsResult;
 			}
 		}
 		else

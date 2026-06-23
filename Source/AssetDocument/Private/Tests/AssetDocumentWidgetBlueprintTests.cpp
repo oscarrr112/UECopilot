@@ -79,6 +79,11 @@ static TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 	return ClassRef;
 }
 
+TSharedRef<FJsonObject> MakeTestUserWidgetParentClassRef()
+{
+	return MakeClassRef(UTestUserWidget::StaticClass()->GetPathName());
+}
+
 static TSharedPtr<FJsonObject> MakeWidgetBlueprintDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
 {
 	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
@@ -217,6 +222,70 @@ TArray<TSharedPtr<FJsonValue>> MakeVariableArray(std::initializer_list<TSharedPt
 		Result.Add(MakeShared<FJsonValueObject>(Variable));
 	}
 	return Result;
+}
+
+TSharedRef<FJsonObject> MakeBindingFixtureBody()
+{
+	TSharedRef<FJsonObject> TitleText = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	TitleText->SetBoolField(TEXT("IsVariable"), true);
+	TitleText->SetStringField(TEXT("VariableName"), TEXT("TitleText"));
+
+	TSharedRef<FJsonObject> Body = MakeWidgetTreeBody(MakeWidgetTree(TitleText));
+	Body->SetObjectField(TEXT("ParentClass"), MakeTestUserWidgetParentClassRef());
+	return Body;
+}
+
+TSharedPtr<FJsonObject> MakeFunctionBinding(const TCHAR* Widget, const TCHAR* Property, const TCHAR* Function)
+{
+	TSharedPtr<FJsonObject> Binding = MakeShared<FJsonObject>();
+	Binding->SetStringField(TEXT("Widget"), Widget);
+	Binding->SetStringField(TEXT("Property"), Property);
+	Binding->SetStringField(TEXT("Kind"), TEXT("Function"));
+	Binding->SetStringField(TEXT("Function"), Function);
+	return Binding;
+}
+
+TSharedPtr<FJsonObject> MakePropertyBinding(const TCHAR* Widget, const TCHAR* Property, std::initializer_list<const TCHAR*> SourcePath)
+{
+	TSharedPtr<FJsonObject> Binding = MakeShared<FJsonObject>();
+	Binding->SetStringField(TEXT("Widget"), Widget);
+	Binding->SetStringField(TEXT("Property"), Property);
+	Binding->SetStringField(TEXT("Kind"), TEXT("Property"));
+
+	TArray<TSharedPtr<FJsonValue>> Path;
+	for (const TCHAR* Segment : SourcePath)
+	{
+		Path.Add(MakeShared<FJsonValueString>(Segment));
+	}
+	Binding->SetArrayField(TEXT("SourcePath"), Path);
+	return Binding;
+}
+
+void SetBindings(TSharedRef<FJsonObject> Body, std::initializer_list<TSharedPtr<FJsonObject>> Bindings)
+{
+	TArray<TSharedPtr<FJsonValue>> BindingValues;
+	for (const TSharedPtr<FJsonObject>& Binding : Bindings)
+	{
+		BindingValues.Add(MakeShared<FJsonValueObject>(Binding));
+	}
+	Body->SetArrayField(TEXT("Bindings"), BindingValues);
+}
+
+TArray<TSharedPtr<FJsonValue>> GetExtractedBindings(const FAssetDocumentResult& ExtractResult)
+{
+	TArray<TSharedPtr<FJsonValue>> Empty;
+	TSharedPtr<FJsonObject> Body = GetExtractedBody(ExtractResult);
+	if (!Body.IsValid())
+	{
+		return Empty;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Bindings = nullptr;
+	if (Body->TryGetArrayField(TEXT("Bindings"), Bindings) && Bindings)
+	{
+		return *Bindings;
+	}
+	return Empty;
 }
 }
 
@@ -387,12 +456,12 @@ bool FAssetDocumentWidgetBlueprintRejectsNonEmptyAuthoredRegionsTest::RunTest(co
 	Context.AssetClass = UWidgetBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
-	TArray<TSharedPtr<FJsonValue>> Bindings;
-	Bindings.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
-	Body->SetArrayField(TEXT("Bindings"), Bindings);
+	TArray<TSharedPtr<FJsonValue>> Animations;
+	Animations.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
+	Body->SetArrayField(TEXT("Animations"), Animations);
 
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyJsonValue(Body));
-	TestFalse(TEXT("Non-empty authored Bindings fail validation"), Result.bSuccess);
+	TestFalse(TEXT("Non-empty authored Animations fail validation"), Result.bSuccess);
 	TestTrue(TEXT("Diagnostic uses UnsupportedWidgetBlueprintRegion"), Result.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
 	{
 		return Diagnostic.Code == TEXT("UnsupportedWidgetBlueprintRegion");
@@ -431,7 +500,6 @@ bool FAssetDocumentWidgetBlueprintExistingNonEmptyStateBlocksTask1ApplyTest::Run
 
 	UWidget* RootWidget = WidgetBlueprint->WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("RootCanvas"));
 	WidgetBlueprint->WidgetTree->RootWidget = RootWidget;
-	WidgetBlueprint->Bindings.AddDefaulted();
 	UWidgetAnimation* Animation = NewObject<UWidgetAnimation>(WidgetBlueprint, TEXT("Intro"));
 	WidgetBlueprint->Animations.Add(Animation);
 
@@ -447,20 +515,19 @@ bool FAssetDocumentWidgetBlueprintExistingNonEmptyStateBlocksTask1ApplyTest::Run
 		return Diagnostic.Code == TEXT("UnsupportedWidgetBlueprintRegion");
 	}));
 	TestTrue(TEXT("RootWidget remains intact"), WidgetBlueprint->WidgetTree->RootWidget == RootWidget);
-	TestEqual(TEXT("Bindings remain intact"), WidgetBlueprint->Bindings.Num(), 1);
 	TestEqual(TEXT("Animations remain intact"), WidgetBlueprint->Animations.Num(), 1);
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyJsonValue(MakeDefaultWidgetBlueprintBody()), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for inspection"), DiffResult.bSuccess);
-	TestTrue(TEXT("Diff exposes non-empty unsupported Bindings as changed/skipped"), DiffEntries.ContainsByPredicate([](const TSharedPtr<FJsonValue>& Entry)
+	TestTrue(TEXT("Diff exposes non-empty unsupported Animations as changed/skipped"), DiffEntries.ContainsByPredicate([](const TSharedPtr<FJsonValue>& Entry)
 	{
 		const TSharedPtr<FJsonObject> Object = Entry.IsValid() ? Entry->AsObject() : nullptr;
 		FString Path;
 		FString Status;
 		return Object.IsValid()
 			&& Object->TryGetStringField(TEXT("path"), Path)
-			&& Path == TEXT("/Body/Bindings")
+			&& Path == TEXT("/Body/Animations")
 			&& Object->TryGetStringField(TEXT("status"), Status)
 			&& Status != TEXT("unchanged");
 	}));
@@ -921,6 +988,223 @@ bool FAssetDocumentWidgetBlueprintMetadataVariableRoundTripTest::RunTest(const F
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Diff succeeds after variable roundtrip"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Variable roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsFunctionRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.FunctionRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsFunctionRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsFunctionRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Function binding apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Function binding apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("One UE binding is materialized"), WidgetBlueprint->Bindings.Num(), 1);
+		if (WidgetBlueprint->Bindings.Num() == 1)
+		{
+			const FDelegateEditorBinding& Binding = WidgetBlueprint->Bindings[0];
+			TestEqual(TEXT("Binding object name is canonical"), Binding.ObjectName, FString(TEXT("TitleText")));
+			TestEqual(TEXT("Binding target property is Text"), Binding.PropertyName, FName(TEXT("Text")));
+			TestEqual(TEXT("Binding kind is Function"), Binding.Kind, EBindingKind::Function);
+			TestEqual(TEXT("Binding function is preserved"), Binding.FunctionName, FName(TEXT("GetDisplayText")));
+		}
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after function binding apply"), ExtractResult.IsSuccess());
+	const TArray<TSharedPtr<FJsonValue>> ExtractedBindings = GetExtractedBindings(ExtractResult);
+	TestEqual(TEXT("Extract returns one binding"), ExtractedBindings.Num(), 1);
+	if (ExtractedBindings.Num() == 1 && ExtractedBindings[0].IsValid() && ExtractedBindings[0]->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Binding = ExtractedBindings[0]->AsObject();
+		TestEqual(TEXT("Extracted binding widget"), Binding->GetStringField(TEXT("Widget")), FString(TEXT("TitleText")));
+		TestEqual(TEXT("Extracted binding property"), Binding->GetStringField(TEXT("Property")), FString(TEXT("Text")));
+		TestEqual(TEXT("Extracted binding kind"), Binding->GetStringField(TEXT("Kind")), FString(TEXT("Function")));
+		TestEqual(TEXT("Extracted binding function"), Binding->GetStringField(TEXT("Function")), FString(TEXT("GetDisplayText")));
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after function binding roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Function binding diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsPropertyRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.PropertyRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsPropertyRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsPropertyRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetBindings(Body, {MakePropertyBinding(TEXT("TitleText"), TEXT("Text"), {TEXT("DisplayText")})});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Property binding apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Property binding apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("One UE property binding is materialized"), WidgetBlueprint->Bindings.Num(), 1);
+		if (WidgetBlueprint->Bindings.Num() == 1)
+		{
+			const FDelegateEditorBinding& Binding = WidgetBlueprint->Bindings[0];
+			TestEqual(TEXT("Property binding object name is canonical"), Binding.ObjectName, FString(TEXT("TitleText")));
+			TestEqual(TEXT("Property binding target property is Text"), Binding.PropertyName, FName(TEXT("Text")));
+			TestEqual(TEXT("Binding kind is Property"), Binding.Kind, EBindingKind::Property);
+			TestFalse(TEXT("Property binding uses SourcePath"), Binding.SourcePath.IsEmpty());
+		}
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after property binding apply"), ExtractResult.IsSuccess());
+	const TArray<TSharedPtr<FJsonValue>> ExtractedBindings = GetExtractedBindings(ExtractResult);
+	TestEqual(TEXT("Extract returns one property binding"), ExtractedBindings.Num(), 1);
+	if (ExtractedBindings.Num() == 1 && ExtractedBindings[0].IsValid() && ExtractedBindings[0]->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Binding = ExtractedBindings[0]->AsObject();
+		TestEqual(TEXT("Extracted property binding kind"), Binding->GetStringField(TEXT("Kind")), FString(TEXT("Property")));
+		const TArray<TSharedPtr<FJsonValue>>* SourcePath = nullptr;
+		TestTrue(TEXT("Extracted property binding prefers SourcePath"), Binding->TryGetArrayField(TEXT("SourcePath"), SourcePath) && SourcePath && SourcePath->Num() == 1);
+		if (SourcePath && SourcePath->Num() == 1)
+		{
+			TestEqual(TEXT("Extracted SourcePath segment"), (*SourcePath)[0]->AsString(), FString(TEXT("DisplayText")));
+		}
+		TestFalse(TEXT("Extracted property binding omits legacy Property"), Binding->HasField(TEXT("SourceProperty")));
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after property binding roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Property binding diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsOmissionRemovesBindingTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.OmissionRemovesBinding",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsOmissionRemovesBindingTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsOmissionRemoves"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	SetBindings(InitialBody, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText"))});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial binding apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> ResetBody = MakeBindingFixtureBody();
+	const FAssetDocumentResult ResetResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ResetBody)));
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Binding omission reset failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitted Bindings reset applies"), ResetResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Omitted Bindings removes existing UE binding"), WidgetBlueprint->Bindings.Num(), 0);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, ResetBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after binding omission"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Omitted binding diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsRejectsMissingWidgetTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.RejectsMissingWidget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsRejectsMissingWidgetTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsRejectsMissingWidget"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetBindings(Body, {MakeFunctionBinding(TEXT("MissingText"), TEXT("Text"), TEXT("GetDisplayText"))});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Missing binding widget rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Missing binding widget diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MissingBindingWidget")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsRejectsInvalidFunctionSignatureTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.RejectsInvalidFunctionSignature",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsRejectsInvalidFunctionSignatureTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsRejectsInvalidFunction"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetBindings(Body, {MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetObjectForText"))});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Invalid binding function signature rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Invalid binding function diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("InvalidBindingFunctionSignature")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintBindingsRejectsDuplicateTargetTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Bindings.RejectsDuplicateTarget",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintBindingsRejectsDuplicateTargetTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_BindingsRejectsDuplicate"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetBindings(Body, {
+		MakeFunctionBinding(TEXT("TitleText"), TEXT("Text"), TEXT("GetDisplayText")),
+		MakePropertyBinding(TEXT("TitleText"), TEXT("Text"), {TEXT("DisplayText")})
+	});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Duplicate binding target rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Duplicate binding target diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("DuplicateBindingTarget")));
 	return true;
 }
 
