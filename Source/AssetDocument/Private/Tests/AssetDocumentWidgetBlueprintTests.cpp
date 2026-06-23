@@ -607,6 +607,40 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsInvalidClassTest::RunTest(con
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeRejectsNullWidgetTreeTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.RejectsNullWidgetTree",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsNullWidgetTreeTest::RunTest(const FString&)
+{
+	FWidgetBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> NullWidgetTreeBody = MakeDefaultWidgetBlueprintBody();
+	NullWidgetTreeBody->SetField(TEXT("WidgetTree"), MakeShared<FJsonValueNull>());
+	const FAssetDocumentCapabilityResult NullWidgetTreeResult = Capability.Validate(Context, MakeBodyJsonValue(NullWidgetTreeBody));
+	TestFalse(TEXT("Explicit null Body.WidgetTree fails validation"), NullWidgetTreeResult.bSuccess);
+	TestTrue(TEXT("Null WidgetTree reports invalid section type"), NullWidgetTreeResult.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == TEXT("/Body/WidgetTree") && Diagnostic.Code == TEXT("InvalidBodySectionType");
+	}));
+
+	TSharedRef<FJsonObject> RootNullBody = MakeDefaultWidgetBlueprintBody();
+	TSharedPtr<FJsonObject> WidgetTree = MakeShared<FJsonObject>();
+	WidgetTree->SetField(TEXT("RootWidget"), MakeShared<FJsonValueNull>());
+	WidgetTree->SetObjectField(TEXT("NamedSlotBindings"), MakeShared<FJsonObject>());
+	RootNullBody->SetObjectField(TEXT("WidgetTree"), WidgetTree);
+	const FAssetDocumentCapabilityResult RootNullResult = Capability.Validate(Context, MakeBodyJsonValue(RootNullBody));
+	TestTrue(TEXT("Null WidgetTree.RootWidget remains valid"), RootNullResult.bSuccess);
+	if (!RootNullResult.bSuccess)
+	{
+		AddError(RootNullResult.Message);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintWidgetTreeRejectsDuplicateNamesTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.RejectsDuplicateNames",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

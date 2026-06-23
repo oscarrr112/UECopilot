@@ -275,7 +275,7 @@ FAssetDocumentCapabilityResult ParseWidgetTree(
 	FWidgetBlueprintTreeSpec& OutSpec)
 {
 	TSharedPtr<FJsonObject> WidgetTreeObject;
-	if (!WidgetTreeValue.IsValid() || WidgetTreeValue->Type == EJson::Null)
+	if (!WidgetTreeValue.IsValid())
 	{
 		WidgetTreeObject = FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
 	}
