@@ -2,6 +2,8 @@
 
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 
+#include "Profiles/WidgetBlueprintTreeAdapter.h"
+
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonValue.h"
@@ -212,23 +214,6 @@ void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, T
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (WidgetBlueprint->WidgetTree)
-	{
-		if (WidgetBlueprint->WidgetTree->RootWidget)
-		{
-			OutRegions.Add({
-				TEXT("/Body/WidgetTree"),
-				TEXT("Existing WidgetBlueprint has a non-empty WidgetTree.RootWidget that Task 1 cannot safely apply or diff")
-			});
-		}
-		if (WidgetBlueprint->WidgetTree->NamedSlotBindings.Num() > 0)
-		{
-			OutRegions.Add({
-				TEXT("/Body/WidgetTree"),
-				TEXT("Existing WidgetBlueprint has non-empty WidgetTree.NamedSlotBindings that Task 1 cannot safely apply or diff")
-			});
-		}
-	}
 	if (WidgetBlueprint->Bindings.Num() > 0)
 	{
 		OutRegions.Add({
@@ -281,62 +266,12 @@ TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
 
 TSharedRef<FJsonObject> MakeDefaultWidgetTree()
 {
-	TSharedRef<FJsonObject> WidgetTree = MakeShared<FJsonObject>();
-	WidgetTree->SetField(TEXT("RootWidget"), MakeShared<FJsonValueNull>());
-	WidgetTree->SetObjectField(TEXT("NamedSlotBindings"), MakeShared<FJsonObject>());
-	return WidgetTree;
+	return FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
 }
 
 FAssetDocumentCapabilityResult ValidateDefaultWidgetTree(const TSharedPtr<FJsonValue>& Value)
 {
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	if (Value->Type != EJson::Object)
-	{
-		return BodyFailure(TEXT("Body.WidgetTree must be an object when authored"), TEXT("/Body/WidgetTree"), TEXT("InvalidBodySectionType"));
-	}
-
-	const TSharedPtr<FJsonObject> WidgetTree = Value->AsObject();
-	if (!WidgetTree.IsValid())
-	{
-		return BodyFailure(TEXT("Body.WidgetTree must be an object when authored"), TEXT("/Body/WidgetTree"), TEXT("InvalidBodySectionType"));
-	}
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : WidgetTree->Values)
-	{
-		if (Pair.Key == TEXT("RootWidget"))
-		{
-			if (Pair.Value.IsValid() && Pair.Value->Type != EJson::Null)
-			{
-				return BodyFailure(TEXT("Body.WidgetTree.RootWidget is not supported yet when non-null"), TEXT("/Body/WidgetTree/RootWidget"), TEXT("UnsupportedWidgetBlueprintRegion"));
-			}
-			continue;
-		}
-
-		if (Pair.Key == TEXT("NamedSlotBindings"))
-		{
-			if (!Pair.Value.IsValid() || Pair.Value->Type != EJson::Object)
-			{
-				return BodyFailure(TEXT("Body.WidgetTree.NamedSlotBindings must be an object"), TEXT("/Body/WidgetTree/NamedSlotBindings"), TEXT("InvalidBodySectionType"));
-			}
-			const TSharedPtr<FJsonObject> NamedSlotBindings = Pair.Value->AsObject();
-			if (NamedSlotBindings.IsValid() && NamedSlotBindings->Values.Num() > 0)
-			{
-				return BodyFailure(TEXT("Body.WidgetTree.NamedSlotBindings is not supported yet when non-empty"), TEXT("/Body/WidgetTree/NamedSlotBindings"), TEXT("UnsupportedWidgetBlueprintRegion"));
-			}
-			continue;
-		}
-
-		return BodyFailure(
-			FString::Printf(TEXT("Unknown Body.WidgetTree key '%s'"), *Pair.Key),
-			FString::Printf(TEXT("/Body/WidgetTree/%s"), *Pair.Key),
-			TEXT("UnknownBodyKey"));
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
+	return FWidgetBlueprintTreeAdapter::Validate(Value);
 }
 
 FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
@@ -415,7 +350,7 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentCapability::GetSchemaHint()
 	Schema->SetStringField(TEXT("ImplementedInterfaces"), TEXT("array empty until WidgetBlueprint interface adapter lands"));
 	Schema->SetStringField(TEXT("Variables"), TEXT("array empty until WidgetBlueprint variable adapter lands"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object empty until WidgetBlueprint CDO defaults adapter lands"));
-	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:null, NamedSlotBindings:{}} until WidgetTree adapter lands"));
+	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:WidgetNode|null, NamedSlotBindings:map<string, WidgetNode>}"));
 	Schema->SetStringField(TEXT("Bindings"), TEXT("array empty until WidgetBlueprint binding adapter lands"));
 	Schema->SetStringField(TEXT("Animations"), TEXT("array empty until WidgetBlueprint animation adapter lands"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array empty until WidgetBlueprint graph adapter lands"));
@@ -440,7 +375,22 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 
 FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
 {
-	return Validate(Context, BodyJson);
+	TSharedPtr<FJsonObject> BodyObject;
+	const FAssetDocumentCapabilityResult ObjectResult = RequireBodyObject(BodyJson, BodyObject);
+	if (!ObjectResult.bSuccess)
+	{
+		return ObjectResult;
+	}
+
+	const FAssetDocumentCapabilityResult ValidateResult = ValidateBodyObject(Context, BodyObject.ToSharedRef());
+	if (!ValidateResult.bSuccess)
+	{
+		return ValidateResult;
+	}
+
+	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
+	const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
+	return FWidgetBlueprintTreeAdapter::Preflight(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr);
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
@@ -475,6 +425,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (!CurrentStateResult.bSuccess)
 	{
 		return CurrentStateResult;
+	}
+
+	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
+	const FAssetDocumentCapabilityResult WidgetTreeResult =
+		FWidgetBlueprintTreeAdapter::Apply(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr);
+	if (!WidgetTreeResult.bSuccess)
+	{
+		return WidgetTreeResult;
 	}
 
 	bool bChanged = false;
@@ -514,7 +472,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 	OutBodyJson->SetArrayField(TEXT("ImplementedInterfaces"), {});
 	OutBodyJson->SetArrayField(TEXT("Variables"), {});
 	OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
-	OutBodyJson->SetObjectField(TEXT("WidgetTree"), MakeDefaultWidgetTree());
+	TSharedRef<FJsonObject> WidgetTreeJson = MakeDefaultWidgetTree();
+	const FAssetDocumentCapabilityResult WidgetTreeResult = FWidgetBlueprintTreeAdapter::Extract(WidgetBlueprint, WidgetTreeJson);
+	if (!WidgetTreeResult.bSuccess)
+	{
+		return WidgetTreeResult;
+	}
+	OutBodyJson->SetObjectField(TEXT("WidgetTree"), WidgetTreeJson);
 	OutBodyJson->SetArrayField(TEXT("Bindings"), {});
 	OutBodyJson->SetArrayField(TEXT("Animations"), {});
 	OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
@@ -579,10 +543,25 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				}
 			}
 		}
-		const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
-			? TEXT("unchanged")
-			: TEXT("changed");
-		AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+		if (BodyKey == TEXT("WidgetTree"))
+		{
+			const TSharedPtr<FJsonValue>* DesiredWidgetTree = DesiredBody->Values.Find(TEXT("WidgetTree"));
+			const FAssetDocumentCapabilityResult WidgetTreeDiffResult = FWidgetBlueprintTreeAdapter::Diff(
+				Cast<UWidgetBlueprint>(Context.Asset),
+				DesiredWidgetTree ? *DesiredWidgetTree : nullptr,
+				OutDiffEntries);
+			if (!WidgetTreeDiffResult.bSuccess)
+			{
+				return WidgetTreeDiffResult;
+			}
+		}
+		else
+		{
+			const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
+				? TEXT("unchanged")
+				: TEXT("changed");
+			AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("WidgetBlueprint Body diffed"));
