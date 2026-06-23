@@ -190,6 +190,33 @@ TSharedRef<FJsonObject> MakeFloatPinType()
 	Type->SetStringField(TEXT("PinSubCategory"), TEXT("float"));
 	return Type;
 }
+
+TSharedPtr<FJsonObject> MakeFloatVariable(const TCHAR* Name, const TCHAR* DefaultValue, const TCHAR* Category = nullptr, const TCHAR* Tooltip = nullptr)
+{
+	TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
+	Variable->SetStringField(TEXT("Name"), Name);
+	Variable->SetObjectField(TEXT("Type"), MakeFloatPinType());
+	Variable->SetStringField(TEXT("DefaultValue"), DefaultValue);
+	if (Category)
+	{
+		Variable->SetStringField(TEXT("Category"), Category);
+	}
+	if (Tooltip)
+	{
+		Variable->SetStringField(TEXT("Tooltip"), Tooltip);
+	}
+	return Variable;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeVariableArray(std::initializer_list<TSharedPtr<FJsonObject>> Variables)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const TSharedPtr<FJsonObject>& Variable : Variables)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(Variable));
+	}
+	return Result;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -237,6 +264,15 @@ bool FAssetDocumentWidgetBlueprintProfileTest::RunTest(const FString&)
 	TestTrue(TEXT("WidgetTree has region policy"), HasPolicy(TEXT("Body.WidgetTree")));
 	TestTrue(TEXT("Bindings has region policy"), HasPolicy(TEXT("Body.Bindings")));
 	TestTrue(TEXT("Animations has region policy"), HasPolicy(TEXT("Body.Animations")));
+	const FAssetDocumentRegionPolicy* WidgetVariableGuidsPolicy = Policies.FindByPredicate([](const FAssetDocumentRegionPolicy& Policy)
+	{
+		return Policy.RegionId == TEXT("Body.WidgetVariableGuids");
+	});
+	TestNotNull(TEXT("WidgetVariableGuids has region policy"), WidgetVariableGuidsPolicy);
+	if (WidgetVariableGuidsPolicy)
+	{
+		TestEqual(TEXT("WidgetVariableGuids uses canonicalizer"), WidgetVariableGuidsPolicy->CanonicalizerHookName, FName(TEXT("WidgetBlueprintWidgetVariableGuids")));
+	}
 	return true;
 }
 
@@ -660,6 +696,69 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsVariableWidgetNameConflictTest:
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Explicit variable conflicting with variable widget rejects apply"), Result.IsSuccess());
 	TestTrue(TEXT("Conflict diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("VariableWidgetNameConflict")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataVariableRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.VariableRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataVariableRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataVariableRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	Body->SetArrayField(
+		TEXT("Variables"),
+		MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("100.0"), TEXT("Stats"), TEXT("Hit points"))}));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Variable apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Non-widget Blueprint variable apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		const FBPVariableDescription* Health = WidgetBlueprint->NewVariables.FindByPredicate([](const FBPVariableDescription& Variable)
+		{
+			return Variable.VarName == TEXT("Health");
+		});
+		TestNotNull(TEXT("Health variable exists"), Health);
+		if (Health)
+		{
+			TestEqual(TEXT("Health category is applied"), Health->Category.ToString(), FString(TEXT("Stats")));
+			TestTrue(TEXT("Health tooltip is applied"), Health->HasMetaData(FBlueprintMetadata::MD_Tooltip));
+			TestEqual(TEXT("Health default value is persisted"), Health->DefaultValue, FString(TEXT("100.0")));
+		}
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after variable apply"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedVariables = nullptr;
+	TestTrue(TEXT("Extract includes Variables"), ExtractedBody.IsValid() && ExtractedBody->TryGetArrayField(TEXT("Variables"), ExtractedVariables));
+	TestEqual(TEXT("Extracted Variables has one entry"), ExtractedVariables ? ExtractedVariables->Num() : -1, 1);
+	if (ExtractedVariables && ExtractedVariables->Num() == 1 && (*ExtractedVariables)[0].IsValid() && (*ExtractedVariables)[0]->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Variable = (*ExtractedVariables)[0]->AsObject();
+		TestEqual(TEXT("Extracted variable name"), Variable->GetStringField(TEXT("Name")), FString(TEXT("Health")));
+		TestEqual(TEXT("Extracted variable category"), Variable->GetStringField(TEXT("Category")), FString(TEXT("Stats")));
+		TestEqual(TEXT("Extracted variable tooltip"), Variable->GetStringField(TEXT("Tooltip")), FString(TEXT("Hit points")));
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after variable roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Variable roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 

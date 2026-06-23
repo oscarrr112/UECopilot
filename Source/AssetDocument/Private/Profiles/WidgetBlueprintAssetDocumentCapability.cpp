@@ -10,6 +10,8 @@
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonValue.h"
+#include "EdGraphSchema_K2.h"
+#include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Serialization/JsonSerializer.h"
@@ -506,22 +508,140 @@ TSharedRef<FJsonObject> BuildWidgetVariableGuidsJson(
 	return Json;
 }
 
-FAssetDocumentCapabilityResult CollectExplicitVariableNames(
-	const TSharedPtr<FJsonValue>& VariablesValue,
-	TSet<FName>& OutVariableNames)
+struct FWidgetBlueprintVariableSpec
 {
-	OutVariableNames.Reset();
-	if (!VariablesValue.IsValid() || VariablesValue->Type == EJson::Null)
+	FName Name;
+	FEdGraphPinType Type;
+	FString DefaultValue;
+	TOptional<FString> Category;
+	TOptional<FString> Tooltip;
+};
+
+FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeObject, const FString& Path, FEdGraphPinType& OutPinType)
+{
+	OutPinType.ResetToDefaults();
+	if (!TypeObject.IsValid())
+	{
+		return BodyFailure(TEXT("Variable Type must be an object"), Path, TEXT("InvalidVariableType"));
+	}
+
+	FString PinCategory;
+	if (!TypeObject->TryGetStringField(TEXT("PinCategory"), PinCategory) || PinCategory.IsEmpty())
+	{
+		return BodyFailure(TEXT("Variable Type.PinCategory is required"), Path / TEXT("PinCategory"), TEXT("MissingPinCategory"));
+	}
+
+	auto SetScalar = [&OutPinType](FName Category)
+	{
+		OutPinType.PinCategory = Category;
+		OutPinType.PinSubCategory = NAME_None;
+	};
+
+	if (PinCategory == UEdGraphSchema_K2::PC_Boolean.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Boolean);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Byte.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Byte);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Int.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Int);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Int64.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Int64);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Name.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Name);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_String.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_String);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Text.ToString())
+	{
+		SetScalar(UEdGraphSchema_K2::PC_Text);
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Real.ToString())
+	{
+		FString PinSubCategory;
+		if (!TypeObject->TryGetStringField(TEXT("PinSubCategory"), PinSubCategory) || PinSubCategory.IsEmpty())
+		{
+			return BodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("MissingRealPinSubCategory"));
+		}
+		if (PinSubCategory == UEdGraphSchema_K2::PC_Float.ToString())
+		{
+			OutPinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			OutPinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+		}
+		else if (PinSubCategory == UEdGraphSchema_K2::PC_Double.ToString())
+		{
+			OutPinType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			OutPinType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
+		}
+		else
+		{
+			return BodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("UnsupportedRealPinSubCategory"));
+		}
+	}
+	else if (PinCategory == UEdGraphSchema_K2::PC_Object.ToString() || PinCategory == UEdGraphSchema_K2::PC_Class.ToString())
+	{
+		FString ObjectClassPath;
+		if (!TypeObject->TryGetStringField(TEXT("PinSubCategoryObject"), ObjectClassPath) || ObjectClassPath.IsEmpty())
+		{
+			return BodyFailure(TEXT("object/class variable Type.PinSubCategoryObject is required"), Path / TEXT("PinSubCategoryObject"), TEXT("MissingPinSubCategoryObject"));
+		}
+
+		UClass* ObjectClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ObjectClassPath);
+		if (!ObjectClass)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Failed to resolve PinSubCategoryObject '%s'"), *ObjectClassPath),
+				Path / TEXT("PinSubCategoryObject"),
+				TEXT("UnresolvedPinSubCategoryObject"));
+		}
+
+		OutPinType.PinCategory = PinCategory == UEdGraphSchema_K2::PC_Object.ToString()
+			? UEdGraphSchema_K2::PC_Object
+			: UEdGraphSchema_K2::PC_Class;
+		OutPinType.PinSubCategory = NAME_None;
+		OutPinType.PinSubCategoryObject = ObjectClass;
+	}
+	else
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Unsupported variable PinCategory '%s'"), *PinCategory),
+			Path / TEXT("PinCategory"),
+			TEXT("UnsupportedPinCategory"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseVariableSpecs(
+	const TSharedPtr<FJsonObject>& BodyObject,
+	TArray<FWidgetBlueprintVariableSpec>& OutVariables)
+{
+	OutVariables.Reset();
+	const TSharedPtr<FJsonValue>* VariablesValue = BodyObject.IsValid() ? BodyObject->Values.Find(TEXT("Variables")) : nullptr;
+	if (!VariablesValue)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
-	if (VariablesValue->Type != EJson::Array)
+	if (!VariablesValue->IsValid() || (*VariablesValue)->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if ((*VariablesValue)->Type != EJson::Array)
 	{
 		return BodyFailure(TEXT("Body.Variables must be an array when authored"), TEXT("/Body/Variables"), TEXT("InvalidBodySectionType"));
 	}
 
 	TSet<FName> SeenNames;
-	const TArray<TSharedPtr<FJsonValue>>& Variables = VariablesValue->AsArray();
+	const TArray<TSharedPtr<FJsonValue>>& Variables = (*VariablesValue)->AsArray();
 	for (int32 Index = 0; Index < Variables.Num(); ++Index)
 	{
 		const FString Path = FString::Printf(TEXT("/Body/Variables/%d"), Index);
@@ -537,32 +657,69 @@ FAssetDocumentCapabilityResult CollectExplicitVariableNames(
 			return BodyFailure(TEXT("Variable Name is required"), Path / TEXT("Name"), TEXT("MissingVariableName"));
 		}
 
-		const FName VariableName(*Name);
-		if (SeenNames.Contains(VariableName))
+		FWidgetBlueprintVariableSpec Spec;
+		Spec.Name = FName(*Name);
+		if (SeenNames.Contains(Spec.Name))
 		{
 			return BodyFailure(
 				FString::Printf(TEXT("Duplicate Body.Variables Name '%s'"), *Name),
 				Path / TEXT("Name"),
 				TEXT("DuplicateVariableName"));
 		}
-		SeenNames.Add(VariableName);
-		OutVariableNames.Add(VariableName);
+		SeenNames.Add(Spec.Name);
+
+		const TSharedPtr<FJsonObject>* TypeObject = nullptr;
+		if (!VariableObject->TryGetObjectField(TEXT("Type"), TypeObject) || !TypeObject || !TypeObject->IsValid())
+		{
+			return BodyFailure(TEXT("Variable Type object is required"), Path / TEXT("Type"), TEXT("MissingVariableType"));
+		}
+
+		const FAssetDocumentCapabilityResult TypeResult = ReadPinType(*TypeObject, Path / TEXT("Type"), Spec.Type);
+		if (!TypeResult.bSuccess)
+		{
+			return TypeResult;
+		}
+
+		VariableObject->TryGetStringField(TEXT("DefaultValue"), Spec.DefaultValue);
+
+		FString Category;
+		if (VariableObject->TryGetStringField(TEXT("Category"), Category))
+		{
+			Spec.Category = Category;
+		}
+
+		FString Tooltip;
+		if (VariableObject->TryGetStringField(TEXT("Tooltip"), Tooltip))
+		{
+			Spec.Tooltip = Tooltip;
+		}
+
+		OutVariables.Add(MoveTemp(Spec));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+void CollectVariableSpecNames(const TArray<FWidgetBlueprintVariableSpec>& Variables, TSet<FName>& OutVariableNames)
+{
+	OutVariableNames.Reset();
+	for (const FWidgetBlueprintVariableSpec& Variable : Variables)
+	{
+		OutVariableNames.Add(Variable.Name);
+	}
+}
+
 FAssetDocumentCapabilityResult ValidateVariableWidgetNameConflicts(const TSharedRef<FJsonObject>& BodyObject)
 {
-	TSet<FName> ExplicitVariableNames;
-	const TSharedPtr<FJsonValue>* VariablesValue = BodyObject->Values.Find(TEXT("Variables"));
-	const FAssetDocumentCapabilityResult VariablesResult =
-		CollectExplicitVariableNames(VariablesValue ? *VariablesValue : nullptr, ExplicitVariableNames);
+	TArray<FWidgetBlueprintVariableSpec> Variables;
+	const FAssetDocumentCapabilityResult VariablesResult = ParseVariableSpecs(BodyObject, Variables);
 	if (!VariablesResult.bSuccess)
 	{
 		return VariablesResult;
 	}
 
+	TSet<FName> ExplicitVariableNames;
+	CollectVariableSpecNames(Variables, ExplicitVariableNames);
 	if (ExplicitVariableNames.Num() == 0)
 	{
 		return FAssetDocumentCapabilityResult::Success();
@@ -587,6 +744,457 @@ FAssetDocumentCapabilityResult ValidateVariableWidgetNameConflicts(const TShared
 				TEXT("VariableWidgetNameConflict"));
 		}
 	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FBPVariableDescription* FindNewVariable(UBlueprint* Blueprint, FName Name)
+{
+	return Blueprint ? Blueprint->NewVariables.FindByPredicate([Name](const FBPVariableDescription& Variable)
+	{
+		return Variable.VarName == Name;
+	}) : nullptr;
+}
+
+const FBPVariableDescription* FindNewVariable(const UBlueprint* Blueprint, FName Name)
+{
+	return Blueprint ? Blueprint->NewVariables.FindByPredicate([Name](const FBPVariableDescription& Variable)
+	{
+		return Variable.VarName == Name;
+	}) : nullptr;
+}
+
+void ApplyVariableMetadata(UBlueprint* Blueprint, const FWidgetBlueprintVariableSpec& Spec)
+{
+	if (FBPVariableDescription* Variable = FindNewVariable(Blueprint, Spec.Name))
+	{
+		if (Spec.Category.IsSet())
+		{
+			FBlueprintEditorUtils::SetBlueprintVariableCategory(Blueprint, Spec.Name, nullptr, FText::FromString(Spec.Category.GetValue()), true);
+		}
+		else
+		{
+			Variable->Category = FText::GetEmpty();
+		}
+		if (Spec.Tooltip.IsSet())
+		{
+			FBlueprintEditorUtils::SetBlueprintVariableMetaData(Blueprint, Spec.Name, nullptr, FBlueprintMetadata::MD_Tooltip, Spec.Tooltip.GetValue());
+		}
+		else
+		{
+			Variable->RemoveMetaData(FBlueprintMetadata::MD_Tooltip);
+		}
+	}
+}
+
+bool ParentClassHasPropertyNamed(const UClass* ParentClass, FName Name)
+{
+	if (!ParentClass || Name.IsNone())
+	{
+		return false;
+	}
+
+	for (TFieldIterator<FProperty> PropertyIt(ParentClass, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		if (PropertyIt->GetFName() == Name)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FAssetDocumentCapabilityResult ValidateVariablesAgainstParentClass(UClass* ParentClass, const TArray<FWidgetBlueprintVariableSpec>& Variables)
+{
+	for (const FWidgetBlueprintVariableSpec& Variable : Variables)
+	{
+		if (ParentClassHasPropertyNamed(ParentClass, Variable.Name))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Body.Variables Name '%s' conflicts with parent class '%s'"), *Variable.Name.ToString(), ParentClass ? *ParentClass->GetPathName() : TEXT("")),
+				FString::Printf(TEXT("/Body/Variables/%s"), *Variable.Name.ToString()),
+				TEXT("ParentVariableNameConflict"));
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyVariables(
+	UBlueprint* Blueprint,
+	const TArray<FWidgetBlueprintVariableSpec>& Variables,
+	const TSet<FName>& ProtectedNames,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	TSet<FName> DesiredNames;
+	for (const FWidgetBlueprintVariableSpec& Spec : Variables)
+	{
+		DesiredNames.Add(Spec.Name);
+	}
+
+	TArray<FName> ExistingNames;
+	for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+	{
+		ExistingNames.Add(Variable.VarName);
+	}
+
+	for (const FName& ExistingName : ExistingNames)
+	{
+		if (!DesiredNames.Contains(ExistingName) && !ProtectedNames.Contains(ExistingName))
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, ExistingName);
+			bOutChanged = true;
+		}
+	}
+
+	for (const FWidgetBlueprintVariableSpec& Spec : Variables)
+	{
+		const FBPVariableDescription* Existing = FindNewVariable(Blueprint, Spec.Name);
+		if (Existing && Existing->VarType != Spec.Type)
+		{
+			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, Spec.Name);
+			Existing = nullptr;
+			bOutChanged = true;
+		}
+
+		if (!Existing)
+		{
+			if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Spec.Name, Spec.Type))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("Failed to add Blueprint variable '%s'"), *Spec.Name.ToString()),
+					TEXT("/Body/Variables"),
+					TEXT("AddVariableFailed"));
+			}
+			bOutChanged = true;
+		}
+
+		if (FBPVariableDescription* Mutable = FindNewVariable(Blueprint, Spec.Name))
+		{
+			const FString PreviousDefault = Mutable->DefaultValue;
+			const FString PreviousCategory = Mutable->Category.ToString();
+			const FString PreviousTooltip = Mutable->HasMetaData(FBlueprintMetadata::MD_Tooltip)
+				? Mutable->GetMetaData(FBlueprintMetadata::MD_Tooltip)
+				: FString();
+			ApplyVariableMetadata(Blueprint, Spec);
+			if (PreviousDefault != Spec.DefaultValue
+				|| (Spec.Category.IsSet() && PreviousCategory != Spec.Category.GetValue())
+				|| (!Spec.Category.IsSet() && !PreviousCategory.IsEmpty())
+				|| (Spec.Tooltip.IsSet() && PreviousTooltip != Spec.Tooltip.GetValue())
+				|| (!Spec.Tooltip.IsSet() && !PreviousTooltip.IsEmpty()))
+			{
+				bOutChanged = true;
+			}
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+TSharedRef<FJsonObject> PinTypeToJsonObject(const FEdGraphPinType& PinType)
+{
+	TSharedRef<FJsonObject> TypeObject = MakeShared<FJsonObject>();
+	TypeObject->SetStringField(TEXT("PinCategory"), PinType.PinCategory.ToString());
+	if (!PinType.PinSubCategory.IsNone())
+	{
+		TypeObject->SetStringField(TEXT("PinSubCategory"), PinType.PinSubCategory.ToString());
+	}
+	if (UObject* SubCategoryObject = PinType.PinSubCategoryObject.Get())
+	{
+		TypeObject->SetStringField(TEXT("PinSubCategoryObject"), SubCategoryObject->GetPathName());
+	}
+	return TypeObject;
+}
+
+bool IsSupportedAuthoredPinType(const FEdGraphPinType& PinType)
+{
+	if (PinType.IsContainer() || PinType.bIsReference || PinType.bIsWeakPointer || PinType.bIsConst)
+	{
+		return false;
+	}
+
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Int
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Int64
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Name
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_String
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Text
+		|| PinType.PinCategory == UEdGraphSchema_K2::PC_Byte)
+	{
+		return PinType.PinSubCategory.IsNone() && !PinType.PinSubCategoryObject.IsValid();
+	}
+
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+	{
+		return (PinType.PinSubCategory == UEdGraphSchema_K2::PC_Float || PinType.PinSubCategory == UEdGraphSchema_K2::PC_Double)
+			&& !PinType.PinSubCategoryObject.IsValid();
+	}
+
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Object || PinType.PinCategory == UEdGraphSchema_K2::PC_Class)
+	{
+		return PinType.PinSubCategory.IsNone() && Cast<UClass>(PinType.PinSubCategoryObject.Get()) != nullptr;
+	}
+
+	return false;
+}
+
+bool AuthoredPinTypesDiffer(const FEdGraphPinType& Current, const FEdGraphPinType& Desired)
+{
+	if (!IsSupportedAuthoredPinType(Current) || !IsSupportedAuthoredPinType(Desired))
+	{
+		return true;
+	}
+
+	if (Current.PinCategory != Desired.PinCategory || Current.PinSubCategory != Desired.PinSubCategory)
+	{
+		return true;
+	}
+
+	return Current.PinSubCategoryObject.Get() != Desired.PinSubCategoryObject.Get();
+}
+
+bool AuthoredDefaultValuesDiffer(const FEdGraphPinType& PinType, const FString& Current, const FString& Desired)
+{
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+	{
+		double CurrentNumber = 0.0;
+		double DesiredNumber = 0.0;
+		if (LexTryParseString(CurrentNumber, *Current) && LexTryParseString(DesiredNumber, *Desired))
+		{
+			return !FMath::IsNearlyEqual(CurrentNumber, DesiredNumber);
+		}
+	}
+
+	return Current != Desired;
+}
+
+FString ResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
+{
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		UObject* GeneratedCDO = Blueprint->GeneratedClass->GetDefaultObject(false);
+		FProperty* Property = GeneratedCDO ? FindFProperty<FProperty>(GeneratedCDO->GetClass(), Variable.VarName) : nullptr;
+		if (GeneratedCDO && Property)
+		{
+			FString Value;
+			FBlueprintEditorUtils::PropertyValueToString(Property, reinterpret_cast<const uint8*>(GeneratedCDO), Value, GeneratedCDO, PPF_SerializedAsImportText);
+			return Value;
+		}
+	}
+
+	return Variable.DefaultValue;
+}
+
+void CollectPublicWidgetVariableNamesFromBlueprint(const UBlueprint* Blueprint, TSet<FName>& OutNames)
+{
+	OutNames.Reset();
+	if (const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint))
+	{
+		CollectPublicWidgetVariableNames(WidgetBlueprint, OutNames);
+	}
+}
+
+bool IsOrdinaryAuthoredVariable(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
+{
+	TSet<FName> PublicWidgetVariableNames;
+	CollectPublicWidgetVariableNamesFromBlueprint(Blueprint, PublicWidgetVariableNames);
+	return !PublicWidgetVariableNames.Contains(Variable.VarName) && IsSupportedAuthoredPinType(Variable.VarType);
+}
+
+TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
+{
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Name"), Variable.VarName.ToString());
+	Object->SetObjectField(TEXT("Type"), PinTypeToJsonObject(Variable.VarType));
+	Object->SetStringField(TEXT("DefaultValue"), ResolveVariableDefaultValue(Blueprint, Variable));
+	if (!Variable.Category.IsEmpty())
+	{
+		Object->SetStringField(TEXT("Category"), Variable.Category.ToString());
+	}
+	if (Variable.HasMetaData(FBlueprintMetadata::MD_Tooltip))
+	{
+		Object->SetStringField(TEXT("Tooltip"), Variable.GetMetaData(FBlueprintMetadata::MD_Tooltip));
+	}
+	return Object;
+}
+
+TSharedRef<FJsonObject> VariableSpecToJsonObject(const FWidgetBlueprintVariableSpec& Variable)
+{
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Name"), Variable.Name.ToString());
+	Object->SetObjectField(TEXT("Type"), PinTypeToJsonObject(Variable.Type));
+	Object->SetStringField(TEXT("DefaultValue"), Variable.DefaultValue);
+	if (Variable.Category.IsSet())
+	{
+		Object->SetStringField(TEXT("Category"), Variable.Category.GetValue());
+	}
+	if (Variable.Tooltip.IsSet())
+	{
+		Object->SetStringField(TEXT("Tooltip"), Variable.Tooltip.GetValue());
+	}
+	return Object;
+}
+
+TArray<TSharedPtr<FJsonValue>> ExtractVariableArray(const UBlueprint* Blueprint)
+{
+	TArray<const FBPVariableDescription*> Variables;
+	if (Blueprint)
+	{
+		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+		{
+			if (IsOrdinaryAuthoredVariable(Blueprint, Variable))
+			{
+				Variables.Add(&Variable);
+			}
+		}
+	}
+	Variables.Sort([](const FBPVariableDescription& Left, const FBPVariableDescription& Right)
+	{
+		return Left.VarName.ToString() < Right.VarName.ToString();
+	});
+
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FBPVariableDescription* Variable : Variables)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(VariableToJsonObject(*Variable, Blueprint)));
+	}
+	return Result;
+}
+
+TSharedPtr<FJsonValue> CanonicalDesiredVariablesValue(const TArray<FWidgetBlueprintVariableSpec>& Variables)
+{
+	TArray<const FWidgetBlueprintVariableSpec*> SortedVariables;
+	for (const FWidgetBlueprintVariableSpec& Variable : Variables)
+	{
+		SortedVariables.Add(&Variable);
+	}
+	SortedVariables.Sort([](const FWidgetBlueprintVariableSpec& Left, const FWidgetBlueprintVariableSpec& Right)
+	{
+		return Left.Name.ToString() < Right.Name.ToString();
+	});
+
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FWidgetBlueprintVariableSpec* Variable : SortedVariables)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(VariableSpecToJsonObject(*Variable)));
+	}
+	return MakeShared<FJsonValueArray>(Result);
+}
+
+bool VariablesSemanticallyDiffer(const UBlueprint* Blueprint, const TArray<FWidgetBlueprintVariableSpec>& DesiredVariables)
+{
+	TMap<FName, const FWidgetBlueprintVariableSpec*> DesiredByName;
+	for (const FWidgetBlueprintVariableSpec& DesiredVariable : DesiredVariables)
+	{
+		DesiredByName.Add(DesiredVariable.Name, &DesiredVariable);
+	}
+
+	int32 CurrentOrdinaryCount = 0;
+	if (Blueprint)
+	{
+		for (const FBPVariableDescription& CurrentVariable : Blueprint->NewVariables)
+		{
+			if (!IsOrdinaryAuthoredVariable(Blueprint, CurrentVariable))
+			{
+				continue;
+			}
+
+			++CurrentOrdinaryCount;
+			const FWidgetBlueprintVariableSpec* const* DesiredVariablePtr = DesiredByName.Find(CurrentVariable.VarName);
+			if (!DesiredVariablePtr || !*DesiredVariablePtr)
+			{
+				return true;
+			}
+			const FWidgetBlueprintVariableSpec& DesiredVariable = **DesiredVariablePtr;
+			if (AuthoredPinTypesDiffer(CurrentVariable.VarType, DesiredVariable.Type))
+			{
+				return true;
+			}
+			if (AuthoredDefaultValuesDiffer(CurrentVariable.VarType, ResolveVariableDefaultValue(Blueprint, CurrentVariable), DesiredVariable.DefaultValue))
+			{
+				return true;
+			}
+
+			const FString CurrentCategory = CurrentVariable.Category.ToString();
+			const FString DesiredCategory = DesiredVariable.Category.IsSet() ? DesiredVariable.Category.GetValue() : FString();
+			if (CurrentCategory != DesiredCategory)
+			{
+				return true;
+			}
+
+			const FString CurrentTooltip = CurrentVariable.HasMetaData(FBlueprintMetadata::MD_Tooltip)
+				? CurrentVariable.GetMetaData(FBlueprintMetadata::MD_Tooltip)
+				: FString();
+			const FString DesiredTooltip = DesiredVariable.Tooltip.IsSet() ? DesiredVariable.Tooltip.GetValue() : FString();
+			if (CurrentTooltip != DesiredTooltip)
+			{
+				return true;
+			}
+		}
+	}
+
+	return CurrentOrdinaryCount != DesiredVariables.Num();
+}
+
+FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint* Blueprint, const TArray<FWidgetBlueprintVariableSpec>& Variables)
+{
+	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
+	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
+	if (!GeneratedCDO)
+	{
+		return BodyFailure(TEXT("Failed to resolve Blueprint generated CDO for variable defaults"), TEXT("/Body/Variables"), TEXT("MissingGeneratedCDO"));
+	}
+
+	struct FPreviousDefault
+	{
+		FProperty* Property = nullptr;
+		FString Value;
+	};
+
+	TArray<FPreviousDefault> PreviousDefaults;
+	for (const FWidgetBlueprintVariableSpec& Variable : Variables)
+	{
+		FProperty* Property = FindFProperty<FProperty>(GeneratedCDO->GetClass(), Variable.Name);
+		if (!Property)
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Failed to resolve generated property for Blueprint variable '%s'"), *Variable.Name.ToString()),
+				FString::Printf(TEXT("/Body/Variables/%s/DefaultValue"), *Variable.Name.ToString()),
+				TEXT("MissingGeneratedVariableProperty"));
+		}
+
+		FPreviousDefault Previous;
+		Previous.Property = Property;
+		FBlueprintEditorUtils::PropertyValueToString(Property, reinterpret_cast<const uint8*>(GeneratedCDO), Previous.Value, GeneratedCDO, PPF_SerializedAsImportText);
+		PreviousDefaults.Add(Previous);
+	}
+
+	GeneratedCDO->Modify();
+	for (int32 Index = 0; Index < Variables.Num(); ++Index)
+	{
+		const FWidgetBlueprintVariableSpec& Variable = Variables[Index];
+		FProperty* Property = PreviousDefaults[Index].Property;
+		if (!FBlueprintEditorUtils::PropertyValueFromString(Property, Variable.DefaultValue, reinterpret_cast<uint8*>(GeneratedCDO), GeneratedCDO, PPF_SerializedAsImportText))
+		{
+			for (const FPreviousDefault& Previous : PreviousDefaults)
+			{
+				if (Previous.Property)
+				{
+					FBlueprintEditorUtils::PropertyValueFromString(Previous.Property, Previous.Value, reinterpret_cast<uint8*>(GeneratedCDO), GeneratedCDO, PPF_SerializedAsImportText);
+				}
+			}
+			return BodyFailure(
+				FString::Printf(TEXT("Failed to parse default value '%s' for Blueprint variable '%s'"), *Variable.DefaultValue, *Variable.Name.ToString()),
+				FString::Printf(TEXT("/Body/Variables/%s/DefaultValue"), *Variable.Name.ToString()),
+				TEXT("InvalidVariableDefaultValue"));
+		}
+
+		if (FBPVariableDescription* MutableVariable = FindNewVariable(Blueprint, Variable.Name))
+		{
+			MutableVariable->DefaultValue = Variable.DefaultValue;
+		}
+	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 
 	return FAssetDocumentCapabilityResult::Success();
 }
@@ -976,6 +1584,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		return DesiredGuidsResult;
 	}
 
+	TArray<FWidgetBlueprintVariableSpec> VariableSpecs;
+	const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(BodyObject, VariableSpecs);
+	if (!VariableParseResult.bSuccess)
+	{
+		return VariableParseResult;
+	}
+
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	bool bChanged = false;
 	bool bWidgetTreeChanged = false;
@@ -994,6 +1609,17 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		bChanged = true;
 	}
 
+	TSet<FName> ProtectedWidgetVariableNames;
+	CollectPublicWidgetVariableNames(WidgetBlueprint, ProtectedWidgetVariableNames);
+	bool bVariablesChanged = false;
+	const FAssetDocumentCapabilityResult VariableApplyResult =
+		ApplyVariables(WidgetBlueprint, VariableSpecs, ProtectedWidgetVariableNames, bVariablesChanged);
+	if (!VariableApplyResult.bSuccess)
+	{
+		return VariableApplyResult;
+	}
+	bChanged |= bVariablesChanged;
+
 	if (bChanged)
 	{
 		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint, Context.TargetAssetPath, DesiredGuids);
@@ -1007,6 +1633,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	else
 	{
 		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint, Context.TargetAssetPath, DesiredGuids);
+	}
+
+	const FAssetDocumentCapabilityResult VariableDefaultsResult = ApplyVariableDefaultsToGeneratedClass(WidgetBlueprint, VariableSpecs);
+	if (!VariableDefaultsResult.bSuccess)
+	{
+		return VariableDefaultsResult;
 	}
 
 	const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(WidgetBlueprint, ClassDefaults);
@@ -1072,7 +1704,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 	const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
 	OutBodyJson->SetObjectField(TEXT("ParentClass"), MakeClassRef(WidgetBlueprint && WidgetBlueprint->ParentClass ? WidgetBlueprint->ParentClass.Get() : UUserWidget::StaticClass()));
 	OutBodyJson->SetArrayField(TEXT("ImplementedInterfaces"), {});
-	OutBodyJson->SetArrayField(TEXT("Variables"), {});
+	OutBodyJson->SetArrayField(TEXT("Variables"), ExtractVariableArray(WidgetBlueprint));
 	OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractClassDefaults(WidgetBlueprint));
 	TSharedRef<FJsonObject> WidgetTreeJson = MakeDefaultWidgetTree();
 	const FAssetDocumentCapabilityResult WidgetTreeResult = FWidgetBlueprintTreeAdapter::Extract(WidgetBlueprint, WidgetTreeJson);
@@ -1176,7 +1808,22 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 		}
 		else
 		{
-			if (BodyKey == TEXT("WidgetVariableGuids"))
+			if (BodyKey == TEXT("Variables"))
+			{
+				TArray<FWidgetBlueprintVariableSpec> DesiredVariables;
+				const FAssetDocumentCapabilityResult DesiredVariablesResult = ParseVariableSpecs(DesiredBody, DesiredVariables);
+				if (!DesiredVariablesResult.bSuccess)
+				{
+					return DesiredVariablesResult;
+				}
+				DesiredValue = CanonicalDesiredVariablesValue(DesiredVariables);
+				const FString Status = VariablesSemanticallyDiffer(Cast<UBlueprint>(Context.Asset), DesiredVariables)
+					? TEXT("changed")
+					: TEXT("unchanged");
+				AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+				continue;
+			}
+			else if (BodyKey == TEXT("WidgetVariableGuids"))
 			{
 				TSharedPtr<FJsonObject> DesiredGuidsObject;
 				if (DesiredValue.IsValid() && DesiredValue->Type == EJson::Object)
@@ -1269,8 +1916,8 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 		}
 		else if (Pair.Key == TEXT("Variables"))
 		{
-			TSet<FName> VariableNames;
-			const FAssetDocumentCapabilityResult VariableParseResult = CollectExplicitVariableNames(Pair.Value, VariableNames);
+			TArray<FWidgetBlueprintVariableSpec> Variables;
+			const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(BodyObject, Variables);
 			if (!VariableParseResult.bSuccess)
 			{
 				return VariableParseResult;
@@ -1292,15 +1939,22 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 		return VariableConflictResult;
 	}
 
-	if (const TSharedPtr<FJsonValue>* VariablesValue = BodyObject->Values.Find(TEXT("Variables")))
+	TArray<FWidgetBlueprintVariableSpec> Variables;
+	const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(BodyObject, Variables);
+	if (!VariableParseResult.bSuccess)
 	{
-		if (VariablesValue->IsValid() && (*VariablesValue)->Type == EJson::Array && (*VariablesValue)->AsArray().Num() > 0)
-		{
-			return BodyFailure(
-				TEXT("Body.Variables is not supported yet for non-conflicting WidgetBlueprint variables"),
-				TEXT("/Body/Variables"),
-				TEXT("UnsupportedWidgetBlueprintRegion"));
-		}
+		return VariableParseResult;
+	}
+	UClass* ParentClass = nullptr;
+	const FAssetDocumentCapabilityResult ParentClassResult = ResolveUserWidgetParentClass(BodyObject->Values.FindChecked(TEXT("ParentClass")), ParentClass);
+	if (!ParentClassResult.bSuccess)
+	{
+		return ParentClassResult;
+	}
+	const FAssetDocumentCapabilityResult ParentVariableResult = ValidateVariablesAgainstParentClass(ParentClass, Variables);
+	if (!ParentVariableResult.bSuccess)
+	{
+		return ParentVariableResult;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated WidgetBlueprint Body scaffold"));

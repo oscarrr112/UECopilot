@@ -171,7 +171,7 @@ TArray<FAssetDocumentRegionPolicy> FWidgetBlueprintAssetDocumentProfile::GetRegi
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetVariableGuids"), EAssetDocumentRegionKind::Object, {TEXT("WidgetVariableNameToGuidMap")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetVariableGuids"), EAssetDocumentRegionKind::Object, {TEXT("WidgetVariableNameToGuidMap")}, Policy, TEXT("WidgetBlueprintWidgetVariableGuids")))
 	{
 		Policies.Add(Policy);
 	}
