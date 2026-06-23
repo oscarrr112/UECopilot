@@ -1671,6 +1671,58 @@ bool FAssetDocumentWidgetBlueprintGraphsMacroGraphRoundTripTest::RunTest(const F
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsDesiredVariableSelfMemberRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.DesiredVariableSelfMemberRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsDesiredVariableSelfMemberRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsDesiredVariableSelfMember"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	Body->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{
+				MakeGraphNode(
+					TEXT("Get_Score"),
+					TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+					MakeGraphMemberRef(TEXT("Self"), TEXT("Score"))),
+				MakeGraphNode(
+					TEXT("Set_Score"),
+					TEXT("/Script/BlueprintGraph.K2Node_VariableSet"),
+					MakeGraphMemberRef(TEXT("Self"), TEXT("Score")))
+			})
+	});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Desired variable graph apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Graph nodes can reference desired Self variable"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after desired variable graph apply"), ExtractResult.IsSuccess());
+	const TSharedPtr<FJsonObject> EventGraph = FindExtractedGraph(ExtractResult, TEXT("UbergraphPages"), TEXT("EventGraph"));
+	TestTrue(TEXT("VariableGet extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_VariableGet")));
+	TestTrue(TEXT("VariableSet extracts"), ExtractedGraphHasNodeClass(EventGraph, TEXT("/Script/BlueprintGraph.K2Node_VariableSet")));
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after desired variable graph roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Desired variable graph roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintGraphsUnsupportedExistingNodePreflightPreservesBodyTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.UnsupportedExistingNodePreflightPreservesBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1721,6 +1773,66 @@ bool FAssetDocumentWidgetBlueprintGraphsUnsupportedExistingNodePreflightPreserve
 		: nullptr;
 	TestNotNull(TEXT("TitleText still exists after rejected graph preflight"), AfterFailureTitleText);
 	TestEqual(TEXT("Body text remains unchanged after rejected graph preflight"), AfterFailureTitleText ? AfterFailureTitleText->GetText().ToString() : FString(), FString(TEXT("Original title")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsSameGraphResidualUnsupportedNodePreservesBodyTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.SameGraphResidualUnsupportedNodePreservesBody",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsSameGraphResidualUnsupportedNodePreservesBodyTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsSameGraphResidualPreservesBody"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialTitle = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	InitialTitle->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Original title"));
+	TSharedRef<FJsonObject> InitialBody = MakeWidgetTreeBody(MakeWidgetTree(InitialTitle));
+	SetGraphRegion(InitialBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial same-graph residual fixture applies"), InitialResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
+	TestNotNull(TEXT("EventGraph exists before injecting same-graph residual node"), EventGraph);
+	if (!EventGraph)
+	{
+		return false;
+	}
+
+	UK2Node_IfThenElse* Branch = NewObject<UK2Node_IfThenElse>(EventGraph, UK2Node_IfThenElse::StaticClass(), NAME_None, RF_Transactional);
+	Branch->CreateNewGuid();
+	Branch->NodePosX = 640;
+	Branch->NodePosY = 0;
+	EventGraph->AddNode(Branch, true, false);
+	Branch->AllocateDefaultPins();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+
+	TSharedRef<FJsonObject> ChangedTitle = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	ChangedTitle->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Mutated title"));
+	TSharedRef<FJsonObject> InvalidBody = MakeWidgetTreeBody(MakeWidgetTree(ChangedTitle));
+	SetGraphRegion(InvalidBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{MakeGraphNode(TEXT("Self"), TEXT("/Script/BlueprintGraph.K2Node_Self"))})
+	});
+	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Unsupported residual node in same graph rejects apply during preflight"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Same-graph residual diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+
+	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UTextBlock* AfterFailureTitleText = AfterFailureBlueprint && AfterFailureBlueprint->WidgetTree
+		? Cast<UTextBlock>(AfterFailureBlueprint->WidgetTree->FindWidget(TEXT("TitleText")))
+		: nullptr;
+	TestNotNull(TEXT("TitleText still exists after same-graph rejected preflight"), AfterFailureTitleText);
+	TestEqual(TEXT("Body text remains unchanged after same-graph rejected preflight"), AfterFailureTitleText ? AfterFailureTitleText->GetText().ToString() : FString(), FString(TEXT("Original title")));
 	return true;
 }
 

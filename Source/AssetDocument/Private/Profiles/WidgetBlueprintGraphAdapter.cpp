@@ -275,6 +275,9 @@ void NormalizeMemberIdentityForDiff(FAssetDocumentNodeSpec& Node, const UBluepri
 		return;
 	}
 
+	Node.Member->RemoveField(TEXT("Guid"));
+	Node.Member->RemoveField(TEXT("SelfContext"));
+
 	FString Kind;
 	FString OwnerClass;
 	if (Node.Member->TryGetStringField(TEXT("Kind"), Kind)
@@ -438,6 +441,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::PreflightRegions(
 	FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& BodyObject) const
 {
+	return PreflightRegions(Context, BodyObject, Cast<UBlueprint>(Context.Asset));
+}
+
+FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::PreflightRegions(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject,
+	UBlueprint* DesiredStateBlueprint) const
+{
 	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
 	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
 	for (const FWidgetBlueprintGraphRegion& Region : GraphRegions())
@@ -450,7 +461,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::PreflightRegions(
 		}
 
 		const FAssetDocumentCapabilityResult PreflightResult =
-			K2GraphAdapter.PreflightGraphRegion(Cast<UBlueprint>(WidgetBlueprint), Region.K2Region, Graphs);
+			K2GraphAdapter.PreflightGraphRegion(Cast<UBlueprint>(WidgetBlueprint), DesiredStateBlueprint, Region.K2Region, Graphs);
 		if (!PreflightResult.bSuccess)
 		{
 			return PreflightResult;

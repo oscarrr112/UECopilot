@@ -4,6 +4,7 @@
 
 #include "AssetDocumentProfile.h"
 
+class UBlueprint;
 class UWidgetBlueprint;
 
 class FWidgetBlueprintGraphAdapter
@@ -16,6 +17,11 @@ public:
 	FAssetDocumentCapabilityResult PreflightRegions(
 		FAssetDocumentCapabilityContext& Context,
 		const TSharedRef<FJsonObject>& BodyObject) const;
+
+	FAssetDocumentCapabilityResult PreflightRegions(
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject,
+		UBlueprint* DesiredStateBlueprint) const;
 
 	FAssetDocumentCapabilityResult ApplyRegions(
 		FAssetDocumentCapabilityContext& Context,

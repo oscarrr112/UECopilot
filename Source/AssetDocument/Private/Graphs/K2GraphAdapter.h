@@ -35,6 +35,7 @@ public:
 
 	FAssetDocumentK2GraphExtractResult ExtractGraphRegion(const UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region) const;
 	FAssetDocumentCapabilityResult PreflightGraphRegion(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
+	FAssetDocumentCapabilityResult PreflightGraphRegion(UBlueprint* CurrentBlueprint, UBlueprint* DesiredStateBlueprint, EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
 	FAssetDocumentK2GraphApplyResult ApplyGraphRegion(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const;
 
 	FAssetDocumentK2GraphExtractResult ExtractUbergraphPages(const UBlueprint* Blueprint) const;

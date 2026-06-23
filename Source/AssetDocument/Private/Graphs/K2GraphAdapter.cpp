@@ -1060,6 +1060,15 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 	EAssetDocumentK2GraphRegion Region,
 	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
 {
+	return PreflightGraphRegion(Blueprint, Blueprint, Region, DesiredGraphs);
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegion(
+	UBlueprint* CurrentBlueprint,
+	UBlueprint* DesiredStateBlueprint,
+	EAssetDocumentK2GraphRegion Region,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs) const
+{
 	const FScopedGraphRegionPath ScopedRegion(Region);
 	const FAssetDocumentNodeAdapterRegistry Registry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
 	TSet<FString> DesiredGraphNames;
@@ -1067,7 +1076,7 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 	{
 		UClass* SchemaClass = nullptr;
 		TMap<FString, UClass*> NodeClasses;
-		const FAssetDocumentCapabilityResult PreflightResult = PreflightGraphSpec(Blueprint, GraphSpec, SchemaClass, NodeClasses);
+		const FAssetDocumentCapabilityResult PreflightResult = PreflightGraphSpec(DesiredStateBlueprint, GraphSpec, SchemaClass, NodeClasses);
 		if (!PreflightResult.bSuccess)
 		{
 			return PreflightResult;
@@ -1075,19 +1084,19 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 		DesiredGraphNames.Add(GraphSpec.Name);
 	}
 
-	if (!Blueprint)
+	if (!CurrentBlueprint)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(Blueprint, Region)))
+	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(CurrentBlueprint, Region)))
 	{
 		if (!ExistingGraph || DesiredGraphNames.Contains(ExistingGraph->GetName()))
 		{
 			continue;
 		}
 
-		const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, Region, ExistingGraph);
+		const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(CurrentBlueprint, Registry, Region, ExistingGraph);
 		if (!DeleteResult.bSuccess)
 		{
 			return DeleteResult;
@@ -1096,7 +1105,7 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 
 	for (const FAssetDocumentGraphSpec& GraphSpec : DesiredGraphs)
 	{
-		UEdGraph* ExistingGraph = FindGraphByName(Blueprint, Region, GraphSpec.Name);
+		UEdGraph* ExistingGraph = FindGraphByName(CurrentBlueprint, Region, GraphSpec.Name);
 		if (!ExistingGraph)
 		{
 			continue;
@@ -1113,7 +1122,7 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 		TSet<UEdGraphNode*> UsedExistingNodes;
 		for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
 		{
-			FindReusableNode(Blueprint, Registry, ExistingGraph, NodeSpec, UsedExistingNodes);
+			FindReusableNode(CurrentBlueprint, Registry, ExistingGraph, NodeSpec, UsedExistingNodes);
 		}
 
 		for (const UEdGraphNode* ExistingNode : ExistingGraph->Nodes)
@@ -1122,7 +1131,7 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 			{
 				continue;
 			}
-			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(Blueprint, Registry, ExistingGraph, ExistingNode);
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingNode(CurrentBlueprint, Registry, ExistingGraph, ExistingNode);
 			if (!DeleteResult.bSuccess)
 			{
 				return DeleteResult;

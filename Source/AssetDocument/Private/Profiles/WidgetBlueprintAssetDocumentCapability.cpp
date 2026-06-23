@@ -1521,31 +1521,46 @@ bool HasBindingEntries(const TSharedPtr<FJsonValue>& BindingsJson)
 	return BindingsJson->Type == EJson::Array && BindingsJson->AsArray().Num() > 0;
 }
 
-FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
-	const FAssetDocumentCapabilityContext& SourceContext,
+struct FDesiredWidgetBlueprintPreflightScratch
+{
+	~FDesiredWidgetBlueprintPreflightScratch()
+	{
+		if (Blueprint && Blueprint->IsRooted())
+		{
+			Blueprint->RemoveFromRoot();
+		}
+	}
+
+	void Set(UWidgetBlueprint* InBlueprint)
+	{
+		if (Blueprint && Blueprint->IsRooted())
+		{
+			Blueprint->RemoveFromRoot();
+		}
+		Blueprint = InBlueprint;
+		if (Blueprint)
+		{
+			Blueprint->AddToRoot();
+		}
+	}
+
+	UWidgetBlueprint* Blueprint = nullptr;
+};
+
+FAssetDocumentCapabilityResult BuildDesiredWidgetBlueprintPreflightScratch(
 	const FString& TargetAssetPath,
 	UClass* ParentClass,
-	const TSharedRef<FJsonObject>& DesiredBody,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
 	const TSharedPtr<FJsonObject>& ClassDefaults,
-	const TSharedPtr<FJsonValue>& BindingsJson)
+	const FString& FailurePath,
+	FDesiredWidgetBlueprintPreflightScratch& OutScratch)
 {
-	const FAssetDocumentCapabilityResult BindingShapeResult = FWidgetBlueprintBindingAdapter::Validate(BindingsJson);
-	if (!BindingShapeResult.bSuccess)
-	{
-		return BindingShapeResult;
-	}
-	if (!HasBindingEntries(BindingsJson))
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
 	const FName ValidationName = MakeUniqueObjectName(
 		GetTransientPackage(),
 		UWidgetBlueprint::StaticClass(),
-		TEXT("AssetDocumentWidgetBlueprintBindingPreflight"));
+		TEXT("AssetDocumentWidgetBlueprintDesiredPreflight"));
 	UWidgetBlueprint* ValidationBlueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
 		ParentClass,
 		GetTransientPackage(),
@@ -1553,13 +1568,13 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 		BPTYPE_Normal,
 		UWidgetBlueprint::StaticClass(),
 		UWidgetBlueprintGeneratedClass::StaticClass(),
-		TEXT("AssetDocumentWidgetBlueprintBindingPreflight")));
+		TEXT("AssetDocumentWidgetBlueprintDesiredPreflight")));
 	if (!ValidationBlueprint)
 	{
-		return BodyFailure(TEXT("Failed to create transient WidgetBlueprint for Bindings preflight"), TEXT("/Body/Bindings"), TEXT("CreateValidationBlueprintFailed"));
+		return BodyFailure(TEXT("Failed to create transient WidgetBlueprint for desired-state preflight"), FailurePath, TEXT("CreateValidationBlueprintFailed"));
 	}
+	OutScratch.Set(ValidationBlueprint);
 
-	FScopedRootedObject RootedValidationBlueprint(ValidationBlueprint);
 	bool bScratchWidgetTreeChanged = false;
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
 		FWidgetBlueprintTreeAdapter::Apply(ValidationBlueprint, WidgetTreeJson, &bScratchWidgetTreeChanged);
@@ -1583,7 +1598,7 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 	FKismetEditorUtilities::CompileBlueprint(ValidationBlueprint);
 	if (ValidationBlueprint->Status == BS_Error)
 	{
-		return BodyFailure(TEXT("Failed to compile transient WidgetBlueprint for Bindings preflight"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed"));
+		return BodyFailure(TEXT("Failed to compile transient WidgetBlueprint for desired-state preflight"), FailurePath, TEXT("WidgetBlueprintCompileFailed"));
 	}
 
 	const FAssetDocumentCapabilityResult VariableDefaultsResult = ApplyVariableDefaultsToGeneratedClass(ValidationBlueprint, VariableSpecs);
@@ -1603,8 +1618,75 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 		return ClassDefaultsApplyResult;
 	}
 
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightGraphsAgainstDesiredWidgetBlueprint(
+	FAssetDocumentCapabilityContext& SourceContext,
+	const FString& TargetAssetPath,
+	UClass* ParentClass,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
+	const TMap<FName, FGuid>& DesiredGuids,
+	const TSharedPtr<FJsonObject>& ClassDefaults)
+{
+	FDesiredWidgetBlueprintPreflightScratch Scratch;
+	const FAssetDocumentCapabilityResult ScratchResult = BuildDesiredWidgetBlueprintPreflightScratch(
+		TargetAssetPath,
+		ParentClass,
+		WidgetTreeJson,
+		VariableSpecs,
+		DesiredGuids,
+		ClassDefaults,
+		TEXT("/Body"),
+		Scratch);
+	if (!ScratchResult.bSuccess)
+	{
+		return ScratchResult;
+	}
+
+	return FWidgetBlueprintGraphAdapter().PreflightRegions(SourceContext, DesiredBody, Scratch.Blueprint);
+}
+
+FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
+	const FAssetDocumentCapabilityContext& SourceContext,
+	const FString& TargetAssetPath,
+	UClass* ParentClass,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
+	const TMap<FName, FGuid>& DesiredGuids,
+	const TSharedPtr<FJsonObject>& ClassDefaults,
+	const TSharedPtr<FJsonValue>& BindingsJson)
+{
+	const FAssetDocumentCapabilityResult BindingShapeResult = FWidgetBlueprintBindingAdapter::Validate(BindingsJson);
+	if (!BindingShapeResult.bSuccess)
+	{
+		return BindingShapeResult;
+	}
+	if (!HasBindingEntries(BindingsJson))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FDesiredWidgetBlueprintPreflightScratch Scratch;
+	const FAssetDocumentCapabilityResult ScratchResult = BuildDesiredWidgetBlueprintPreflightScratch(
+		TargetAssetPath,
+		ParentClass,
+		WidgetTreeJson,
+		VariableSpecs,
+		DesiredGuids,
+		ClassDefaults,
+		TEXT("/Body/Bindings"),
+		Scratch);
+	if (!ScratchResult.bSuccess)
+	{
+		return ScratchResult;
+	}
+
 	FAssetDocumentCapabilityContext ScratchContext = SourceContext;
-	ScratchContext.Asset = ValidationBlueprint;
+	ScratchContext.Asset = Scratch.Blueprint;
 	ScratchContext.AssetClass = UWidgetBlueprint::StaticClass();
 	bool bScratchGraphsChanged = false;
 	const FAssetDocumentCapabilityResult GraphApplyResult =
@@ -1614,7 +1696,7 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 		return GraphApplyResult;
 	}
 
-	return FWidgetBlueprintBindingAdapter::Preflight(ValidationBlueprint, BindingsJson);
+	return FWidgetBlueprintBindingAdapter::Preflight(Scratch.Blueprint, BindingsJson);
 }
 
 TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
@@ -1801,7 +1883,15 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 	}
 
 	const FAssetDocumentCapabilityResult GraphPreflightResult =
-		FWidgetBlueprintGraphAdapter().PreflightRegions(Context, BodyObject.ToSharedRef());
+		PreflightGraphsAgainstDesiredWidgetBlueprint(
+			Context,
+			Context.TargetAssetPath,
+			ParentClass,
+			BodyObject.ToSharedRef(),
+			WidgetTreeValue ? *WidgetTreeValue : nullptr,
+			VariableSpecs,
+			ParsedGuids,
+			ClassDefaults);
 	if (!GraphPreflightResult.bSuccess)
 	{
 		return GraphPreflightResult;
@@ -1911,14 +2001,22 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		return VariableParseResult;
 	}
 
+	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	const FAssetDocumentCapabilityResult GraphPreflightResult =
-		FWidgetBlueprintGraphAdapter().PreflightRegions(Context, BodyObject.ToSharedRef());
+		PreflightGraphsAgainstDesiredWidgetBlueprint(
+			Context,
+			Context.TargetAssetPath,
+			ParentClass,
+			BodyObject.ToSharedRef(),
+			WidgetTreeValue ? *WidgetTreeValue : nullptr,
+			VariableSpecs,
+			DesiredGuids,
+			ClassDefaults);
 	if (!GraphPreflightResult.bSuccess)
 	{
 		return GraphPreflightResult;
 	}
 
-	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	const TSharedPtr<FJsonValue>* BindingsValue = BodyObject->Values.Find(TEXT("Bindings"));
 	const FAssetDocumentCapabilityResult BindingPreflightResult = PreflightBindingsAgainstDesiredWidgetBlueprint(
 		Context,
