@@ -20,6 +20,7 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
 #include "Misc/ScopeExit.h"
+#include "Test/TestUserWidget.h"
 #include "WidgetBlueprint.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -528,6 +529,49 @@ bool FAssetDocumentWidgetBlueprintMetadataClassDefaultsAuthoritativeTest::RunTes
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataClassDefaultsParentChangeTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.ClassDefaultsParentChange",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataClassDefaultsParentChangeTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataClassDefaultsParent"));
+	FAssetDocumentService Service;
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeDefaultWidgetBlueprintBody())));
+	TestTrue(TEXT("Initial default WidgetBlueprint apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(UTestUserWidget::StaticClass()->GetPathName()));
+	Body->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bTextEnabled"), false);
+
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Parent-change ClassDefaults apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Parent change with new-parent ClassDefaults applies"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	TestEqual(TEXT("Parent class changed to TestUserWidget"), WidgetBlueprint ? WidgetBlueprint->ParentClass.Get() : nullptr, UTestUserWidget::StaticClass());
+	const UTestUserWidget* GeneratedCDO = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? Cast<UTestUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+		: nullptr;
+	TestNotNull(TEXT("Generated CDO uses TestUserWidget parent"), GeneratedCDO);
+	if (GeneratedCDO)
+	{
+		TestFalse(TEXT("new-parent class default is applied"), GeneratedCDO->bTextEnabled);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after parent-change ClassDefaults apply"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Parent-change ClassDefaults diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintMetadataPaletteCategoryRoundTripTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.PaletteCategoryRoundTrip",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -572,6 +616,96 @@ bool FAssetDocumentWidgetBlueprintMetadataPaletteCategoryRoundTripTest::RunTest(
 	{
 		TestEqual(TEXT("Palette category roundtrips"), (*ExtractedPalette)->GetStringField(TEXT("Category")), FString(TEXT("AssetDoc Metadata")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataPaletteEditorOptionsResetTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.PaletteEditorOptionsReset",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataPaletteEditorOptionsResetTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteEditorReset"));
+	TSharedRef<FJsonObject> SetBody = MakeDefaultWidgetBlueprintBody();
+	SetBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Category"), TEXT("Transient Category"));
+	SetBody->GetObjectField(TEXT("EditorOptions"))->SetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext"), true);
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult SetResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, SetBody)));
+	TestTrue(TEXT("Initial Palette/EditorOptions apply succeeds"), SetResult.IsSuccess());
+
+	TSharedRef<FJsonObject> ResetBody = MakeDefaultWidgetBlueprintBody();
+	const FAssetDocumentResult ResetResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ResetBody)));
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Palette/EditorOptions reset failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Empty Palette/EditorOptions reset applies"), ResetResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestTrue(TEXT("PaletteCategory clears on empty Palette"), WidgetBlueprint->PaletteCategory.IsEmpty());
+		TestFalse(TEXT("Editor option resets false on empty EditorOptions"), WidgetBlueprint->bCanCallInitializedWithoutPlayerContext);
+	}
+
+	UUserWidget* GeneratedCDO = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+		: nullptr;
+	if (GeneratedCDO)
+	{
+		TestTrue(TEXT("Generated CDO palette clears"), GeneratedCDO->GetPaletteCategory().IsEmpty());
+	}
+	const UWidgetBlueprintGeneratedClass* GeneratedClass = WidgetBlueprint
+		? Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass)
+		: nullptr;
+	if (GeneratedClass)
+	{
+		TestFalse(TEXT("Generated class editor option resets"), GeneratedClass->bCanCallInitializedWithoutPlayerContext);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, ResetBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after Palette/EditorOptions reset"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Reset Palette/EditorOptions diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.RejectsInvalidPaletteEditorOptions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest::RunTest(const FString&)
+{
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> PaletteUnknownBody = MakeDefaultWidgetBlueprintBody();
+	PaletteUnknownBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Unexpected"), TEXT("value"));
+	const FAssetDocumentResult PaletteUnknownResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
+		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteUnknown")),
+		PaletteUnknownBody)));
+	TestFalse(TEXT("Unknown Palette field rejects apply"), PaletteUnknownResult.IsSuccess());
+	TestTrue(TEXT("Unknown Palette diagnostic is reported"), ResultHasDiagnosticCode(PaletteUnknownResult, TEXT("UnknownPaletteField")));
+
+	TSharedRef<FJsonObject> PaletteTypeBody = MakeDefaultWidgetBlueprintBody();
+	PaletteTypeBody->GetObjectField(TEXT("Palette"))->SetBoolField(TEXT("Category"), true);
+	const FAssetDocumentResult PaletteTypeResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
+		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteType")),
+		PaletteTypeBody)));
+	TestFalse(TEXT("Non-string Palette.Category rejects apply"), PaletteTypeResult.IsSuccess());
+	TestTrue(TEXT("Invalid Palette.Category diagnostic is reported"), ResultHasDiagnosticCode(PaletteTypeResult, TEXT("InvalidPaletteCategory")));
+
+	TSharedRef<FJsonObject> EditorTypeBody = MakeDefaultWidgetBlueprintBody();
+	EditorTypeBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("bCanCallInitializedWithoutPlayerContext"), TEXT("true"));
+	const FAssetDocumentResult EditorTypeResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
+		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorType")),
+		EditorTypeBody)));
+	TestFalse(TEXT("Non-bool EditorOptions flag rejects apply"), EditorTypeResult.IsSuccess());
+	TestTrue(TEXT("Invalid EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorTypeResult, TEXT("InvalidEditorOption")));
 	return true;
 }
 
@@ -670,6 +804,34 @@ bool FAssetDocumentWidgetBlueprintMetadataWidgetVariableGuidCanonicalizesTest::R
 	{
 		TestEqual(TEXT("Extracted GUID is deterministic"), (*ExtractedGuids)->GetStringField(TEXT("TitleText")), ExpectedGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataRejectsUnknownWidgetVariableGuidTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.RejectsUnknownWidgetVariableGuid",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataRejectsUnknownWidgetVariableGuidTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataUnknownWidgetGuid"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	TSharedRef<FJsonObject> TitleText = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	TitleText->SetBoolField(TEXT("IsVariable"), true);
+	TitleText->SetStringField(TEXT("VariableName"), TEXT("TitleText"));
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeShared<FJsonValueObject>(TitleText));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedRef<FJsonObject> Body = MakeWidgetTreeBody(MakeWidgetTree(Root));
+	Body->GetObjectField(TEXT("WidgetVariableGuids"))->SetStringField(
+		TEXT("TitleTypo"),
+		FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Unknown WidgetVariableGuids key rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Unknown WidgetVariableGuids diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("UnknownWidgetVariableGuid")));
 	return true;
 }
 

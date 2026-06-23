@@ -274,6 +274,59 @@ FAssetDocumentCapabilityResult ParseObjectSection(
 	return RequireObjectSection(Value ? *Value : nullptr, FString::Printf(TEXT("/Body/%s"), *BodyKey), BodyKey, OutObject);
 }
 
+FAssetDocumentCapabilityResult ValidatePaletteSection(const TSharedPtr<FJsonObject>& Palette)
+{
+	if (!Palette.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Palette->Values)
+	{
+		if (Pair.Key != TEXT("Category"))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Unknown Body.Palette field '%s'"), *Pair.Key),
+				FString::Printf(TEXT("/Body/Palette/%s"), *Pair.Key),
+				TEXT("UnknownPaletteField"));
+		}
+		if (!Pair.Value.IsValid() || Pair.Value->Type != EJson::String)
+		{
+			return BodyFailure(TEXT("Body.Palette.Category must be a string"), TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateEditorOptionsSection(const TSharedPtr<FJsonObject>& EditorOptions)
+{
+	if (!EditorOptions.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : EditorOptions->Values)
+	{
+		if (Pair.Key != TEXT("bCanCallInitializedWithoutPlayerContext"))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Unknown Body.EditorOptions field '%s'"), *Pair.Key),
+				FString::Printf(TEXT("/Body/EditorOptions/%s"), *Pair.Key),
+				TEXT("UnknownEditorOption"));
+		}
+		if (!Pair.Value.IsValid() || Pair.Value->Type != EJson::Boolean)
+		{
+			return BodyFailure(
+				TEXT("Body.EditorOptions.bCanCallInitializedWithoutPlayerContext must be a boolean"),
+				TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"),
+				TEXT("InvalidEditorOption"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 bool IsSupportedClassDefaultProperty(FProperty* Property)
 {
 	return CastField<FBoolProperty>(Property)
@@ -400,6 +453,75 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UWidgetBlueprint* WidgetBluepr
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+struct FScopedRootedObject
+{
+	explicit FScopedRootedObject(UObject* InObject)
+		: Object(InObject)
+	{
+		if (Object)
+		{
+			Object->AddToRoot();
+		}
+	}
+
+	~FScopedRootedObject()
+	{
+		if (Object && Object->IsRooted())
+		{
+			Object->RemoveFromRoot();
+		}
+	}
+
+	UObject* Object = nullptr;
+};
+
+FAssetDocumentCapabilityResult PreflightClassDefaultsForParent(
+	UWidgetBlueprint* WidgetBlueprint,
+	UClass* DesiredParentClass,
+	const TSharedPtr<FJsonObject>& ClassDefaults)
+{
+	if (!ClassDefaults.IsValid() || ClassDefaults->Values.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!WidgetBlueprint)
+	{
+		return BodyFailure(TEXT("Body.ClassDefaults requires a WidgetBlueprint asset"), TEXT("/Body/ClassDefaults"), TEXT("UnsupportedAsset"));
+	}
+
+	if (WidgetBlueprint->ParentClass.Get() == DesiredParentClass)
+	{
+		return PreflightClassDefaults(WidgetBlueprint, ClassDefaults);
+	}
+
+	const FName ValidationName = MakeUniqueObjectName(
+		GetTransientPackage(),
+		UWidgetBlueprint::StaticClass(),
+		TEXT("AssetDocumentWidgetBlueprintClassDefaultsPreflight"));
+	UWidgetBlueprint* ValidationBlueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
+		DesiredParentClass,
+		GetTransientPackage(),
+		ValidationName,
+		BPTYPE_Normal,
+		UWidgetBlueprint::StaticClass(),
+		UWidgetBlueprintGeneratedClass::StaticClass(),
+		TEXT("AssetDocumentWidgetBlueprintClassDefaultsPreflight")));
+	if (!ValidationBlueprint)
+	{
+		return BodyFailure(TEXT("Failed to create transient WidgetBlueprint for ClassDefaults preflight"), TEXT("/Body/ClassDefaults"), TEXT("CreateValidationBlueprintFailed"));
+	}
+
+	FScopedRootedObject RootedValidationBlueprint(ValidationBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(ValidationBlueprint);
+	if (ValidationBlueprint->Status == BS_Error)
+	{
+		return BodyFailure(TEXT("Failed to compile transient WidgetBlueprint for ClassDefaults preflight"), TEXT("/Body/ClassDefaults"), TEXT("WidgetBlueprintCompileFailed"));
+	}
+
+	return PreflightClassDefaults(ValidationBlueprint, ClassDefaults);
+}
+
 TSharedPtr<FJsonObject> ExtractClassDefaults(const UWidgetBlueprint* WidgetBlueprint)
 {
 	TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
@@ -472,6 +594,54 @@ FAssetDocumentCapabilityResult ParseWidgetVariableGuids(
 				TEXT("InvalidWidgetVariableGuid"));
 		}
 		OutGuids.Add(FName(*Pair.Key), Guid);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateWidgetVariableGuidKeys(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TMap<FName, FGuid>& Guids)
+{
+	if (Guids.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSet<FName> SourceVariableNames;
+	if (const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree")))
+	{
+		const FAssetDocumentCapabilityResult WidgetNamesResult =
+			FWidgetBlueprintTreeAdapter::CollectVariableWidgetNames(WidgetTreeValue ? *WidgetTreeValue : nullptr, SourceVariableNames);
+		if (!WidgetNamesResult.bSuccess)
+		{
+			return WidgetNamesResult;
+		}
+	}
+	else
+	{
+		CollectPublicWidgetVariableNames(Cast<UWidgetBlueprint>(Context.Asset), SourceVariableNames);
+	}
+
+	TSet<FGuid> SeenGuids;
+	for (const TPair<FName, FGuid>& Pair : Guids)
+	{
+		if (!SourceVariableNames.Contains(Pair.Key))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Body.WidgetVariableGuids.%s does not match a public variable widget or animation"), *Pair.Key.ToString()),
+				FString::Printf(TEXT("/Body/WidgetVariableGuids/%s"), *Pair.Key.ToString()),
+				TEXT("UnknownWidgetVariableGuid"));
+		}
+		if (SeenGuids.Contains(Pair.Value))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Body.WidgetVariableGuids.%s duplicates another widget variable GUID"), *Pair.Key.ToString()),
+				FString::Printf(TEXT("/Body/WidgetVariableGuids/%s"), *Pair.Key.ToString()),
+				TEXT("DuplicateWidgetVariableGuid"));
+		}
+		SeenGuids.Add(Pair.Value);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -1472,6 +1642,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		return ValidateResult;
 	}
 
+	UClass* ParentClass = nullptr;
+	const FAssetDocumentCapabilityResult ParentClassResult = ResolveUserWidgetParentClass(BodyObject->Values.FindChecked(TEXT("ParentClass")), ParentClass);
+	if (!ParentClassResult.bSuccess)
+	{
+		return ParentClassResult;
+	}
+
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
@@ -1489,7 +1666,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		return ClassDefaultsResult;
 	}
 	const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult =
-		PreflightClassDefaults(Cast<UWidgetBlueprint>(Context.Asset), ClassDefaults);
+		PreflightClassDefaultsForParent(Cast<UWidgetBlueprint>(Context.Asset), ParentClass, ClassDefaults);
 	if (!ClassDefaultsPreflightResult.bSuccess)
 	{
 		return ClassDefaultsPreflightResult;
@@ -1552,6 +1729,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (!ClassDefaultsParseResult.bSuccess)
 	{
 		return ClassDefaultsParseResult;
+	}
+	const FAssetDocumentCapabilityResult TargetClassDefaultsPreflightResult =
+		PreflightClassDefaultsForParent(WidgetBlueprint, ParentClass, ClassDefaults);
+	if (!TargetClassDefaultsPreflightResult.bSuccess)
+	{
+		return TargetClassDefaultsPreflightResult;
 	}
 
 	TSharedPtr<FJsonObject> Palette;
@@ -1656,34 +1839,30 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (Palette.IsValid())
 	{
 		FString Category;
-		if (Palette->TryGetStringField(TEXT("Category"), Category))
+		Palette->TryGetStringField(TEXT("Category"), Category);
+		WidgetBlueprint->Modify();
+		WidgetBlueprint->PaletteCategory = Category;
+		if (UUserWidget* GeneratedCDO = WidgetBlueprint->GeneratedClass
+			? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+			: nullptr)
 		{
-			WidgetBlueprint->Modify();
-			WidgetBlueprint->PaletteCategory = Category;
-			if (UUserWidget* GeneratedCDO = WidgetBlueprint->GeneratedClass
-				? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
-				: nullptr)
-			{
-				GeneratedCDO->Modify();
-				GeneratedCDO->PaletteCategory = FText::FromString(Category);
-			}
-			FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+			GeneratedCDO->Modify();
+			GeneratedCDO->PaletteCategory = Category.IsEmpty() ? FText::GetEmpty() : FText::FromString(Category);
 		}
+		FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
 	}
 
 	if (EditorOptions.IsValid())
 	{
 		bool bCanCallInitializedWithoutPlayerContext = false;
-		if (EditorOptions->TryGetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext"), bCanCallInitializedWithoutPlayerContext))
+		EditorOptions->TryGetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext"), bCanCallInitializedWithoutPlayerContext);
+		WidgetBlueprint->Modify();
+		WidgetBlueprint->bCanCallInitializedWithoutPlayerContext = bCanCallInitializedWithoutPlayerContext;
+		if (UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass))
 		{
-			WidgetBlueprint->Modify();
-			WidgetBlueprint->bCanCallInitializedWithoutPlayerContext = bCanCallInitializedWithoutPlayerContext;
-			if (UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass))
-			{
-				GeneratedClass->bCanCallInitializedWithoutPlayerContext = bCanCallInitializedWithoutPlayerContext;
-			}
-			FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
+			GeneratedClass->bCanCallInitializedWithoutPlayerContext = bCanCallInitializedWithoutPlayerContext;
 		}
+		FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
 	}
 #endif
 
@@ -1911,6 +2090,27 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 				if (!GuidParseResult.bSuccess)
 				{
 					return GuidParseResult;
+				}
+				const FAssetDocumentCapabilityResult GuidKeyResult = ValidateWidgetVariableGuidKeys(Context, BodyObject, ParsedGuids);
+				if (!GuidKeyResult.bSuccess)
+				{
+					return GuidKeyResult;
+				}
+			}
+			else if (Pair.Key == TEXT("Palette"))
+			{
+				const FAssetDocumentCapabilityResult PaletteResult = ValidatePaletteSection(Object);
+				if (!PaletteResult.bSuccess)
+				{
+					return PaletteResult;
+				}
+			}
+			else if (Pair.Key == TEXT("EditorOptions"))
+			{
+				const FAssetDocumentCapabilityResult EditorOptionsResult = ValidateEditorOptionsSection(Object);
+				if (!EditorOptionsResult.bSuccess)
+				{
+					return EditorOptionsResult;
 				}
 			}
 		}
