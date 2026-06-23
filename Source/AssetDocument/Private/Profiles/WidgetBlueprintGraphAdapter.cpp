@@ -3,6 +3,7 @@
 #include "Profiles/WidgetBlueprintGraphAdapter.h"
 
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
+#include "Graphs/AssetDocumentGraphDiff.h"
 #include "Graphs/AssetDocumentGraphParser.h"
 #include "Graphs/AssetDocumentNodeAdapter.h"
 #include "Graphs/K2GraphAdapter.h"
@@ -255,6 +256,126 @@ void MergeSkippedGraphEvidence(TSharedRef<FJsonObject>& OutBodyJson, const TArra
 	Graphs->SetNumberField(TEXT("Count"), Nodes.Num());
 	Graphs->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 }
+
+void NormalizeGraphIdentityForDiff(TArray<FAssetDocumentGraphSpec>& Graphs)
+{
+	for (FAssetDocumentGraphSpec& Graph : Graphs)
+	{
+		Graph.GraphGuid.Reset();
+		for (FAssetDocumentNodeSpec& Node : Graph.Nodes)
+		{
+			Node.NodeGuid.Reset();
+			Node.Capability.Reset();
+		}
+	}
+}
+
+FString RewriteGraphDiffPath(const FString& Path, const FWidgetBlueprintGraphRegion& Region)
+{
+	const FString UBlueprintPrefix = TEXT("/Body/UbergraphPages");
+	if (Region.Path == UBlueprintPrefix || !Path.StartsWith(UBlueprintPrefix))
+	{
+		return Path;
+	}
+	return Region.Path + Path.RightChop(FCString::Strlen(*UBlueprintPrefix));
+}
+
+TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
+	const FString& Path,
+	const FString& Status,
+	const TSharedPtr<FJsonValue>& Current,
+	const TSharedPtr<FJsonValue>& Desired,
+	const FString& Change = FString(),
+	const FString& Message = FString(),
+	const FString& Code = FString())
+{
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), Path);
+	Entry->SetStringField(TEXT("status"), Status);
+	if (!Change.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("change"), Change);
+	}
+	if (!Message.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("message"), Message);
+	}
+	if (!Code.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("code"), Code);
+	}
+	Entry->SetField(TEXT("current"), Current.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Current) : MakeShared<FJsonValueNull>());
+	Entry->SetField(TEXT("desired"), Desired.IsValid() ? AssetDocumentGraphJson::CloneJsonValue(Desired) : MakeShared<FJsonValueNull>());
+	return Entry;
+}
+
+TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FWidgetBlueprintGraphRegion& Region, const FAssetDocumentGraphDiffEntry& GraphEntry)
+{
+	const bool bUnsupported = GraphEntry.Status == TEXT("unsupported");
+	const bool bUnchanged = GraphEntry.Status == TEXT("unchanged");
+	const FString PublicStatus = bUnsupported ? FString(TEXT("skipped")) : (bUnchanged ? FString(TEXT("unchanged")) : FString(TEXT("changed")));
+	const FString Change = bUnchanged ? FString() : GraphEntry.Status;
+	return MakeCapabilityDiffEntry(
+		RewriteGraphDiffPath(GraphEntry.Path, Region),
+		PublicStatus,
+		GraphEntry.Current,
+		GraphEntry.Desired,
+		Change,
+		GraphEntry.Message,
+		bUnsupported ? FString(TEXT("UnsupportedGraphDiff")) : FString());
+}
+
+FString GraphPathFromSkippedNode(const FWidgetBlueprintGraphRegion& Region, const TSharedPtr<FJsonObject>& SkippedNode)
+{
+	FString GraphName;
+	if (SkippedNode.IsValid() && SkippedNode->TryGetStringField(TEXT("Graph"), GraphName) && !GraphName.IsEmpty())
+	{
+		FString EscapedName = GraphName;
+		EscapedName.ReplaceInline(TEXT("~"), TEXT("~0"));
+		EscapedName.ReplaceInline(TEXT("/"), TEXT("~1"));
+		return FString::Printf(TEXT("%s/%s"), *Region.Path, *EscapedName);
+	}
+	return Region.Path;
+}
+
+FString SkippedNodeMessage(const TSharedPtr<FJsonObject>& SkippedNode)
+{
+	FString ClassPath;
+	FString NodeTitle;
+	if (SkippedNode.IsValid())
+	{
+		SkippedNode->TryGetStringField(TEXT("Class"), ClassPath);
+		SkippedNode->TryGetStringField(TEXT("NodeTitle"), NodeTitle);
+	}
+	return FString::Printf(
+		TEXT("current asset contains unsupported graph node%s%s; graph content cannot be fully canonicalized"),
+		ClassPath.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" class '%s'"), *ClassPath),
+		NodeTitle.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" titled '%s'"), *NodeTitle));
+}
+
+void AppendSkippedGraphDiffEntries(
+	const FWidgetBlueprintGraphRegion& Region,
+	const TArray<TSharedPtr<FJsonValue>>& SkippedNodes,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	for (const TSharedPtr<FJsonValue>& SkippedValue : SkippedNodes)
+	{
+		const TSharedPtr<FJsonObject> SkippedNode = SkippedValue.IsValid() ? SkippedValue->AsObject() : nullptr;
+		FString Code = TEXT("UnsupportedGraphNodeClass");
+		if (SkippedNode.IsValid())
+		{
+			SkippedNode->TryGetStringField(TEXT("Reason"), Code);
+		}
+		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(
+			GraphPathFromSkippedNode(Region, SkippedNode),
+			TEXT("skipped"),
+			SkippedValue,
+			nullptr,
+			TEXT("unsupported"),
+			SkippedNodeMessage(SkippedNode),
+			Code)));
+	}
+}
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::ValidateRegions(
@@ -351,4 +472,45 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::ExtractRegions(
 		MergeSkippedGraphEvidence(OutBodyJson, ExtractResult.SkippedNodes);
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted WidgetBlueprint graph regions"));
+}
+
+FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::DiffRegions(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
+{
+	const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
+	if (!WidgetBlueprint)
+	{
+		return GraphFailure(TEXT("WidgetBlueprint graph diff requires exact UWidgetBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+	}
+
+	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
+	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
+	for (const FWidgetBlueprintGraphRegion& Region : GraphRegions())
+	{
+		TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+		const FAssetDocumentCapabilityResult DesiredParseResult = ParseAndResolveRegion(Context, DesiredBody, Region, DesiredGraphs);
+		if (!DesiredParseResult.bSuccess)
+		{
+			return DesiredParseResult;
+		}
+
+		const FAssetDocumentK2GraphExtractResult CurrentExtract =
+			K2GraphAdapter.ExtractGraphRegion(Cast<UBlueprint>(const_cast<UWidgetBlueprint*>(WidgetBlueprint)), Region.K2Region);
+		TArray<FAssetDocumentGraphSpec> CurrentGraphs = CurrentExtract.Graphs;
+		NormalizeGraphIdentityForDiff(DesiredGraphs);
+		NormalizeGraphIdentityForDiff(CurrentGraphs);
+
+		const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
+			FAssetDocumentGraphDiff::CompareUbergraphPages(DesiredGraphs, CurrentGraphs, Definitions);
+		for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
+		{
+			OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(Region, GraphEntry)));
+		}
+
+		AppendSkippedGraphDiffEntries(Region, CurrentExtract.SkippedNodes, OutDiffEntries);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed WidgetBlueprint graph regions"));
 }

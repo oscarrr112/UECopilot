@@ -587,9 +587,12 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
 	return Adapter->CanRepresentExistingNode(Context, Node);
 }
 
+bool IsPreservedFrameworkNode(EAssetDocumentK2GraphRegion Region, const UEdGraphNode* Node);
+
 FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
 	UBlueprint* Blueprint,
 	const FAssetDocumentNodeAdapterRegistry& Registry,
+	EAssetDocumentK2GraphRegion Region,
 	const UEdGraph* Graph)
 {
 	if (!Graph)
@@ -607,6 +610,10 @@ FAssetDocumentCapabilityResult PreflightDeleteExistingGraph(
 
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
+		if (IsPreservedFrameworkNode(Region, Node))
+		{
+			continue;
+		}
 		const FAssetDocumentCapabilityResult NodeResult = PreflightDeleteExistingNode(Blueprint, Registry, Graph, Node);
 		if (!NodeResult.bSuccess)
 		{
@@ -697,7 +704,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
 
 		if (Region == EAssetDocumentK2GraphRegion::UbergraphPages && ExistingGraph == FBlueprintEditorUtils::FindEventGraph(Blueprint))
 		{
-			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, ExistingGraph);
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, Region, ExistingGraph);
 			if (!DeleteResult.bSuccess)
 			{
 				return DeleteResult;
@@ -713,7 +720,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
 		}
 		else
 		{
-			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, ExistingGraph);
+			const FAssetDocumentCapabilityResult DeleteResult = PreflightDeleteExistingGraph(Blueprint, Registry, Region, ExistingGraph);
 			if (!DeleteResult.bSuccess)
 			{
 				return DeleteResult;
@@ -1098,6 +1105,10 @@ FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractGraphReg
 			FAssetDocumentNodeSpec NodeSpec;
 			if (!ExtractNode(Blueprint, Node, NodeSpec))
 			{
+				if (IsPreservedFrameworkNode(Region, Node))
+				{
+					continue;
+				}
 				Result.SkippedNodes.Add(MakeShared<FJsonValueObject>(MakeSkippedNodeObject(Graph, Node)));
 				continue;
 			}

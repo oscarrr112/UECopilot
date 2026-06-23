@@ -1524,6 +1524,11 @@ bool FAssetDocumentWidgetBlueprintGraphsFunctionGraphForBindingRoundTripTest::Ru
 	TestTrue(TEXT("FunctionGraph extracts by name"), FindExtractedGraph(ExtractResult, TEXT("FunctionGraphs"), TEXT("PrepareDisplayTextBinding")).IsValid());
 	TestEqual(TEXT("Binding also extracts"), GetExtractedBindings(ExtractResult).Num(), 1);
 
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after FunctionGraph roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("FunctionGraph binding roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 

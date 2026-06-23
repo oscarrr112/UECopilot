@@ -2130,6 +2130,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 		return ExtractResult;
 	}
 
+	bool bDiffedGraphRegions = false;
 	for (const FName& BodyKeyName : GetCanonicalBodyKeys())
 	{
 		const FString BodyKey = BodyKeyName.ToString();
@@ -2180,6 +2181,20 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				? TEXT("unchanged")
 				: TEXT("changed");
 			AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+		}
+		else if (IsGraphBodyKey(BodyKey))
+		{
+			if (!bDiffedGraphRegions)
+			{
+				const FAssetDocumentCapabilityResult GraphDiffResult =
+					FWidgetBlueprintGraphAdapter().DiffRegions(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
+				if (!GraphDiffResult.bSuccess)
+				{
+					return GraphDiffResult;
+				}
+				bDiffedGraphRegions = true;
+			}
+			continue;
 		}
 		else
 		{
