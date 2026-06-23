@@ -527,6 +527,103 @@ FAssetDocumentCapabilityResult TrySetReflectedContent(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FObjectPropertyBase* FindSingleWidgetReturnProperty(UFunction* Function)
+{
+	if (!Function)
+	{
+		return nullptr;
+	}
+
+	FObjectPropertyBase* ReturnProperty = nullptr;
+	for (TFieldIterator<FProperty> It(Function); It; ++It)
+	{
+		FProperty* Param = *It;
+		if (!Param || !Param->HasAnyPropertyFlags(CPF_Parm))
+		{
+			continue;
+		}
+
+		if (!Param->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			return nullptr;
+		}
+
+		FObjectPropertyBase* ObjectParam = CastField<FObjectPropertyBase>(Param);
+		if (!ObjectParam || !ObjectParam->PropertyClass || !ObjectParam->PropertyClass->IsChildOf(UWidget::StaticClass()))
+		{
+			return nullptr;
+		}
+		if (ReturnProperty)
+		{
+			return nullptr;
+		}
+		ReturnProperty = ObjectParam;
+	}
+	return ReturnProperty;
+}
+
+bool HasReflectedWidgetContentSetter(UWidget* Widget)
+{
+	UFunction* SetContentFunction = Widget ? Widget->FindFunction(TEXT("SetContent")) : nullptr;
+	if (!SetContentFunction)
+	{
+		return false;
+	}
+
+	FObjectPropertyBase* ContentParam = nullptr;
+	for (TFieldIterator<FProperty> It(SetContentFunction); It; ++It)
+	{
+		FProperty* Param = *It;
+		if (!Param || !Param->HasAnyPropertyFlags(CPF_Parm) || Param->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			continue;
+		}
+
+		FObjectPropertyBase* ObjectParam = CastField<FObjectPropertyBase>(Param);
+		if (!ObjectParam || !ObjectParam->PropertyClass || !ObjectParam->PropertyClass->IsChildOf(UWidget::StaticClass()))
+		{
+			return false;
+		}
+		if (ContentParam)
+		{
+			return false;
+		}
+		ContentParam = ObjectParam;
+	}
+	return ContentParam != nullptr;
+}
+
+FAssetDocumentCapabilityResult TryGetReflectedContent(
+	UWidget* Widget,
+	const FString& Path,
+	bool& bOutHandled,
+	UWidget*& OutContent)
+{
+	bOutHandled = false;
+	OutContent = nullptr;
+
+	if (!HasReflectedWidgetContentSetter(Widget))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	UFunction* GetContentFunction = Widget->FindFunction(TEXT("GetContent"));
+	FObjectPropertyBase* ReturnProperty = FindSingleWidgetReturnProperty(GetContentFunction);
+	if (!GetContentFunction || !ReturnProperty)
+	{
+		return TreeFailure(
+			FString::Printf(TEXT("Widget '%s' supports reflected SetContent but has no safe GetContent extractor"), *GetNameSafe(Widget)),
+			NodePath(Path, TEXT("Children")),
+			TEXT("UnsupportedWidgetContentExtraction"));
+	}
+
+	FStructOnScope Params(GetContentFunction);
+	Widget->ProcessEvent(GetContentFunction, Params.GetStructMemory());
+	OutContent = Cast<UWidget>(ReturnProperty->GetObjectPropertyValue_InContainer(Params.GetStructMemory()));
+	bOutHandled = true;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult MaterializeNode(
 	UWidgetTree* WidgetTree,
 	const FWidgetBlueprintNodeSpec& Spec,
@@ -661,53 +758,99 @@ FAssetDocumentCapabilityResult PreflightTreeMaterialization(const FWidgetBluepri
 	return MaterializeTree(PreviewTree, Spec);
 }
 
-TSharedRef<FJsonObject> ExtractNode(UWidget* Widget)
+FAssetDocumentCapabilityResult ExtractNode(UWidget* Widget, const FString& Path, TSharedRef<FJsonObject>& OutNode)
 {
-	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
-	Node->SetStringField(TEXT("Name"), Widget ? Widget->GetName() : FString());
-	Node->SetStringField(TEXT("Class"), Widget && Widget->GetClass() ? Widget->GetClass()->GetPathName() : FString());
-	Node->SetBoolField(TEXT("IsVariable"), Widget && Widget->bIsVariable);
+	OutNode = MakeShared<FJsonObject>();
+	OutNode->SetStringField(TEXT("Name"), Widget ? Widget->GetName() : FString());
+	OutNode->SetStringField(TEXT("Class"), Widget && Widget->GetClass() ? Widget->GetClass()->GetPathName() : FString());
+	OutNode->SetBoolField(TEXT("IsVariable"), Widget && Widget->bIsVariable);
 	if (Widget && Widget->bIsVariable)
 	{
-		Node->SetStringField(TEXT("VariableName"), Widget->GetName());
+		OutNode->SetStringField(TEXT("VariableName"), Widget->GetName());
 	}
 
 	TSharedPtr<FJsonObject> Properties = Widget
 		? FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Widget, true)
 		: MakeShared<FJsonObject>();
-	Node->SetObjectField(TEXT("Properties"), Properties.IsValid() ? Properties : MakeShared<FJsonObject>());
+	OutNode->SetObjectField(TEXT("Properties"), Properties.IsValid() ? Properties : MakeShared<FJsonObject>());
 
 	TSharedPtr<FJsonObject> Slot = Widget && Widget->Slot
 		? FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Widget->Slot, true)
 		: MakeShared<FJsonObject>();
-	Node->SetObjectField(TEXT("Slot"), Slot.IsValid() ? Slot : MakeShared<FJsonObject>());
+	OutNode->SetObjectField(TEXT("Slot"), Slot.IsValid() ? Slot : MakeShared<FJsonObject>());
 
 	TArray<TSharedPtr<FJsonValue>> Children;
-	if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
+	if (UContentWidget* ContentWidget = Cast<UContentWidget>(Widget))
+	{
+		if (UWidget* Content = ContentWidget->GetContent())
+		{
+			TSharedRef<FJsonObject> ChildNode = MakeShared<FJsonObject>();
+			const FAssetDocumentCapabilityResult ChildResult = ExtractNode(Content, FString::Printf(TEXT("%s/Children/0"), *Path), ChildNode);
+			if (!ChildResult.bSuccess)
+			{
+				return ChildResult;
+			}
+			Children.Add(MakeShared<FJsonValueObject>(ChildNode));
+		}
+	}
+	else if (UPanelWidget* PanelWidget = Cast<UPanelWidget>(Widget))
 	{
 		for (int32 ChildIndex = 0; ChildIndex < PanelWidget->GetChildrenCount(); ++ChildIndex)
 		{
 			if (UWidget* Child = PanelWidget->GetChildAt(ChildIndex))
 			{
-				Children.Add(MakeShared<FJsonValueObject>(ExtractNode(Child)));
+				TSharedRef<FJsonObject> ChildNode = MakeShared<FJsonObject>();
+				const FAssetDocumentCapabilityResult ChildResult = ExtractNode(Child, FString::Printf(TEXT("%s/Children/%d"), *Path, ChildIndex), ChildNode);
+				if (!ChildResult.bSuccess)
+				{
+					return ChildResult;
+				}
+				Children.Add(MakeShared<FJsonValueObject>(ChildNode));
 			}
 		}
 	}
-	Node->SetArrayField(TEXT("Children"), Children);
-	return Node;
+	else
+	{
+		bool bHandledReflectedContent = false;
+		UWidget* ReflectedContent = nullptr;
+		const FAssetDocumentCapabilityResult ReflectedContentResult =
+			TryGetReflectedContent(Widget, Path, bHandledReflectedContent, ReflectedContent);
+		if (!ReflectedContentResult.bSuccess)
+		{
+			return ReflectedContentResult;
+		}
+		if (bHandledReflectedContent && ReflectedContent)
+		{
+			TSharedRef<FJsonObject> ChildNode = MakeShared<FJsonObject>();
+			const FAssetDocumentCapabilityResult ChildResult = ExtractNode(ReflectedContent, FString::Printf(TEXT("%s/Children/0"), *Path), ChildNode);
+			if (!ChildResult.bSuccess)
+			{
+				return ChildResult;
+			}
+			Children.Add(MakeShared<FJsonValueObject>(ChildNode));
+		}
+	}
+	OutNode->SetArrayField(TEXT("Children"), Children);
+	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedRef<FJsonObject> ExtractTreeObject(const UWidgetTree* WidgetTree)
+FAssetDocumentCapabilityResult ExtractTreeObject(const UWidgetTree* WidgetTree, TSharedRef<FJsonObject>& OutWidgetTreeJson)
 {
-	TSharedRef<FJsonObject> WidgetTreeJson = FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
+	OutWidgetTreeJson = FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
 	if (!WidgetTree)
 	{
-		return WidgetTreeJson;
+		return FAssetDocumentCapabilityResult::Success();
 	}
 
 	if (WidgetTree->RootWidget)
 	{
-		WidgetTreeJson->SetObjectField(TEXT("RootWidget"), ExtractNode(WidgetTree->RootWidget));
+		TSharedRef<FJsonObject> RootNode = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult RootResult = ExtractNode(WidgetTree->RootWidget, TEXT("/Body/WidgetTree/RootWidget"), RootNode);
+		if (!RootResult.bSuccess)
+		{
+			return RootResult;
+		}
+		OutWidgetTreeJson->SetObjectField(TEXT("RootWidget"), RootNode);
 	}
 
 	TArray<FName> SlotNames;
@@ -722,11 +865,18 @@ TSharedRef<FJsonObject> ExtractTreeObject(const UWidgetTree* WidgetTree)
 	{
 		if (UWidget* SlotWidget = WidgetTree->NamedSlotBindings.FindRef(SlotName))
 		{
-			NamedSlotBindings->SetObjectField(SlotName.ToString(), ExtractNode(SlotWidget));
+			TSharedRef<FJsonObject> SlotNode = MakeShared<FJsonObject>();
+			const FString BindingPath = FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *EscapePathToken(SlotName.ToString()));
+			const FAssetDocumentCapabilityResult SlotResult = ExtractNode(SlotWidget, BindingPath, SlotNode);
+			if (!SlotResult.bSuccess)
+			{
+				return SlotResult;
+			}
+			NamedSlotBindings->SetObjectField(SlotName.ToString(), SlotNode);
 		}
 	}
-	WidgetTreeJson->SetObjectField(TEXT("NamedSlotBindings"), NamedSlotBindings);
-	return WidgetTreeJson;
+	OutWidgetTreeJson->SetObjectField(TEXT("NamedSlotBindings"), NamedSlotBindings);
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
@@ -736,7 +886,12 @@ FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
 {
 	bOutChanged = false;
 
-	TSharedRef<FJsonObject> CurrentTree = ExtractTreeObject(WidgetBlueprint ? WidgetBlueprint->WidgetTree : nullptr);
+	TSharedRef<FJsonObject> CurrentTree = FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
+	const FAssetDocumentCapabilityResult CurrentExtractResult = ExtractTreeObject(WidgetBlueprint ? WidgetBlueprint->WidgetTree : nullptr, CurrentTree);
+	if (!CurrentExtractResult.bSuccess)
+	{
+		return CurrentExtractResult;
+	}
 
 	UWidgetTree* DesiredPreviewTree = NewObject<UWidgetTree>(GetTransientPackage(), UWidgetTree::StaticClass());
 	if (!DesiredPreviewTree)
@@ -750,7 +905,12 @@ FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
 		return DesiredMaterializeResult;
 	}
 
-	TSharedRef<FJsonObject> DesiredTree = ExtractTreeObject(DesiredPreviewTree);
+	TSharedRef<FJsonObject> DesiredTree = FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree();
+	const FAssetDocumentCapabilityResult DesiredExtractResult = ExtractTreeObject(DesiredPreviewTree, DesiredTree);
+	if (!DesiredExtractResult.bSuccess)
+	{
+		return DesiredExtractResult;
+	}
 	bOutChanged =
 		JsonValueToComparableString(MakeShared<FJsonValueObject>(CurrentTree)) !=
 		JsonValueToComparableString(MakeShared<FJsonValueObject>(DesiredTree));
@@ -834,7 +994,11 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Apply(UWidgetBluepri
 
 FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Extract(const UWidgetBlueprint* WidgetBlueprint, TSharedRef<FJsonObject>& OutWidgetTreeJson)
 {
-	OutWidgetTreeJson = ExtractTreeObject(WidgetBlueprint ? WidgetBlueprint->WidgetTree : nullptr);
+	const FAssetDocumentCapabilityResult ExtractResult = ExtractTreeObject(WidgetBlueprint ? WidgetBlueprint->WidgetTree : nullptr, OutWidgetTreeJson);
+	if (!ExtractResult.bSuccess)
+	{
+		return ExtractResult;
+	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted WidgetTree"));
 }
 
@@ -864,7 +1028,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Diff(const UWidgetBl
 	{
 		return DesiredMaterializeResult;
 	}
-	TSharedRef<FJsonObject> DesiredCanonicalTree = ExtractTreeObject(DesiredPreviewTree);
+	TSharedRef<FJsonObject> DesiredCanonicalTree = MakeDefaultWidgetTree();
+	const FAssetDocumentCapabilityResult DesiredExtractResult = ExtractTreeObject(DesiredPreviewTree, DesiredCanonicalTree);
+	if (!DesiredExtractResult.bSuccess)
+	{
+		return DesiredExtractResult;
+	}
 
 	AddRecursiveDiffEntries(
 		OutDiffEntries,

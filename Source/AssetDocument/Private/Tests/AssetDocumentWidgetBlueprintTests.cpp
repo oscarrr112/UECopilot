@@ -670,11 +670,49 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeSingleContentWidgetRoundtripTest::Ru
 		}
 	}
 
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after single-content WidgetTree apply"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract returns payload"), ExtractResult.Payload.IsValid());
+	if (ExtractResult.Payload.IsValid())
+	{
+		const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+		TestTrue(TEXT("Extracted document contains Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody) && ExtractedBody && ExtractedBody->IsValid());
+		if (ExtractedBody && ExtractedBody->IsValid())
+		{
+			const TSharedPtr<FJsonObject>* ExtractedWidgetTree = nullptr;
+			TestTrue(TEXT("Extracted Body contains WidgetTree"), (*ExtractedBody)->TryGetObjectField(TEXT("WidgetTree"), ExtractedWidgetTree) && ExtractedWidgetTree && ExtractedWidgetTree->IsValid());
+			if (ExtractedWidgetTree && ExtractedWidgetTree->IsValid())
+			{
+				const TSharedPtr<FJsonObject>* ExtractedRoot = nullptr;
+				TestTrue(TEXT("Extracted WidgetTree contains RootWidget"), (*ExtractedWidgetTree)->TryGetObjectField(TEXT("RootWidget"), ExtractedRoot) && ExtractedRoot && ExtractedRoot->IsValid());
+				if (ExtractedRoot && ExtractedRoot->IsValid())
+				{
+					const TArray<TSharedPtr<FJsonValue>>* ExtractedChildren = nullptr;
+					TestTrue(TEXT("Extracted RootBorder preserves content child"), (*ExtractedRoot)->TryGetArrayField(TEXT("Children"), ExtractedChildren) && ExtractedChildren && ExtractedChildren->Num() == 1);
+					if (ExtractedChildren && ExtractedChildren->Num() == 1 && (*ExtractedChildren)[0].IsValid() && (*ExtractedChildren)[0]->Type == EJson::Object)
+					{
+						TestEqual(TEXT("Extracted RootBorder child is BorderText"), (*ExtractedChildren)[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("BorderText")));
+					}
+				}
+			}
+		}
+	}
+
 	FAssetDocumentDiffRequest DiffRequest;
 	DiffRequest.Document = Document;
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Diff succeeds after single-content WidgetTree apply"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Single-content WidgetTree is unchanged after roundtrip"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+
+	TSharedRef<FJsonObject> RootBorderWithoutChild = MakeWidgetNode(TEXT("RootBorder"), TEXT("/Script/UMG.Border"));
+	FAssetDocumentDiffRequest MissingChildDiffRequest;
+	MissingChildDiffRequest.Document = MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(RootBorderWithoutChild)));
+	const FAssetDocumentResult MissingChildDiffResult = Service.Diff(MissingChildDiffRequest);
+	TestTrue(TEXT("Diff succeeds for missing single-content child"), MissingChildDiffResult.IsSuccess());
+	TestFalse(TEXT("Diff reports omitted single-content child"), DiffPayloadHasNoChangedOrFailedEntries(MissingChildDiffResult.Payload));
 	return true;
 }
 
