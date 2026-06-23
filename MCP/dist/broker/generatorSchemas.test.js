@@ -163,9 +163,18 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
             /validate_asset_document/,
             /diff_asset_document/,
             /file watcher/i,
+            /\/Script\/UMGEditor\.WidgetBlueprint/,
+            /Body\.WidgetTree/,
+            /Body\.Bindings/,
+            /Body\.Animations/,
+            /FunctionGraphs/,
+            /WidgetVariableGuids/,
+            /UnsupportedWidgetAnimationTrack/,
         ]) {
             assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
         }
+        assert.doesNotMatch(text, /"AssetType"\s*:\s*"WidgetBlueprint"/, "AssetDocument schema should not present generator-only WidgetBlueprint AssetType input");
+        assert.doesNotMatch(text, /empty until WidgetBlueprint interface adapter lands/i, "WidgetBlueprint ImplementedInterfaces must not be documented as an unimplemented placeholder");
     });
 });
 test("AssetDocument validate and diff require exactly one document source", async () => {
