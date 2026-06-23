@@ -313,7 +313,7 @@ The `/Script/UMGEditor.WidgetBlueprint` profile represents exact `UWidgetBluepri
 The profile owns these canonical `Body` keys:
 
 - `Body.ParentClass`: required `ClassRef` resolving to a `UUserWidget` subclass. The default is `/Script/UMG.UserWidget`.
-- `Body.ImplementedInterfaces`: authoritative array of implemented interface refs. WidgetBlueprint currently validates the region shape and keeps unsupported authored interface content as an explicit diagnostic rather than silently preserving existing state.
+- `Body.ImplementedInterfaces`: authoritative array of `{Interface: ClassRef}` implemented interface refs. Applying the region adds missing interfaces, removes omitted interfaces, rejects duplicate entries, and rejects non-interface classes with explicit diagnostics.
 - `Body.Variables`: authoritative array for non-widget Blueprint variables using the UBlueprint variable shape. Widget variables generated from `Body.WidgetTree` are owned by `WidgetTree` entries and must not be duplicated here.
 - `Body.ClassDefaults`: generated `UUserWidget` CDO default deltas. Missing properties restore the parent/default CDO value.
 - `Body.WidgetTree`: authoritative object for `RootWidget` and `NamedSlotBindings`. Non-empty widget trees are supported through widget node `Name`, `Class`, `IsVariable`, `VariableName`, `Properties`, `Slot`, and `Children` fields; explicit `Body.WidgetTree: null` is invalid, while `WidgetTree.RootWidget: null` is valid.

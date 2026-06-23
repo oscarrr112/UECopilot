@@ -93,6 +93,23 @@ static TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 	return ClassRef;
 }
 
+TSharedPtr<FJsonObject> MakeImplementedInterface(const FString& ClassPath)
+{
+	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
+	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(ClassPath));
+	return InterfaceEntry;
+}
+
+void SetImplementedInterfaces(TSharedRef<FJsonObject> Body, std::initializer_list<TSharedPtr<FJsonObject>> Interfaces)
+{
+	TArray<TSharedPtr<FJsonValue>> InterfaceValues;
+	for (const TSharedPtr<FJsonObject>& InterfaceEntry : Interfaces)
+	{
+		InterfaceValues.Add(MakeShared<FJsonValueObject>(InterfaceEntry));
+	}
+	Body->SetArrayField(TEXT("ImplementedInterfaces"), InterfaceValues);
+}
+
 TSharedRef<FJsonObject> MakeTestUserWidgetParentClassRef()
 {
 	return MakeClassRef(UTestUserWidget::StaticClass()->GetPathName());
@@ -743,6 +760,45 @@ bool GetGeneratedBoolDefault(const UWidgetBlueprint* WidgetBlueprint, FName Prop
 	}
 	OutValue = Property->GetPropertyValue_InContainer(CDO);
 	return true;
+}
+
+bool WidgetBlueprintImplementsInterface(const UWidgetBlueprint* WidgetBlueprint, const UClass* InterfaceClass)
+{
+	return WidgetBlueprint
+		&& InterfaceClass
+		&& WidgetBlueprint->ImplementedInterfaces.ContainsByPredicate([InterfaceClass](const FBPInterfaceDescription& Description)
+		{
+			return Description.Interface == InterfaceClass;
+		});
+}
+
+bool ExtractedInterfacesContain(const FAssetDocumentResult& ExtractResult, const FString& InterfacePath)
+{
+	TSharedPtr<FJsonObject> Body = GetExtractedBody(ExtractResult);
+	const TArray<TSharedPtr<FJsonValue>>* Interfaces = nullptr;
+	if (!Body.IsValid() || !Body->TryGetArrayField(TEXT("ImplementedInterfaces"), Interfaces) || !Interfaces)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& InterfaceValue : *Interfaces)
+	{
+		const TSharedPtr<FJsonObject> InterfaceObject = InterfaceValue.IsValid() && InterfaceValue->Type == EJson::Object
+			? InterfaceValue->AsObject()
+			: nullptr;
+		const TSharedPtr<FJsonObject>* InterfaceRef = nullptr;
+		if (!InterfaceObject.IsValid() || !InterfaceObject->TryGetObjectField(TEXT("Interface"), InterfaceRef) || !InterfaceRef || !InterfaceRef->IsValid())
+		{
+			continue;
+		}
+
+		FString ExtractedPath;
+		if ((*InterfaceRef)->TryGetStringField(TEXT("Class"), ExtractedPath) && ExtractedPath == InterfacePath)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 }
 
@@ -3357,6 +3413,114 @@ bool FAssetDocumentWidgetBlueprintFullApplyExtractDiffTest::RunTest(const FStrin
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintImplementedInterfaceRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.RoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintImplementedInterfaceRoundTripTest::RunTest(const FString&)
+{
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InterfaceRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(Body, {MakeImplementedInterface(InterfacePath)});
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("WidgetBlueprint implemented interface apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("WidgetBlueprint implemented interface apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
+	TestTrue(TEXT("WidgetBlueprint implements desired interface"), WidgetBlueprintImplementsInterface(WidgetBlueprint, InterfaceClass));
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = false;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Implemented interface extract succeeds"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("Extract includes implemented interface"), ExtractedInterfacesContain(ExtractResult, InterfacePath));
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Implemented interface diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Implemented interface diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintImplementedInterfacesClearTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.AuthoritativeClear",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintImplementedInterfacesClearTest::RunTest(const FString&)
+{
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InterfaceClear"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InterfaceBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InterfaceBody, {MakeImplementedInterface(InterfacePath)});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InterfaceBody)));
+	TestTrue(TEXT("Initial implemented interface apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> ClearBody = MakeDefaultWidgetBlueprintBody();
+	const FAssetDocumentResult ClearResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ClearBody)));
+	if (!ClearResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("WidgetBlueprint implemented interface clear failed: %s"), *ClearResult.Message));
+	}
+	TestTrue(TEXT("Empty ImplementedInterfaces apply succeeds"), ClearResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads after interface clear"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Empty ImplementedInterfaces clears existing interfaces"), WidgetBlueprint->ImplementedInterfaces.Num(), 0);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, ClearBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Implemented interface clear diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Implemented interface clear diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintInvalidImplementedInterfaceRejectsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.InvalidClassRejects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintInvalidImplementedInterfaceRejectsTest::RunTest(const FString&)
+{
+	const FString ValidInterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InvalidInterfaceRejects"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InitialBody, {MakeImplementedInterface(ValidInterfacePath)});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial valid interface apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> InvalidBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InvalidBody, {MakeImplementedInterface(TEXT("/Script/Engine.Actor"))});
+	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
+	TestFalse(TEXT("Non-interface class is rejected"), InvalidResult.IsSuccess());
+	TestTrue(TEXT("Invalid interface diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("InvalidInterfaceClass")));
+	TestTrue(TEXT("Invalid interface diagnostic path is precise"), ResultHasDiagnosticPath(InvalidResult, TEXT("/Body/ImplementedInterfaces/0/Interface/Class")));
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *ValidInterfacePath);
+	TestTrue(TEXT("Failed invalid interface apply preserves existing interface"), WidgetBlueprintImplementsInterface(WidgetBlueprint, InterfaceClass));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentWidgetBlueprintApplyFileCanonicalWritebackTest,
 	"AssetFactory.AssetDocument.WidgetBlueprint.ApplyFileCanonicalWriteback",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -3535,6 +3699,7 @@ bool FAssetDocumentWidgetBlueprintProfileInspectionListsAllRegionsTest::RunTest(
 		TEXT("Body.WidgetTree"),
 		TEXT("Body.Bindings"),
 		TEXT("Body.Animations"),
+		TEXT("Body.ImplementedInterfaces"),
 		TEXT("Body.UbergraphPages"),
 		TEXT("Body.FunctionGraphs"),
 		TEXT("Body.MacroGraphs"),
@@ -3545,6 +3710,12 @@ bool FAssetDocumentWidgetBlueprintProfileInspectionListsAllRegionsTest::RunTest(
 	{
 		TestTrue(FString::Printf(TEXT("Profile RegionPolicies contains %s"), *RegionId), RegionPoliciesContain(RegionPolicies, RegionId));
 	}
+
+	const FWidgetBlueprintAssetDocumentCapability Capability;
+	TSharedRef<FJsonObject> SchemaHint = Capability.GetSchemaHint();
+	FString ImplementedInterfacesHint;
+	TestTrue(TEXT("Schema hint exposes ImplementedInterfaces"), SchemaHint->TryGetStringField(TEXT("ImplementedInterfaces"), ImplementedInterfacesHint));
+	TestEqual(TEXT("Schema hint documents implemented interface ClassRefs"), ImplementedInterfacesHint, FString(TEXT("array<{Interface: ClassRef}>")));
 	return true;
 }
 

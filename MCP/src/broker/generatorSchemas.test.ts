@@ -201,6 +201,7 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
 			assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
 		}
 		assert.doesNotMatch(text, /"AssetType"\s*:\s*"WidgetBlueprint"/, "AssetDocument schema should not present generator-only WidgetBlueprint AssetType input");
+		assert.doesNotMatch(text, /empty until WidgetBlueprint interface adapter lands/i, "WidgetBlueprint ImplementedInterfaces must not be documented as an unimplemented placeholder");
 	});
 });
 

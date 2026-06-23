@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $Target = "/Game/AssetDocumentSmoke/WBP_WidgetBlueprintSmoke"
 $AssetName = "WBP_WidgetBlueprintSmoke"
+$SmokeInterface = "/Script/Engine.ActorSoundParameterInterface"
 $ExpectedBodyRegions = @(
   "ParentClass",
   "ImplementedInterfaces",
@@ -43,8 +44,20 @@ function Invoke-AssetFactoryJson {
   return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $Json -TimeoutSec 120
 }
 
+function Test-AssetFactoryHealthOnce {
+  try {
+    $Health = Invoke-AssetFactoryJson -Method "GET" -Path "/assetfactory/health"
+    return ($Health.status -eq "ok" -or $Health.success -eq $true)
+  }
+  catch {
+    return $false
+  }
+}
+
 function Wait-AssetFactoryHealth {
-  $Deadline = (Get-Date).AddSeconds(120)
+  param([int]$TimeoutSeconds = 180)
+
+  $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $LastError = $null
   while ((Get-Date) -lt $Deadline) {
     try {
@@ -59,6 +72,17 @@ function Wait-AssetFactoryHealth {
     Start-Sleep -Milliseconds 500
   }
   throw "Timed out waiting for AssetFactory HTTP server at http://${ServerHost}:${Port}/assetfactory/health. Last error: $LastError"
+}
+
+function Start-AssetFactoryEditor {
+  $EditorExe = "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe"
+  if (-not (Test-Path -LiteralPath $EditorExe)) {
+    throw "UnrealEditor.exe not found: $EditorExe"
+  }
+
+  $Editor = Start-Process -FilePath $EditorExe -ArgumentList @($Project) -PassThru -WindowStyle Hidden
+  Write-Host "Started UnrealEditor PID $($Editor.Id)"
+  return $Editor
 }
 
 function New-ClassRef {
@@ -128,7 +152,11 @@ function New-SmokeSidecar {
     Properties = @{}
     Body = [ordered]@{
       ParentClass = New-ClassRef -Class "/Script/AssetFactory.TestUserWidget"
-      ImplementedInterfaces = @()
+      ImplementedInterfaces = @(
+        [ordered]@{
+          Interface = New-ClassRef -Class $SmokeInterface
+        }
+      )
       Variables = @()
       ClassDefaults = @{
         bIsFocusable = $true
@@ -228,66 +256,90 @@ $SidecarPath = Join-Path $ProjectDir "Content/AssetDocumentSmoke/${AssetName}.as
 $SidecarDir = Split-Path -Parent $SidecarPath
 New-Item -ItemType Directory -Force -Path $SidecarDir | Out-Null
 
-Wait-AssetFactoryHealth
-
-$Sidecar = New-SmokeSidecar
-$Sidecar | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $SidecarPath -Encoding UTF8
-$SidecarPathForHttp = $SidecarPath.Replace("\", "/")
-
-$ApplyPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/apply-file" -Body @{
-  file_path = $SidecarPathForHttp
-  save_asset = $true
-}) -Label "apply-file"
-
-if ($ApplyPayload.sidecar_sync_update_skipped -eq $true) {
-  throw "apply-file skipped sidecar sync update: $($ApplyPayload.sidecar_sync_update_skip_reason)"
+$StartedEditor = $null
+if (-not (Test-AssetFactoryHealthOnce)) {
+  $StartedEditor = Start-AssetFactoryEditor
 }
 
-$ExtractPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/extract" -Body @{
-  asset_path = $Target
-  diff_only = $false
-  include_all_writable = $true
-}) -Label "extract"
+try {
+  Wait-AssetFactoryHealth
 
-if ($ExtractPayload.Target -ne $Target) {
-  throw "extract returned wrong Target: $($ExtractPayload.Target)"
+  $Sidecar = New-SmokeSidecar
+  $Sidecar | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $SidecarPath -Encoding UTF8
+  $SidecarPathForHttp = $SidecarPath.Replace("\", "/")
+
+  $ApplyPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/apply-file" -Body @{
+    file_path = $SidecarPathForHttp
+    save_asset = $true
+  }) -Label "apply-file"
+
+  if ($ApplyPayload.sidecar_sync_update_skipped -eq $true) {
+    throw "apply-file skipped sidecar sync update: $($ApplyPayload.sidecar_sync_update_skip_reason)"
+  }
+
+  $ExtractPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/extract" -Body @{
+    asset_path = $Target
+    diff_only = $false
+    include_all_writable = $true
+  }) -Label "extract"
+
+  if ($ExtractPayload.Target -ne $Target) {
+    throw "extract returned wrong Target: $($ExtractPayload.Target)"
+  }
+  if ($null -eq $ExtractPayload.Body) {
+    throw "extract payload does not include Body"
+  }
+  foreach ($Region in $ExpectedBodyRegions) {
+    if (-not ($ExtractPayload.Body.PSObject.Properties.Name -contains $Region)) {
+      throw "extract Body missing expected region: $Region"
+    }
+  }
+  if ($ExtractPayload.Body.Bindings.Count -lt 1) {
+    throw "extract Body.Bindings is missing the smoke binding"
+  }
+  if ($ExtractPayload.Body.Animations.Count -lt 1) {
+    throw "extract Body.Animations is missing the smoke animation"
+  }
+  $ExtractedInterfaces = @($ExtractPayload.Body.ImplementedInterfaces)
+  $HasSmokeInterface = $false
+  foreach ($InterfaceEntry in $ExtractedInterfaces) {
+    if ($InterfaceEntry.Interface.Class -eq $SmokeInterface) {
+      $HasSmokeInterface = $true
+      break
+    }
+  }
+  if (-not $HasSmokeInterface) {
+    throw "extract Body.ImplementedInterfaces is missing $SmokeInterface"
+  }
+  if ($null -eq $ExtractPayload.Body.WidgetVariableGuids.TitleText -or $null -eq $ExtractPayload.Body.WidgetVariableGuids.Intro) {
+    throw "extract Body.WidgetVariableGuids is missing generated TitleText or Intro GUIDs"
+  }
+
+  $DiffPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/diff" -Body @{
+    file_path = $SidecarPathForHttp
+  }) -Label "diff"
+
+  $Failed = @(Get-Entries -Payload $DiffPayload -Name "failed")
+  $Changed = @(Get-Entries -Payload $DiffPayload -Name "changed")
+  if ($Failed.Count -gt 0) {
+    throw "diff reported failed entries: $($Failed | ConvertTo-Json -Depth 100)"
+  }
+  if ($Changed.Count -gt 0) {
+    throw "diff reported unexpected changed entries: $($Changed | ConvertTo-Json -Depth 100)"
+  }
+
+  if (-not $KeepSidecar) {
+    Remove-Item -LiteralPath $SidecarPath -Force -ErrorAction SilentlyContinue
+  }
+
+  Write-Host "WidgetBlueprint AssetDocument HTTP smoke passed"
+  Write-Host "asset: $Target"
+  Write-Host "sidecar: $SidecarPath"
+  Write-Host "apply payload: $($ApplyPayload | ConvertTo-Json -Depth 20 -Compress)"
 }
-if ($null -eq $ExtractPayload.Body) {
-  throw "extract payload does not include Body"
-}
-foreach ($Region in $ExpectedBodyRegions) {
-  if (-not ($ExtractPayload.Body.PSObject.Properties.Name -contains $Region)) {
-    throw "extract Body missing expected region: $Region"
+finally {
+  if ($null -ne $StartedEditor -and -not $StartedEditor.HasExited) {
+    Write-Host "Stopping UnrealEditor PID $($StartedEditor.Id)"
+    Stop-Process -Id $StartedEditor.Id -Force
   }
 }
-if ($ExtractPayload.Body.Bindings.Count -lt 1) {
-  throw "extract Body.Bindings is missing the smoke binding"
-}
-if ($ExtractPayload.Body.Animations.Count -lt 1) {
-  throw "extract Body.Animations is missing the smoke animation"
-}
-if ($null -eq $ExtractPayload.Body.WidgetVariableGuids.TitleText -or $null -eq $ExtractPayload.Body.WidgetVariableGuids.Intro) {
-  throw "extract Body.WidgetVariableGuids is missing generated TitleText or Intro GUIDs"
-}
-
-$DiffPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/diff" -Body @{
-  file_path = $SidecarPathForHttp
-}) -Label "diff"
-
-$Failed = @(Get-Entries -Payload $DiffPayload -Name "failed")
-$Changed = @(Get-Entries -Payload $DiffPayload -Name "changed")
-if ($Failed.Count -gt 0) {
-  throw "diff reported failed entries: $($Failed | ConvertTo-Json -Depth 100)"
-}
-if ($Changed.Count -gt 0) {
-  throw "diff reported unexpected changed entries: $($Changed | ConvertTo-Json -Depth 100)"
-}
-
-if (-not $KeepSidecar) {
-  Remove-Item -LiteralPath $SidecarPath -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host "WidgetBlueprint AssetDocument HTTP smoke passed"
-Write-Host "asset: $Target"
-Write-Host "sidecar: $SidecarPath"
-Write-Host "apply payload: $($ApplyPayload | ConvertTo-Json -Depth 20 -Compress)"

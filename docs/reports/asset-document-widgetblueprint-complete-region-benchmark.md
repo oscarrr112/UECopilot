@@ -49,8 +49,8 @@ WidgetBlueprint AssetDocument profile 覆盖 `/Script/UMGEditor.WidgetBlueprint`
   - 命令：`UnrealBuildTool.exe AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload`
   - 结果：`Target is up to date`，`Result: Succeeded`
 - WidgetBlueprint focused automation: 成功。
-  - Report: `C:/AVH1/Saved/AutomationReports/WidgetBlueprintFull/index.json`
-  - 结果：58 succeeded，1 succeeded with warnings，0 failed，0 not run。
+  - Report: `C:/AVH1/Saved/AutomationReports/WidgetBlueprintInterfaceFix/index.json`
+  - 结果：61 succeeded，1 succeeded with warnings，0 failed，0 not run。
   - Warning: 已知 invalid-class 测试 warning，`WidgetTree.RejectsInvalidClass`。
 - UBlueprint regression: 成功。
   - Report: `C:/AVH1/Saved/AutomationReports/UBlueprintRegression/index.json`
@@ -59,8 +59,8 @@ WidgetBlueprint AssetDocument profile 覆盖 `/Script/UMGEditor.WidgetBlueprint`
   - Report: `C:/AVH1/Saved/AutomationReports/GraphCoreRegression/index.json`
   - 结果：17 succeeded，0 failed，0 not run。
 - Full AssetDocument automation: 成功。
-  - Report: `C:/AVH1/Saved/AutomationReports/AssetDocumentFull/index.json`
-  - 结果：194 succeeded，12 succeeded with warnings，0 failed，0 not run。
+  - Report: `C:/AVH1/Saved/AutomationReports/AssetDocumentInterfaceFix/index.json`
+  - 结果：197 succeeded，12 succeeded with warnings，0 failed，0 not run。
 - MCP tests: 成功。
   - `npm test`
   - 结果：39 tests，39 pass，0 fail。
@@ -68,7 +68,7 @@ WidgetBlueprint AssetDocument profile 覆盖 `/Script/UMGEditor.WidgetBlueprint`
 - External HTTP smoke: 成功。
   - Entrypoint: `docs/superpowers/verification/run_asset_document_widgetblueprint_smoke.ps1`
   - 命令：`powershell -NoProfile -ExecutionPolicy Bypass -File docs/superpowers/verification/run_asset_document_widgetblueprint_smoke.ps1 -Project C:/AVH1/AVH1.uproject -KeepSidecar`
-  - 结果：`apply-file` 成功，`extract` 返回全部预期 WidgetBlueprint body regions，`diff` 无 unexpected changed entries。
+  - 结果：脚本启动并关闭真实 `UnrealEditor`，`apply-file` 成功，`extract` 返回全部预期 WidgetBlueprint body regions 且包含 `/Script/Engine.ActorSoundParameterInterface`，`diff` 无 unexpected changed entries。
 
 ## 外部 smoke 资产
 
@@ -83,3 +83,4 @@ WidgetBlueprint AssetDocument profile 覆盖 `/Script/UMGEditor.WidgetBlueprint`
 - 外部 smoke 初版使用 PowerShell 参数名 `$Host`，与内置只读变量冲突。修复：内部参数改为 `$ServerHost`，保留 `[Alias("Host")]` 兼容调用语义。
 - 外部 smoke 初版在 `WidgetTree` authored property 上触发非目标 hash 差异。修复：smoke fixture 聚焦当前集成面，保留 variable widget、binding、animation、function graph、metadata 和 generated GUID canonical writeback 检查，不把 WidgetTree property canonicalization 噪声混入外部 smoke。
 - MCP schema 文档已从早期保守文本更新为当前完整实现状态，并新增 MCP 测试断言，确认文档列出 `/Script/UMGEditor.WidgetBlueprint`、WidgetBlueprint body regions、unsupported diagnostics，同时不暴露 generator-only `AssetType: "WidgetBlueprint"` 输入路径。
+- Final review 指出 `Body.ImplementedInterfaces` 被声明为完成区域但实现仍是空数组占位。修复：WidgetBlueprint capability 接入 implemented interface parse/apply/extract/diff，支持 `{Interface: ClassRef}` 添加、删除、extract、diff unchanged/changed，invalid/duplicate/non-interface class 返回明确 diagnostic；外部 smoke 和 MCP schema 测试同步覆盖接口区域。

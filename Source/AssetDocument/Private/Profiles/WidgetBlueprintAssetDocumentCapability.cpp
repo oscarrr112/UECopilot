@@ -1469,6 +1469,199 @@ struct FUnsupportedCurrentRegion
 	FString Message;
 };
 
+struct FWidgetBlueprintInterfaceSpec
+{
+	UClass* InterfaceClass = nullptr;
+};
+
+FString GetClassPath(const UClass* Class)
+{
+	return Class ? Class->GetPathName() : FString();
+}
+
+FAssetDocumentCapabilityResult ReadClassRef(const TSharedPtr<FJsonObject>& Object, const FString& Path, UClass*& OutClass)
+{
+	OutClass = nullptr;
+	if (!Object.IsValid())
+	{
+		return BodyFailure(TEXT("ClassRef must be an object"), Path, TEXT("InvalidClassRef"));
+	}
+
+	FString Kind;
+	if (!Object->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+	{
+		return BodyFailure(TEXT("ClassRef.Kind must be ClassRef"), Path / TEXT("Kind"), TEXT("InvalidClassRefKind"));
+	}
+
+	FString ClassPath;
+	if (!Object->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
+	{
+		return BodyFailure(TEXT("ClassRef.Class is required"), Path / TEXT("Class"), TEXT("MissingClassRefClass"));
+	}
+
+	OutClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+	if (!OutClass)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Failed to resolve ClassRef.Class '%s'"), *ClassPath),
+			Path / TEXT("Class"),
+			TEXT("UnresolvedClassRef"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult RequireArrayValue(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path,
+	const FString& BodyKey,
+	const TArray<TSharedPtr<FJsonValue>>*& OutArray)
+{
+	OutArray = nullptr;
+	if (!Value.IsValid() || Value->Type != EJson::Array)
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Body.%s must be an array when authored"), *BodyKey),
+			Path,
+			TEXT("InvalidBodySectionType"));
+	}
+
+	OutArray = &Value->AsArray();
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseInterfaceSpecs(
+	const TSharedPtr<FJsonObject>& BodyObject,
+	TArray<FWidgetBlueprintInterfaceSpec>& OutInterfaces)
+{
+	OutInterfaces.Reset();
+	const TSharedPtr<FJsonValue>* InterfacesValue = BodyObject->Values.Find(TEXT("ImplementedInterfaces"));
+	if (!InterfacesValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Interfaces = nullptr;
+	const FAssetDocumentCapabilityResult ArrayResult =
+		RequireArrayValue(*InterfacesValue, TEXT("/Body/ImplementedInterfaces"), TEXT("ImplementedInterfaces"), Interfaces);
+	if (!ArrayResult.bSuccess)
+	{
+		return ArrayResult;
+	}
+
+	TSet<UClass*> SeenInterfaces;
+	for (int32 Index = 0; Index < Interfaces->Num(); ++Index)
+	{
+		const FString Path = FString::Printf(TEXT("/Body/ImplementedInterfaces/%d"), Index);
+		const TSharedPtr<FJsonObject> InterfaceObject = (*Interfaces)[Index].IsValid() ? (*Interfaces)[Index]->AsObject() : nullptr;
+		if (!InterfaceObject.IsValid())
+		{
+			return BodyFailure(TEXT("Body.ImplementedInterfaces entries must be objects"), Path, TEXT("InvalidImplementedInterface"));
+		}
+
+		const TSharedPtr<FJsonObject>* InterfaceRef = nullptr;
+		if (!InterfaceObject->TryGetObjectField(TEXT("Interface"), InterfaceRef) || !InterfaceRef || !InterfaceRef->IsValid())
+		{
+			return BodyFailure(TEXT("ImplementedInterfaces entry requires Interface ClassRef"), Path / TEXT("Interface"), TEXT("MissingInterfaceClassRef"));
+		}
+
+		UClass* InterfaceClass = nullptr;
+		const FAssetDocumentCapabilityResult ClassResult = ReadClassRef(*InterfaceRef, Path / TEXT("Interface"), InterfaceClass);
+		if (!ClassResult.bSuccess)
+		{
+			return ClassResult;
+		}
+
+		if (!InterfaceClass->HasAnyClassFlags(CLASS_Interface))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Implemented interface '%s' is not an interface class"), *GetClassPath(InterfaceClass)),
+				Path / TEXT("Interface/Class"),
+				TEXT("InvalidInterfaceClass"));
+		}
+
+		if (SeenInterfaces.Contains(InterfaceClass))
+		{
+			return BodyFailure(
+				FString::Printf(TEXT("Duplicate implemented interface '%s'"), *GetClassPath(InterfaceClass)),
+				Path / TEXT("Interface/Class"),
+				TEXT("DuplicateInterface"));
+		}
+		SeenInterfaces.Add(InterfaceClass);
+
+		FWidgetBlueprintInterfaceSpec Spec;
+		Spec.InterfaceClass = InterfaceClass;
+		OutInterfaces.Add(Spec);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyInterfaces(
+	UBlueprint* Blueprint,
+	const TArray<FWidgetBlueprintInterfaceSpec>& Interfaces,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	TSet<UClass*> DesiredInterfaces;
+	for (const FWidgetBlueprintInterfaceSpec& Spec : Interfaces)
+	{
+		DesiredInterfaces.Add(Spec.InterfaceClass);
+	}
+
+	TArray<UClass*> ExistingInterfaces;
+	for (const FBPInterfaceDescription& InterfaceDescription : Blueprint->ImplementedInterfaces)
+	{
+		if (InterfaceDescription.Interface)
+		{
+			ExistingInterfaces.Add(InterfaceDescription.Interface);
+		}
+	}
+
+	for (UClass* ExistingInterface : ExistingInterfaces)
+	{
+		if (!DesiredInterfaces.Contains(ExistingInterface))
+		{
+			FBlueprintEditorUtils::RemoveInterface(Blueprint, ExistingInterface->GetClassPathName(), false);
+			bOutChanged = true;
+		}
+	}
+
+	for (const FWidgetBlueprintInterfaceSpec& Spec : Interfaces)
+	{
+		const bool bAlreadyImplemented = Blueprint->ImplementedInterfaces.ContainsByPredicate([&Spec](const FBPInterfaceDescription& InterfaceDescription)
+		{
+			return InterfaceDescription.Interface == Spec.InterfaceClass;
+		});
+		if (!bAlreadyImplemented)
+		{
+			if (!FBlueprintEditorUtils::ImplementNewInterface(Blueprint, Spec.InterfaceClass->GetClassPathName()))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("Failed to implement WidgetBlueprint interface '%s'"), *GetClassPath(Spec.InterfaceClass)),
+					TEXT("/Body/ImplementedInterfaces"),
+					TEXT("ImplementInterfaceFailed"));
+			}
+			bOutChanged = true;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+void RestoreWidgetBlueprintInterfaces(UWidgetBlueprint* WidgetBlueprint, const TArray<FBPInterfaceDescription>& PreviousInterfaces)
+{
+	if (!WidgetBlueprint)
+	{
+		return;
+	}
+
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->ImplementedInterfaces = PreviousInterfaces;
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+}
+
 void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, TArray<FUnsupportedCurrentRegion>& OutRegions)
 {
 	OutRegions.Reset();
@@ -1554,6 +1747,7 @@ FAssetDocumentCapabilityResult BuildDesiredWidgetBlueprintPreflightScratch(
 	const FString& TargetAssetPath,
 	UClass* ParentClass,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintInterfaceSpec>& InterfaceSpecs,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
 	const TSharedPtr<FJsonObject>& ClassDefaults,
@@ -1577,6 +1771,14 @@ FAssetDocumentCapabilityResult BuildDesiredWidgetBlueprintPreflightScratch(
 		return BodyFailure(TEXT("Failed to create transient WidgetBlueprint for desired-state preflight"), FailurePath, TEXT("CreateValidationBlueprintFailed"));
 	}
 	OutScratch.Set(ValidationBlueprint);
+
+	bool bScratchInterfacesChanged = false;
+	const FAssetDocumentCapabilityResult InterfaceApplyResult =
+		ApplyInterfaces(ValidationBlueprint, InterfaceSpecs, bScratchInterfacesChanged);
+	if (!InterfaceApplyResult.bSuccess)
+	{
+		return InterfaceApplyResult;
+	}
 
 	bool bScratchWidgetTreeChanged = false;
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
@@ -1630,6 +1832,7 @@ FAssetDocumentCapabilityResult PreflightGraphsAgainstDesiredWidgetBlueprint(
 	UClass* ParentClass,
 	const TSharedRef<FJsonObject>& DesiredBody,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintInterfaceSpec>& InterfaceSpecs,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
 	const TSharedPtr<FJsonObject>& ClassDefaults)
@@ -1639,6 +1842,7 @@ FAssetDocumentCapabilityResult PreflightGraphsAgainstDesiredWidgetBlueprint(
 		TargetAssetPath,
 		ParentClass,
 		WidgetTreeJson,
+		InterfaceSpecs,
 		VariableSpecs,
 		DesiredGuids,
 		ClassDefaults,
@@ -1658,6 +1862,7 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 	UClass* ParentClass,
 	const TSharedRef<FJsonObject>& DesiredBody,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintInterfaceSpec>& InterfaceSpecs,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
 	const TSharedPtr<FJsonObject>& ClassDefaults,
@@ -1678,6 +1883,7 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 		TargetAssetPath,
 		ParentClass,
 		WidgetTreeJson,
+		InterfaceSpecs,
 		VariableSpecs,
 		DesiredGuids,
 		ClassDefaults,
@@ -1706,6 +1912,7 @@ FAssetDocumentCapabilityResult PreflightAnimationsAgainstDesiredWidgetBlueprint(
 	const FString& TargetAssetPath,
 	UClass* ParentClass,
 	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintInterfaceSpec>& InterfaceSpecs,
 	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
 	const TMap<FName, FGuid>& DesiredGuids,
 	const TSharedPtr<FJsonObject>& ClassDefaults,
@@ -1726,6 +1933,7 @@ FAssetDocumentCapabilityResult PreflightAnimationsAgainstDesiredWidgetBlueprint(
 		TargetAssetPath,
 		ParentClass,
 		WidgetTreeJson,
+		InterfaceSpecs,
 		VariableSpecs,
 		DesiredGuids,
 		ClassDefaults,
@@ -1745,6 +1953,20 @@ TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
 	ClassRef->SetStringField(TEXT("Class"), Class ? Class->GetPathName() : FString(TEXT("/Script/UMG.UserWidget")));
 	return ClassRef;
+}
+
+TSharedRef<FJsonObject> InterfaceToJsonObject(UClass* InterfaceClass)
+{
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetObjectField(TEXT("Interface"), MakeClassRef(InterfaceClass));
+	return Object;
+}
+
+TSharedPtr<FJsonValue> MakeInterfaceDiffValue(UClass* InterfaceClass)
+{
+	return InterfaceClass
+		? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(InterfaceToJsonObject(InterfaceClass)))
+		: TSharedPtr<FJsonValue>(MakeShared<FJsonValueNull>());
 }
 
 TSharedRef<FJsonObject> MakeDefaultWidgetTree()
@@ -1830,7 +2052,7 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentCapability::GetSchemaHint()
 {
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
 	Schema->SetStringField(TEXT("ParentClass"), TEXT("ClassRef<UUserWidget>"));
-	Schema->SetStringField(TEXT("ImplementedInterfaces"), TEXT("array empty until WidgetBlueprint interface adapter lands"));
+	Schema->SetStringField(TEXT("ImplementedInterfaces"), TEXT("array<{Interface: ClassRef}>"));
 	Schema->SetStringField(TEXT("Variables"), TEXT("array of explicit Blueprint variables; names must not conflict with variable widgets"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object of reflected generated CDO default differences"));
 	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:WidgetNode|null, NamedSlotBindings:map<string, WidgetNode>}"));
@@ -1922,6 +2144,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		return VariableParseResult;
 	}
 
+	TArray<FWidgetBlueprintInterfaceSpec> InterfaceSpecs;
+	const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(BodyObject, InterfaceSpecs);
+	if (!InterfaceParseResult.bSuccess)
+	{
+		return InterfaceParseResult;
+	}
+
 	const FAssetDocumentCapabilityResult GraphPreflightResult =
 		PreflightGraphsAgainstDesiredWidgetBlueprint(
 			Context,
@@ -1929,6 +2158,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 			ParentClass,
 			BodyObject.ToSharedRef(),
 			WidgetTreeValue ? *WidgetTreeValue : nullptr,
+			InterfaceSpecs,
 			VariableSpecs,
 			ParsedGuids,
 			ClassDefaults);
@@ -1944,6 +2174,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		ParentClass,
 		BodyObject.ToSharedRef(),
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		InterfaceSpecs,
 		VariableSpecs,
 		ParsedGuids,
 		ClassDefaults,
@@ -1958,6 +2189,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		Context.TargetAssetPath,
 		ParentClass,
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		InterfaceSpecs,
 		VariableSpecs,
 		ParsedGuids,
 		ClassDefaults,
@@ -2068,6 +2300,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		return VariableParseResult;
 	}
 
+	TArray<FWidgetBlueprintInterfaceSpec> InterfaceSpecs;
+	const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(BodyObject, InterfaceSpecs);
+	if (!InterfaceParseResult.bSuccess)
+	{
+		return InterfaceParseResult;
+	}
+
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
 	const FAssetDocumentCapabilityResult GraphPreflightResult =
 		PreflightGraphsAgainstDesiredWidgetBlueprint(
@@ -2076,6 +2315,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 			ParentClass,
 			BodyObject.ToSharedRef(),
 			WidgetTreeValue ? *WidgetTreeValue : nullptr,
+			InterfaceSpecs,
 			VariableSpecs,
 			DesiredGuids,
 			ClassDefaults);
@@ -2091,6 +2331,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		ParentClass,
 		BodyObject.ToSharedRef(),
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		InterfaceSpecs,
 		VariableSpecs,
 		DesiredGuids,
 		ClassDefaults,
@@ -2105,6 +2346,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		Context.TargetAssetPath,
 		ParentClass,
 		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		InterfaceSpecs,
 		VariableSpecs,
 		DesiredGuids,
 		ClassDefaults,
@@ -2115,12 +2357,28 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	}
 
 	bool bChanged = false;
+	const TArray<FBPInterfaceDescription> PreviousInterfaces = WidgetBlueprint->ImplementedInterfaces;
+	auto ReturnInterfaceFailure = [&PreviousInterfaces, WidgetBlueprint](const FAssetDocumentCapabilityResult& FailureResult)
+	{
+		RestoreWidgetBlueprintInterfaces(WidgetBlueprint, PreviousInterfaces);
+		return FailureResult;
+	};
+
+	bool bInterfacesChanged = false;
+	const FAssetDocumentCapabilityResult InterfaceApplyResult =
+		ApplyInterfaces(WidgetBlueprint, InterfaceSpecs, bInterfacesChanged);
+	if (!InterfaceApplyResult.bSuccess)
+	{
+		return ReturnInterfaceFailure(InterfaceApplyResult);
+	}
+	bChanged |= bInterfacesChanged;
+
 	bool bWidgetTreeChanged = false;
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
 		FWidgetBlueprintTreeAdapter::Apply(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr, &bWidgetTreeChanged);
 	if (!WidgetTreeResult.bSuccess)
 	{
-		return WidgetTreeResult;
+		return ReturnInterfaceFailure(WidgetTreeResult);
 	}
 	bChanged |= bWidgetTreeChanged;
 
@@ -2149,7 +2407,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed"));
+			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed")));
 		}
 	}
 	else
@@ -2162,25 +2420,25 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintGraphAdapter().ApplyRegions(Context, BodyObject.ToSharedRef(), bGraphsChanged);
 	if (!GraphApplyResult.bSuccess)
 	{
-		return GraphApplyResult;
+		return ReturnInterfaceFailure(GraphApplyResult);
 	}
 	bChanged |= bGraphsChanged;
 
 	const FAssetDocumentCapabilityResult VariableDefaultsResult = ApplyVariableDefaultsToGeneratedClass(WidgetBlueprint, VariableSpecs);
 	if (!VariableDefaultsResult.bSuccess)
 	{
-		return VariableDefaultsResult;
+		return ReturnInterfaceFailure(VariableDefaultsResult);
 	}
 
 	const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(WidgetBlueprint, ClassDefaults);
 	if (!ClassDefaultsPreflightResult.bSuccess)
 	{
-		return ClassDefaultsPreflightResult;
+		return ReturnInterfaceFailure(ClassDefaultsPreflightResult);
 	}
 	const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = ApplyClassDefaults(WidgetBlueprint, ClassDefaults);
 	if (!ClassDefaultsApplyResult.bSuccess)
 	{
-		return ClassDefaultsApplyResult;
+		return ReturnInterfaceFailure(ClassDefaultsApplyResult);
 	}
 
 	bool bBindingsChanged = false;
@@ -2188,14 +2446,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintBindingAdapter::Apply(WidgetBlueprint, BindingsValue ? *BindingsValue : nullptr, &bBindingsChanged);
 	if (!BindingsApplyResult.bSuccess)
 	{
-		return BindingsApplyResult;
+		return ReturnInterfaceFailure(BindingsApplyResult);
 	}
 	if (bBindingsChanged)
 	{
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Bindings"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed"));
+			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Bindings"), TEXT("/Body/Bindings"), TEXT("WidgetBlueprintCompileFailed")));
 		}
 	}
 
@@ -2204,7 +2462,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FWidgetBlueprintAnimationAdapter::Apply(WidgetBlueprint, AnimationsValue ? *AnimationsValue : nullptr, &bAnimationsChanged);
 	if (!AnimationsApplyResult.bSuccess)
 	{
-		return AnimationsApplyResult;
+		return ReturnInterfaceFailure(AnimationsApplyResult);
 	}
 	if (bAnimationsChanged)
 	{
@@ -2212,7 +2470,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Animations"), TEXT("/Body/Animations"), TEXT("WidgetBlueprintCompileFailed"));
+			return ReturnInterfaceFailure(BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Animations"), TEXT("/Body/Animations"), TEXT("WidgetBlueprintCompileFailed")));
 		}
 	}
 
@@ -2263,7 +2521,18 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 
 	const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset);
 	OutBodyJson->SetObjectField(TEXT("ParentClass"), MakeClassRef(WidgetBlueprint && WidgetBlueprint->ParentClass ? WidgetBlueprint->ParentClass.Get() : UUserWidget::StaticClass()));
-	OutBodyJson->SetArrayField(TEXT("ImplementedInterfaces"), {});
+	TArray<TSharedPtr<FJsonValue>> Interfaces;
+	if (WidgetBlueprint)
+	{
+		for (const FBPInterfaceDescription& InterfaceDescription : WidgetBlueprint->ImplementedInterfaces)
+		{
+			if (InterfaceDescription.Interface)
+			{
+				Interfaces.Add(MakeShared<FJsonValueObject>(InterfaceToJsonObject(InterfaceDescription.Interface)));
+			}
+		}
+	}
+	OutBodyJson->SetArrayField(TEXT("ImplementedInterfaces"), Interfaces);
 	OutBodyJson->SetArrayField(TEXT("Variables"), ExtractVariableArray(WidgetBlueprint));
 	OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractClassDefaults(WidgetBlueprint));
 	TSharedRef<FJsonObject> WidgetTreeJson = MakeDefaultWidgetTree();
@@ -2407,6 +2676,56 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 			if (!AnimationDiffResult.bSuccess)
 			{
 				return AnimationDiffResult;
+			}
+		}
+		else if (BodyKey == TEXT("ImplementedInterfaces"))
+		{
+			TArray<FWidgetBlueprintInterfaceSpec> DesiredInterfaces;
+			const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(DesiredBody, DesiredInterfaces);
+			if (!InterfaceParseResult.bSuccess)
+			{
+				return InterfaceParseResult;
+			}
+
+			TMap<FString, UClass*> DesiredByPath;
+			for (const FWidgetBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
+			{
+				DesiredByPath.Add(GetClassPath(DesiredInterface.InterfaceClass), DesiredInterface.InterfaceClass);
+			}
+
+			TSet<FString> SeenCurrentInterfaces;
+			if (const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset))
+			{
+				for (const FBPInterfaceDescription& CurrentInterface : WidgetBlueprint->ImplementedInterfaces)
+				{
+					if (!CurrentInterface.Interface)
+					{
+						continue;
+					}
+					const FString CurrentPath = GetClassPath(CurrentInterface.Interface);
+					SeenCurrentInterfaces.Add(CurrentPath);
+					UClass* const* DesiredInterface = DesiredByPath.Find(CurrentPath);
+					AddBodyDiffEntry(
+						OutDiffEntries,
+						FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *CurrentPath),
+						DesiredInterface ? TEXT("unchanged") : TEXT("changed"),
+						MakeInterfaceDiffValue(CurrentInterface.Interface),
+						DesiredInterface ? MakeInterfaceDiffValue(*DesiredInterface) : MakeInterfaceDiffValue(nullptr));
+				}
+			}
+
+			for (const FWidgetBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
+			{
+				const FString DesiredPath = GetClassPath(DesiredInterface.InterfaceClass);
+				if (!SeenCurrentInterfaces.Contains(DesiredPath))
+				{
+					AddBodyDiffEntry(
+						OutDiffEntries,
+						FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *DesiredPath),
+						TEXT("changed"),
+						MakeShared<FJsonValueNull>(),
+						MakeShared<FJsonValueObject>(InterfaceToJsonObject(DesiredInterface.InterfaceClass)));
+				}
 			}
 		}
 		else if (IsGraphBodyKey(BodyKey))
@@ -2561,6 +2880,15 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 				return VariableParseResult;
 			}
 		}
+		else if (Pair.Key == TEXT("ImplementedInterfaces"))
+		{
+			TArray<FWidgetBlueprintInterfaceSpec> Interfaces;
+			const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(BodyObject, Interfaces);
+			if (!InterfaceParseResult.bSuccess)
+			{
+				return InterfaceParseResult;
+			}
+		}
 		else if (Pair.Key == TEXT("Bindings"))
 		{
 			const FAssetDocumentCapabilityResult BindingsResult = FWidgetBlueprintBindingAdapter::Validate(Pair.Value);
@@ -2602,6 +2930,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 	if (!VariableConflictResult.bSuccess)
 	{
 		return VariableConflictResult;
+	}
+
+	TArray<FWidgetBlueprintInterfaceSpec> Interfaces;
+	const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(BodyObject, Interfaces);
+	if (!InterfaceParseResult.bSuccess)
+	{
+		return InterfaceParseResult;
 	}
 
 	TArray<FWidgetBlueprintVariableSpec> Variables;
