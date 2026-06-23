@@ -167,6 +167,29 @@ bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Paylo
 		&& Changed->Num() == 0
 		&& Failed->Num() == 0;
 }
+
+TSharedPtr<FJsonObject> GetExtractedBody(const FAssetDocumentResult& ExtractResult)
+{
+	if (!ExtractResult.Payload.IsValid())
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject>* Body = nullptr;
+	if (ExtractResult.Payload->TryGetObjectField(TEXT("Body"), Body) && Body && Body->IsValid())
+	{
+		return *Body;
+	}
+	return nullptr;
+}
+
+TSharedRef<FJsonObject> MakeFloatPinType()
+{
+	TSharedRef<FJsonObject> Type = MakeShared<FJsonObject>();
+	Type->SetStringField(TEXT("PinCategory"), TEXT("real"));
+	Type->SetStringField(TEXT("PinSubCategory"), TEXT("float"));
+	return Type;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -404,6 +427,239 @@ bool FAssetDocumentWidgetBlueprintExistingNonEmptyStateBlocksTask1ApplyTest::Run
 			&& Object->TryGetStringField(TEXT("status"), Status)
 			&& Status != TEXT("unchanged");
 	}));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataClassDefaultsAuthoritativeTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.ClassDefaultsAuthoritative",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataClassDefaultsAuthoritativeTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataClassDefaults"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	Body->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bIsFocusable"), true);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ClassDefaults apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("ClassDefaults apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	UUserWidget* GeneratedCDO = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+		: nullptr;
+	TestNotNull(TEXT("Generated CDO is a UUserWidget"), GeneratedCDO);
+	if (GeneratedCDO)
+	{
+		TestTrue(TEXT("bIsFocusable is applied to generated CDO"), GeneratedCDO->IsFocusable());
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after ClassDefaults apply"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* ExtractedClassDefaults = nullptr;
+	TestTrue(TEXT("Extract includes ClassDefaults"), ExtractedBody.IsValid() && ExtractedBody->TryGetObjectField(TEXT("ClassDefaults"), ExtractedClassDefaults));
+	if (ExtractedClassDefaults && ExtractedClassDefaults->IsValid())
+	{
+		TestTrue(TEXT("Extracted ClassDefaults includes bIsFocusable"), (*ExtractedClassDefaults)->GetBoolField(TEXT("bIsFocusable")));
+	}
+
+	TSharedRef<FJsonObject> ResetBody = MakeDefaultWidgetBlueprintBody();
+	const FAssetDocumentResult ResetResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ResetBody)));
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ClassDefaults reset failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitted ClassDefaults property resets to parent baseline"), ResetResult.IsSuccess());
+	WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	GeneratedCDO = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+		: nullptr;
+	if (GeneratedCDO)
+	{
+		TestFalse(TEXT("bIsFocusable resets when omitted"), GeneratedCDO->IsFocusable());
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataPaletteCategoryRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.PaletteCategoryRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataPaletteCategoryRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPalette"));
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	Body->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Category"), TEXT("AssetDoc Metadata"));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Palette apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Palette category apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("PaletteCategory mirror is updated"), WidgetBlueprint->PaletteCategory, FString(TEXT("AssetDoc Metadata")));
+	}
+	UUserWidget* GeneratedCDO = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? Cast<UUserWidget>(WidgetBlueprint->GeneratedClass->GetDefaultObject(false))
+		: nullptr;
+	if (GeneratedCDO)
+	{
+		TestEqual(TEXT("Generated CDO palette source is updated"), GeneratedCDO->GetPaletteCategory().ToString(), FString(TEXT("AssetDoc Metadata")));
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after Palette apply"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* ExtractedPalette = nullptr;
+	TestTrue(TEXT("Extract includes Palette"), ExtractedBody.IsValid() && ExtractedBody->TryGetObjectField(TEXT("Palette"), ExtractedPalette));
+	if (ExtractedPalette && ExtractedPalette->IsValid())
+	{
+		TestEqual(TEXT("Palette category roundtrips"), (*ExtractedPalette)->GetStringField(TEXT("Category")), FString(TEXT("AssetDoc Metadata")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataEditorOptionsRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.EditorOptionsRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataEditorOptionsRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorOptions"));
+	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
+	Body->GetObjectField(TEXT("EditorOptions"))->SetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext"), true);
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("EditorOptions apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("EditorOptions apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestTrue(TEXT("Editor option is applied to UWidgetBlueprint"), WidgetBlueprint->bCanCallInitializedWithoutPlayerContext);
+	}
+	UWidgetBlueprintGeneratedClass* GeneratedClass = WidgetBlueprint
+		? Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass)
+		: nullptr;
+	if (GeneratedClass)
+	{
+		TestTrue(TEXT("Editor option compiles to generated class"), GeneratedClass->bCanCallInitializedWithoutPlayerContext);
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after EditorOptions apply"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* ExtractedEditorOptions = nullptr;
+	TestTrue(TEXT("Extract includes EditorOptions"), ExtractedBody.IsValid() && ExtractedBody->TryGetObjectField(TEXT("EditorOptions"), ExtractedEditorOptions));
+	if (ExtractedEditorOptions && ExtractedEditorOptions->IsValid())
+	{
+		TestTrue(TEXT("Editor option roundtrips"), (*ExtractedEditorOptions)->GetBoolField(TEXT("bCanCallInitializedWithoutPlayerContext")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataWidgetVariableGuidCanonicalizesTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.WidgetVariableGuidCanonicalizes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataWidgetVariableGuidCanonicalizesTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataWidgetVariableGuids"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	TSharedRef<FJsonObject> TitleText = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	TitleText->SetBoolField(TEXT("IsVariable"), true);
+	TitleText->SetStringField(TEXT("VariableName"), TEXT("TitleText"));
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeShared<FJsonValueObject>(TitleText));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedRef<FJsonObject> Body = MakeWidgetTreeBody(MakeWidgetTree(Root));
+	Body->RemoveField(TEXT("WidgetVariableGuids"));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("WidgetVariableGuids fixture apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Variable WidgetTree apply succeeds with omitted WidgetVariableGuids"), ApplyResult.IsSuccess());
+
+	const FGuid ExpectedGuid = FGuid::NewDeterministicGuid(FString::Printf(TEXT("%s|WidgetVariableGuids|%s"), *Target, TEXT("TitleText")));
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Deterministic widget variable GUID is written to UE map"), WidgetBlueprint->WidgetVariableNameToGuidMap.FindRef(TEXT("TitleText")), ExpectedGuid);
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after GUID canonicalization"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TSharedPtr<FJsonObject>* ExtractedGuids = nullptr;
+	TestTrue(TEXT("Extract includes WidgetVariableGuids"), ExtractedBody.IsValid() && ExtractedBody->TryGetObjectField(TEXT("WidgetVariableGuids"), ExtractedGuids));
+	if (ExtractedGuids && ExtractedGuids->IsValid())
+	{
+		TestEqual(TEXT("Extracted GUID is deterministic"), (*ExtractedGuids)->GetStringField(TEXT("TitleText")), ExpectedGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintMetadataRejectsVariableWidgetNameConflictTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Metadata.RejectsVariableWidgetNameConflict",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintMetadataRejectsVariableWidgetNameConflictTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataVariableConflict"));
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("TitleText"), TEXT("/Script/UMG.TextBlock"));
+	Root->SetBoolField(TEXT("IsVariable"), true);
+	Root->SetStringField(TEXT("VariableName"), TEXT("TitleText"));
+
+	TSharedRef<FJsonObject> Body = MakeWidgetTreeBody(MakeWidgetTree(Root));
+	TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
+	Variable->SetStringField(TEXT("Name"), TEXT("TitleText"));
+	Variable->SetObjectField(TEXT("Type"), MakeFloatPinType());
+	Variable->SetStringField(TEXT("DefaultValue"), TEXT("1.0"));
+	Body->SetArrayField(TEXT("Variables"), {MakeShared<FJsonValueObject>(Variable)});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Explicit variable conflicting with variable widget rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Conflict diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("VariableWidgetNameConflict")));
 	return true;
 }
 

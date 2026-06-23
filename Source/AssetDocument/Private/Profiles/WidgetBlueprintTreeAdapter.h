@@ -15,4 +15,5 @@ public:
 	static FAssetDocumentCapabilityResult Apply(UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& WidgetTreeJson, bool* bOutChanged = nullptr);
 	static FAssetDocumentCapabilityResult Extract(const UWidgetBlueprint* WidgetBlueprint, TSharedRef<FJsonObject>& OutWidgetTreeJson);
 	static FAssetDocumentCapabilityResult Diff(const UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries);
+	static FAssetDocumentCapabilityResult CollectVariableWidgetNames(const TSharedPtr<FJsonValue>& WidgetTreeJson, TSet<FName>& OutNames);
 };

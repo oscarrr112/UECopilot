@@ -953,6 +953,18 @@ FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
 		JsonValueToComparableString(MakeShared<FJsonValueObject>(DesiredTree));
 	return FAssetDocumentCapabilityResult::Success();
 }
+
+void CollectVariableWidgetNamesFromSpec(const FWidgetBlueprintNodeSpec& Spec, TSet<FName>& OutNames)
+{
+	if (Spec.bIsVariable)
+	{
+		OutNames.Add(Spec.Name);
+	}
+	for (const FWidgetBlueprintNodeSpec& Child : Spec.Children)
+	{
+		CollectVariableWidgetNamesFromSpec(Child, OutNames);
+	}
+}
 }
 
 TSharedRef<FJsonObject> FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree()
@@ -1087,4 +1099,26 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Diff(const UWidgetBl
 		MakeShared<FJsonValueObject>(CurrentTree),
 		MakeShared<FJsonValueObject>(DesiredCanonicalTree));
 	return FAssetDocumentCapabilityResult::Success(TEXT("WidgetTree diffed"));
+}
+
+FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::CollectVariableWidgetNames(const TSharedPtr<FJsonValue>& WidgetTreeJson, TSet<FName>& OutNames)
+{
+	OutNames.Reset();
+
+	FWidgetBlueprintTreeSpec Spec;
+	const FAssetDocumentCapabilityResult ParseResult = ParseWidgetTree(WidgetTreeJson, Spec);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	if (Spec.bHasRootWidget)
+	{
+		CollectVariableWidgetNamesFromSpec(Spec.RootWidget, OutNames);
+	}
+	for (const FWidgetBlueprintNamedSlotSpec& Binding : Spec.NamedSlotBindings)
+	{
+		CollectVariableWidgetNamesFromSpec(Binding.Widget, OutNames);
+	}
+	return FAssetDocumentCapabilityResult::Success();
 }

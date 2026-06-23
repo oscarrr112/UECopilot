@@ -811,6 +811,56 @@ const IAssetDocumentRegionCanonicalizationStrategy& GetUBlueprintGraphStrategy()
 	return Strategy;
 }
 
+TSharedPtr<FJsonValue> SortObjectByFieldName(const TSharedPtr<FJsonValue>& RegionValue)
+{
+	if (!RegionValue.IsValid() || RegionValue->Type != EJson::Object)
+	{
+		return CloneJsonValuePreservingShape(RegionValue);
+	}
+
+	const TSharedPtr<FJsonObject> SourceObject = RegionValue->AsObject();
+	if (!SourceObject.IsValid())
+	{
+		return MakeShared<FJsonValueObject>(MakeShared<FJsonObject>());
+	}
+
+	TArray<FString> Keys;
+	SourceObject->Values.GetKeys(Keys);
+	Keys.Sort();
+
+	TSharedRef<FJsonObject> SortedObject = MakeShared<FJsonObject>();
+	for (const FString& Key : Keys)
+	{
+		const TSharedPtr<FJsonValue>* Value = SourceObject->Values.Find(Key);
+		SortedObject->SetField(Key, Value ? CloneJsonValuePreservingShape(*Value) : MakeShared<FJsonValueNull>());
+	}
+	return MakeShared<FJsonValueObject>(SortedObject);
+}
+
+class FAssetDocumentWidgetBlueprintWidgetVariableGuidsCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
+{
+public:
+	virtual TSharedPtr<FJsonValue> CanonicalizeForHash(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		return SortObjectByFieldName(FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(RegionValue, Context.Policy));
+	}
+
+	virtual TSharedPtr<FJsonValue> CanonicalizeForSidecarWriteback(
+		const FAssetDocumentRegionCanonicalizeContext&,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		return SortObjectByFieldName(RegionValue);
+	}
+};
+
+const IAssetDocumentRegionCanonicalizationStrategy& GetWidgetBlueprintWidgetVariableGuidsStrategy()
+{
+	static FAssetDocumentWidgetBlueprintWidgetVariableGuidsCanonicalizationStrategy Strategy;
+	return Strategy;
+}
+
 class FAssetDocumentAnimSequencePostApplyCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
 {
 public:
@@ -854,6 +904,7 @@ const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*>& GetBuilt
 	static const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*> Strategies = {
 		{FName(TEXT("AnimSequencePostApply")), &GetAnimSequencePostApplyStrategy()},
 		{FName(TEXT("UBlueprintGraph")), &GetUBlueprintGraphStrategy()},
+		{FName(TEXT("WidgetBlueprintWidgetVariableGuids")), &GetWidgetBlueprintWidgetVariableGuidsStrategy()},
 	};
 	return Strategies;
 }
