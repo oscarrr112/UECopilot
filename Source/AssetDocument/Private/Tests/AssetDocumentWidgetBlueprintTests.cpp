@@ -7,7 +7,10 @@
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 
 #include "Animation/WidgetAnimation.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Components/Border.h"
 #include "Components/CanvasPanel.h"
+#include "Components/ContentWidget.h"
 #include "Components/NamedSlot.h"
 #include "Components/TextBlock.h"
 #include "Blueprint/UserWidget.h"
@@ -576,6 +579,102 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeNamedSlotBindingsTest::RunTest(const
 		TestTrue(TEXT("Named slot binding exists"), WidgetBlueprint->WidgetTree->NamedSlotBindings.Contains(TEXT("Header")));
 		TestEqual(TEXT("Named slot binding points to HeaderText"), WidgetBlueprint->WidgetTree->NamedSlotBindings.FindRef(TEXT("Header"))->GetFName(), FName(TEXT("HeaderText")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeCompilesTreeOnlyRebuildTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.CompilesTreeOnlyRebuild",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeCompilesTreeOnlyRebuildTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_WidgetTreeCompilesTreeOnlyRebuild"));
+	FAssetDocumentService Service;
+
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeDefaultWidgetBlueprintBody())));
+	TestTrue(TEXT("Initial empty WidgetBlueprint apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> Root = MakeWidgetNode(TEXT("RootCanvas"), TEXT("/Script/UMG.CanvasPanel"));
+	TSharedRef<FJsonObject> CompiledTitle = MakeWidgetNode(TEXT("CompiledTitle"), TEXT("/Script/UMG.TextBlock"));
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeShared<FJsonValueObject>(CompiledTitle));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	const FAssetDocumentResult TreeOnlyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(Root)))));
+	if (!TreeOnlyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("WidgetTree-only apply failed: %s"), *TreeOnlyResult.Message));
+	}
+	TestTrue(TEXT("WidgetTree-only apply succeeds without ParentClass change"), TreeOnlyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint exists"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		UWidgetBlueprintGeneratedClass* GeneratedClass = Cast<UWidgetBlueprintGeneratedClass>(WidgetBlueprint->GeneratedClass);
+		TestNotNull(TEXT("WidgetBlueprint generated class exists"), GeneratedClass);
+		if (GeneratedClass)
+		{
+			UWidgetTree* GeneratedTree = GeneratedClass->GetWidgetTreeArchetype();
+			TestNotNull(TEXT("Compiled generated class has WidgetTree archetype"), GeneratedTree);
+			if (GeneratedTree)
+			{
+				TestNotNull(TEXT("Compiled generated class includes WidgetTree-only child"), GeneratedTree->FindWidget(TEXT("CompiledTitle")));
+			}
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintWidgetTreeSingleContentWidgetRoundtripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.WidgetTree.SingleContentWidgetRoundtrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintWidgetTreeSingleContentWidgetRoundtripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_WidgetTreeSingleContentWidgetRoundtrip"));
+
+	TSharedRef<FJsonObject> RootBorder = MakeWidgetNode(TEXT("RootBorder"), TEXT("/Script/UMG.Border"));
+	TSharedRef<FJsonObject> BorderText = MakeWidgetNode(TEXT("BorderText"), TEXT("/Script/UMG.TextBlock"));
+	BorderText->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("Text"), TEXT("Inside border"));
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeShared<FJsonValueObject>(BorderText));
+	RootBorder->SetArrayField(TEXT("Children"), Children);
+
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(RootBorder)));
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Single-content WidgetTree apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Single-content WidgetTree apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint exists"), WidgetBlueprint);
+	if (WidgetBlueprint && WidgetBlueprint->WidgetTree)
+	{
+		UContentWidget* Border = Cast<UContentWidget>(WidgetBlueprint->WidgetTree->FindWidget(TEXT("RootBorder")));
+		TestNotNull(TEXT("RootBorder is a content widget"), Border);
+		if (Border)
+		{
+			UWidget* Content = Border->GetContent();
+			TestNotNull(TEXT("RootBorder has authored content"), Content);
+			if (Content)
+			{
+				TestEqual(TEXT("RootBorder content is BorderText"), Content->GetFName(), FName(TEXT("BorderText")));
+			}
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after single-content WidgetTree apply"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Single-content WidgetTree is unchanged after roundtrip"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 

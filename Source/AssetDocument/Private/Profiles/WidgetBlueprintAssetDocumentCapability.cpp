@@ -4,6 +4,7 @@
 
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 
+#include "Animation/WidgetAnimation.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonValue.h"
@@ -36,6 +37,55 @@ bool IsLegalWidgetBlueprintParentClass(const UClass* ParentClass)
 	return ParentClass
 		&& ParentClass->IsChildOf(UUserWidget::StaticClass())
 		&& (!ParentClass->HasAnyClassFlags(CLASS_Abstract) || ParentClass == UUserWidget::StaticClass());
+}
+
+void SyncWidgetTreeVariableGuidsForCompile(UWidgetBlueprint* WidgetBlueprint)
+{
+#if WITH_EDITORONLY_DATA
+	if (!WidgetBlueprint)
+	{
+		return;
+	}
+
+	TMap<FName, FString> SourceVariables;
+	if (WidgetBlueprint->WidgetTree)
+	{
+		WidgetBlueprint->WidgetTree->ForEachWidget([&SourceVariables](UWidget* Widget)
+		{
+			if (Widget)
+			{
+				SourceVariables.Add(Widget->GetFName(), Widget->GetPathName());
+			}
+		});
+	}
+	for (UWidgetAnimation* Animation : WidgetBlueprint->Animations)
+	{
+		if (Animation)
+		{
+			SourceVariables.Add(Animation->GetFName(), Animation->GetPathName());
+		}
+	}
+	const TMap<FName, FGuid> ExistingGuids = WidgetBlueprint->WidgetVariableNameToGuidMap;
+	WidgetBlueprint->Modify();
+	WidgetBlueprint->WidgetVariableNameToGuidMap.Empty();
+
+	TSet<FGuid> UsedGuids;
+	for (const TPair<FName, FString>& SourceVariable : SourceVariables)
+	{
+		FGuid VariableGuid = ExistingGuids.FindRef(SourceVariable.Key);
+		if (!VariableGuid.IsValid())
+		{
+			VariableGuid = FGuid::NewDeterministicGuid(SourceVariable.Value);
+		}
+		if (!VariableGuid.IsValid() || UsedGuids.Contains(VariableGuid))
+		{
+			VariableGuid = FGuid::NewGuid();
+		}
+
+		UsedGuids.Add(VariableGuid);
+		WidgetBlueprint->WidgetVariableNameToGuidMap.Add(SourceVariable.Key, VariableGuid);
+	}
+#endif
 }
 
 FAssetDocumentCapabilityResult RequireBodyObject(const TSharedRef<FJsonValue>& BodyJson, TSharedPtr<FJsonObject>& OutBody)
@@ -428,14 +478,16 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	}
 
 	const TSharedPtr<FJsonValue>* WidgetTreeValue = BodyObject->Values.Find(TEXT("WidgetTree"));
+	bool bChanged = false;
+	bool bWidgetTreeChanged = false;
 	const FAssetDocumentCapabilityResult WidgetTreeResult =
-		FWidgetBlueprintTreeAdapter::Apply(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr);
+		FWidgetBlueprintTreeAdapter::Apply(WidgetBlueprint, WidgetTreeValue ? *WidgetTreeValue : nullptr, &bWidgetTreeChanged);
 	if (!WidgetTreeResult.bSuccess)
 	{
 		return WidgetTreeResult;
 	}
+	bChanged |= bWidgetTreeChanged;
 
-	bool bChanged = false;
 	if (WidgetBlueprint->ParentClass.Get() != ParentClass)
 	{
 		WidgetBlueprint->Modify();
@@ -446,10 +498,11 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (bChanged)
 	{
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(WidgetBlueprint);
+		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint);
 		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 		if (WidgetBlueprint->Status == BS_Error)
 		{
-			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying empty Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed"));
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body contract"), TEXT("/Body"), TEXT("WidgetBlueprintCompileFailed"));
 		}
 	}
 

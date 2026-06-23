@@ -6,11 +6,14 @@
 #include "Utils/ClassFinderUtils.h"
 
 #include "Blueprint/WidgetTree.h"
+#include "Components/ContentWidget.h"
 #include "Components/PanelSlot.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "Dom/JsonValue.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/UnrealType.h"
 #include "WidgetBlueprint.h"
 
 namespace
@@ -395,6 +398,139 @@ FAssetDocumentCapabilityResult MaterializeNode(
 	UWidgetTree* WidgetTree,
 	const FWidgetBlueprintNodeSpec& Spec,
 	const FString& Path,
+	UWidget*& OutWidget);
+
+FAssetDocumentCapabilityResult ApplyChildSlotProperties(
+	UPanelSlot* Slot,
+	const FWidgetBlueprintNodeSpec& ChildSpec,
+	const FString& ChildPath)
+{
+	if (!Slot)
+	{
+		return TreeFailure(
+			FString::Printf(TEXT("Failed to add child widget '%s'"), *ChildSpec.Name.ToString()),
+			ChildPath,
+			TEXT("AddChildFailed"));
+	}
+
+	const FAssetDocumentPropertyApplyResult SlotPropertyResult =
+		FAssetDocumentPropertyAdapter::ApplyProperties(Slot, ChildSpec.Slot);
+	if (!SlotPropertyResult.bSuccess)
+	{
+		return ApplyPropertyResultAsCapability(SlotPropertyResult, NodePath(ChildPath, TEXT("Slot")), TEXT("InvalidWidgetSlotProperty"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult MaterializeSingleChild(
+	UWidgetTree* WidgetTree,
+	const FWidgetBlueprintNodeSpec& ParentSpec,
+	const FString& ParentPath,
+	UWidget*& OutChildWidget,
+	FString& OutChildPath)
+{
+	if (ParentSpec.Children.Num() != 1)
+	{
+		return TreeFailure(
+			FString::Printf(TEXT("Widget '%s' accepts a single authored child"), *ParentSpec.Name.ToString()),
+			NodePath(ParentPath, TEXT("Children")),
+			TEXT("UnsupportedWidgetChildren"));
+	}
+
+	OutChildPath = FString::Printf(TEXT("%s/Children/0"), *ParentPath);
+	return MaterializeNode(WidgetTree, ParentSpec.Children[0], OutChildPath, OutChildWidget);
+}
+
+FAssetDocumentCapabilityResult TrySetReflectedContent(
+	UWidget* ParentWidget,
+	UWidgetTree* WidgetTree,
+	const FWidgetBlueprintNodeSpec& ParentSpec,
+	const FString& ParentPath,
+	bool& bOutHandled)
+{
+	bOutHandled = false;
+	UFunction* SetContentFunction = ParentWidget ? ParentWidget->FindFunction(TEXT("SetContent")) : nullptr;
+	if (!SetContentFunction)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FObjectPropertyBase* ContentParam = nullptr;
+	FObjectPropertyBase* SlotReturnParam = nullptr;
+	for (TFieldIterator<FProperty> It(SetContentFunction); It; ++It)
+	{
+		FProperty* Param = *It;
+		if (!Param || !Param->HasAnyPropertyFlags(CPF_Parm))
+		{
+			continue;
+		}
+
+		FObjectPropertyBase* ObjectParam = CastField<FObjectPropertyBase>(Param);
+		if (Param->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			if (ObjectParam && ObjectParam->PropertyClass && ObjectParam->PropertyClass->IsChildOf(UPanelSlot::StaticClass()))
+			{
+				SlotReturnParam = ObjectParam;
+			}
+			continue;
+		}
+
+		if (!ObjectParam || !ObjectParam->PropertyClass || !ObjectParam->PropertyClass->IsChildOf(UWidget::StaticClass()))
+		{
+			return TreeFailure(
+				FString::Printf(TEXT("Widget '%s' has an unsupported SetContent signature"), *ParentSpec.Name.ToString()),
+				NodePath(ParentPath, TEXT("Children")),
+				TEXT("UnsupportedWidgetChildren"));
+		}
+		if (ContentParam)
+		{
+			return TreeFailure(
+				FString::Printf(TEXT("Widget '%s' has an ambiguous SetContent signature"), *ParentSpec.Name.ToString()),
+				NodePath(ParentPath, TEXT("Children")),
+				TEXT("UnsupportedWidgetChildren"));
+		}
+		ContentParam = ObjectParam;
+	}
+
+	if (!ContentParam)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	UWidget* ChildWidget = nullptr;
+	FString ChildPath;
+	const FAssetDocumentCapabilityResult ChildResult = MaterializeSingleChild(WidgetTree, ParentSpec, ParentPath, ChildWidget, ChildPath);
+	if (!ChildResult.bSuccess)
+	{
+		return ChildResult;
+	}
+
+	FStructOnScope Params(SetContentFunction);
+	ContentParam->SetObjectPropertyValue_InContainer(Params.GetStructMemory(), ChildWidget);
+	ParentWidget->ProcessEvent(SetContentFunction, Params.GetStructMemory());
+
+	UPanelSlot* Slot = ChildWidget ? ChildWidget->Slot : nullptr;
+	if (!Slot && SlotReturnParam)
+	{
+		Slot = Cast<UPanelSlot>(SlotReturnParam->GetObjectPropertyValue_InContainer(Params.GetStructMemory()));
+	}
+
+	const FAssetDocumentCapabilityResult SlotResult =
+		ApplyChildSlotProperties(Slot, ParentSpec.Children[0], ChildPath);
+	if (!SlotResult.bSuccess)
+	{
+		return SlotResult;
+	}
+
+	bOutHandled = true;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult MaterializeNode(
+	UWidgetTree* WidgetTree,
+	const FWidgetBlueprintNodeSpec& Spec,
+	const FString& Path,
 	UWidget*& OutWidget)
 {
 	OutWidget = ConstructWidgetFromSpec(WidgetTree, Spec);
@@ -418,9 +554,31 @@ FAssetDocumentCapabilityResult MaterializeNode(
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
+	if (UContentWidget* ContentWidget = Cast<UContentWidget>(OutWidget))
+	{
+		UWidget* ChildWidget = nullptr;
+		FString ChildPath;
+		const FAssetDocumentCapabilityResult ChildResult = MaterializeSingleChild(WidgetTree, Spec, Path, ChildWidget, ChildPath);
+		if (!ChildResult.bSuccess)
+		{
+			return ChildResult;
+		}
+
+		UPanelSlot* Slot = ContentWidget->SetContent(ChildWidget);
+		return ApplyChildSlotProperties(Slot, Spec.Children[0], ChildPath);
+	}
+
 	UPanelWidget* PanelWidget = Cast<UPanelWidget>(OutWidget);
 	if (!PanelWidget)
 	{
+		bool bHandledByReflectedContent = false;
+		const FAssetDocumentCapabilityResult ReflectedContentResult =
+			TrySetReflectedContent(OutWidget, WidgetTree, Spec, Path, bHandledByReflectedContent);
+		if (!ReflectedContentResult.bSuccess || bHandledByReflectedContent)
+		{
+			return ReflectedContentResult;
+		}
+
 		return TreeFailure(
 			FString::Printf(TEXT("Widget '%s' does not support authored children"), *Spec.Name.ToString()),
 			NodePath(Path, TEXT("Children")),
@@ -439,19 +597,10 @@ FAssetDocumentCapabilityResult MaterializeNode(
 		}
 
 		UPanelSlot* Slot = PanelWidget->AddChild(ChildWidget);
-		if (!Slot)
+		const FAssetDocumentCapabilityResult SlotResult = ApplyChildSlotProperties(Slot, ChildSpec, ChildPath);
+		if (!SlotResult.bSuccess)
 		{
-			return TreeFailure(
-				FString::Printf(TEXT("Failed to add child widget '%s' to '%s'"), *ChildSpec.Name.ToString(), *Spec.Name.ToString()),
-				ChildPath,
-				TEXT("AddChildFailed"));
-		}
-
-		const FAssetDocumentPropertyApplyResult SlotPropertyResult =
-			FAssetDocumentPropertyAdapter::ApplyProperties(Slot, ChildSpec.Slot);
-		if (!SlotPropertyResult.bSuccess)
-		{
-			return ApplyPropertyResultAsCapability(SlotPropertyResult, NodePath(ChildPath, TEXT("Slot")), TEXT("InvalidWidgetSlotProperty"));
+			return SlotResult;
 		}
 	}
 
@@ -579,6 +728,34 @@ TSharedRef<FJsonObject> ExtractTreeObject(const UWidgetTree* WidgetTree)
 	WidgetTreeJson->SetObjectField(TEXT("NamedSlotBindings"), NamedSlotBindings);
 	return WidgetTreeJson;
 }
+
+FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
+	const UWidgetBlueprint* WidgetBlueprint,
+	const FWidgetBlueprintTreeSpec& Spec,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+
+	TSharedRef<FJsonObject> CurrentTree = ExtractTreeObject(WidgetBlueprint ? WidgetBlueprint->WidgetTree : nullptr);
+
+	UWidgetTree* DesiredPreviewTree = NewObject<UWidgetTree>(GetTransientPackage(), UWidgetTree::StaticClass());
+	if (!DesiredPreviewTree)
+	{
+		return TreeFailure(TEXT("Failed to create transient WidgetTree for apply comparison"), TEXT("/Body/WidgetTree"), TEXT("WidgetTreeApplyCompareFailed"));
+	}
+
+	const FAssetDocumentCapabilityResult DesiredMaterializeResult = MaterializeTree(DesiredPreviewTree, Spec);
+	if (!DesiredMaterializeResult.bSuccess)
+	{
+		return DesiredMaterializeResult;
+	}
+
+	TSharedRef<FJsonObject> DesiredTree = ExtractTreeObject(DesiredPreviewTree);
+	bOutChanged =
+		JsonValueToComparableString(MakeShared<FJsonValueObject>(CurrentTree)) !=
+		JsonValueToComparableString(MakeShared<FJsonValueObject>(DesiredTree));
+	return FAssetDocumentCapabilityResult::Success();
+}
 }
 
 TSharedRef<FJsonObject> FWidgetBlueprintTreeAdapter::MakeDefaultWidgetTree()
@@ -606,8 +783,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Preflight(const UWid
 	return PreflightTreeMaterialization(Spec);
 }
 
-FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Apply(UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& WidgetTreeJson)
+FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Apply(UWidgetBlueprint* WidgetBlueprint, const TSharedPtr<FJsonValue>& WidgetTreeJson, bool* bOutChanged)
 {
+	if (bOutChanged)
+	{
+		*bOutChanged = false;
+	}
+
 	if (!WidgetBlueprint)
 	{
 		return TreeFailure(TEXT("WidgetTree apply requires a WidgetBlueprint asset"), TEXT("/Body/WidgetTree"), TEXT("UnsupportedAsset"));
@@ -626,12 +808,28 @@ FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Apply(UWidgetBluepri
 		return PreflightResult;
 	}
 
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult ChangeResult = ComputeWidgetTreeChanged(WidgetBlueprint, Spec, bChanged);
+	if (!ChangeResult.bSuccess)
+	{
+		return ChangeResult;
+	}
+
 	if (!WidgetBlueprint->WidgetTree)
 	{
 		WidgetBlueprint->WidgetTree = NewObject<UWidgetTree>(WidgetBlueprint, TEXT("WidgetTree"), RF_Transactional);
 	}
 
-	return MaterializeTree(WidgetBlueprint->WidgetTree, Spec);
+	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeTree(WidgetBlueprint->WidgetTree, Spec);
+	if (!MaterializeResult.bSuccess)
+	{
+		return MaterializeResult;
+	}
+	if (bOutChanged)
+	{
+		*bOutChanged = bChanged;
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied WidgetTree"));
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintTreeAdapter::Extract(const UWidgetBlueprint* WidgetBlueprint, TSharedRef<FJsonObject>& OutWidgetTreeJson)
