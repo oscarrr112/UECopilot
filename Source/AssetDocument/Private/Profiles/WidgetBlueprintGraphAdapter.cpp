@@ -257,18 +257,7 @@ void MergeSkippedGraphEvidence(TSharedRef<FJsonObject>& OutBodyJson, const TArra
 	Graphs->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 }
 
-bool IsSelfOwnerClassForDiff(const UBlueprint* Blueprint, const FString& OwnerClass)
-{
-	if (OwnerClass == TEXT("Self"))
-	{
-		return true;
-	}
-	return (Blueprint && Blueprint->GeneratedClass && OwnerClass == Blueprint->GeneratedClass->GetPathName())
-		|| (Blueprint && Blueprint->SkeletonGeneratedClass && OwnerClass == Blueprint->SkeletonGeneratedClass->GetPathName())
-		|| (Blueprint && Blueprint->ParentClass && OwnerClass == Blueprint->ParentClass->GetPathName());
-}
-
-void NormalizeMemberIdentityForDiff(FAssetDocumentNodeSpec& Node, const UBlueprint* Blueprint)
+void NormalizeMemberIdentityForDiff(FAssetDocumentNodeSpec& Node, const UBlueprint*)
 {
 	if (!Node.Member.IsValid())
 	{
@@ -277,16 +266,6 @@ void NormalizeMemberIdentityForDiff(FAssetDocumentNodeSpec& Node, const UBluepri
 
 	Node.Member->RemoveField(TEXT("Guid"));
 	Node.Member->RemoveField(TEXT("SelfContext"));
-
-	FString Kind;
-	FString OwnerClass;
-	if (Node.Member->TryGetStringField(TEXT("Kind"), Kind)
-		&& Kind == TEXT("MemberRef")
-		&& Node.Member->TryGetStringField(TEXT("OwnerClass"), OwnerClass)
-		&& IsSelfOwnerClassForDiff(Blueprint, OwnerClass))
-	{
-		Node.Member->SetStringField(TEXT("OwnerClass"), TEXT("Self"));
-	}
 }
 
 void NormalizeGraphIdentityForDiff(TArray<FAssetDocumentGraphSpec>& Graphs, const UBlueprint* Blueprint)

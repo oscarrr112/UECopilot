@@ -1569,7 +1569,7 @@ bool FAssetDocumentWidgetBlueprintGraphsEventGraphRoundTripTest::RunTest(const F
 				MakeGraphNode(
 					TEXT("GetDisplayText"),
 					TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
-					MakeGraphMemberRef(TEXT("Self"), TEXT("GetDisplayText")))
+					MakeGraphMemberRef(*UTestUserWidget::StaticClass()->GetPathName(), TEXT("GetDisplayText")))
 			})
 	});
 
@@ -1719,6 +1719,83 @@ bool FAssetDocumentWidgetBlueprintGraphsDesiredVariableSelfMemberRoundTripTest::
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Diff succeeds after desired variable graph roundtrip"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Desired variable graph roundtrip diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintGraphsMemberOwnerAndNameDiffTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Graphs.MemberOwnerAndNameDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintGraphsMemberOwnerAndNameDiffTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsMemberOwnerAndNameDiff"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	Body->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	SetGraphRegion(Body, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{
+				MakeGraphNode(
+					TEXT("Get_Score"),
+					TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+					MakeGraphMemberRef(TEXT("Self"), TEXT("Score")))
+			})
+	});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestTrue(TEXT("Member diff fixture applies"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads for member diff fixture"), WidgetBlueprint);
+	const FString GeneratedClassPath = WidgetBlueprint && WidgetBlueprint->GeneratedClass
+		? WidgetBlueprint->GeneratedClass->GetPathName()
+		: FString();
+	TestFalse(TEXT("GeneratedClass path is available"), GeneratedClassPath.IsEmpty());
+	if (GeneratedClassPath.IsEmpty())
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> OwnerChangedBody = MakeBindingFixtureBody();
+	OwnerChangedBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	SetGraphRegion(OwnerChangedBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{
+				MakeGraphNode(
+					TEXT("Get_Score"),
+					TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+					MakeGraphMemberRef(*GeneratedClassPath, TEXT("Score")))
+			})
+	});
+	FAssetDocumentDiffRequest OwnerChangedDiffRequest;
+	OwnerChangedDiffRequest.Document = MakeWidgetBlueprintDocument(Target, OwnerChangedBody);
+	const FAssetDocumentResult OwnerChangedDiffResult = Service.Diff(OwnerChangedDiffRequest);
+	TestTrue(TEXT("Owner changed graph diff succeeds"), OwnerChangedDiffResult.IsSuccess());
+	TestTrue(TEXT("Member OwnerClass difference reports semantic diff"), DiffPayloadHasChangedEntries(OwnerChangedDiffResult.Payload));
+
+	TSharedRef<FJsonObject> NameChangedBody = MakeBindingFixtureBody();
+	NameChangedBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	SetGraphRegion(NameChangedBody, TEXT("UbergraphPages"), {
+		MakeGraph(
+			TEXT("EventGraph"),
+			TEXT("/Script/UMGEditor.WidgetGraphSchema"),
+			{
+				MakeGraphNode(
+					TEXT("Get_Score"),
+					TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
+					MakeGraphMemberRef(TEXT("Self"), TEXT("ScoreRenamed")))
+			})
+	});
+	FAssetDocumentDiffRequest NameChangedDiffRequest;
+	NameChangedDiffRequest.Document = MakeWidgetBlueprintDocument(Target, NameChangedBody);
+	const FAssetDocumentResult NameChangedDiffResult = Service.Diff(NameChangedDiffRequest);
+	TestTrue(TEXT("Name changed graph diff succeeds"), NameChangedDiffResult.IsSuccess());
+	TestTrue(TEXT("Member Name difference reports semantic diff"), DiffPayloadHasChangedEntries(NameChangedDiffResult.Payload));
 	return true;
 }
 
