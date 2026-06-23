@@ -861,6 +861,172 @@ const IAssetDocumentRegionCanonicalizationStrategy& GetWidgetBlueprintWidgetVari
 	return Strategy;
 }
 
+double GetObjectNumberFieldOrZero(const TSharedPtr<FJsonObject>& Object, const FString& FieldName)
+{
+	if (!Object.IsValid())
+	{
+		return 0.0;
+	}
+	double Value = 0.0;
+	Object->TryGetNumberField(FieldName, Value);
+	return Value;
+}
+
+FString GetObjectStringFieldOrEmpty(const TSharedPtr<FJsonObject>& Object, const FString& FieldName)
+{
+	if (!Object.IsValid())
+	{
+		return FString();
+	}
+	FString Value;
+	Object->TryGetStringField(FieldName, Value);
+	return Value;
+}
+
+void SortArrayObjectsByStringField(const TSharedPtr<FJsonObject>& Object, const FString& ArrayField, const FString& SortField)
+{
+	const TArray<TSharedPtr<FJsonValue>>* ExistingArray = nullptr;
+	if (!Object.IsValid() || !Object->TryGetArrayField(ArrayField, ExistingArray) || !ExistingArray)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SortedArray = *ExistingArray;
+	SortedArray.Sort([&SortField](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+		return GetObjectStringFieldOrEmpty(LeftObject, SortField) < GetObjectStringFieldOrEmpty(RightObject, SortField);
+	});
+	Object->SetArrayField(ArrayField, MoveTemp(SortedArray));
+}
+
+void SortAnimationKeys(const TSharedPtr<FJsonObject>& Object)
+{
+	const TArray<TSharedPtr<FJsonValue>>* ExistingKeys = nullptr;
+	if (!Object.IsValid() || !Object->TryGetArrayField(TEXT("Keys"), ExistingKeys) || !ExistingKeys)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SortedKeys = *ExistingKeys;
+	SortedKeys.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+		const double LeftFrame = GetObjectNumberFieldOrZero(LeftObject, TEXT("Frame"));
+		const double RightFrame = GetObjectNumberFieldOrZero(RightObject, TEXT("Frame"));
+		if (LeftFrame != RightFrame)
+		{
+			return LeftFrame < RightFrame;
+		}
+		return MakeCanonicalObjectSortKey(LeftObject) < MakeCanonicalObjectSortKey(RightObject);
+	});
+	Object->SetArrayField(TEXT("Keys"), MoveTemp(SortedKeys));
+}
+
+FString MakeAnimationTrackSortKey(const TSharedPtr<FJsonObject>& Object)
+{
+	return FString::Printf(
+		TEXT("%s|%s|%s"),
+		*GetObjectStringFieldOrEmpty(Object, TEXT("Widget")),
+		*GetObjectStringFieldOrEmpty(Object, TEXT("Property")),
+		*GetObjectStringFieldOrEmpty(Object, TEXT("Type"))).ToLower();
+}
+
+void NormalizeWidgetBlueprintAnimationValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type != EJson::Array)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>>& Animations = const_cast<TArray<TSharedPtr<FJsonValue>>&>(Value->AsArray());
+	for (const TSharedPtr<FJsonValue>& AnimationValue : Animations)
+	{
+		const TSharedPtr<FJsonObject> AnimationObject = AnimationValue.IsValid() && AnimationValue->Type == EJson::Object ? AnimationValue->AsObject() : nullptr;
+		if (!AnimationObject.IsValid())
+		{
+			continue;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* TrackValues = nullptr;
+		if (AnimationObject->TryGetArrayField(TEXT("Tracks"), TrackValues) && TrackValues)
+		{
+			TArray<TSharedPtr<FJsonValue>> SortedTracks = *TrackValues;
+			for (const TSharedPtr<FJsonValue>& TrackValue : SortedTracks)
+			{
+				const TSharedPtr<FJsonObject> TrackObject = TrackValue.IsValid() && TrackValue->Type == EJson::Object ? TrackValue->AsObject() : nullptr;
+				if (!TrackObject.IsValid())
+				{
+					continue;
+				}
+
+				SortAnimationKeys(TrackObject);
+				const TArray<TSharedPtr<FJsonValue>>* ChannelValues = nullptr;
+				if (TrackObject->TryGetArrayField(TEXT("Channels"), ChannelValues) && ChannelValues)
+				{
+					TArray<TSharedPtr<FJsonValue>> SortedChannels = *ChannelValues;
+					for (const TSharedPtr<FJsonValue>& ChannelValue : SortedChannels)
+					{
+						const TSharedPtr<FJsonObject> ChannelObject = ChannelValue.IsValid() && ChannelValue->Type == EJson::Object ? ChannelValue->AsObject() : nullptr;
+						SortAnimationKeys(ChannelObject);
+					}
+					SortedChannels.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+					{
+						const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+						const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+						return GetObjectStringFieldOrEmpty(LeftObject, TEXT("Name")) < GetObjectStringFieldOrEmpty(RightObject, TEXT("Name"));
+					});
+					TrackObject->SetArrayField(TEXT("Channels"), MoveTemp(SortedChannels));
+				}
+			}
+			SortedTracks.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+			{
+				const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+				const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+				return MakeAnimationTrackSortKey(LeftObject) < MakeAnimationTrackSortKey(RightObject);
+			});
+			AnimationObject->SetArrayField(TEXT("Tracks"), MoveTemp(SortedTracks));
+		}
+	}
+
+	Animations.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left.IsValid() && Left->Type == EJson::Object ? Left->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject> RightObject = Right.IsValid() && Right->Type == EJson::Object ? Right->AsObject() : nullptr;
+		return GetObjectStringFieldOrEmpty(LeftObject, TEXT("Name")) < GetObjectStringFieldOrEmpty(RightObject, TEXT("Name"));
+	});
+}
+
+class FAssetDocumentWidgetBlueprintAnimationsCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
+{
+public:
+	virtual TSharedPtr<FJsonValue> CanonicalizeForHash(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(RegionValue, Context.Policy);
+		NormalizeWidgetBlueprintAnimationValue(CanonicalValue);
+		return CanonicalValue;
+	}
+
+	virtual TSharedPtr<FJsonValue> CanonicalizeForSidecarWriteback(
+		const FAssetDocumentRegionCanonicalizeContext&,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = CloneJsonValuePreservingShape(RegionValue);
+		NormalizeWidgetBlueprintAnimationValue(CanonicalValue);
+		return CanonicalValue;
+	}
+};
+
+const IAssetDocumentRegionCanonicalizationStrategy& GetWidgetBlueprintAnimationsStrategy()
+{
+	static FAssetDocumentWidgetBlueprintAnimationsCanonicalizationStrategy Strategy;
+	return Strategy;
+}
+
 class FAssetDocumentAnimSequencePostApplyCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
 {
 public:
@@ -904,6 +1070,7 @@ const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*>& GetBuilt
 	static const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*> Strategies = {
 		{FName(TEXT("AnimSequencePostApply")), &GetAnimSequencePostApplyStrategy()},
 		{FName(TEXT("UBlueprintGraph")), &GetUBlueprintGraphStrategy()},
+		{FName(TEXT("WidgetBlueprintAnimations")), &GetWidgetBlueprintAnimationsStrategy()},
 		{FName(TEXT("WidgetBlueprintWidgetVariableGuids")), &GetWidgetBlueprintWidgetVariableGuidsStrategy()},
 	};
 	return Strategies;

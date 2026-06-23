@@ -3,6 +3,7 @@
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "Profiles/WidgetBlueprintAnimationAdapter.h"
 #include "Profiles/WidgetBlueprintBindingAdapter.h"
 #include "Profiles/WidgetBlueprintGraphAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
@@ -1477,13 +1478,6 @@ void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, T
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (WidgetBlueprint->Animations.Num() > 0)
-	{
-		OutRegions.Add({
-			TEXT("/Body/Animations"),
-			TEXT("Existing WidgetBlueprint has non-empty Animations that the current AssetDocument adapter cannot safely apply or diff")
-		});
-	}
 #endif
 }
 
@@ -1519,6 +1513,15 @@ bool HasBindingEntries(const TSharedPtr<FJsonValue>& BindingsJson)
 		return false;
 	}
 	return BindingsJson->Type == EJson::Array && BindingsJson->AsArray().Num() > 0;
+}
+
+bool HasAnimationEntries(const TSharedPtr<FJsonValue>& AnimationsJson)
+{
+	if (!AnimationsJson.IsValid() || AnimationsJson->Type == EJson::Null)
+	{
+		return false;
+	}
+	return AnimationsJson->Type == EJson::Array && AnimationsJson->AsArray().Num() > 0;
 }
 
 struct FDesiredWidgetBlueprintPreflightScratch
@@ -1699,6 +1702,43 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 	return FWidgetBlueprintBindingAdapter::Preflight(Scratch.Blueprint, BindingsJson);
 }
 
+FAssetDocumentCapabilityResult PreflightAnimationsAgainstDesiredWidgetBlueprint(
+	const FString& TargetAssetPath,
+	UClass* ParentClass,
+	const TSharedPtr<FJsonValue>& WidgetTreeJson,
+	const TArray<FWidgetBlueprintVariableSpec>& VariableSpecs,
+	const TMap<FName, FGuid>& DesiredGuids,
+	const TSharedPtr<FJsonObject>& ClassDefaults,
+	const TSharedPtr<FJsonValue>& AnimationsJson)
+{
+	const FAssetDocumentCapabilityResult AnimationShapeResult = FWidgetBlueprintAnimationAdapter::Validate(AnimationsJson);
+	if (!AnimationShapeResult.bSuccess)
+	{
+		return AnimationShapeResult;
+	}
+	if (!HasAnimationEntries(AnimationsJson))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FDesiredWidgetBlueprintPreflightScratch Scratch;
+	const FAssetDocumentCapabilityResult ScratchResult = BuildDesiredWidgetBlueprintPreflightScratch(
+		TargetAssetPath,
+		ParentClass,
+		WidgetTreeJson,
+		VariableSpecs,
+		DesiredGuids,
+		ClassDefaults,
+		TEXT("/Body/Animations"),
+		Scratch);
+	if (!ScratchResult.bSuccess)
+	{
+		return ScratchResult;
+	}
+
+	return FWidgetBlueprintAnimationAdapter::Preflight(Scratch.Blueprint, AnimationsJson);
+}
+
 TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
@@ -1768,7 +1808,7 @@ FName FWidgetBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FWidgetBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("WidgetBlueprintBody"), TEXT("WidgetBlueprintTree"), TEXT("WidgetBlueprintBindings"), TEXT("WidgetBlueprintEmptyAssetContract")};
+	return {TEXT("WidgetBlueprintBody"), TEXT("WidgetBlueprintTree"), TEXT("WidgetBlueprintBindings"), TEXT("WidgetBlueprintAnimations"), TEXT("WidgetBlueprintEmptyAssetContract")};
 }
 
 int32 FWidgetBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -1795,7 +1835,7 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentCapability::GetSchemaHint()
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object of reflected generated CDO default differences"));
 	Schema->SetStringField(TEXT("WidgetTree"), TEXT("object {RootWidget:WidgetNode|null, NamedSlotBindings:map<string, WidgetNode>}"));
 	Schema->SetStringField(TEXT("Bindings"), TEXT("array of {Widget:string, Property:string, Kind:Function|Property, Function?:string, SourcePath?:string[]}"));
-	Schema->SetStringField(TEXT("Animations"), TEXT("array empty until WidgetBlueprint animation adapter lands"));
+	Schema->SetStringField(TEXT("Animations"), TEXT("array of {Name, FrameRate, PlaybackRange, Tracks:[{Widget, Property, Type:Float|Transform, Keys|Channels}]}"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array of UBlueprintGraph objects"));
 	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array of UBlueprintGraph objects"));
 	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array of UBlueprintGraph objects"));
@@ -1913,6 +1953,27 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Prefligh
 		return BindingPreflightResult;
 	}
 
+	const TSharedPtr<FJsonValue>* AnimationsValue = BodyObject->Values.Find(TEXT("Animations"));
+	const FAssetDocumentCapabilityResult AnimationPreflightResult = PreflightAnimationsAgainstDesiredWidgetBlueprint(
+		Context.TargetAssetPath,
+		ParentClass,
+		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		VariableSpecs,
+		ParsedGuids,
+		ClassDefaults,
+		AnimationsValue ? *AnimationsValue : nullptr);
+	if (!AnimationPreflightResult.bSuccess)
+	{
+		return AnimationPreflightResult;
+	}
+
+	const FAssetDocumentCapabilityResult CurrentAnimationResult =
+		FWidgetBlueprintAnimationAdapter::CheckForUnsupportedCurrentTracks(Cast<UWidgetBlueprint>(Context.Asset));
+	if (!CurrentAnimationResult.bSuccess)
+	{
+		return CurrentAnimationResult;
+	}
+
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -1948,6 +2009,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (!CurrentStateResult.bSuccess)
 	{
 		return CurrentStateResult;
+	}
+	const FAssetDocumentCapabilityResult CurrentAnimationResult =
+		FWidgetBlueprintAnimationAdapter::CheckForUnsupportedCurrentTracks(WidgetBlueprint);
+	if (!CurrentAnimationResult.bSuccess)
+	{
+		return CurrentAnimationResult;
 	}
 
 	TSharedPtr<FJsonObject> ClassDefaults;
@@ -2031,6 +2098,20 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 	if (!BindingPreflightResult.bSuccess)
 	{
 		return BindingPreflightResult;
+	}
+
+	const TSharedPtr<FJsonValue>* AnimationsValue = BodyObject->Values.Find(TEXT("Animations"));
+	const FAssetDocumentCapabilityResult AnimationPreflightResult = PreflightAnimationsAgainstDesiredWidgetBlueprint(
+		Context.TargetAssetPath,
+		ParentClass,
+		WidgetTreeValue ? *WidgetTreeValue : nullptr,
+		VariableSpecs,
+		DesiredGuids,
+		ClassDefaults,
+		AnimationsValue ? *AnimationsValue : nullptr);
+	if (!AnimationPreflightResult.bSuccess)
+	{
+		return AnimationPreflightResult;
 	}
 
 	bool bChanged = false;
@@ -2118,6 +2199,23 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		}
 	}
 
+	bool bAnimationsChanged = false;
+	const FAssetDocumentCapabilityResult AnimationsApplyResult =
+		FWidgetBlueprintAnimationAdapter::Apply(WidgetBlueprint, AnimationsValue ? *AnimationsValue : nullptr, &bAnimationsChanged);
+	if (!AnimationsApplyResult.bSuccess)
+	{
+		return AnimationsApplyResult;
+	}
+	if (bAnimationsChanged)
+	{
+		SyncWidgetTreeVariableGuidsForCompile(WidgetBlueprint, Context.TargetAssetPath, DesiredGuids);
+		FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+		if (WidgetBlueprint->Status == BS_Error)
+		{
+			return BodyFailure(TEXT("Failed to compile WidgetBlueprint after applying Body.Animations"), TEXT("/Body/Animations"), TEXT("WidgetBlueprintCompileFailed"));
+		}
+	}
+
 #if WITH_EDITORONLY_DATA
 	if (Palette.IsValid())
 	{
@@ -2182,7 +2280,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 		return BindingsResult;
 	}
 	OutBodyJson->SetArrayField(TEXT("Bindings"), BindingValues);
-	OutBodyJson->SetArrayField(TEXT("Animations"), {});
+	TArray<TSharedPtr<FJsonValue>> AnimationValues;
+	const FAssetDocumentCapabilityResult AnimationsResult = FWidgetBlueprintAnimationAdapter::Extract(WidgetBlueprint, AnimationValues);
+	if (!AnimationsResult.bSuccess)
+	{
+		return AnimationsResult;
+	}
+	OutBodyJson->SetArrayField(TEXT("Animations"), AnimationValues);
 	const FAssetDocumentCapabilityResult GraphExtractResult =
 		FWidgetBlueprintGraphAdapter().ExtractRegions(Context, OutBodyJson);
 	if (!GraphExtractResult.bSuccess)
@@ -2293,6 +2397,17 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				? TEXT("unchanged")
 				: TEXT("changed");
 			AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+		}
+		else if (BodyKey == TEXT("Animations"))
+		{
+			const FAssetDocumentCapabilityResult AnimationDiffResult = FWidgetBlueprintAnimationAdapter::Diff(
+				Cast<UWidgetBlueprint>(Context.Asset),
+				Desired ? *Desired : nullptr,
+				OutDiffEntries);
+			if (!AnimationDiffResult.bSuccess)
+			{
+				return AnimationDiffResult;
+			}
 		}
 		else if (IsGraphBodyKey(BodyKey))
 		{
@@ -2452,6 +2567,14 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 			if (!BindingsResult.bSuccess)
 			{
 				return BindingsResult;
+			}
+		}
+		else if (Pair.Key == TEXT("Animations"))
+		{
+			const FAssetDocumentCapabilityResult AnimationsResult = FWidgetBlueprintAnimationAdapter::Validate(Pair.Value);
+			if (!AnimationsResult.bSuccess)
+			{
+				return AnimationsResult;
 			}
 		}
 		else if (IsGraphBodyKey(Pair.Key))

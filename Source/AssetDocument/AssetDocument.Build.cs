@@ -27,7 +27,9 @@ public class AssetDocument : ModuleRules
 			"DirectoryWatcher",
 			"Projects",
 			"UMG",
-			"UMGEditor"
+			"UMGEditor",
+			"MovieScene",
+			"MovieSceneTracks"
 		});
 	}
 }

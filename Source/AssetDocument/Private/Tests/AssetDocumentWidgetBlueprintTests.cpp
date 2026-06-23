@@ -25,7 +25,9 @@
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
 #include "Misc/ScopeExit.h"
+#include "MovieScene.h"
 #include "Test/TestUserWidget.h"
+#include "Tracks/MovieSceneBoolTrack.h"
 #include "WidgetBlueprint.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -200,6 +202,33 @@ bool DiffPayloadHasChangedEntries(const TSharedPtr<FJsonObject>& Payload)
 		&& Changed->Num() > 0;
 }
 
+bool DiffPayloadHasFailedCode(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedCode)
+{
+	if (!Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+	if (!Payload->TryGetArrayField(TEXT("failed"), Failed) || !Failed)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& EntryValue : *Failed)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() && EntryValue->Type == EJson::Object
+			? EntryValue->AsObject()
+			: nullptr;
+		FString Code;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("code"), Code) && Code == ExpectedCode)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 TSharedPtr<FJsonObject> GetExtractedBody(const FAssetDocumentResult& ExtractResult)
 {
 	if (!ExtractResult.Payload.IsValid())
@@ -285,6 +314,114 @@ TSharedPtr<FJsonObject> MakePropertyBinding(const TCHAR* Widget, const TCHAR* Pr
 	}
 	Binding->SetArrayField(TEXT("SourcePath"), Path);
 	return Binding;
+}
+
+TSharedPtr<FJsonObject> MakeAnimationFloatKey(int32 Frame, double Value)
+{
+	TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+	Key->SetNumberField(TEXT("Frame"), Frame);
+	Key->SetNumberField(TEXT("Value"), Value);
+	return Key;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeAnimationKeyArray(std::initializer_list<TSharedPtr<FJsonObject>> Keys)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const TSharedPtr<FJsonObject>& Key : Keys)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(Key));
+	}
+	return Result;
+}
+
+TSharedPtr<FJsonObject> MakeAnimationFloatTrack(
+	const TCHAR* Widget,
+	const TCHAR* Property,
+	std::initializer_list<TSharedPtr<FJsonObject>> Keys)
+{
+	TSharedPtr<FJsonObject> Track = MakeShared<FJsonObject>();
+	Track->SetStringField(TEXT("Widget"), Widget);
+	Track->SetStringField(TEXT("Property"), Property);
+	Track->SetStringField(TEXT("Type"), TEXT("Float"));
+	Track->SetArrayField(TEXT("Keys"), MakeAnimationKeyArray(Keys));
+	return Track;
+}
+
+TSharedPtr<FJsonObject> MakeAnimationTransformTrack(
+	const TCHAR* Widget,
+	const TCHAR* Channel,
+	std::initializer_list<TSharedPtr<FJsonObject>> Keys)
+{
+	TSharedPtr<FJsonObject> Track = MakeShared<FJsonObject>();
+	Track->SetStringField(TEXT("Widget"), Widget);
+	Track->SetStringField(TEXT("Property"), TEXT("RenderTransform"));
+	Track->SetStringField(TEXT("Type"), TEXT("Transform"));
+
+	TSharedPtr<FJsonObject> ChannelObject = MakeShared<FJsonObject>();
+	ChannelObject->SetStringField(TEXT("Name"), Channel);
+	ChannelObject->SetArrayField(TEXT("Keys"), MakeAnimationKeyArray(Keys));
+
+	TArray<TSharedPtr<FJsonValue>> Channels;
+	Channels.Add(MakeShared<FJsonValueObject>(ChannelObject));
+	Track->SetArrayField(TEXT("Channels"), Channels);
+	return Track;
+}
+
+TSharedPtr<FJsonObject> MakeAnimation(
+	const TCHAR* Name,
+	std::initializer_list<TSharedPtr<FJsonObject>> Tracks,
+	int32 StartFrame = 0,
+	int32 EndFrame = 30,
+	int32 FrameRateNumerator = 30,
+	int32 FrameRateDenominator = 1)
+{
+	TSharedPtr<FJsonObject> Animation = MakeShared<FJsonObject>();
+	Animation->SetStringField(TEXT("Name"), Name);
+
+	TSharedPtr<FJsonObject> FrameRate = MakeShared<FJsonObject>();
+	FrameRate->SetNumberField(TEXT("Numerator"), FrameRateNumerator);
+	FrameRate->SetNumberField(TEXT("Denominator"), FrameRateDenominator);
+	Animation->SetObjectField(TEXT("FrameRate"), FrameRate);
+
+	TSharedPtr<FJsonObject> PlaybackRange = MakeShared<FJsonObject>();
+	PlaybackRange->SetNumberField(TEXT("StartFrame"), StartFrame);
+	PlaybackRange->SetNumberField(TEXT("EndFrame"), EndFrame);
+	Animation->SetObjectField(TEXT("PlaybackRange"), PlaybackRange);
+
+	TArray<TSharedPtr<FJsonValue>> TrackValues;
+	for (const TSharedPtr<FJsonObject>& Track : Tracks)
+	{
+		TrackValues.Add(MakeShared<FJsonValueObject>(Track));
+	}
+	Animation->SetArrayField(TEXT("Tracks"), TrackValues);
+	return Animation;
+}
+
+void SetAnimations(TSharedRef<FJsonObject> Body, std::initializer_list<TSharedPtr<FJsonObject>> Animations)
+{
+	TArray<TSharedPtr<FJsonValue>> AnimationValues;
+	for (const TSharedPtr<FJsonObject>& Animation : Animations)
+	{
+		AnimationValues.Add(MakeShared<FJsonValueObject>(Animation));
+	}
+	Body->SetArrayField(TEXT("Animations"), AnimationValues);
+}
+
+TArray<TSharedPtr<FJsonValue>> GetExtractedAnimations(const FAssetDocumentResult& ExtractResult)
+{
+	TArray<TSharedPtr<FJsonValue>> Empty;
+	TSharedPtr<FJsonObject> Body = GetExtractedBody(ExtractResult);
+	if (!Body.IsValid())
+	{
+		return Empty;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Animations = nullptr;
+	if (Body->TryGetArrayField(TEXT("Animations"), Animations) && Animations)
+	{
+		return *Animations;
+	}
+	return Empty;
 }
 
 void SetBindings(TSharedRef<FJsonObject> Body, std::initializer_list<TSharedPtr<FJsonObject>> Bindings)
@@ -666,15 +803,21 @@ bool FAssetDocumentWidgetBlueprintRejectsNonEmptyAuthoredRegionsTest::RunTest(co
 	Context.AssetClass = UWidgetBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
-	TArray<TSharedPtr<FJsonValue>> Animations;
-	Animations.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
-	Body->SetArrayField(TEXT("Animations"), Animations);
+	TSharedPtr<FJsonObject> UnsupportedTrack = MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+		MakeAnimationFloatKey(0, 1.0),
+		MakeAnimationFloatKey(30, 0.0)});
+	UnsupportedTrack->SetStringField(TEXT("Type"), TEXT("Unsupported"));
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			UnsupportedTrack
+		})
+	});
 
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyJsonValue(Body));
-	TestFalse(TEXT("Non-empty authored Animations fail validation"), Result.bSuccess);
-	TestTrue(TEXT("Diagnostic uses UnsupportedWidgetBlueprintRegion"), Result.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
+	TestFalse(TEXT("Unsupported authored animation track fails validation"), Result.bSuccess);
+	TestTrue(TEXT("Diagnostic uses UnsupportedWidgetAnimationTrack"), Result.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
 	{
-		return Diagnostic.Code == TEXT("UnsupportedWidgetBlueprintRegion");
+		return Diagnostic.Code == TEXT("UnsupportedWidgetAnimationTrack");
 	}));
 	return true;
 }
@@ -720,26 +863,19 @@ bool FAssetDocumentWidgetBlueprintExistingNonEmptyStateBlocksTask1ApplyTest::Run
 
 	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyJsonValue(MakeDefaultWidgetBlueprintBody()));
 	TestFalse(TEXT("Task 1 apply refuses existing non-empty unsupported state"), ApplyResult.bSuccess);
-	TestTrue(TEXT("Apply diagnostic uses UnsupportedWidgetBlueprintRegion"), ApplyResult.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
+	TestTrue(TEXT("Apply diagnostic uses UnsupportedWidgetAnimationTrack"), ApplyResult.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
 	{
-		return Diagnostic.Code == TEXT("UnsupportedWidgetBlueprintRegion");
+		return Diagnostic.Code == TEXT("UnsupportedWidgetAnimationTrack");
 	}));
 	TestTrue(TEXT("RootWidget remains intact"), WidgetBlueprint->WidgetTree->RootWidget == RootWidget);
 	TestEqual(TEXT("Animations remain intact"), WidgetBlueprint->Animations.Num(), 1);
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyJsonValue(MakeDefaultWidgetBlueprintBody()), DiffEntries);
-	TestTrue(TEXT("Diff succeeds for inspection"), DiffResult.bSuccess);
-	TestTrue(TEXT("Diff exposes non-empty unsupported Animations as changed/skipped"), DiffEntries.ContainsByPredicate([](const TSharedPtr<FJsonValue>& Entry)
+	TestFalse(TEXT("Diff blocks unsupported existing Animations until implemented"), DiffResult.bSuccess);
+	TestTrue(TEXT("Diff diagnostic uses UnsupportedWidgetAnimationTrack"), DiffResult.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
 	{
-		const TSharedPtr<FJsonObject> Object = Entry.IsValid() ? Entry->AsObject() : nullptr;
-		FString Path;
-		FString Status;
-		return Object.IsValid()
-			&& Object->TryGetStringField(TEXT("path"), Path)
-			&& Path == TEXT("/Body/Animations")
-			&& Object->TryGetStringField(TEXT("status"), Status)
-			&& Status != TEXT("unchanged");
+		return Diagnostic.Code == TEXT("UnsupportedWidgetAnimationTrack");
 	}));
 	return true;
 }
@@ -1523,6 +1659,329 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsMismatchedMemberGuidTest::RunTe
 	TestFalse(TEXT("Mismatched function MemberGuid rejects apply"), Result.IsSuccess());
 	TestTrue(TEXT("Mismatched function MemberGuid diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MismatchedBindingMemberGuid")));
 	TestTrue(TEXT("Mismatched function MemberGuid diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Bindings/0/MemberGuid")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsCreateFloatTrackRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.CreateFloatTrackRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsCreateFloatTrackRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsFloatRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Float animation apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Float animation apply succeeds"), ApplyResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint exists"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("One WidgetBlueprint animation is materialized"), WidgetBlueprint->Animations.Num(), 1);
+		if (WidgetBlueprint->Animations.Num() == 1)
+		{
+			TestEqual(TEXT("Animation object is named Intro"), WidgetBlueprint->Animations[0]->GetFName(), FName(TEXT("Intro")));
+			TestNotNull(TEXT("Animation owns a MovieScene"), WidgetBlueprint->Animations[0]->GetMovieScene());
+			TestTrue(
+				TEXT("Animation variable has stable compile GUID"),
+				WidgetBlueprint->WidgetVariableNameToGuidMap.FindRef(FName(TEXT("Intro"))).IsValid());
+		}
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after float animation apply"), ExtractResult.IsSuccess());
+	const TArray<TSharedPtr<FJsonValue>> ExtractedAnimations = GetExtractedAnimations(ExtractResult);
+	TestEqual(TEXT("Extract returns one animation"), ExtractedAnimations.Num(), 1);
+	if (ExtractedAnimations.Num() == 1 && ExtractedAnimations[0].IsValid() && ExtractedAnimations[0]->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Animation = ExtractedAnimations[0]->AsObject();
+		TestEqual(TEXT("Extracted animation keeps name"), Animation->GetStringField(TEXT("Name")), FString(TEXT("Intro")));
+		const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+		TestTrue(TEXT("Extracted animation contains tracks"), Animation->TryGetArrayField(TEXT("Tracks"), Tracks) && Tracks && Tracks->Num() == 1);
+		if (Tracks && Tracks->Num() == 1 && (*Tracks)[0].IsValid() && (*Tracks)[0]->Type == EJson::Object)
+		{
+			const TSharedPtr<FJsonObject> Track = (*Tracks)[0]->AsObject();
+			TestEqual(TEXT("Extracted track targets TitleText"), Track->GetStringField(TEXT("Widget")), FString(TEXT("TitleText")));
+			TestEqual(TEXT("Extracted track targets RenderOpacity"), Track->GetStringField(TEXT("Property")), FString(TEXT("RenderOpacity")));
+			TestEqual(TEXT("Extracted track type is Float"), Track->GetStringField(TEXT("Type")), FString(TEXT("Float")));
+			const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+			TestTrue(TEXT("Extracted float track keeps two keys"), Track->TryGetArrayField(TEXT("Keys"), Keys) && Keys && Keys->Num() == 2);
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after float animation roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Float animation diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsCreateTransformTrackRoundTripTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.CreateTransformTrackRoundTrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsCreateTransformTrackRoundTripTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsTransformRoundTrip"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationTransformTrack(TEXT("TitleText"), TEXT("Rotation"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 45.0)})
+		})
+	});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Transform animation apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Transform animation apply succeeds"), ApplyResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after transform animation apply"), ExtractResult.IsSuccess());
+	const TArray<TSharedPtr<FJsonValue>> ExtractedAnimations = GetExtractedAnimations(ExtractResult);
+	TestEqual(TEXT("Extract returns one animation"), ExtractedAnimations.Num(), 1);
+	if (ExtractedAnimations.Num() == 1 && ExtractedAnimations[0].IsValid() && ExtractedAnimations[0]->Type == EJson::Object)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+		TestTrue(TEXT("Extracted animation contains transform track"), ExtractedAnimations[0]->AsObject()->TryGetArrayField(TEXT("Tracks"), Tracks) && Tracks && Tracks->Num() == 1);
+		if (Tracks && Tracks->Num() == 1 && (*Tracks)[0].IsValid() && (*Tracks)[0]->Type == EJson::Object)
+		{
+			const TSharedPtr<FJsonObject> Track = (*Tracks)[0]->AsObject();
+			TestEqual(TEXT("Extracted transform property"), Track->GetStringField(TEXT("Property")), FString(TEXT("RenderTransform")));
+			TestEqual(TEXT("Extracted transform type"), Track->GetStringField(TEXT("Type")), FString(TEXT("Transform")));
+			const TArray<TSharedPtr<FJsonValue>>* Channels = nullptr;
+			TestTrue(TEXT("Transform track extracts channels"), Track->TryGetArrayField(TEXT("Channels"), Channels) && Channels && Channels->Num() == 1);
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after transform animation roundtrip"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Transform animation diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsOmissionDeletesAnimationTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.OmissionDeletesAnimation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsOmissionDeletesAnimationTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsOmissionDeletesAnimation"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	SetAnimations(InitialBody, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+	TestTrue(TEXT("Initial animation apply succeeds"), Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody))).IsSuccess());
+
+	TSharedRef<FJsonObject> ResetBody = MakeBindingFixtureBody();
+	SetAnimations(ResetBody, {});
+	TSharedPtr<FJsonObject> ResetDocument = MakeWidgetBlueprintDocument(Target, ResetBody);
+	const FAssetDocumentResult ResetResult = Service.Apply(MakeApplyFileRequest(ResetDocument));
+	if (!ResetResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Animation reset apply failed: %s"), *ResetResult.Message));
+	}
+	TestTrue(TEXT("Omitted animation apply succeeds"), ResetResult.IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint exists after reset"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Omitted Animations removes existing animation"), WidgetBlueprint->Animations.Num(), 0);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = ResetDocument;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after animation omission"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Omitted animation diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsOmissionDeletesTrackAndKeyTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.OmissionDeletesTrackAndKey",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsOmissionDeletesTrackAndKeyTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsOmissionDeletesTrackKey"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	SetAnimations(InitialBody, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(15, 0.5),
+				MakeAnimationFloatKey(30, 1.0)}),
+			MakeAnimationTransformTrack(TEXT("TitleText"), TEXT("Rotation"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 45.0)})
+		})
+	});
+	TestTrue(TEXT("Initial animation apply succeeds"), Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody))).IsSuccess());
+
+	TSharedRef<FJsonObject> ReducedBody = MakeBindingFixtureBody();
+	SetAnimations(ReducedBody, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+	TSharedPtr<FJsonObject> ReducedDocument = MakeWidgetBlueprintDocument(Target, ReducedBody);
+	const FAssetDocumentResult ReducedResult = Service.Apply(MakeApplyFileRequest(ReducedDocument));
+	if (!ReducedResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Reduced animation apply failed: %s"), *ReducedResult.Message));
+	}
+	TestTrue(TEXT("Reduced animation apply succeeds"), ReducedResult.IsSuccess());
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("Extract succeeds after reduced animation apply"), ExtractResult.IsSuccess());
+	const TArray<TSharedPtr<FJsonValue>> ExtractedAnimations = GetExtractedAnimations(ExtractResult);
+	TestEqual(TEXT("One animation remains"), ExtractedAnimations.Num(), 1);
+	if (ExtractedAnimations.Num() == 1 && ExtractedAnimations[0].IsValid() && ExtractedAnimations[0]->Type == EJson::Object)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+		TestTrue(TEXT("One track remains"), ExtractedAnimations[0]->AsObject()->TryGetArrayField(TEXT("Tracks"), Tracks) && Tracks && Tracks->Num() == 1);
+		if (Tracks && Tracks->Num() == 1 && (*Tracks)[0].IsValid() && (*Tracks)[0]->Type == EJson::Object)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+			TestTrue(TEXT("Only two keys remain"), (*Tracks)[0]->AsObject()->TryGetArrayField(TEXT("Keys"), Keys) && Keys && Keys->Num() == 2);
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = ReducedDocument;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff succeeds after track/key omission"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Reduced animation diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsRejectsMissingWidgetBindingTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.RejectsMissingWidgetBinding",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsRejectsMissingWidgetBindingTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsRejectsMissingWidget"));
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("MissingText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+	TestFalse(TEXT("Missing animation widget rejects apply"), Result.IsSuccess());
+	TestTrue(TEXT("Missing widget diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MissingWidgetAnimationBinding")));
+	TestTrue(TEXT("Missing widget diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Animations/0/Tracks/0/Widget")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsUnsupportedTrackBlocksCompleteDiffTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.UnsupportedTrackBlocksCompleteDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsUnsupportedTrackBlocksCompleteDiffTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsUnsupportedTrackBlocksDiff"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+	SetAnimations(Body, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
+	TestTrue(TEXT("Supported animation apply succeeds"), Service.Apply(MakeApplyFileRequest(Document)).IsSuccess());
+
+	TSharedRef<FJsonObject> UnsupportedBody = MakeBindingFixtureBody();
+	SetAnimations(UnsupportedBody, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("Visibility"), {
+				MakeAnimationFloatKey(0, 1.0),
+				MakeAnimationFloatKey(30, 0.0)})
+		})
+	});
+	const FAssetDocumentResult UnsupportedApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, UnsupportedBody)));
+	TestFalse(TEXT("Authored unsupported animation track rejects apply"), UnsupportedApplyResult.IsSuccess());
+	TestTrue(TEXT("Authored unsupported diagnostic is reported"), ResultHasDiagnosticCode(UnsupportedApplyResult, TEXT("UnsupportedWidgetAnimationTrack")));
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	if (WidgetBlueprint && WidgetBlueprint->Animations.Num() > 0 && WidgetBlueprint->Animations[0] && WidgetBlueprint->Animations[0]->MovieScene)
+	{
+		UWidgetAnimation* Animation = WidgetBlueprint->Animations[0];
+		Animation->Modify();
+		UMovieScene* MovieScene = Animation->MovieScene;
+		const FGuid BindingGuid = Animation->AnimationBindings.Num() > 0
+			? Animation->AnimationBindings[0].AnimationGuid
+			: MovieScene->AddPossessable(TEXT("Unsupported"), UWidget::StaticClass());
+		UMovieSceneBoolTrack* UnsupportedTrack = MovieScene->AddTrack<UMovieSceneBoolTrack>(BindingGuid);
+		if (UnsupportedTrack)
+		{
+			UnsupportedTrack->SetPropertyNameAndPath(TEXT("bIsEnabled"), TEXT("bIsEnabled"));
+		}
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Diff returns payload for unsupported animation state"), DiffResult.IsSuccess());
+	TestTrue(
+		TEXT("Existing unsupported animation state blocks complete diff"),
+		DiffPayloadHasFailedCode(DiffResult.Payload, TEXT("UnsupportedWidgetAnimationTrack")));
 	return true;
 }
 

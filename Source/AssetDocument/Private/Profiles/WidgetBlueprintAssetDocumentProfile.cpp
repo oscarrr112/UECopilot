@@ -147,7 +147,7 @@ TArray<FAssetDocumentRegionPolicy> FWidgetBlueprintAssetDocumentProfile::GetRegi
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Animations"), EAssetDocumentRegionKind::Timeline, {TEXT("Animations")}, Policy))
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Animations"), EAssetDocumentRegionKind::Timeline, {TEXT("Animations")}, Policy, TEXT("WidgetBlueprintAnimations")))
 	{
 		Policies.Add(Policy);
 	}
