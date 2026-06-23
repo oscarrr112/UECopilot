@@ -214,9 +214,57 @@ bool FAssetDocumentLifecycle::TryResolveBlueprintParentClass(const TSharedPtr<FJ
 	return true;
 }
 
+bool TryReadLifecycleParentClassRef(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError, const TCHAR* AssetClassName)
+{
+	OutParentClass = nullptr;
+
+	if (!Document.IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s creation requires Body.ParentClass"), AssetClassName);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Body = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), Body) || !Body || !Body->IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s creation requires Body.ParentClass"), AssetClassName);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ParentClass = nullptr;
+	if (!(*Body)->TryGetObjectField(TEXT("ParentClass"), ParentClass) || !ParentClass || !ParentClass->IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s creation requires Body.ParentClass"), AssetClassName);
+		return false;
+	}
+
+	FString Kind;
+	if (!(*ParentClass)->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+	{
+		OutError = TEXT("Body.ParentClass.Kind must be ClassRef");
+		return false;
+	}
+
+	FString ParentClassPath;
+	if (!(*ParentClass)->TryGetStringField(TEXT("Class"), ParentClassPath) || ParentClassPath.IsEmpty())
+	{
+		OutError = TEXT("Body.ParentClass.Class is required");
+		return false;
+	}
+
+	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ParentClassPath);
+	if (!OutParentClass)
+	{
+		OutError = FString::Printf(TEXT("Failed to resolve Body.ParentClass.Class '%s'"), *ParentClassPath);
+		return false;
+	}
+
+	return true;
+}
+
 bool FAssetDocumentLifecycle::TryResolveWidgetBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError)
 {
-	if (!TryResolveBlueprintParentClass(Document, OutParentClass, OutError))
+	if (!TryReadLifecycleParentClassRef(Document, OutParentClass, OutError, TEXT("WidgetBlueprint")))
 	{
 		return false;
 	}
@@ -224,6 +272,18 @@ bool FAssetDocumentLifecycle::TryResolveWidgetBlueprintParentClass(const TShared
 	if (!OutParentClass->IsChildOf(UUserWidget::StaticClass()))
 	{
 		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UUserWidget subclass"), *OutParentClass->GetName());
+		return false;
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract) && OutParentClass != UUserWidget::StaticClass())
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName());
+		return false;
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is deprecated or newer-version-only"), *OutParentClass->GetName());
 		return false;
 	}
 

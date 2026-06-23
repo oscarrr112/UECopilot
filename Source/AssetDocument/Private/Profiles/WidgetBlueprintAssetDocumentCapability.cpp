@@ -29,6 +29,13 @@ FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
+bool IsLegalWidgetBlueprintParentClass(const UClass* ParentClass)
+{
+	return ParentClass
+		&& ParentClass->IsChildOf(UUserWidget::StaticClass())
+		&& (!ParentClass->HasAnyClassFlags(CLASS_Abstract) || ParentClass == UUserWidget::StaticClass());
+}
+
 FAssetDocumentCapabilityResult RequireBodyObject(const TSharedRef<FJsonValue>& BodyJson, TSharedPtr<FJsonObject>& OutBody)
 {
 	if (BodyJson->Type != EJson::Object)
@@ -150,7 +157,7 @@ FAssetDocumentCapabilityResult ResolveUserWidgetParentClass(const TSharedPtr<FJs
 			TEXT("InvalidParentClass"));
 	}
 
-	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract))
+	if (!IsLegalWidgetBlueprintParentClass(OutParentClass))
 	{
 		return BodyFailure(
 			FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName()),
@@ -159,6 +166,109 @@ FAssetDocumentCapabilityResult ResolveUserWidgetParentClass(const TSharedPtr<FJs
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+void AddSkippedEvidence(TSharedRef<FJsonObject>& OutBodyJson, const FString& Path, const FString& Message)
+{
+	const TSharedPtr<FJsonObject>* ExistingSkipped = nullptr;
+	TSharedPtr<FJsonObject> Skipped;
+	if (OutBodyJson->TryGetObjectField(TEXT("_Skipped"), ExistingSkipped) && ExistingSkipped && ExistingSkipped->IsValid())
+	{
+		Skipped = *ExistingSkipped;
+	}
+	if (!Skipped.IsValid())
+	{
+		Skipped = MakeShared<FJsonObject>();
+		OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	const TArray<TSharedPtr<FJsonValue>>* ExistingEntries = nullptr;
+	if (Skipped->TryGetArrayField(TEXT("UnsupportedWidgetBlueprintRegions"), ExistingEntries) && ExistingEntries)
+	{
+		Entries = *ExistingEntries;
+	}
+
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("Code"), TEXT("UnsupportedWidgetBlueprintRegion"));
+	Entry->SetStringField(TEXT("Path"), Path);
+	Entry->SetStringField(TEXT("Message"), Message);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+	Skipped->SetArrayField(TEXT("UnsupportedWidgetBlueprintRegions"), Entries);
+}
+
+struct FUnsupportedCurrentRegion
+{
+	FString Path;
+	FString Message;
+};
+
+void CollectUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint, TArray<FUnsupportedCurrentRegion>& OutRegions)
+{
+	OutRegions.Reset();
+	if (!WidgetBlueprint)
+	{
+		return;
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (WidgetBlueprint->WidgetTree)
+	{
+		if (WidgetBlueprint->WidgetTree->RootWidget)
+		{
+			OutRegions.Add({
+				TEXT("/Body/WidgetTree"),
+				TEXT("Existing WidgetBlueprint has a non-empty WidgetTree.RootWidget that Task 1 cannot safely apply or diff")
+			});
+		}
+		if (WidgetBlueprint->WidgetTree->NamedSlotBindings.Num() > 0)
+		{
+			OutRegions.Add({
+				TEXT("/Body/WidgetTree"),
+				TEXT("Existing WidgetBlueprint has non-empty WidgetTree.NamedSlotBindings that Task 1 cannot safely apply or diff")
+			});
+		}
+	}
+	if (WidgetBlueprint->Bindings.Num() > 0)
+	{
+		OutRegions.Add({
+			TEXT("/Body/Bindings"),
+			TEXT("Existing WidgetBlueprint has non-empty Bindings that Task 1 cannot safely apply or diff")
+		});
+	}
+	if (WidgetBlueprint->Animations.Num() > 0)
+	{
+		OutRegions.Add({
+			TEXT("/Body/Animations"),
+			TEXT("Existing WidgetBlueprint has non-empty Animations that Task 1 cannot safely apply or diff")
+		});
+	}
+#endif
+}
+
+FAssetDocumentCapabilityResult FailOnUnsupportedCurrentRegions(const UWidgetBlueprint* WidgetBlueprint)
+{
+	TArray<FUnsupportedCurrentRegion> UnsupportedRegions;
+	CollectUnsupportedCurrentRegions(WidgetBlueprint, UnsupportedRegions);
+	if (UnsupportedRegions.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
+		TEXT("Existing WidgetBlueprint contains unsupported non-empty regions for Task 1"),
+		UnsupportedRegions[0].Path,
+		TEXT("UnsupportedWidgetBlueprintRegion"));
+	Result.Diagnostics.Reset();
+	for (const FUnsupportedCurrentRegion& UnsupportedRegion : UnsupportedRegions)
+	{
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = UnsupportedRegion.Path;
+		Diagnostic.Code = TEXT("UnsupportedWidgetBlueprintRegion");
+		Diagnostic.Message = UnsupportedRegion.Message;
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return Result;
 }
 
 TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
@@ -361,6 +471,12 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		return ParentClassResult;
 	}
 
+	const FAssetDocumentCapabilityResult CurrentStateResult = FailOnUnsupportedCurrentRegions(WidgetBlueprint);
+	if (!CurrentStateResult.bSuccess)
+	{
+		return CurrentStateResult;
+	}
+
 	bool bChanged = false;
 	if (WidgetBlueprint->ParentClass.Get() != ParentClass)
 	{
@@ -368,35 +484,6 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 		WidgetBlueprint->ParentClass = ParentClass;
 		bChanged = true;
 	}
-
-#if WITH_EDITORONLY_DATA
-	if (WidgetBlueprint->WidgetTree)
-	{
-		WidgetBlueprint->WidgetTree->Modify();
-		if (WidgetBlueprint->WidgetTree->RootWidget)
-		{
-			WidgetBlueprint->WidgetTree->RootWidget = nullptr;
-			bChanged = true;
-		}
-		if (WidgetBlueprint->WidgetTree->NamedSlotBindings.Num() > 0)
-		{
-			WidgetBlueprint->WidgetTree->NamedSlotBindings.Empty();
-			bChanged = true;
-		}
-	}
-	if (WidgetBlueprint->Bindings.Num() > 0)
-	{
-		WidgetBlueprint->Modify();
-		WidgetBlueprint->Bindings.Empty();
-		bChanged = true;
-	}
-	if (WidgetBlueprint->Animations.Num() > 0)
-	{
-		WidgetBlueprint->Modify();
-		WidgetBlueprint->Animations.Empty();
-		bChanged = true;
-	}
-#endif
 
 	if (bChanged)
 	{
@@ -437,6 +524,13 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 	OutBodyJson->SetObjectField(TEXT("EditorOptions"), MakeShared<FJsonObject>());
 	OutBodyJson->SetObjectField(TEXT("WidgetVariableGuids"), MakeShared<FJsonObject>());
 
+	TArray<FUnsupportedCurrentRegion> UnsupportedRegions;
+	CollectUnsupportedCurrentRegions(WidgetBlueprint, UnsupportedRegions);
+	for (const FUnsupportedCurrentRegion& UnsupportedRegion : UnsupportedRegions)
+	{
+		AddSkippedEvidence(OutBodyJson, UnsupportedRegion.Path, UnsupportedRegion.Message);
+	}
+
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted WidgetBlueprint Body"));
 }
 
@@ -467,8 +561,24 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 		const FString BodyKey = BodyKeyName.ToString();
 		const TSharedPtr<FJsonValue>* Current = CurrentBody->Values.Find(BodyKey);
 		const TSharedPtr<FJsonValue>* Desired = DesiredBody->Values.Find(BodyKey);
-		const TSharedPtr<FJsonValue> CurrentValue = Current ? *Current : MakeShared<FJsonValueNull>();
+		TSharedPtr<FJsonValue> CurrentValue = Current ? *Current : MakeShared<FJsonValueNull>();
 		const TSharedPtr<FJsonValue> DesiredValue = Desired ? *Desired : MakeShared<FJsonValueNull>();
+		if (const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset))
+		{
+			TArray<FUnsupportedCurrentRegion> UnsupportedRegions;
+			CollectUnsupportedCurrentRegions(WidgetBlueprint, UnsupportedRegions);
+			for (const FUnsupportedCurrentRegion& UnsupportedRegion : UnsupportedRegions)
+			{
+				if (UnsupportedRegion.Path == FString::Printf(TEXT("/Body/%s"), *BodyKey))
+				{
+					TSharedRef<FJsonObject> UnsupportedEvidence = MakeShared<FJsonObject>();
+					UnsupportedEvidence->SetStringField(TEXT("Code"), TEXT("UnsupportedWidgetBlueprintRegion"));
+					UnsupportedEvidence->SetStringField(TEXT("Message"), UnsupportedRegion.Message);
+					CurrentValue = MakeShared<FJsonValueObject>(UnsupportedEvidence);
+					break;
+				}
+			}
+		}
 		const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
 			? TEXT("unchanged")
 			: TEXT("changed");

@@ -324,7 +324,7 @@ The profile owns these canonical `Body` keys:
 - `EditorOptions`: stable WidgetBlueprint editor/runtime behavior flags. Task 1 accepts only an empty object.
 - `WidgetVariableGuids`: stable widget/animation variable GUID map. Task 1 accepts only an empty object.
 
-Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected.
+Non-empty regions whose adapters are scheduled for later WidgetBlueprint implementation tasks fail validation or apply with `UnsupportedWidgetBlueprintRegion`; they are not silently preserved. Unknown `Body` keys are rejected. During Task 1, applying an empty/default document to an existing WidgetBlueprint that already has non-empty `WidgetTree`, `Bindings`, or `Animations` also fails with `UnsupportedWidgetBlueprintRegion` so unsupported current content is not cleared. Extract and diff surface extract-only `_Skipped.UnsupportedWidgetBlueprintRegions` evidence for those current unsupported regions.
 
 Minimal empty WidgetBlueprint sidecar:
 
