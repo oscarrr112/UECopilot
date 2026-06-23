@@ -28,7 +28,10 @@
 #include "MovieScene.h"
 #include "Test/TestUserWidget.h"
 #include "Tracks/MovieSceneBoolTrack.h"
+#include "Tracks/MovieSceneFloatTrack.h"
 #include "WidgetBlueprint.h"
+
+#include <limits>
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -317,6 +320,14 @@ TSharedPtr<FJsonObject> MakePropertyBinding(const TCHAR* Widget, const TCHAR* Pr
 }
 
 TSharedPtr<FJsonObject> MakeAnimationFloatKey(int32 Frame, double Value)
+{
+	TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
+	Key->SetNumberField(TEXT("Frame"), Frame);
+	Key->SetNumberField(TEXT("Value"), Value);
+	return Key;
+}
+
+TSharedPtr<FJsonObject> MakeAnimationFloatKeyNumber(double Frame, double Value)
 {
 	TSharedPtr<FJsonObject> Key = MakeShared<FJsonObject>();
 	Key->SetNumberField(TEXT("Frame"), Frame);
@@ -1982,6 +1993,193 @@ bool FAssetDocumentWidgetBlueprintAnimationsUnsupportedTrackBlocksCompleteDiffTe
 	TestTrue(
 		TEXT("Existing unsupported animation state blocks complete diff"),
 		DiffPayloadHasFailedCode(DiffResult.Payload, TEXT("UnsupportedWidgetAnimationTrack")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsApplyFailurePreservesExistingAnimationsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.ApplyFailurePreservesExistingAnimations",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsApplyFailurePreservesExistingAnimationsTest::RunTest(const FString&)
+{
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsApplyFailurePreserves"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InitialBody = MakeBindingFixtureBody();
+	SetAnimations(InitialBody, {
+		MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		})
+	});
+	TestTrue(TEXT("Initial animation apply succeeds"), Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InitialBody))).IsSuccess());
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint exists before failed apply"), WidgetBlueprint);
+	if (!WidgetBlueprint)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Initial animation exists before failed apply"), WidgetBlueprint->Animations.Num(), 1);
+
+	UMovieScene::FIsTrackClassAllowedEvent PreviousTrackClassAllowedEvent = UMovieScene::IsTrackClassAllowedEvent;
+	UMovieScene::IsTrackClassAllowedEvent.BindLambda([](UClass* TrackClass)
+	{
+		return TrackClass != UMovieSceneFloatTrack::StaticClass();
+	});
+	ON_SCOPE_EXIT
+	{
+		UMovieScene::IsTrackClassAllowedEvent = PreviousTrackClassAllowedEvent;
+	};
+
+	TSharedRef<FJsonObject> ReplacementBody = MakeBindingFixtureBody();
+	SetAnimations(ReplacementBody, {
+		MakeAnimation(TEXT("Outro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 1.0),
+				MakeAnimationFloatKey(30, 0.0)})
+		})
+	});
+	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ReplacementBody)));
+	TestFalse(TEXT("Injected MovieScene track failure rejects apply"), FailedResult.IsSuccess());
+	TestTrue(TEXT("Track creation failure diagnostic is reported"), ResultHasDiagnosticCode(FailedResult, TEXT("CreateWidgetAnimationTrackFailed")));
+
+	WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint still exists after failed apply"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		TestEqual(TEXT("Failed animation apply preserves existing animation count"), WidgetBlueprint->Animations.Num(), 1);
+		if (WidgetBlueprint->Animations.Num() == 1 && WidgetBlueprint->Animations[0])
+		{
+			TestEqual(TEXT("Failed animation apply preserves existing animation name"), WidgetBlueprint->Animations[0]->GetFName(), FName(TEXT("Intro")));
+			TestNotNull(TEXT("Failed animation apply preserves existing MovieScene"), WidgetBlueprint->Animations[0]->GetMovieScene());
+		}
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintAnimationsRejectsMalformedNumbersTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.Animations.RejectsMalformedNumbers",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintAnimationsRejectsMalformedNumbersTest::RunTest(const FString&)
+{
+	struct FCase
+	{
+		const TCHAR* Label;
+		TFunction<void(TSharedPtr<FJsonObject>)> MutateAnimation;
+		const TCHAR* ExpectedCode;
+		const TCHAR* ExpectedPath;
+	};
+
+	const TArray<FCase> Cases = {
+		{
+			TEXT("Fractional key frame"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+				Animation->TryGetArrayField(TEXT("Tracks"), Tracks);
+				const TSharedPtr<FJsonObject> Track = Tracks && Tracks->Num() > 0 ? (*Tracks)[0]->AsObject() : nullptr;
+				const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+				if (Track.IsValid() && Track->TryGetArrayField(TEXT("Keys"), Keys) && Keys && Keys->Num() > 0)
+				{
+					(*Keys)[0]->AsObject()->SetNumberField(TEXT("Frame"), 0.5);
+				}
+			},
+			TEXT("InvalidAnimationFrame"),
+			TEXT("/Body/Animations/0/Tracks/0/Keys/0/Frame")
+		},
+		{
+			TEXT("Overflow key frame"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
+				Animation->TryGetArrayField(TEXT("Tracks"), Tracks);
+				const TSharedPtr<FJsonObject> Track = Tracks && Tracks->Num() > 0 ? (*Tracks)[0]->AsObject() : nullptr;
+				const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+				if (Track.IsValid() && Track->TryGetArrayField(TEXT("Keys"), Keys) && Keys && Keys->Num() > 0)
+				{
+					(*Keys)[0]->AsObject()->SetNumberField(TEXT("Frame"), static_cast<double>(TNumericLimits<int32>::Max()) + 1.0);
+				}
+			},
+			TEXT("InvalidAnimationFrame"),
+			TEXT("/Body/Animations/0/Tracks/0/Keys/0/Frame")
+		},
+		{
+			TEXT("Fractional frame rate numerator"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TSharedPtr<FJsonObject>* FrameRate = nullptr;
+				if (Animation->TryGetObjectField(TEXT("FrameRate"), FrameRate) && FrameRate && FrameRate->IsValid())
+				{
+					(*FrameRate)->SetNumberField(TEXT("Numerator"), 29.97);
+				}
+			},
+			TEXT("InvalidAnimationFrameRate"),
+			TEXT("/Body/Animations/0/FrameRate/Numerator")
+		},
+		{
+			TEXT("Non-finite frame rate denominator"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TSharedPtr<FJsonObject>* FrameRate = nullptr;
+				if (Animation->TryGetObjectField(TEXT("FrameRate"), FrameRate) && FrameRate && FrameRate->IsValid())
+				{
+					(*FrameRate)->SetNumberField(TEXT("Denominator"), std::numeric_limits<double>::infinity());
+				}
+			},
+			TEXT("InvalidAnimationFrameRate"),
+			TEXT("/Body/Animations/0/FrameRate/Denominator")
+		},
+		{
+			TEXT("Fractional playback start frame"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TSharedPtr<FJsonObject>* PlaybackRange = nullptr;
+				if (Animation->TryGetObjectField(TEXT("PlaybackRange"), PlaybackRange) && PlaybackRange && PlaybackRange->IsValid())
+				{
+					(*PlaybackRange)->SetNumberField(TEXT("StartFrame"), 0.25);
+				}
+			},
+			TEXT("InvalidAnimationPlaybackRange"),
+			TEXT("/Body/Animations/0/PlaybackRange/StartFrame")
+		},
+		{
+			TEXT("Overflow playback end frame"),
+			[](TSharedPtr<FJsonObject> Animation)
+			{
+				const TSharedPtr<FJsonObject>* PlaybackRange = nullptr;
+				if (Animation->TryGetObjectField(TEXT("PlaybackRange"), PlaybackRange) && PlaybackRange && PlaybackRange->IsValid())
+				{
+					(*PlaybackRange)->SetNumberField(TEXT("EndFrame"), static_cast<double>(TNumericLimits<int32>::Max()) + 1.0);
+				}
+			},
+			TEXT("InvalidAnimationPlaybackRange"),
+			TEXT("/Body/Animations/0/PlaybackRange/EndFrame")
+		}
+	};
+
+	FAssetDocumentService Service;
+	for (const FCase& Case : Cases)
+	{
+		TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
+		TSharedPtr<FJsonObject> Animation = MakeAnimation(TEXT("Intro"), {
+			MakeAnimationFloatTrack(TEXT("TitleText"), TEXT("RenderOpacity"), {
+				MakeAnimationFloatKey(0, 0.0),
+				MakeAnimationFloatKey(30, 1.0)})
+		});
+		Case.MutateAnimation(Animation);
+		SetAnimations(Body, {Animation});
+
+		const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsMalformed"));
+		const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
+		TestFalse(FString::Printf(TEXT("%s rejects apply"), Case.Label), Result.IsSuccess());
+		TestTrue(FString::Printf(TEXT("%s diagnostic code"), Case.Label), ResultHasDiagnosticCode(Result, Case.ExpectedCode));
+		TestTrue(FString::Printf(TEXT("%s diagnostic path"), Case.Label), ResultHasDiagnosticPath(Result, Case.ExpectedPath));
+	}
 	return true;
 }
 

@@ -91,6 +91,99 @@ FAssetDocumentCapabilityResult RequireStringField(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ReadIntegralNumberField(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& FieldName,
+	const FString& Path,
+	const FString& MissingCode,
+	const FString& InvalidCode,
+	double MinValue,
+	double MaxValue,
+	int64& OutValue)
+{
+	const TSharedPtr<FJsonValue> Value = Object.IsValid() ? Object->TryGetField(FieldName) : nullptr;
+	if (!Value.IsValid())
+	{
+		return AnimationFailure(
+			FString::Printf(TEXT("Animation numeric field '%s' is required"), *FieldName),
+			Path,
+			MissingCode);
+	}
+	if (Value->Type != EJson::Number)
+	{
+		return AnimationFailure(
+			FString::Printf(TEXT("Animation numeric field '%s' must be an integer"), *FieldName),
+			Path,
+			InvalidCode);
+	}
+
+	double Number = 0.0;
+	if (!Value->TryGetNumber(Number)
+		|| !FMath::IsFinite(Number)
+		|| FMath::FloorToDouble(Number) != Number
+		|| Number < MinValue
+		|| Number > MaxValue)
+	{
+		return AnimationFailure(
+			FString::Printf(TEXT("Animation numeric field '%s' must be a finite integer in range"), *FieldName),
+			Path,
+			InvalidCode);
+	}
+
+	OutValue = static_cast<int64>(Number);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadInt32NumberField(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& FieldName,
+	const FString& Path,
+	const FString& MissingCode,
+	const FString& InvalidCode,
+	int32& OutValue)
+{
+	int64 Value = 0;
+	const FAssetDocumentCapabilityResult Result = ReadIntegralNumberField(
+		Object,
+		FieldName,
+		Path,
+		MissingCode,
+		InvalidCode,
+		static_cast<double>(TNumericLimits<int32>::Min()),
+		static_cast<double>(TNumericLimits<int32>::Max()),
+		Value);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutValue = static_cast<int32>(Value);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadPositiveFrameRateNumberField(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& FieldName,
+	const FString& Path,
+	uint32& OutValue)
+{
+	int64 Value = 0;
+	const FAssetDocumentCapabilityResult Result = ReadIntegralNumberField(
+		Object,
+		FieldName,
+		Path,
+		TEXT("MissingAnimationFrameRate"),
+		TEXT("InvalidAnimationFrameRate"),
+		1.0,
+		static_cast<double>(TNumericLimits<int32>::Max()),
+		Value);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutValue = static_cast<uint32>(Value);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ParseKeyArray(
 	const TArray<TSharedPtr<FJsonValue>>* KeyValues,
 	const FString& Path,
@@ -112,11 +205,18 @@ FAssetDocumentCapabilityResult ParseKeyArray(
 		}
 
 		const TSharedPtr<FJsonObject> KeyObject = KeyValue->AsObject();
-		double Frame = 0.0;
 		double Value = 0.0;
-		if (!KeyObject->TryGetNumberField(TEXT("Frame"), Frame))
+		int32 Frame = 0;
+		FAssetDocumentCapabilityResult Result = ReadInt32NumberField(
+			KeyObject,
+			TEXT("Frame"),
+			KeyPath / TEXT("Frame"),
+			TEXT("MissingAnimationKeyFrame"),
+			TEXT("InvalidAnimationFrame"),
+			Frame);
+		if (!Result.bSuccess)
 		{
-			return AnimationFailure(TEXT("Animation key requires Frame"), KeyPath / TEXT("Frame"), TEXT("MissingAnimationKeyFrame"));
+			return Result;
 		}
 		if (!KeyObject->TryGetNumberField(TEXT("Value"), Value))
 		{
@@ -124,7 +224,7 @@ FAssetDocumentCapabilityResult ParseKeyArray(
 		}
 
 		FWidgetAnimationKeySpec Key;
-		Key.Frame = static_cast<int32>(Frame);
+		Key.Frame = Frame;
 		Key.Value = static_cast<float>(Value);
 		OutKeys.Add(Key);
 	}
@@ -268,26 +368,70 @@ FAssetDocumentCapabilityResult ParseAnimationSpecs(
 		const TSharedPtr<FJsonObject>* FrameRateObject = nullptr;
 		if (AnimationObject->TryGetObjectField(TEXT("FrameRate"), FrameRateObject) && FrameRateObject && FrameRateObject->IsValid())
 		{
-			double Numerator = 30.0;
-			double Denominator = 1.0;
-			(*FrameRateObject)->TryGetNumberField(TEXT("Numerator"), Numerator);
-			(*FrameRateObject)->TryGetNumberField(TEXT("Denominator"), Denominator);
-			if (Numerator <= 0.0 || Denominator <= 0.0)
+			uint32 Numerator = 30;
+			uint32 Denominator = 1;
+			if ((*FrameRateObject)->HasField(TEXT("Numerator")))
 			{
-				return AnimationFailure(TEXT("Animation FrameRate must be positive"), AnimationPath / TEXT("FrameRate"), TEXT("InvalidAnimationFrameRate"));
+				Result = ReadPositiveFrameRateNumberField(
+					*FrameRateObject,
+					TEXT("Numerator"),
+					AnimationPath / TEXT("FrameRate") / TEXT("Numerator"),
+					Numerator);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
 			}
-			Animation.FrameRate = FFrameRate(static_cast<uint32>(Numerator), static_cast<uint32>(Denominator));
+			if ((*FrameRateObject)->HasField(TEXT("Denominator")))
+			{
+				Result = ReadPositiveFrameRateNumberField(
+					*FrameRateObject,
+					TEXT("Denominator"),
+					AnimationPath / TEXT("FrameRate") / TEXT("Denominator"),
+					Denominator);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			Animation.FrameRate = FFrameRate(Numerator, Denominator);
 		}
 
 		const TSharedPtr<FJsonObject>* PlaybackRangeObject = nullptr;
 		if (AnimationObject->TryGetObjectField(TEXT("PlaybackRange"), PlaybackRangeObject) && PlaybackRangeObject && PlaybackRangeObject->IsValid())
 		{
-			double StartFrame = 0.0;
-			double EndFrame = 30.0;
-			(*PlaybackRangeObject)->TryGetNumberField(TEXT("StartFrame"), StartFrame);
-			(*PlaybackRangeObject)->TryGetNumberField(TEXT("EndFrame"), EndFrame);
-			Animation.StartFrame = static_cast<int32>(StartFrame);
-			Animation.EndFrame = static_cast<int32>(EndFrame);
+			int32 StartFrame = 0;
+			int32 EndFrame = 30;
+			if ((*PlaybackRangeObject)->HasField(TEXT("StartFrame")))
+			{
+				Result = ReadInt32NumberField(
+					*PlaybackRangeObject,
+					TEXT("StartFrame"),
+					AnimationPath / TEXT("PlaybackRange") / TEXT("StartFrame"),
+					TEXT("MissingAnimationPlaybackRange"),
+					TEXT("InvalidAnimationPlaybackRange"),
+					StartFrame);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			if ((*PlaybackRangeObject)->HasField(TEXT("EndFrame")))
+			{
+				Result = ReadInt32NumberField(
+					*PlaybackRangeObject,
+					TEXT("EndFrame"),
+					AnimationPath / TEXT("PlaybackRange") / TEXT("EndFrame"),
+					TEXT("MissingAnimationPlaybackRange"),
+					TEXT("InvalidAnimationPlaybackRange"),
+					EndFrame);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			Animation.StartFrame = StartFrame;
+			Animation.EndFrame = EndFrame;
 			if (Animation.EndFrame < Animation.StartFrame)
 			{
 				return AnimationFailure(TEXT("Animation PlaybackRange.EndFrame must be >= StartFrame"), AnimationPath / TEXT("PlaybackRange"), TEXT("InvalidAnimationPlaybackRange"));
@@ -590,8 +734,28 @@ UWidgetAnimation* FindAnimationByName(UWidgetBlueprint* WidgetBlueprint, FName N
 	return nullptr;
 }
 
-void RenameExistingAnimationsOutOfTheWay(UWidgetBlueprint* WidgetBlueprint)
+struct FExistingAnimationState
 {
+	UWidgetAnimation* Animation = nullptr;
+	FName OriginalName;
+};
+
+void MoveAnimationToTransient(UWidgetAnimation* Animation)
+{
+	if (!Animation)
+	{
+		return;
+	}
+	const FName TransientName = MakeUniqueObjectName(
+		GetTransientPackage(),
+		UWidgetAnimation::StaticClass(),
+		FName(*(Animation->GetName() + TEXT("_AssetDocumentDiscarded"))));
+	Animation->Rename(*TransientName.ToString(), GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+}
+
+void RenameExistingAnimationsOutOfTheWay(UWidgetBlueprint* WidgetBlueprint, TArray<FExistingAnimationState>& OutExistingAnimations)
+{
+	OutExistingAnimations.Reset();
 	if (!WidgetBlueprint)
 	{
 		return;
@@ -603,6 +767,7 @@ void RenameExistingAnimationsOutOfTheWay(UWidgetBlueprint* WidgetBlueprint)
 		{
 			continue;
 		}
+		OutExistingAnimations.Add({Animation, Animation->GetFName()});
 		const FName TrashName = MakeUniqueObjectName(
 			WidgetBlueprint,
 			UWidgetAnimation::StaticClass(),
@@ -610,6 +775,24 @@ void RenameExistingAnimationsOutOfTheWay(UWidgetBlueprint* WidgetBlueprint)
 		Animation->Rename(*TrashName.ToString(), WidgetBlueprint, REN_DontCreateRedirectors | REN_NonTransactional);
 	}
 	WidgetBlueprint->Animations.Empty();
+}
+
+void RestoreExistingAnimations(UWidgetBlueprint* WidgetBlueprint, const TArray<FExistingAnimationState>& ExistingAnimations)
+{
+	if (!WidgetBlueprint)
+	{
+		return;
+	}
+	WidgetBlueprint->Animations.Empty();
+	for (const FExistingAnimationState& Existing : ExistingAnimations)
+	{
+		if (!Existing.Animation)
+		{
+			continue;
+		}
+		Existing.Animation->Rename(*Existing.OriginalName.ToString(), WidgetBlueprint, REN_DontCreateRedirectors | REN_NonTransactional);
+		WidgetBlueprint->Animations.Add(Existing.Animation);
+	}
 }
 
 FGuid ResolveOrCreateWidgetBindingGuid(
@@ -694,9 +877,14 @@ FAssetDocumentCapabilityResult AddTransformTrack(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult MaterializeAnimation(UWidgetBlueprint* WidgetBlueprint, const FWidgetAnimationSpec& Spec)
+FAssetDocumentCapabilityResult MaterializeAnimation(
+	UWidgetBlueprint* WidgetBlueprint,
+	const FWidgetAnimationSpec& Spec,
+	const FName& ObjectName,
+	UWidgetAnimation*& OutAnimation)
 {
-	UWidgetAnimation* Animation = NewObject<UWidgetAnimation>(WidgetBlueprint, Spec.Name, RF_Transactional);
+	OutAnimation = nullptr;
+	UWidgetAnimation* Animation = NewObject<UWidgetAnimation>(WidgetBlueprint, ObjectName, RF_Transactional);
 	if (!Animation)
 	{
 		return AnimationFailure(TEXT("Failed to create WidgetAnimation object"), Spec.JsonPath, TEXT("CreateWidgetAnimationFailed"));
@@ -732,7 +920,7 @@ FAssetDocumentCapabilityResult MaterializeAnimation(UWidgetBlueprint* WidgetBlue
 		}
 	}
 
-	WidgetBlueprint->Animations.Add(Animation);
+	OutAnimation = Animation;
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -964,15 +1152,42 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAnimationAdapter::Apply(UWidgetBl
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied WidgetBlueprint Animations"));
 	}
 
-	WidgetBlueprint->Modify();
-	RenameExistingAnimationsOutOfTheWay(WidgetBlueprint);
+	TArray<UWidgetAnimation*> StagedAnimations;
 	for (const FWidgetAnimationSpec& Spec : DesiredSpecs)
 	{
-		Result = MaterializeAnimation(WidgetBlueprint, Spec);
+		const FName StagedName = MakeUniqueObjectName(
+			WidgetBlueprint,
+			UWidgetAnimation::StaticClass(),
+			FName(*(Spec.Name.ToString() + TEXT("_AssetDocumentStaged"))));
+		UWidgetAnimation* StagedAnimation = nullptr;
+		Result = MaterializeAnimation(WidgetBlueprint, Spec, StagedName, StagedAnimation);
 		if (!Result.bSuccess)
 		{
+			for (UWidgetAnimation* Animation : StagedAnimations)
+			{
+				MoveAnimationToTransient(Animation);
+			}
 			return Result;
 		}
+		StagedAnimations.Add(StagedAnimation);
+	}
+
+	WidgetBlueprint->Modify();
+	TArray<FExistingAnimationState> ExistingAnimations;
+	RenameExistingAnimationsOutOfTheWay(WidgetBlueprint, ExistingAnimations);
+	for (int32 Index = 0; Index < DesiredSpecs.Num(); ++Index)
+	{
+		UWidgetAnimation* Animation = StagedAnimations.IsValidIndex(Index) ? StagedAnimations[Index] : nullptr;
+		if (!Animation || !Animation->Rename(*DesiredSpecs[Index].Name.ToString(), WidgetBlueprint, REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			RestoreExistingAnimations(WidgetBlueprint, ExistingAnimations);
+			for (UWidgetAnimation* StagedAnimation : StagedAnimations)
+			{
+				MoveAnimationToTransient(StagedAnimation);
+			}
+			return AnimationFailure(TEXT("Failed to finalize WidgetAnimation replacement"), DesiredSpecs[Index].JsonPath, TEXT("CreateWidgetAnimationFailed"));
+		}
+		WidgetBlueprint->Animations.Add(Animation);
 	}
 	FBlueprintEditorUtils::MarkBlueprintAsModified(WidgetBlueprint);
 	if (bOutChanged)
