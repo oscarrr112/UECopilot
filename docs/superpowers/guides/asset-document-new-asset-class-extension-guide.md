@@ -25,6 +25,7 @@ docs/superpowers/guides/asset-document-new-asset-class-extension-guide.md
 docs/reports/asset-document-animmontage-branch-final-review.md
 docs/reports/asset-document-animmontage-complete-region-benchmark.md
 docs/superpowers/specs/2026-06-13-asset-document-bidirectional-delta-sidecar-goal.md
+docs/superpowers/specs/2026-06-24-asset-document-public-region-runtime-design.md
 docs/superpowers/specs/2026-06-14-animmontage-region-benchmark.md
 docs/superpowers/specs/asset-document-deferred-fields/2026-06-12-animmontage.md
 ```
@@ -342,12 +343,13 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 ## 新 Session Prompt 模板
 
 ```text
-你正在 E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec 中扩展 AssetDocument 新资产类：<AssetClass>。
+你正在当前 spec/plan 指定的 UECopilot worktree 中扩展 AssetDocument 新资产类：<AssetClass>。
 
 请先读取：
 - docs/superpowers/guides/asset-document-new-asset-class-extension-guide.md
 - docs/reports/asset-document-animmontage-branch-final-review.md
 - docs/superpowers/specs/2026-06-13-asset-document-bidirectional-delta-sidecar-goal.md
+- docs/superpowers/specs/2026-06-24-asset-document-public-region-runtime-design.md
 - docs/superpowers/specs/2026-06-14-animmontage-region-benchmark.md
 
 任务目标：
