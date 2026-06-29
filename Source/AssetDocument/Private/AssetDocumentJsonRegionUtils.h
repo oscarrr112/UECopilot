@@ -23,7 +23,7 @@ struct FAssetDocumentJsonRegionUtils
 	static FAssetDocumentCapabilityResult RequireArrayValue(
 		const TSharedPtr<FJsonValue>& Value,
 		const FString& Path,
-		const TArray<TSharedPtr<FJsonValue>>*& OutArray);
+		TArray<TSharedPtr<FJsonValue>>& OutArray);
 
 	static FAssetDocumentCapabilityResult RequireStringField(
 		const TSharedPtr<FJsonObject>& Object,

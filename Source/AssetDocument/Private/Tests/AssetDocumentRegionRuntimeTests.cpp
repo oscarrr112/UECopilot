@@ -42,6 +42,11 @@ bool FAssetDocumentRegionRuntimeJsonUtilsRequireObjectTest::RunTest(const FStrin
 		TEXT("/Body/Preview"),
 		OutObject);
 	TestFalse(TEXT("String value fails object requirement"), Result.bSuccess);
+	TestEqual(TEXT("Failure reports one diagnostic"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
 	TestEqual(TEXT("Failure path uses supplied JSON pointer"), Result.Diagnostics[0].Path, FString(TEXT("/Body/Preview")));
 	TestEqual(TEXT("Failure code marks invalid section type"), Result.Diagnostics[0].Code, FString(TEXT("InvalidBodySectionType")));
 
@@ -55,19 +60,29 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentRegionRuntimeJsonUtilsRequireArrayTest::RunTest(const FString& Parameters)
 {
-	const TArray<TSharedPtr<FJsonValue>>* OutArray = nullptr;
+	TArray<TSharedPtr<FJsonValue>> OutArray;
 	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireArrayValue(
 		MakeArrayValue({MakeShared<FJsonValueString>(TEXT("A"))}),
 		TEXT("/Body/Curves"),
 		OutArray);
 	TestTrue(TEXT("Array value succeeds"), Result.bSuccess);
-	TestTrue(TEXT("Array pointer is returned"), OutArray && OutArray->Num() == 1);
+	TestEqual(TEXT("Array values are copied to caller-owned storage"), OutArray.Num(), 1);
+	if (OutArray.Num() < 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Array value remains safe after temporary input"), OutArray[0]->AsString(), FString(TEXT("A")));
 
 	Result = FAssetDocumentJsonRegionUtils::RequireArrayValue(
 		MakeObjectValue(MakeShared<FJsonObject>()),
 		TEXT("/Body/Curves"),
 		OutArray);
 	TestFalse(TEXT("Object value fails array requirement"), Result.bSuccess);
+	TestEqual(TEXT("Failure reports one diagnostic"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
 	TestEqual(TEXT("Failure path uses supplied JSON pointer"), Result.Diagnostics[0].Path, FString(TEXT("/Body/Curves")));
 	TestEqual(TEXT("Failure message describes array requirement"), Result.Message, FString(TEXT("Expected a JSON array")));
 
@@ -113,8 +128,16 @@ bool FAssetDocumentRegionRuntimeJsonUtilsDiffEntryShapeTest::RunTest(const FStri
 		MakeShared<FJsonValueString>(TEXT("After")));
 
 	TestEqual(TEXT("One diff entry is added"), Entries.Num(), 1);
+	if (Entries.Num() < 1)
+	{
+		return false;
+	}
 	TestTrue(TEXT("Entry is a JSON object"), Entries[0].IsValid() && Entries[0]->Type == EJson::Object);
 	const TSharedPtr<FJsonObject> EntryObject = Entries[0]->AsObject();
+	if (!EntryObject.IsValid())
+	{
+		return false;
+	}
 	TestEqual(TEXT("Entry path field"), EntryObject->GetStringField(TEXT("path")), FString(TEXT("/Body/Preview")));
 	TestEqual(TEXT("Entry status field"), EntryObject->GetStringField(TEXT("status")), FString(TEXT("changed")));
 	TestEqual(TEXT("Entry current field"), EntryObject->GetStringField(TEXT("current")), FString(TEXT("Before")));
@@ -130,6 +153,62 @@ bool FAssetDocumentRegionRuntimeJsonUtilsDiffEntryShapeTest::RunTest(const FStri
 		TEXT("Comparable JSON ignores object field insertion order"),
 		FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeObjectValue(FirstObject)),
 		FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeObjectValue(SecondObject)));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeJsonUtilsFieldFailureTest,
+	"AssetFactory.AssetDocument.RegionRuntime.JsonUtils.FieldFailures",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeJsonUtilsFieldFailureTest::RunTest(const FString& Parameters)
+{
+	TSharedPtr<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Name"), TEXT("   "));
+	Object->SetStringField(TEXT("Enabled"), TEXT("true"));
+
+	FString OutString;
+	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireStringField(
+		Object,
+		TEXT("Name"),
+		TEXT("/Body/Variables/0/Name"),
+		OutString);
+	TestFalse(TEXT("Whitespace-only string is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Whitespace string failure diagnostic count"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Whitespace string failure path"), Result.Diagnostics[0].Path, FString(TEXT("/Body/Variables/0/Name")));
+
+	double OutNumber = 0.0;
+	Result = FAssetDocumentJsonRegionUtils::RequireNumberField(
+		Object,
+		TEXT("Time"),
+		TEXT("/Body/Curves/0/Keys/0/Time"),
+		OutNumber);
+	TestFalse(TEXT("Missing number is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Missing number diagnostic count"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Missing number diagnostic code"), Result.Diagnostics[0].Code, FString(TEXT("InvalidNumericField")));
+
+	bool bOutBool = false;
+	Result = FAssetDocumentJsonRegionUtils::RequireBoolField(
+		Object,
+		TEXT("Enabled"),
+		TEXT("/Body/Options/Enabled"),
+		bOutBool);
+	TestFalse(TEXT("Wrong bool type is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Wrong bool diagnostic count"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Wrong bool diagnostic code"), Result.Diagnostics[0].Code, FString(TEXT("InvalidBooleanField")));
 
 	return true;
 }

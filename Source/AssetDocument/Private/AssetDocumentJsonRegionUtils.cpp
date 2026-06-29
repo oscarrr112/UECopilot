@@ -34,14 +34,14 @@ FAssetDocumentCapabilityResult FAssetDocumentJsonRegionUtils::RequireObjectValue
 FAssetDocumentCapabilityResult FAssetDocumentJsonRegionUtils::RequireArrayValue(
 	const TSharedPtr<FJsonValue>& Value,
 	const FString& Path,
-	const TArray<TSharedPtr<FJsonValue>>*& OutArray)
+	TArray<TSharedPtr<FJsonValue>>& OutArray)
 {
 	if (!Value.IsValid() || Value->Type != EJson::Array)
 	{
 		return Failure(Path, TEXT("InvalidBodySectionType"), TEXT("Expected a JSON array"));
 	}
 
-	OutArray = &Value->AsArray();
+	OutArray = Value->AsArray();
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -52,7 +52,14 @@ FAssetDocumentCapabilityResult FAssetDocumentJsonRegionUtils::RequireStringField
 	FString& OutString,
 	const FString& Code)
 {
-	if (!Object.IsValid() || !Object->TryGetStringField(FieldName, OutString) || OutString.IsEmpty())
+	const TSharedPtr<FJsonValue> FieldValue = Object.IsValid() ? Object->TryGetField(FieldName) : nullptr;
+	if (!FieldValue.IsValid() || FieldValue->Type != EJson::String)
+	{
+		return Failure(Path, Code, FString::Printf(TEXT("%s must be a non-empty string"), *FieldName));
+	}
+
+	OutString = FieldValue->AsString().TrimStartAndEnd();
+	if (OutString.IsEmpty())
 	{
 		return Failure(Path, Code, FString::Printf(TEXT("%s must be a non-empty string"), *FieldName));
 	}
@@ -66,10 +73,12 @@ FAssetDocumentCapabilityResult FAssetDocumentJsonRegionUtils::RequireNumberField
 	double& OutNumber,
 	const FString& Code)
 {
-	if (!Object.IsValid() || !Object->TryGetNumberField(FieldName, OutNumber))
+	const TSharedPtr<FJsonValue> FieldValue = Object.IsValid() ? Object->TryGetField(FieldName) : nullptr;
+	if (!FieldValue.IsValid() || FieldValue->Type != EJson::Number)
 	{
 		return Failure(Path, Code, FString::Printf(TEXT("%s must be a number"), *FieldName));
 	}
+	OutNumber = FieldValue->AsNumber();
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -80,10 +89,12 @@ FAssetDocumentCapabilityResult FAssetDocumentJsonRegionUtils::RequireBoolField(
 	bool& OutBool,
 	const FString& Code)
 {
-	if (!Object.IsValid() || !Object->TryGetBoolField(FieldName, OutBool))
+	const TSharedPtr<FJsonValue> FieldValue = Object.IsValid() ? Object->TryGetField(FieldName) : nullptr;
+	if (!FieldValue.IsValid() || FieldValue->Type != EJson::Boolean)
 	{
 		return Failure(Path, Code, FString::Printf(TEXT("%s must be a boolean"), *FieldName));
 	}
+	OutBool = FieldValue->AsBool();
 	return FAssetDocumentCapabilityResult::Success();
 }
 
