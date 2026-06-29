@@ -4,6 +4,8 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
+#include "Regions/AssetDocumentObjectRegionAdapter.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -660,6 +662,291 @@ bool FAssetDocumentRegionRuntimeDeferredRegionExtractsDeclaredDefaultTest::RunTe
 	TestTrue(TEXT("Deferred extract succeeds"), Result.bSuccess);
 	TestTrue(TEXT("Deferred graph default is array"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Array);
 	TestEqual(TEXT("Deferred graph default is empty"), ExtractedValue.IsValid() ? ExtractedValue->AsArray().Num() : -1, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectRegionRequiresObjectTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectRegion.RequiresObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectRegionRequiresObjectTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentObjectRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Preview"), TEXT("Body.Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Preview"), TEXT("/Body/Preview"), &Policy);
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeShared<FJsonValueString>(TEXT("not-object")), Adapter);
+
+	TestFalse(TEXT("Object adapter rejects non-object values"), Result.bSuccess);
+	TestEqual(TEXT("Non-object diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Preview")));
+	TestEqual(TEXT("Non-object diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidBodySectionType")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectRegionCallsValidationHookTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectRegion.CallsValidationHook",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectRegionCallsValidationHookTest::RunTest(const FString& Parameters)
+{
+	int32 ValidationCalls = 0;
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ValidateObject = [&ValidationCalls](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& Object)
+	{
+		++ValidationCalls;
+		return Object->HasField(TEXT("PreviewMesh"))
+			? FAssetDocumentCapabilityResult::Success(TEXT("object hook ok"))
+			: FAssetDocumentJsonRegionUtils::Failure(Context.JsonPointer / TEXT("PreviewMesh"), TEXT("MissingPreviewMesh"), TEXT("PreviewMesh is required"));
+	};
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("ObjectAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Preview"), TEXT("Body.Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Preview"), TEXT("/Body/Preview"), &Policy);
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewMesh"), MakeShared<FJsonObject>());
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(Preview), Adapter);
+
+	TestTrue(TEXT("Object validation hook succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Validation hook is called once"), ValidationCalls, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectRegionExtractsViaHookTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectRegion.ExtractsViaHook",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectRegionExtractsViaHookTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ExtractObject = [](const FAssetDocumentRegionContext&, TSharedRef<FJsonObject>& OutObject)
+	{
+		OutObject->SetNumberField(TEXT("RateScale"), 1.25);
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted object"));
+	};
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("ObjectAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Playback"), TEXT("Body.Playback"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Playback"), TEXT("/Body/Playback"), &Policy);
+
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+
+	TestTrue(TEXT("Object extract hook succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Extracted value is an object"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Object);
+	TestEqual(TEXT("Extracted object field is returned"), ExtractedValue->AsObject()->GetNumberField(TEXT("RateScale")), 1.25);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectRegionDiffsCanonicalJsonTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectRegion.DiffsCanonicalJson",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectRegionDiffsCanonicalJsonTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ExtractObject = [](const FAssetDocumentRegionContext&, TSharedRef<FJsonObject>& OutObject)
+	{
+		OutObject->SetNumberField(TEXT("B"), 2.0);
+		OutObject->SetNumberField(TEXT("A"), 1.0);
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted object"));
+	};
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("ObjectAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Playback"), TEXT("Body.Playback"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Playback"), TEXT("/Body/Playback"), &Policy);
+
+	TSharedRef<FJsonObject> SameDesired = MakeShared<FJsonObject>();
+	SameDesired->SetNumberField(TEXT("A"), 1.0);
+	SameDesired->SetNumberField(TEXT("B"), 2.0);
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Diff(Context, MakeObjectValue(SameDesired), Adapter, DiffEntries);
+	TestTrue(TEXT("Canonical object diff succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Field insertion order does not produce diff"), DiffEntries.Num(), 0);
+
+	TSharedRef<FJsonObject> ChangedDesired = MakeShared<FJsonObject>();
+	ChangedDesired->SetNumberField(TEXT("A"), 1.0);
+	ChangedDesired->SetNumberField(TEXT("B"), 3.0);
+	Result = FAssetDocumentRegionRuntime::Diff(Context, MakeObjectValue(ChangedDesired), Adapter, DiffEntries);
+	TestTrue(TEXT("Changed object diff succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Changed canonical object emits one diff"), DiffEntries.Num(), 1);
+	TestEqual(TEXT("Changed object diff path"), DiffEntries.Num() > 0 ? DiffEntries[0]->AsObject()->GetStringField(TEXT("path")) : FString(), FString(TEXT("/Body/Playback")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayRequiresArrayTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.RequiresArray",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayRequiresArrayTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentNamedArrayRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(MakeShared<FJsonObject>()), Adapter);
+
+	TestFalse(TEXT("Named array adapter rejects non-array values"), Result.bSuccess);
+	TestEqual(TEXT("Non-array diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidBodySectionType")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayRequiresUniqueIdentityTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.RequiresUniqueIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayRequiresUniqueIdentityTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentNamedArrayRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("Name"), TEXT("Footstep"));
+	TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+	Second->SetStringField(TEXT("Name"), TEXT("Footstep"));
+
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
+		Context,
+		MakeArrayValue({MakeObjectValue(First), MakeObjectValue(Second)}),
+		Adapter);
+
+	TestFalse(TEXT("Duplicate named array identity fails"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate identity diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateNamedArrayIdentity")));
+	TestEqual(TEXT("Duplicate identity diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/NotifyTracks/1/Name")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayRejectsMissingIdentityTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.RejectsMissingIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayRejectsMissingIdentityTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentNamedArrayRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+	TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
+	Track->SetNumberField(TEXT("Index"), 0.0);
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeArrayValue({MakeObjectValue(Track)}), Adapter);
+
+	TestFalse(TEXT("Missing identity field fails"), Result.bSuccess);
+	TestEqual(TEXT("Missing identity diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingNamedArrayIdentity")));
+	TestEqual(TEXT("Missing identity diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/NotifyTracks/0/Name")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayCanonicalizesByIdentityTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.CanonicalizesByIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayCanonicalizesByIdentityTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ExtractElements = [](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutElements)
+	{
+		TSharedRef<FJsonObject> Beta = MakeShared<FJsonObject>();
+		Beta->SetStringField(TEXT("Name"), TEXT("Beta"));
+		TSharedRef<FJsonObject> Alpha = MakeShared<FJsonObject>();
+		Alpha->SetStringField(TEXT("Name"), TEXT("Alpha"));
+		OutElements = {Beta, Alpha};
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted elements"));
+	};
+	FAssetDocumentNamedArrayRegionAdapter Adapter(TEXT("NamedArrayAdapter"), TEXT("Name"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+	TSharedRef<FJsonObject> AlphaDesired = MakeShared<FJsonObject>();
+	AlphaDesired->SetStringField(TEXT("Name"), TEXT("Alpha"));
+	TSharedRef<FJsonObject> BetaDesired = MakeShared<FJsonObject>();
+	BetaDesired->SetStringField(TEXT("Name"), TEXT("Beta"));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Diff(
+		Context,
+		MakeArrayValue({MakeObjectValue(AlphaDesired), MakeObjectValue(BetaDesired)}),
+		Adapter,
+		DiffEntries);
+
+	TestTrue(TEXT("Canonical named array diff succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Ordering differences are canonicalized by identity"), DiffEntries.Num(), 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayPreservesAuthoredApplyOrderWhenConfiguredTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.PreservesAuthoredApplyOrderWhenConfigured",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayPreservesAuthoredApplyOrderWhenConfiguredTest::RunTest(const FString& Parameters)
+{
+	TArray<FString> AppliedOrder;
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ApplyElements = [&AppliedOrder](FAssetDocumentRegionContext&, const TArray<TSharedRef<FJsonObject>>& Elements, bool& bOutChanged)
+	{
+		for (const TSharedRef<FJsonObject>& Element : Elements)
+		{
+			AppliedOrder.Add(Element->GetStringField(TEXT("Name")));
+		}
+		bOutChanged = true;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied elements"));
+	};
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.Name = TEXT("NamedArrayAdapter");
+	Config.IdentityField = TEXT("Name");
+	Config.bPreserveAuthoredApplyOrder = true;
+	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+	TSharedRef<FJsonObject> BetaDesired = MakeShared<FJsonObject>();
+	BetaDesired->SetStringField(TEXT("Name"), TEXT("Beta"));
+	TSharedRef<FJsonObject> AlphaDesired = MakeShared<FJsonObject>();
+	AlphaDesired->SetStringField(TEXT("Name"), TEXT("Alpha"));
+
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Apply(
+		Context,
+		MakeArrayValue({MakeObjectValue(BetaDesired), MakeObjectValue(AlphaDesired)}),
+		Adapter,
+		bChanged);
+
+	TestTrue(TEXT("Named array apply succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Named array apply reports change"), bChanged);
+	TestEqual(TEXT("Two elements are applied"), AppliedOrder.Num(), 2);
+	if (AppliedOrder.Num() < 2)
+	{
+		return false;
+	}
+	TestEqual(TEXT("First authored element is applied first"), AppliedOrder[0], FString(TEXT("Beta")));
+	TestEqual(TEXT("Second authored element is applied second"), AppliedOrder[1], FString(TEXT("Alpha")));
 	return true;
 }
 

@@ -2,9 +2,14 @@
 
 #include "Profiles/AnimSequenceAssetDocumentCapability.h"
 
+#include "AssetDocumentBodyRegionDispatcher.h"
 #include "AssetDocumentClassResolver.h"
 #include "AssetDocumentFragmentCompiler.h"
+#include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPropertyAdapter.h"
+#include "AssetDocumentRegionRuntime.h"
+#include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
+#include "Regions/AssetDocumentObjectRegionAdapter.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
@@ -1192,6 +1197,35 @@ FString BodyArrayFieldPath(const TCHAR* SectionName, int32 Index, const TCHAR* F
 	return FString::Printf(TEXT("/Body/%s/%d/%s"), SectionName, Index, FieldName);
 }
 
+FAssetDocumentRegionPolicy MakeAnimSequencePilotPolicy(const FName BodyKey, const EAssetDocumentRegionKind RegionKind)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = FName(*FString::Printf(TEXT("Body.%s"), *BodyKey.ToString()));
+	Policy.BodyPath = Policy.RegionId.ToString();
+	Policy.RegionKind = RegionKind;
+	return Policy;
+}
+
+FAssetDocumentRegionContext MakeAnimSequencePilotRegionContext(
+	const FAssetDocumentCapabilityContext& CapabilityContext,
+	const FName BodyKey,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = CapabilityContext.Asset;
+	RegionContext.AssetClass = CapabilityContext.AssetClass;
+	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
+	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
+	RegionContext.Definitions = CapabilityContext.Definitions;
+	RegionContext.Result = CapabilityContext.Result;
+	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
+	RegionContext.Policy = &Policy;
+	RegionContext.RegionId = Policy.RegionId;
+	RegionContext.BodyPath = Policy.BodyPath;
+	RegionContext.JsonPointer = FAssetDocumentJsonRegionUtils::MakeBodyPath(BodyKey.ToString());
+	return RegionContext;
+}
+
 bool HasManagedObjectName(const UObject* Object, const TCHAR* Prefix)
 {
 	return Object && Object->GetName().StartsWith(Prefix);
@@ -1521,23 +1555,10 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 	}
 
 	bOutHasTracks = true;
-	const TArray<TSharedPtr<FJsonValue>>* Tracks = nullptr;
-	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/NotifyTracks"), Tracks);
-	if (!Result.bSuccess)
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ValidateElement = [&OutTracks](const FAssetDocumentRegionContext&, const TSharedRef<FJsonObject>& TrackObject, const int32 Index)
 	{
-		return Result;
-	}
-
-	TSet<FName> SeenNames;
-	for (int32 Index = 0; Index < Tracks->Num(); ++Index)
-	{
-		TSharedPtr<FJsonObject> TrackObject;
-		Result = RequireObjectValue((*Tracks)[Index], BodyArrayItemPath(TEXT("NotifyTracks"), Index), TrackObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectUnknownArrayObjectFields(TrackObject.ToSharedRef(), TEXT("NotifyTracks"), Index, { TEXT("TrackName"), TEXT("Name") });
+		FAssetDocumentCapabilityResult Result = RejectUnknownArrayObjectFields(TrackObject, TEXT("NotifyTracks"), Index, { TEXT("TrackName"), TEXT("Name") });
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1550,7 +1571,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		FString NameString;
 		if (!TrackObject->TryGetStringField(TEXT("TrackName"), NameString) || NameString.TrimStartAndEnd().IsEmpty())
 		{
-			Result = ReadRequiredStringField(TrackObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), NameString);
+			Result = ReadRequiredStringField(TrackObject, TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), NameString);
 			if (!Result.bSuccess)
 			{
 				return Result;
@@ -1561,18 +1582,26 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		{
 			return BodyFailure(TEXT("Notify track name cannot be None"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("InvalidNotifyTrackName"));
 		}
-		if (SeenNames.Contains(TrackName))
-		{
-			return BodyFailure(TEXT("Duplicate notify track name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("DuplicateNotifyTrackName"));
-		}
-		SeenNames.Add(TrackName);
 
 		FParsedAnimSequenceNotifyTrack ParsedTrack;
 		ParsedTrack.Name = TrackName;
 		OutTracks.Add(ParsedTrack);
-	}
+		return FAssetDocumentCapabilityResult::Success();
+	};
 
-	return FAssetDocumentCapabilityResult::Success();
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.IdentityField = TEXT("TrackName");
+	Config.IdentityAliases = {TEXT("Name")};
+	Config.MissingIdentityCode = TEXT("InvalidStringField");
+	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.bPreserveAuthoredApplyOrder = true;
+	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentCapabilityContext CapabilityContext;
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(CapabilityContext, TEXT("NotifyTracks"), Policy);
+
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, *SectionValue, Adapter);
 }
 
 FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
@@ -2799,6 +2828,132 @@ struct FParsedAnimSequenceBody
 	TArray<FParsedManagedObjectFragment> AssetUserData;
 };
 
+FAssetDocumentCapabilityResult ParseAnimSequencePreviewRegion(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimSequence* Sequence,
+	const TSharedPtr<FJsonValue>& PreviewValue,
+	bool bResolveFragments,
+	FParsedAnimSequenceBody& OutParsed)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ValidateObject = [Compiler, &Context, Sequence, bResolveFragments, &OutParsed](
+		const FAssetDocumentRegionContext&,
+		const TSharedRef<FJsonObject>& PreviewObject)
+	{
+		UObject* PreviewMeshObject = nullptr;
+		FAssetDocumentCapabilityResult Result = ParseAssetRef(
+			Compiler,
+			Context,
+			Sequence,
+			PreviewObject,
+			TEXT("PreviewMesh"),
+			USkeletalMesh::StaticClass(),
+			TEXT("/Body/Preview/PreviewMesh"),
+			bResolveFragments,
+			true,
+			OutParsed.bHasPreviewMesh,
+			PreviewMeshObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutParsed.PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Parsed AnimSequence Preview region"));
+	};
+
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePreviewObjectRegionAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("Preview"), Policy);
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, PreviewValue, Adapter);
+}
+
+FAssetDocumentCapabilityResult ParseAnimSequencePlaybackRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedPtr<FJsonValue>& PlaybackValue,
+	FParsedAnimSequenceBody& OutParsed)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ValidateObject = [&OutParsed](const FAssetDocumentRegionContext&, const TSharedRef<FJsonObject>& PlaybackObject)
+	{
+		double RateScale = 0.0;
+		FAssetDocumentCapabilityResult Result = ReadOptionalNumber(
+			PlaybackObject,
+			TEXT("RateScale"),
+			TEXT("/Body/Playback/RateScale"),
+			OutParsed.bHasRateScale,
+			RateScale);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (OutParsed.bHasRateScale)
+		{
+			if (RateScale <= 0.0)
+			{
+				return BodyFailure(TEXT("RateScale must be positive"), TEXT("/Body/Playback/RateScale"), TEXT("InvalidRateScale"));
+			}
+			OutParsed.RateScale = static_cast<float>(RateScale);
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Parsed AnimSequence Playback region"));
+	};
+
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePlaybackObjectRegionAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("Playback"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("Playback"), Policy);
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, PlaybackValue, Adapter);
+}
+
+TSharedRef<FJsonObject> MakeAnimSequencePilotBodySubset(const TSharedRef<FJsonObject>& BodyObject)
+{
+	TSharedRef<FJsonObject> PilotBody = MakeShared<FJsonObject>();
+	for (const TCHAR* BodyKey : {TEXT("Preview"), TEXT("Playback"), TEXT("NotifyTracks")})
+	{
+		if (const TSharedPtr<FJsonValue>* Value = BodyObject->Values.Find(BodyKey))
+		{
+			PilotBody->SetField(BodyKey, *Value);
+		}
+	}
+	return PilotBody;
+}
+
+FAssetDocumentCapabilityResult ValidateAnimSequencePilotRegionsThroughDispatcher(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject)
+{
+	FAssetDocumentObjectRegionAdapter ObjectAdapter(TEXT("AnimSequenceObjectRegionAdapter"));
+
+	FAssetDocumentNamedArrayRegionAdapterConfig NamedArrayConfig;
+	NamedArrayConfig.Name = TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter");
+	NamedArrayConfig.IdentityField = TEXT("TrackName");
+	NamedArrayConfig.IdentityAliases = {TEXT("Name")};
+	NamedArrayConfig.MissingIdentityCode = TEXT("InvalidStringField");
+	NamedArrayConfig.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	NamedArrayConfig.bPreserveAuthoredApplyOrder = true;
+	FAssetDocumentNamedArrayRegionAdapter NamedArrayAdapter(NamedArrayConfig);
+
+	const TArray<FAssetDocumentRegionBinding> Bindings = {
+		{TEXT("Preview"), TEXT("Body.Preview"), ObjectAdapter.GetName(), 10, false},
+		{TEXT("Playback"), TEXT("Body.Playback"), ObjectAdapter.GetName(), 20, false},
+		{TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), NamedArrayAdapter.GetName(), 30, false},
+	};
+	const TArray<FAssetDocumentRegionPolicy> Policies = {
+		MakeAnimSequencePilotPolicy(TEXT("Preview"), EAssetDocumentRegionKind::Object),
+		MakeAnimSequencePilotPolicy(TEXT("Playback"), EAssetDocumentRegionKind::Object),
+		MakeAnimSequencePilotPolicy(TEXT("NotifyTracks"), EAssetDocumentRegionKind::Array),
+	};
+	TMap<FName, IAssetDocumentRegionAdapter*> Adapters;
+	Adapters.Add(ObjectAdapter.GetName(), &ObjectAdapter);
+	Adapters.Add(NamedArrayAdapter.GetName(), &NamedArrayAdapter);
+
+	const FAssetDocumentBodyRegionDispatcher Dispatcher(Bindings, Policies, Adapters);
+	return Dispatcher.ValidateBody(
+		Context,
+		MakeShared<FJsonValueObject>(MakeAnimSequencePilotBodySubset(BodyObject)));
+}
+
 bool TryGetAnimSequenceFrameCount(const UAnimSequence* Sequence, int32& OutFrameCount)
 {
 	OutFrameCount = 0;
@@ -2989,6 +3144,13 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		return ShapeResult;
 	}
 
+	const FAssetDocumentCapabilityResult PilotDispatchResult =
+		ValidateAnimSequencePilotRegionsThroughDispatcher(Context, BodyObject);
+	if (!PilotDispatchResult.bSuccess)
+	{
+		return PilotDispatchResult;
+	}
+
 	if (const TSharedPtr<FJsonValue>* ReferencesValue = BodyObject->Values.Find(TEXT("References")))
 	{
 		TSharedPtr<FJsonObject> ReferencesObject;
@@ -3028,44 +3190,21 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 
 	if (const TSharedPtr<FJsonValue>* PreviewValue = BodyObject->Values.Find(TEXT("Preview")))
 	{
-		TSharedPtr<FJsonObject> PreviewObject;
-		FAssetDocumentCapabilityResult Result = RequireObjectValue(*PreviewValue, TEXT("/Body/Preview"), PreviewObject);
+		FAssetDocumentCapabilityResult Result =
+			ParseAnimSequencePreviewRegion(Compiler, Context, Sequence, *PreviewValue, bResolveFragments, OutParsed);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-
-		UObject* PreviewMeshObject = nullptr;
-		Result = ParseAssetRef(Compiler, Context, Sequence, PreviewObject.ToSharedRef(), TEXT("PreviewMesh"), USkeletalMesh::StaticClass(), TEXT("/Body/Preview/PreviewMesh"), bResolveFragments, true, OutParsed.bHasPreviewMesh, PreviewMeshObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		OutParsed.PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
 	}
 
 	if (const TSharedPtr<FJsonValue>* PlaybackValue = BodyObject->Values.Find(TEXT("Playback")))
 	{
-		TSharedPtr<FJsonObject> PlaybackObject;
-		FAssetDocumentCapabilityResult Result = RequireObjectValue(*PlaybackValue, TEXT("/Body/Playback"), PlaybackObject);
+		FAssetDocumentCapabilityResult Result =
+			ParseAnimSequencePlaybackRegion(Context, *PlaybackValue, OutParsed);
 		if (!Result.bSuccess)
 		{
 			return Result;
-		}
-
-		double RateScale = 0.0;
-		Result = ReadOptionalNumber(PlaybackObject.ToSharedRef(), TEXT("RateScale"), TEXT("/Body/Playback/RateScale"), OutParsed.bHasRateScale, RateScale);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		if (OutParsed.bHasRateScale)
-		{
-			if (RateScale <= 0.0)
-			{
-				return BodyFailure(TEXT("RateScale must be positive"), TEXT("/Body/Playback/RateScale"), TEXT("InvalidRateScale"));
-			}
-			OutParsed.RateScale = static_cast<float>(RateScale);
 		}
 	}
 
@@ -3305,7 +3444,13 @@ FName FAnimSequenceAssetDocumentCapability::GetName() const
 
 TArray<FName> FAnimSequenceAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {GetName()};
+	return {
+		GetName(),
+		TEXT("AnimSequenceObjectRegionAdapter"),
+		TEXT("AnimSequencePreviewObjectRegionAdapter"),
+		TEXT("AnimSequencePlaybackObjectRegionAdapter"),
+		TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter"),
+	};
 }
 
 int32 FAnimSequenceAssetDocumentCapability::GetApplyOrder() const
@@ -3771,6 +3916,172 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body applied"));
 }
 
+FAssetDocumentCapabilityResult ExtractAnimSequencePreviewRegion(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ExtractObject = [&Compiler, Sequence](const FAssetDocumentRegionContext&, TSharedRef<FJsonObject>& OutObject)
+	{
+		if (USkeletalMesh* PreviewMesh = Sequence->GetPreviewMesh())
+		{
+			TSharedRef<FJsonObject> PreviewMeshRef = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityResult Result = ExtractAssetRef(
+				Compiler,
+				const_cast<UAnimSequence*>(Sequence),
+				PreviewMesh,
+				TEXT("/Body/Preview/PreviewMesh"),
+				PreviewMeshRef);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			OutObject->SetObjectField(TEXT("PreviewMesh"), PreviewMeshRef);
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence Preview"));
+	};
+
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePreviewObjectRegionAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("Preview"), Policy);
+	return FAssetDocumentRegionRuntime::Extract(RegionContext, Adapter, OutValue);
+}
+
+FAssetDocumentCapabilityResult ExtractAnimSequencePlaybackRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ExtractObject = [Sequence](const FAssetDocumentRegionContext&, TSharedRef<FJsonObject>& OutObject)
+	{
+		OutObject->SetNumberField(TEXT("RateScale"), Sequence->RateScale);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence Playback"));
+	};
+
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePlaybackObjectRegionAdapter"), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("Playback"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("Playback"), Policy);
+	return FAssetDocumentRegionRuntime::Extract(RegionContext, Adapter, OutValue);
+}
+
+FAssetDocumentCapabilityResult ExtractAnimSequenceNotifyTracksRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ExtractElements = [Sequence](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutElements)
+	{
+		if (!Sequence)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("No AnimSequence for NotifyTracks extract"));
+		}
+
+		for (const FAnimNotifyTrack& Track : Sequence->AnimNotifyTracks)
+		{
+			TSharedRef<FJsonObject> TrackObject = MakeShared<FJsonObject>();
+			TrackObject->SetStringField(TEXT("TrackName"), Track.TrackName.ToString());
+			OutElements.Add(TrackObject);
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence NotifyTracks"));
+	};
+
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.IdentityField = TEXT("TrackName");
+	Config.IdentityAliases = {TEXT("Name")};
+	Config.MissingIdentityCode = TEXT("InvalidStringField");
+	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.bPreserveAuthoredApplyOrder = true;
+	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("NotifyTracks"), Policy);
+	return FAssetDocumentRegionRuntime::Extract(RegionContext, Adapter, OutValue);
+}
+
+FAssetDocumentCapabilityResult DiffAnimSequenceObjectPilotRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const FName BodyKey,
+	const TSharedPtr<FJsonValue>& CurrentValue,
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	FAssetDocumentObjectRegionAdapterHooks Hooks;
+	Hooks.ExtractObject = [CurrentValue](const FAssetDocumentRegionContext&, TSharedRef<FJsonObject>& OutObject)
+	{
+		if (!CurrentValue.IsValid() || CurrentValue->Type != EJson::Object || !CurrentValue->AsObject().IsValid())
+		{
+			return BodyFailure(TEXT("Current object region value is invalid"), TEXT("/Body"), TEXT("InvalidCurrentBodySectionType"));
+		}
+		OutObject = CurrentValue->AsObject().ToSharedRef();
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted current object pilot region"));
+	};
+	Hooks.DiffObject = [CurrentValue, DesiredValue](const FAssetDocumentRegionContext& RegionContext, const TSharedRef<FJsonObject>&, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
+			? TEXT("unchanged")
+			: TEXT("changed");
+		AddBodyDiffEntry(OutDiffEntries, RegionContext.JsonPointer, Status, CurrentValue, DesiredValue);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimSequence object pilot region"));
+	};
+
+	FAssetDocumentObjectRegionAdapter Adapter(FName(*FString::Printf(TEXT("AnimSequence%sObjectRegionAdapter"), *BodyKey.ToString())), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(BodyKey, EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, BodyKey, Policy);
+	return FAssetDocumentRegionRuntime::Diff(RegionContext, DesiredValue, Adapter, OutDiffEntries);
+}
+
+FAssetDocumentCapabilityResult DiffAnimSequenceNotifyTracksPilotRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedPtr<FJsonValue>& CurrentValue,
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ExtractElements = [CurrentValue](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutElements)
+	{
+		if (!CurrentValue.IsValid() || CurrentValue->Type != EJson::Array)
+		{
+			return BodyFailure(TEXT("Current NotifyTracks value is invalid"), TEXT("/Body/NotifyTracks"), TEXT("InvalidCurrentBodySectionType"));
+		}
+		for (const TSharedPtr<FJsonValue>& Entry : CurrentValue->AsArray())
+		{
+			if (!Entry.IsValid() || Entry->Type != EJson::Object || !Entry->AsObject().IsValid())
+			{
+				return BodyFailure(TEXT("Current NotifyTracks entry is invalid"), TEXT("/Body/NotifyTracks"), TEXT("InvalidCurrentBodySectionType"));
+			}
+			OutElements.Add(Entry->AsObject().ToSharedRef());
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted current NotifyTracks pilot region"));
+	};
+	Hooks.DiffElements = [CurrentValue, DesiredValue](const FAssetDocumentRegionContext& RegionContext, const TArray<TSharedRef<FJsonObject>>&, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
+			? TEXT("unchanged")
+			: TEXT("changed");
+		AddBodyDiffEntry(OutDiffEntries, RegionContext.JsonPointer, Status, CurrentValue, DesiredValue);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimSequence NotifyTracks pilot region"));
+	};
+
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.IdentityField = TEXT("TrackName");
+	Config.IdentityAliases = {TEXT("Name")};
+	Config.MissingIdentityCode = TEXT("InvalidStringField");
+	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.bPreserveAuthoredApplyOrder = true;
+	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakeAnimSequencePilotPolicy(TEXT("NotifyTracks"), EAssetDocumentRegionKind::Array);
+	const FAssetDocumentRegionContext RegionContext =
+		MakeAnimSequencePilotRegionContext(Context, TEXT("NotifyTracks"), Policy);
+	return FAssetDocumentRegionRuntime::Diff(RegionContext, DesiredValue, Adapter, OutDiffEntries);
+}
+
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const
 {
 	const UAnimSequence* Sequence = Cast<UAnimSequence>(Context.Asset);
@@ -3806,22 +4117,22 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 	}
 	OutBodyJson->SetObjectField(TEXT("References"), References);
 
-	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
-	if (USkeletalMesh* PreviewMesh = Sequence->GetPreviewMesh())
+	TSharedPtr<FJsonValue> PreviewValue;
+	FAssetDocumentCapabilityResult PilotExtractResult =
+		ExtractAnimSequencePreviewRegion(Compiler, Context, Sequence, PreviewValue);
+	if (!PilotExtractResult.bSuccess)
 	{
-		TSharedRef<FJsonObject> PreviewMeshRef = MakeShared<FJsonObject>();
-		FAssetDocumentCapabilityResult Result = ExtractAssetRef(Compiler, const_cast<UAnimSequence*>(Sequence), PreviewMesh, TEXT("/Body/Preview/PreviewMesh"), PreviewMeshRef);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Preview->SetObjectField(TEXT("PreviewMesh"), PreviewMeshRef);
+		return PilotExtractResult;
 	}
-	OutBodyJson->SetObjectField(TEXT("Preview"), Preview);
+	OutBodyJson->SetField(TEXT("Preview"), PreviewValue);
 
-	TSharedRef<FJsonObject> Playback = MakeShared<FJsonObject>();
-	Playback->SetNumberField(TEXT("RateScale"), Sequence->RateScale);
-	OutBodyJson->SetObjectField(TEXT("Playback"), Playback);
+	TSharedPtr<FJsonValue> PlaybackValue;
+	PilotExtractResult = ExtractAnimSequencePlaybackRegion(Context, Sequence, PlaybackValue);
+	if (!PilotExtractResult.bSuccess)
+	{
+		return PilotExtractResult;
+	}
+	OutBodyJson->SetField(TEXT("Playback"), PlaybackValue);
 
 	TSharedRef<FJsonObject> Additive = MakeShared<FJsonObject>();
 	Additive->SetStringField(TEXT("AdditiveAnimType"), AdditiveAnimTypeToString(static_cast<EAdditiveAnimationType>(Sequence->AdditiveAnimType.GetValue())));
@@ -3876,7 +4187,13 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 	OutBodyJson->SetObjectField(TEXT("Compression"), Compression);
 
 	OutBodyJson->SetArrayField(TEXT("Curves"), ExtractAnimSequenceCurves(Sequence));
-	OutBodyJson->SetArrayField(TEXT("NotifyTracks"), ExtractAnimSequenceNotifyTracks(Sequence));
+	TSharedPtr<FJsonValue> NotifyTracksValue;
+	PilotExtractResult = ExtractAnimSequenceNotifyTracksRegion(Context, Sequence, NotifyTracksValue);
+	if (!PilotExtractResult.bSuccess)
+	{
+		return PilotExtractResult;
+	}
+	OutBodyJson->SetField(TEXT("NotifyTracks"), NotifyTracksValue);
 	TArray<TSharedPtr<FJsonValue>> ExtractedNotifies;
 	FAssetDocumentCapabilityResult NotifyExtractResult = ExtractAnimSequenceNotifies(Compiler, Sequence, false, ExtractedNotifies);
 	if (!NotifyExtractResult.bSuccess)
@@ -3989,6 +4306,27 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Diff(const 
 		const TSharedPtr<FJsonValue> Current = CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>();
 		const TSharedPtr<FJsonValue>* DesiredValue = PreviewBody->Values.Find(Pair.Key);
 		const TSharedPtr<FJsonValue> Desired = DesiredValue ? *DesiredValue : MakeShared<FJsonValueNull>();
+		if (Pair.Key == TEXT("Preview") || Pair.Key == TEXT("Playback"))
+		{
+			const FAssetDocumentCapabilityResult PilotDiffResult =
+				DiffAnimSequenceObjectPilotRegion(Context, FName(*Pair.Key), Current, Desired, OutDiffEntries);
+			if (!PilotDiffResult.bSuccess)
+			{
+				return PilotDiffResult;
+			}
+			continue;
+		}
+		if (Pair.Key == TEXT("NotifyTracks"))
+		{
+			const FAssetDocumentCapabilityResult PilotDiffResult =
+				DiffAnimSequenceNotifyTracksPilotRegion(Context, Current, Desired, OutDiffEntries);
+			if (!PilotDiffResult.bSuccess)
+			{
+				return PilotDiffResult;
+			}
+			continue;
+		}
+
 		const FString Status = JsonValueToComparableString(Current) == JsonValueToComparableString(Desired)
 			? TEXT("unchanged")
 			: TEXT("changed");
