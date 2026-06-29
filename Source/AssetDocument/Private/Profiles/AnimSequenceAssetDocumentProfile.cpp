@@ -76,6 +76,7 @@ FAssetDocumentNamedArrayRegionAdapterConfig FAnimSequenceAssetDocumentProfile::M
 	{
 		return FName(*Identity).ToString().ToLower();
 	};
+	Config.bCanonicalizeByIdentity = false;
 	Config.bPreserveAuthoredApplyOrder = true;
 	return Config;
 }

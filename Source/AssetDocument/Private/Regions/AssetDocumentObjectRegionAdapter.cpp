@@ -23,6 +23,17 @@ FAssetDocumentCapabilityResult RequireObjectRegionValue(
 {
 	return FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, RegionPath(Context), OutObject);
 }
+
+FAssetDocumentCapabilityResult MissingHookFailure(
+	const FAssetDocumentRegionContext& Context,
+	const FString& Code,
+	const FString& Operation)
+{
+	return FAssetDocumentJsonRegionUtils::Failure(
+		RegionPath(Context),
+		Code,
+		FString::Printf(TEXT("Object region %s requires an explicit %s hook"), *Context.BodyPath, *Operation));
+}
 }
 
 FAssetDocumentObjectRegionAdapter::FAssetDocumentObjectRegionAdapter(
@@ -104,21 +115,24 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::ApplyRegion(
 		return Hooks.ApplyObject(Context, DesiredObject.ToSharedRef(), bOutChanged);
 	}
 
-	return FAssetDocumentCapabilityResult::Success(TEXT("Object region has no apply hook"));
+	return MissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::ExtractRegion(
 	const FAssetDocumentRegionContext& Context,
 	TSharedPtr<FJsonValue>& OutCurrentValue) const
 {
-	TSharedRef<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
-	if (Hooks.ExtractObject)
+	OutCurrentValue.Reset();
+	if (!Hooks.ExtractObject)
 	{
-		const FAssetDocumentCapabilityResult Result = Hooks.ExtractObject(Context, CurrentObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+		return MissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
+	}
+
+	TSharedRef<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult Result = Hooks.ExtractObject(Context, CurrentObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
 	}
 
 	OutCurrentValue = MakeShared<FJsonValueObject>(CurrentObject);
@@ -151,23 +165,5 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::DiffRegion(
 		return Hooks.DiffObject(Context, DesiredObject.ToSharedRef(), OutDiffEntries);
 	}
 
-	TSharedPtr<FJsonValue> CurrentValue;
-	Result = ExtractRegion(Context, CurrentValue);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-
-	if (FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) !=
-		FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue))
-	{
-		FAssetDocumentJsonRegionUtils::AddDiffEntry(
-			OutDiffEntries,
-			RegionPath(Context),
-			TEXT("changed"),
-			CurrentValue,
-			DesiredValue);
-	}
-
-	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed object region"));
+	return MissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
 }

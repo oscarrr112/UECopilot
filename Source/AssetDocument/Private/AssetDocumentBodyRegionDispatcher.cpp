@@ -7,14 +7,76 @@
 
 namespace
 {
-FString MakeRegionBodyPath(const FAssetDocumentRegionBinding& Binding)
+FString ExtractExactBodyKey(
+	const FAssetDocumentRegionBinding& Binding,
+	const FAssetDocumentRegionPolicy* Policy)
 {
-	return FString::Printf(TEXT("Body.%s"), *Binding.BodyKey.ToString());
+	if (Policy && Policy->BodyPath.StartsWith(TEXT("Body.")))
+	{
+		const FString BodyKey = Policy->BodyPath.RightChop(5);
+		if (!BodyKey.IsEmpty() && !BodyKey.Contains(TEXT(".")) && !BodyKey.Contains(TEXT("/")))
+		{
+			return BodyKey;
+		}
+	}
+
+	return Binding.BodyKey.ToString();
 }
 
-FString MakeRegionJsonPointer(const FAssetDocumentRegionBinding& Binding)
+FString ResolveExactBodyKey(
+	const FAssetDocumentRegionBinding& Binding,
+	const TMap<FName, FString>& BodyKeysByRegionId)
 {
-	return FAssetDocumentJsonRegionUtils::MakeBodyPath(Binding.BodyKey.ToString());
+	if (const FString* ExactBodyKey = BodyKeysByRegionId.Find(Binding.RegionId))
+	{
+		return *ExactBodyKey;
+	}
+	return Binding.BodyKey.ToString();
+}
+
+FString MakeRegionJsonPointer(const FString& BodyKey)
+{
+	return FAssetDocumentJsonRegionUtils::MakeBodyPath(BodyKey);
+}
+
+bool StringArrayContainsExact(const TArray<FString>& Values, const FString& Candidate)
+{
+	return Values.ContainsByPredicate([&Candidate](const FString& Value)
+	{
+		return Value.Equals(Candidate, ESearchCase::CaseSensitive);
+	});
+}
+
+const FAssetDocumentRegionBinding* FindExactBinding(
+	const TMap<FString, FAssetDocumentRegionBinding>& BindingsByBodyKey,
+	const FString& BodyKey)
+{
+	for (const TPair<FString, FAssetDocumentRegionBinding>& Pair : BindingsByBodyKey)
+	{
+		if (Pair.Key.Equals(BodyKey, ESearchCase::CaseSensitive))
+		{
+			return &Pair.Value;
+		}
+	}
+	return nullptr;
+}
+
+bool TryFindExactBodyValue(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const FString& BodyKey,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
+	{
+		if (Pair.Key.Equals(BodyKey, ESearchCase::CaseSensitive))
+		{
+			OutValue = Pair.Value;
+			return true;
+		}
+	}
+
+	OutValue.Reset();
+	return false;
 }
 
 FAssetDocumentRegionContext MakeRegionContext(
@@ -22,6 +84,7 @@ FAssetDocumentRegionContext MakeRegionContext(
 	const FAssetDocumentRegionBinding& Binding,
 	const FAssetDocumentRegionPolicy& Policy)
 {
+	const FString ExactBodyKey = ExtractExactBodyKey(Binding, &Policy);
 	FAssetDocumentRegionContext Context;
 	Context.Asset = CapabilityContext.Asset;
 	Context.AssetClass = CapabilityContext.AssetClass;
@@ -32,8 +95,8 @@ FAssetDocumentRegionContext MakeRegionContext(
 	Context.bIsDryRun = CapabilityContext.bIsDryRun;
 	Context.Policy = &Policy;
 	Context.RegionId = Binding.RegionId;
-	Context.BodyPath = Policy.BodyPath.IsEmpty() ? MakeRegionBodyPath(Binding) : Policy.BodyPath;
-	Context.JsonPointer = MakeRegionJsonPointer(Binding);
+	Context.BodyPath = Policy.BodyPath.IsEmpty() ? FString::Printf(TEXT("Body.%s"), *ExactBodyKey) : Policy.BodyPath;
+	Context.JsonPointer = MakeRegionJsonPointer(ExactBodyKey);
 	return Context;
 }
 
@@ -46,10 +109,14 @@ FAssetDocumentCapabilityResult RequireBodyObject(
 
 FAssetDocumentCapabilityResult FailureForBinding(
 	const FAssetDocumentRegionBinding& Binding,
+	const TMap<FName, FString>& BodyKeysByRegionId,
 	const FString& Code,
 	const FString& Message)
 {
-	return FAssetDocumentJsonRegionUtils::Failure(MakeRegionJsonPointer(Binding), Code, Message);
+	return FAssetDocumentJsonRegionUtils::Failure(
+		MakeRegionJsonPointer(ResolveExactBodyKey(Binding, BodyKeysByRegionId)),
+		Code,
+		Message);
 }
 
 FAssetDocumentCapabilityResult ConfigFailure(const FString& Message, const FString& Path = TEXT("/Body"))
@@ -62,7 +129,13 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 	const TArray<FAssetDocumentRegionPolicy>& RegionPolicies,
 	const TMap<FName, IAssetDocumentRegionAdapter*>& AdaptersByName)
 {
-	TSet<FName> BodyKeys;
+	TMap<FName, FAssetDocumentRegionPolicy> PoliciesByRegionId;
+	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+	{
+		PoliciesByRegionId.Add(Policy.RegionId, Policy);
+	}
+
+	TArray<FString> BodyKeys;
 	TSet<FName> RegionIds;
 	for (const FAssetDocumentRegionBinding& Binding : RegionBindings)
 	{
@@ -70,25 +143,26 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 		{
 			return ConfigFailure(TEXT("Region binding BodyKey must not be empty"));
 		}
-		if (BodyKeys.Contains(Binding.BodyKey))
+		const FString ExactBodyKey = ExtractExactBodyKey(Binding, PoliciesByRegionId.Find(Binding.RegionId));
+		if (StringArrayContainsExact(BodyKeys, ExactBodyKey))
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Duplicate BodyKey binding %s"), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExactBodyKey));
 		}
-		BodyKeys.Add(Binding.BodyKey);
+		BodyKeys.Add(ExactBodyKey);
 
 		if (Binding.RegionId.IsNone())
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Region binding for Body.%s must have a RegionId"), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExactBodyKey));
 		}
 		if (RegionIds.Contains(Binding.RegionId))
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Duplicate RegionId binding %s"), *Binding.RegionId.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExactBodyKey));
 		}
 		RegionIds.Add(Binding.RegionId);
 
@@ -96,7 +170,7 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Region binding for Body.%s must have an AdapterName"), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExactBodyKey));
 		}
 	}
 
@@ -137,13 +211,13 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Missing policy for Body.%s region %s"), *Binding.BodyKey.ToString(), *Binding.RegionId.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExtractExactBodyKey(Binding, nullptr)));
 		}
 		if (!AdaptersByName.Contains(Binding.AdapterName))
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Missing adapter %s for Body.%s"), *Binding.AdapterName.ToString(), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExtractExactBodyKey(Binding, PoliciesByRegionId.Find(Binding.RegionId))));
 		}
 
 		const FAssetDocumentRegionPolicy* Policy = RegionPolicies.FindByPredicate(
@@ -156,7 +230,7 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Missing runtime configuration for Body.%s"), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExtractExactBodyKey(Binding, Policy)));
 		}
 
 		const FAssetDocumentCapabilityContext EmptyCapabilityContext;
@@ -169,7 +243,7 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 					*Binding.AdapterName.ToString(),
 					*Binding.BodyKey.ToString(),
 					*Binding.RegionId.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ExtractExactBodyKey(Binding, Policy)));
 		}
 	}
 
@@ -178,11 +252,11 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 
 FAssetDocumentCapabilityResult ValidateKnownAndRequiredKeys(
 	const TSharedRef<FJsonObject>& BodyObject,
-	const TMap<FName, FAssetDocumentRegionBinding>& BindingsByBodyKey)
+	const TMap<FString, FAssetDocumentRegionBinding>& BindingsByBodyKey)
 {
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
 	{
-		if (!BindingsByBodyKey.Contains(FName(*Pair.Key)))
+		if (!FindExactBinding(BindingsByBodyKey, Pair.Key))
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(
 				FAssetDocumentJsonRegionUtils::MakeBodyPath(Pair.Key),
@@ -191,13 +265,14 @@ FAssetDocumentCapabilityResult ValidateKnownAndRequiredKeys(
 		}
 	}
 
-	for (const TPair<FName, FAssetDocumentRegionBinding>& Pair : BindingsByBodyKey)
+	for (const TPair<FString, FAssetDocumentRegionBinding>& Pair : BindingsByBodyKey)
 	{
 		const FAssetDocumentRegionBinding& Binding = Pair.Value;
-		if (Binding.bRequired && !BodyObject->HasField(Binding.BodyKey.ToString()))
+		TSharedPtr<FJsonValue> RequiredValue;
+		if (Binding.bRequired && !TryFindExactBodyValue(BodyObject, Pair.Key, RequiredValue))
 		{
-			return FailureForBinding(
-				Binding,
+			return FAssetDocumentJsonRegionUtils::Failure(
+				MakeRegionJsonPointer(Pair.Key),
 				TEXT("MissingRequiredBodyRegion"),
 				FString::Printf(TEXT("Missing required Body region %s"), *Binding.BodyKey.ToString()));
 		}
@@ -222,12 +297,14 @@ TArray<FAssetDocumentRegionBinding> SortBindingsByApplyOrder(TArray<FAssetDocume
 
 TArray<FAssetDocumentRegionBinding> GetPresentBindingsInApplyOrder(
 	const TSharedRef<FJsonObject>& BodyObject,
-	const TArray<FAssetDocumentRegionBinding>& RegionBindings)
+	const TArray<FAssetDocumentRegionBinding>& RegionBindings,
+	const TMap<FName, FString>& BodyKeysByRegionId)
 {
 	TArray<FAssetDocumentRegionBinding> PresentBindings;
 	for (const FAssetDocumentRegionBinding& Binding : RegionBindings)
 	{
-		if (BodyObject->HasField(Binding.BodyKey.ToString()))
+		TSharedPtr<FJsonValue> BodyValue;
+		if (TryFindExactBodyValue(BodyObject, ResolveExactBodyKey(Binding, BodyKeysByRegionId), BodyValue))
 		{
 			PresentBindings.Add(Binding);
 		}
@@ -242,9 +319,10 @@ FAssetDocumentCapabilityResult ValidatePresentRegions(
 	const TSharedRef<FJsonObject>& BodyObject,
 	const TArray<FAssetDocumentRegionBinding>& RegionBindings,
 	const TMap<FName, FAssetDocumentRegionPolicy>& PoliciesByRegionId,
+	const TMap<FName, FString>& BodyKeysByRegionId,
 	const TMap<FName, IAssetDocumentRegionAdapter*>& AdaptersByName)
 {
-	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject, RegionBindings))
+	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject, RegionBindings, BodyKeysByRegionId))
 	{
 		const FAssetDocumentRegionPolicy* Policy = PoliciesByRegionId.Find(Binding.RegionId);
 		IAssetDocumentRegionAdapter* const* Adapter = AdaptersByName.Find(Binding.AdapterName);
@@ -252,12 +330,15 @@ FAssetDocumentCapabilityResult ValidatePresentRegions(
 		{
 			return ConfigFailure(
 				FString::Printf(TEXT("Missing runtime configuration for Body region %s"), *Binding.BodyKey.ToString()),
-				MakeRegionJsonPointer(Binding));
+				MakeRegionJsonPointer(ResolveExactBodyKey(Binding, BodyKeysByRegionId)));
 		}
 
 		const FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
+		TSharedPtr<FJsonValue> BodyValue;
+		TryFindExactBodyValue(BodyObject, ExactBodyKey, BodyValue);
 		const FAssetDocumentCapabilityResult Result =
-			FAssetDocumentRegionRuntime::Validate(RegionContext, BodyObject->TryGetField(Binding.BodyKey.ToString()), **Adapter);
+			FAssetDocumentRegionRuntime::Validate(RegionContext, BodyValue, **Adapter);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -278,14 +359,16 @@ FAssetDocumentBodyRegionDispatcher::FAssetDocumentBodyRegionDispatcher(
 	, Hooks(MoveTemp(InHooks))
 	, ConfigValidationResult(FAssetDocumentCapabilityResult::Success())
 {
-	for (const FAssetDocumentRegionBinding& Binding : RegionBindings)
-	{
-		BindingsByBodyKey.Add(Binding.BodyKey, Binding);
-	}
-
 	for (const FAssetDocumentRegionPolicy& Policy : InRegionPolicies)
 	{
 		PoliciesByRegionId.Add(Policy.RegionId, Policy);
+	}
+
+	for (const FAssetDocumentRegionBinding& Binding : RegionBindings)
+	{
+		const FString ExactBodyKey = ExtractExactBodyKey(Binding, PoliciesByRegionId.Find(Binding.RegionId));
+		BodyKeysByRegionId.Add(Binding.RegionId, ExactBodyKey);
+		BindingsByBodyKey.Add(ExactBodyKey, Binding);
 	}
 
 	ConfigValidationResult = ValidateDispatcherConfig(RegionBindings, InRegionPolicies, AdaptersByName);
@@ -313,7 +396,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ValidateBody(
 		return Result;
 	}
 
-	Result = ValidatePresentRegions(Context, BodyObject.ToSharedRef(), RegionBindings, PoliciesByRegionId, AdaptersByName);
+	Result = ValidatePresentRegions(Context, BodyObject.ToSharedRef(), RegionBindings, PoliciesByRegionId, BodyKeysByRegionId, AdaptersByName);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -349,13 +432,14 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::PreflightBody
 		return Result;
 	}
 
-	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject.ToSharedRef(), RegionBindings))
+	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject.ToSharedRef(), RegionBindings, BodyKeysByRegionId))
 	{
 		const FAssetDocumentRegionPolicy* Policy = PoliciesByRegionId.Find(Binding.RegionId);
 		if (!Policy)
 		{
 			return FailureForBinding(
 				Binding,
+				BodyKeysByRegionId,
 				TEXT("MissingRegionPolicy"),
 				FString::Printf(TEXT("Missing policy for Body region %s"), *Binding.BodyKey.ToString()));
 		}
@@ -365,12 +449,16 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::PreflightBody
 		{
 			return FailureForBinding(
 				Binding,
+				BodyKeysByRegionId,
 				TEXT("MissingRegionAdapter"),
 				FString::Printf(TEXT("Missing adapter %s for Body region %s"), *Binding.AdapterName.ToString(), *Binding.BodyKey.ToString()));
 		}
 
 		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
-		Result = FAssetDocumentRegionRuntime::Preflight(RegionContext, BodyObject->TryGetField(Binding.BodyKey.ToString()), **Adapter);
+		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
+		TSharedPtr<FJsonValue> BodyValue;
+		TryFindExactBodyValue(BodyObject.ToSharedRef(), ExactBodyKey, BodyValue);
+		Result = FAssetDocumentRegionRuntime::Preflight(RegionContext, BodyValue, **Adapter);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -409,7 +497,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ApplyBody(
 		return Result;
 	}
 
-	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject.ToSharedRef(), RegionBindings))
+	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(BodyObject.ToSharedRef(), RegionBindings, BodyKeysByRegionId))
 	{
 		const FAssetDocumentRegionPolicy* Policy = PoliciesByRegionId.Find(Binding.RegionId);
 		IAssetDocumentRegionAdapter* const* Adapter = AdaptersByName.Find(Binding.AdapterName);
@@ -417,13 +505,17 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ApplyBody(
 		{
 			return FailureForBinding(
 				Binding,
+				BodyKeysByRegionId,
 				!Policy ? TEXT("MissingRegionPolicy") : TEXT("MissingRegionAdapter"),
 				FString::Printf(TEXT("Missing runtime configuration for Body region %s"), *Binding.BodyKey.ToString()));
 		}
 
 		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
+		TSharedPtr<FJsonValue> BodyValue;
+		TryFindExactBodyValue(BodyObject.ToSharedRef(), ExactBodyKey, BodyValue);
 		bool bChanged = false;
-		Result = FAssetDocumentRegionRuntime::Apply(RegionContext, BodyObject->TryGetField(Binding.BodyKey.ToString()), **Adapter, bChanged);
+		Result = FAssetDocumentRegionRuntime::Apply(RegionContext, BodyValue, **Adapter, bChanged);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -460,6 +552,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ExtractBody(
 		{
 			return FailureForBinding(
 				Binding,
+				BodyKeysByRegionId,
 				!Policy ? TEXT("MissingRegionPolicy") : TEXT("MissingRegionAdapter"),
 				FString::Printf(TEXT("Missing runtime configuration for Body region %s"), *Binding.BodyKey.ToString()));
 		}
@@ -471,7 +564,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ExtractBody(
 		{
 			return Result;
 		}
-		OutBodyObject->SetField(Binding.BodyKey.ToString(), RegionValue.IsValid() ? RegionValue : MakeShared<FJsonValueNull>());
+		OutBodyObject->SetField(ResolveExactBodyKey(Binding, BodyKeysByRegionId), RegionValue.IsValid() ? RegionValue : MakeShared<FJsonValueNull>());
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted Body regions"));
@@ -500,7 +593,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::DiffBody(
 		return Result;
 	}
 
-	Result = ValidatePresentRegions(Context, DesiredBodyObject.ToSharedRef(), RegionBindings, PoliciesByRegionId, AdaptersByName);
+	Result = ValidatePresentRegions(Context, DesiredBodyObject.ToSharedRef(), RegionBindings, PoliciesByRegionId, BodyKeysByRegionId, AdaptersByName);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -515,7 +608,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::DiffBody(
 		}
 	}
 
-	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(DesiredBodyObject.ToSharedRef(), RegionBindings))
+	for (const FAssetDocumentRegionBinding& Binding : GetPresentBindingsInApplyOrder(DesiredBodyObject.ToSharedRef(), RegionBindings, BodyKeysByRegionId))
 	{
 		const FAssetDocumentRegionPolicy* Policy = PoliciesByRegionId.Find(Binding.RegionId);
 		IAssetDocumentRegionAdapter* const* Adapter = AdaptersByName.Find(Binding.AdapterName);
@@ -523,12 +616,16 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::DiffBody(
 		{
 			return FailureForBinding(
 				Binding,
+				BodyKeysByRegionId,
 				!Policy ? TEXT("MissingRegionPolicy") : TEXT("MissingRegionAdapter"),
 				FString::Printf(TEXT("Missing runtime configuration for Body region %s"), *Binding.BodyKey.ToString()));
 		}
 
 		const FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
-		Result = FAssetDocumentRegionRuntime::Diff(RegionContext, DesiredBodyObject->TryGetField(Binding.BodyKey.ToString()), **Adapter, OutDiffEntries);
+		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
+		TSharedPtr<FJsonValue> DesiredValue;
+		TryFindExactBodyValue(DesiredBodyObject.ToSharedRef(), ExactBodyKey, DesiredValue);
+		Result = FAssetDocumentRegionRuntime::Diff(RegionContext, DesiredValue, **Adapter, OutDiffEntries);
 		if (!Result.bSuccess)
 		{
 			return Result;

@@ -36,6 +36,17 @@ FAssetDocumentCapabilityResult Failure(
 {
 	return FAssetDocumentJsonRegionUtils::Failure(FieldPath(Context, Index, FieldName), Code, Message);
 }
+
+FAssetDocumentCapabilityResult MissingHookFailure(
+	const FAssetDocumentRegionContext& Context,
+	const FString& Code,
+	const FString& Operation)
+{
+	return FAssetDocumentJsonRegionUtils::Failure(
+		RegionPath(Context),
+		Code,
+		FString::Printf(TEXT("Named array region %s requires an explicit %s hook"), *Context.BodyPath, *Operation));
+}
 }
 
 FAssetDocumentNamedArrayRegionAdapter::FAssetDocumentNamedArrayRegionAdapter()
@@ -281,21 +292,24 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ApplyRegio
 		return Hooks.ApplyElements(Context, Elements, bOutChanged);
 	}
 
-	return FAssetDocumentCapabilityResult::Success(TEXT("Named array region has no apply hook"));
+	return MissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ExtractRegion(
 	const FAssetDocumentRegionContext& Context,
 	TSharedPtr<FJsonValue>& OutCurrentValue) const
 {
-	TArray<TSharedRef<FJsonObject>> Elements;
-	if (Hooks.ExtractElements)
+	OutCurrentValue.Reset();
+	if (!Hooks.ExtractElements)
 	{
-		const FAssetDocumentCapabilityResult Result = Hooks.ExtractElements(Context, Elements);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+		return MissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
+	}
+
+	TArray<TSharedRef<FJsonObject>> Elements;
+	const FAssetDocumentCapabilityResult Result = Hooks.ExtractElements(Context, Elements);
+	if (!Result.bSuccess)
+	{
+		return Result;
 	}
 
 	OutCurrentValue = MakeArrayValueFromElements(MoveTemp(Elements), Config.bCanonicalizeByIdentity);
@@ -319,26 +333,5 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::DiffRegion
 		return Hooks.DiffElements(Context, DesiredElements, OutDiffEntries);
 	}
 
-	TSharedPtr<FJsonValue> CurrentValue;
-	Result = ExtractRegion(Context, CurrentValue);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-
-	const TSharedPtr<FJsonValue> CanonicalDesired =
-		MakeArrayValueFromElements(MoveTemp(DesiredElements), Config.bCanonicalizeByIdentity);
-
-	if (FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) !=
-		FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CanonicalDesired))
-	{
-		FAssetDocumentJsonRegionUtils::AddDiffEntry(
-			OutDiffEntries,
-			RegionPath(Context),
-			TEXT("changed"),
-			CurrentValue,
-			DesiredValue);
-	}
-
-	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed named array region"));
+	return MissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
 }

@@ -1020,6 +1020,7 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 	TestEqual(TEXT("NotifyTracks config missing identity code is profile-visible"), NotifyTracksConfig.MissingIdentityCode, FString(TEXT("InvalidStringField")));
 	TestEqual(TEXT("NotifyTracks config duplicate identity code is profile-visible"), NotifyTracksConfig.DuplicateIdentityCode, FString(TEXT("DuplicateNotifyTrackName")));
 	TestTrue(TEXT("NotifyTracks config preserves authored apply order"), NotifyTracksConfig.bPreserveAuthoredApplyOrder);
+	TestFalse(TEXT("NotifyTracks config preserves extracted asset order"), NotifyTracksConfig.bCanonicalizeByIdentity);
 
 	const TArray<FString> NotifyTracksIdentityFields =
 		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames();
@@ -1089,6 +1090,17 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 	{
 		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order first"), Sequence->AnimNotifyTracks[0].TrackName, FName(TEXT("Upper")));
 		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order second"), Sequence->AnimNotifyTracks[1].TrackName, FName(TEXT("Default")));
+	}
+	TSharedRef<FJsonObject> ExtractedPilotBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractPilotResult = Capability.Extract(Context, ExtractedPilotBody);
+	TestTrue(TEXT("Pilot extract succeeds after reordered NotifyTracks apply"), ExtractPilotResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedPilotTracks = nullptr;
+	TestTrue(TEXT("Pilot extract outputs NotifyTracks"), ExtractedPilotBody->TryGetArrayField(TEXT("NotifyTracks"), ExtractedPilotTracks));
+	TestTrue(TEXT("Pilot extract preserves non-sorted NotifyTracks order"), ExtractedPilotTracks && ExtractedPilotTracks->Num() == 2);
+	if (ExtractedPilotTracks && ExtractedPilotTracks->Num() == 2)
+	{
+		TestEqual(TEXT("Pilot extract keeps first asset track"), (*ExtractedPilotTracks)[0]->AsObject()->GetStringField(TEXT("TrackName")), FString(TEXT("Upper")));
+		TestEqual(TEXT("Pilot extract keeps second asset track"), (*ExtractedPilotTracks)[1]->AsObject()->GetStringField(TEXT("TrackName")), FString(TEXT("Default")));
 	}
 
 	TSharedRef<FJsonObject> DuplicateTracksBody = MakeShared<FJsonObject>();
@@ -1723,12 +1735,18 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	const FAssetDocumentCapabilityResult UnchangedDiffResult = Capability.Diff(Context, MakeBodyValue(MakeTimelineBody()), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for unchanged timeline body"), UnchangedDiffResult.bSuccess);
 	const TSharedPtr<FJsonObject> UnchangedNotifyDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Notifies"));
+	const TSharedPtr<FJsonObject> UnchangedTracksDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/NotifyTracks"));
 	const TSharedPtr<FJsonObject> UnchangedMarkerDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/SyncMarkers"));
 	TestTrue(TEXT("Diff reports Notifies path"), UnchangedNotifyDiff.IsValid());
+	TestTrue(TEXT("Diff reports NotifyTracks path"), UnchangedTracksDiff.IsValid());
 	TestTrue(TEXT("Diff reports SyncMarkers path"), UnchangedMarkerDiff.IsValid());
 	if (UnchangedNotifyDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks Notifies unchanged"), UnchangedNotifyDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+	if (UnchangedTracksDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks NotifyTracks unchanged"), UnchangedTracksDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
 	}
 	if (UnchangedMarkerDiff.IsValid())
 	{
@@ -1748,6 +1766,21 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	if (ChangedMarkerDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks SyncMarkers changed"), ChangedMarkerDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+
+	TSharedRef<FJsonObject> ReorderedTracksDiffBody = MakeTimelineBody();
+	ReorderedTracksDiffBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Upper")),
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult ReorderedTracksDiffResult = Capability.Diff(Context, MakeBodyValue(ReorderedTracksDiffBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for reordered NotifyTracks body"), ReorderedTracksDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> ReorderedTracksDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/NotifyTracks"));
+	TestTrue(TEXT("Diff reports reordered NotifyTracks path"), ReorderedTracksDiff.IsValid());
+	if (ReorderedTracksDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff treats NotifyTracks order changes as changed"), ReorderedTracksDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 	}
 
 	TSharedRef<FJsonObject> ReorderedTracksBody = MakeShared<FJsonObject>();

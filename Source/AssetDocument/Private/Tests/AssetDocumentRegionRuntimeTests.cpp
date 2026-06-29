@@ -1031,6 +1031,25 @@ bool FAssetDocumentRegionRuntimeObjectRegionDiffsCanonicalJsonTest::RunTest(cons
 		OutObject->SetNumberField(TEXT("A"), 1.0);
 		return FAssetDocumentCapabilityResult::Success(TEXT("extracted object"));
 	};
+	Hooks.DiffObject = [](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& DesiredObject, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		TSharedRef<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
+		CurrentObject->SetNumberField(TEXT("B"), 2.0);
+		CurrentObject->SetNumberField(TEXT("A"), 1.0);
+		const TSharedPtr<FJsonValue> CurrentValue = MakeShared<FJsonValueObject>(CurrentObject);
+		const TSharedPtr<FJsonValue> DesiredValue = MakeShared<FJsonValueObject>(DesiredObject);
+		if (FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) !=
+			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue))
+		{
+			FAssetDocumentJsonRegionUtils::AddDiffEntry(
+				OutDiffEntries,
+				Context.JsonPointer,
+				TEXT("changed"),
+				CurrentValue,
+				DesiredValue);
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("diffed object"));
+	};
 	FAssetDocumentObjectRegionAdapter Adapter(TEXT("ObjectAdapter"), MoveTemp(Hooks));
 	const FAssetDocumentRegionPolicy Policy =
 		MakeDeferredPolicy(TEXT("Playback"), TEXT("Body.Playback"), EAssetDocumentRegionKind::Object);
@@ -1053,6 +1072,39 @@ bool FAssetDocumentRegionRuntimeObjectRegionDiffsCanonicalJsonTest::RunTest(cons
 	TestTrue(TEXT("Changed object diff succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Changed canonical object emits one diff"), DiffEntries.Num(), 1);
 	TestEqual(TEXT("Changed object diff path"), DiffEntries.Num() > 0 ? DiffEntries[0]->AsObject()->GetStringField(TEXT("path")) : FString(), FString(TEXT("/Body/Playback")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectRegionMissingLifecycleHooksFailFastTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectRegion.MissingLifecycleHooksFailFast",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectRegionMissingLifecycleHooksFailFastTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentObjectRegionAdapter Adapter(TEXT("ObjectAdapter"));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Playback"), TEXT("Body.Playback"), EAssetDocumentRegionKind::Object);
+	FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Playback"), TEXT("/Body/Playback"), &Policy);
+	TSharedRef<FJsonObject> Desired = MakeShared<FJsonObject>();
+
+	bool bChanged = true;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Apply(Context, MakeObjectValue(Desired), Adapter, bChanged);
+	TestFalse(TEXT("Object apply without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Object missing apply hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionApplyHook")));
+	TestFalse(TEXT("Object missing apply hook leaves changed false"), bChanged);
+
+	TSharedPtr<FJsonValue> ExtractedValue;
+	Result = FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+	TestFalse(TEXT("Object extract without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Object missing extract hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionExtractHook")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	Result = FAssetDocumentRegionRuntime::Diff(Context, MakeObjectValue(Desired), Adapter, DiffEntries);
+	TestFalse(TEXT("Object diff without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Object missing diff hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionDiffHook")));
 	return true;
 }
 
@@ -1185,20 +1237,17 @@ bool FAssetDocumentRegionRuntimeNamedArrayCanonicalizesByIdentityTest::RunTest(c
 		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
 	const FAssetDocumentRegionContext Context =
 		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
-	TSharedRef<FJsonObject> AlphaDesired = MakeShared<FJsonObject>();
-	AlphaDesired->SetStringField(TEXT("Name"), TEXT("Alpha"));
-	TSharedRef<FJsonObject> BetaDesired = MakeShared<FJsonObject>();
-	BetaDesired->SetStringField(TEXT("Name"), TEXT("Beta"));
 
-	TArray<TSharedPtr<FJsonValue>> DiffEntries;
-	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Diff(
-		Context,
-		MakeArrayValue({MakeObjectValue(AlphaDesired), MakeObjectValue(BetaDesired)}),
-		Adapter,
-		DiffEntries);
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
 
-	TestTrue(TEXT("Canonical named array diff succeeds"), Result.bSuccess);
-	TestEqual(TEXT("Ordering differences are canonicalized by identity"), DiffEntries.Num(), 0);
+	TestTrue(TEXT("Canonical named array extract succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Canonical extract returns array"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Array);
+	if (ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Array && ExtractedValue->AsArray().Num() == 2)
+	{
+		TestEqual(TEXT("Canonical extract sorts first identity"), ExtractedValue->AsArray()[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Alpha")));
+		TestEqual(TEXT("Canonical extract sorts second identity"), ExtractedValue->AsArray()[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Beta")));
+	}
 	return true;
 }
 
@@ -1287,6 +1336,41 @@ bool FAssetDocumentRegionRuntimeNamedArrayNoopApplyCanReturnUnchangedTest::RunTe
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeNamedArrayMissingLifecycleHooksFailFastTest,
+	"AssetFactory.AssetDocument.RegionRuntime.NamedArray.MissingLifecycleHooksFailFast",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeNamedArrayMissingLifecycleHooksFailFastTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentNamedArrayRegionAdapter Adapter(TEXT("NamedArrayAdapter"), TEXT("Name"));
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array);
+	FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
+	TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
+	Track->SetStringField(TEXT("Name"), TEXT("Default"));
+	const TSharedPtr<FJsonValue> Desired = MakeArrayValue({MakeObjectValue(Track)});
+
+	bool bChanged = true;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Apply(Context, Desired, Adapter, bChanged);
+	TestFalse(TEXT("Named array apply without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Named array missing apply hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionApplyHook")));
+	TestFalse(TEXT("Named array missing apply hook leaves changed false"), bChanged);
+
+	TSharedPtr<FJsonValue> ExtractedValue;
+	Result = FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+	TestFalse(TEXT("Named array extract without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Named array missing extract hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionExtractHook")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	Result = FAssetDocumentRegionRuntime::Diff(Context, Desired, Adapter, DiffEntries);
+	TestFalse(TEXT("Named array diff without hook fails"), Result.bSuccess);
+	TestEqual(TEXT("Named array missing diff hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionDiffHook")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeBodyDispatcherRejectsNonObjectBodyTest,
 	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsNonObjectBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1328,6 +1412,31 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsUnknownBodyKeyTest::RunTest
 	TestFalse(TEXT("Unknown Body key is rejected"), Result.bSuccess);
 	TestEqual(TEXT("Unknown key diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Unknown")));
 	TestEqual(TEXT("Unknown key diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnknownBodyRegion")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsCaseMismatchedBodyKeyTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsCaseMismatchedBodyKey",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsCaseMismatchedBodyKeyTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{MakePolicy(TEXT("Preview"), TEXT("Body.Preview"))},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Case-mismatched Body key is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Case-mismatched key diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/preview")));
+	TestEqual(TEXT("Case-mismatched key diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnknownBodyRegion")));
+	TestEqual(TEXT("Case-mismatched key is not silently ignored"), Adapter.ValidateCalls, 0);
 	return true;
 }
 

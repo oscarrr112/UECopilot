@@ -52,7 +52,8 @@ public:
 
 private:
 	TArray<FAssetDocumentRegionBinding> RegionBindings;
-	TMap<FName, FAssetDocumentRegionBinding> BindingsByBodyKey;
+	TMap<FString, FAssetDocumentRegionBinding> BindingsByBodyKey;
+	TMap<FName, FString> BodyKeysByRegionId;
 	TMap<FName, FAssetDocumentRegionPolicy> PoliciesByRegionId;
 	TMap<FName, IAssetDocumentRegionAdapter*> AdaptersByName;
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
