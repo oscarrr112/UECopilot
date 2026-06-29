@@ -3,7 +3,9 @@
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "AssetDocumentRegionRuntime.h"
 #include "Profiles/UBlueprintGraphRegionAdapter.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Utils/PropertySetterUtils.h"
 
@@ -93,6 +95,47 @@ FAssetDocumentCapabilityResult RequireArrayOrNullValue(const TSharedPtr<FJsonVal
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentRegionContext MakeDeferredRegionContext(
+	const FAssetDocumentCapabilityContext& CapabilityContext,
+	const FString& BodyKey,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = CapabilityContext.Asset;
+	RegionContext.AssetClass = CapabilityContext.AssetClass;
+	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
+	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
+	RegionContext.Definitions = CapabilityContext.Definitions;
+	RegionContext.Result = CapabilityContext.Result;
+	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
+	RegionContext.Policy = &Policy;
+	RegionContext.RegionId = Policy.RegionId;
+	RegionContext.BodyPath = Policy.BodyPath;
+	RegionContext.JsonPointer = FString::Printf(TEXT("/Body/%s"), *BodyKey);
+	return RegionContext;
+}
+
+FAssetDocumentCapabilityResult ValidateDeferredUBlueprintRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const FString& BodyKey,
+	const TSharedPtr<FJsonValue>& Value)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = FName(*FString::Printf(TEXT("Body.%s"), *BodyKey));
+	Policy.BodyPath = Policy.RegionId.ToString();
+	Policy.RegionKind = BodyKey == TEXT("Timelines")
+		? EAssetDocumentRegionKind::Timeline
+		: EAssetDocumentRegionKind::Graph;
+	Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
+
+	const FAssetDocumentDeferredRegionAdapter Adapter(
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+		TEXT("UnsupportedUBlueprintRegion"),
+		FString::Printf(TEXT("Body.%s is an unsupported UBlueprint graph/timeline region and cannot be non-empty yet"), *BodyKey));
+	const FAssetDocumentRegionContext RegionContext = MakeDeferredRegionContext(Context, BodyKey, Policy);
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, Value, Adapter);
 }
 
 FAssetDocumentCapabilityResult RequireArrayValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
@@ -2692,7 +2735,12 @@ FName FUBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FUBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("UBlueprintBody"), TEXT("UBlueprintAuthoritativeRegions"), TEXT("UBlueprintGraphRegionAdapter")};
+	return {
+		TEXT("UBlueprintBody"),
+		TEXT("UBlueprintAuthoritativeRegions"),
+		TEXT("UBlueprintGraphRegionAdapter"),
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+	};
 }
 
 int32 FUBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -3500,7 +3548,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		if (IsProtectedRegion(Pair.Key))
 		{
 			const FAssetDocumentCapabilityResult ProtectedResult =
-				RequireArrayOrNullValue(Pair.Value, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Pair.Key);
+				ValidateDeferredUBlueprintRegion(Context, Pair.Key, Pair.Value);
 			if (!ProtectedResult.bSuccess)
 			{
 				return ProtectedResult;

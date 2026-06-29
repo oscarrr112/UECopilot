@@ -3,6 +3,7 @@
 #include "AssetDocumentBodyRegionDispatcher.h"
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -39,6 +40,16 @@ FAssetDocumentRegionPolicy MakePolicy(const FName RegionId, const FString& BodyP
 	FAssetDocumentRegionPolicy Policy;
 	Policy.RegionId = RegionId;
 	Policy.BodyPath = BodyPath;
+	return Policy;
+}
+
+FAssetDocumentRegionPolicy MakeDeferredPolicy(
+	const FName RegionId,
+	const FString& BodyPath,
+	const EAssetDocumentRegionKind RegionKind)
+{
+	FAssetDocumentRegionPolicy Policy = MakePolicy(RegionId, BodyPath);
+	Policy.RegionKind = RegionKind;
 	return Policy;
 }
 
@@ -526,6 +537,129 @@ bool FAssetDocumentRegionRuntimeExplicitEmptyRejectsUnexpectedNullTest::RunTest(
 	TestEqual(TEXT("Adapter validate is not called"), Adapter.ValidateCalls, 0);
 	TestEqual(TEXT("Unexpected null diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Preview")));
 	TestEqual(TEXT("Unexpected null diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnexpectedNullBodySection")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDeferredRegionAcceptsEmptyArrayTest,
+	"AssetFactory.AssetDocument.RegionRuntime.DeferredRegion.AcceptsEmptyArray",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDeferredRegionAcceptsEmptyArrayTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentDeferredRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Body.FunctionGraphs"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Body.FunctionGraphs"), TEXT("/Body/FunctionGraphs"), &Policy);
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeArrayValue({}), Adapter);
+
+	TestTrue(TEXT("Deferred empty array succeeds"), Result.bSuccess);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDeferredRegionAcceptsEmptyObjectTest,
+	"AssetFactory.AssetDocument.RegionRuntime.DeferredRegion.AcceptsEmptyObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDeferredRegionAcceptsEmptyObjectTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentDeferredRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Body.Preview"), TEXT("Body.Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Body.Preview"), TEXT("/Body/Preview"), &Policy);
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(MakeShared<FJsonObject>()), Adapter);
+
+	TestTrue(TEXT("Deferred empty object succeeds"), Result.bSuccess);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyArrayTest,
+	"AssetFactory.AssetDocument.RegionRuntime.DeferredRegion.RejectsNonEmptyArray",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyArrayTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentDeferredRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Body.FunctionGraphs"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Body.FunctionGraphs"), TEXT("/Body/FunctionGraphs"), &Policy);
+
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
+		Context,
+		MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Graph"))}),
+		Adapter);
+
+	TestFalse(TEXT("Deferred non-empty array fails"), Result.bSuccess);
+	TestEqual(
+		TEXT("Non-empty array reports unsupported deferred region"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedRegion")));
+	TestEqual(
+		TEXT("Non-empty array diagnostic uses region path"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body/FunctionGraphs")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyObjectTest,
+	"AssetFactory.AssetDocument.RegionRuntime.DeferredRegion.RejectsNonEmptyObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyObjectTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentDeferredRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Body.Preview"), TEXT("Body.Preview"), EAssetDocumentRegionKind::Object);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Body.Preview"), TEXT("/Body/Preview"), &Policy);
+	TSharedRef<FJsonObject> NonEmptyObject = MakeShared<FJsonObject>();
+	NonEmptyObject->SetStringField(TEXT("Name"), TEXT("Preview"));
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(NonEmptyObject), Adapter);
+
+	TestFalse(TEXT("Deferred non-empty object fails"), Result.bSuccess);
+	TestEqual(
+		TEXT("Non-empty object reports unsupported deferred region"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedRegion")));
+	TestEqual(
+		TEXT("Non-empty object diagnostic uses region path"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body/Preview")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDeferredRegionExtractsDeclaredDefaultTest,
+	"AssetFactory.AssetDocument.RegionRuntime.DeferredRegion.ExtractsDeclaredDefault",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDeferredRegionExtractsDeclaredDefaultTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentDeferredRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy =
+		MakeDeferredPolicy(TEXT("Body.FunctionGraphs"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph);
+	const FAssetDocumentRegionContext Context =
+		MakeRuntimeContext(TEXT("Body.FunctionGraphs"), TEXT("/Body/FunctionGraphs"), &Policy);
+
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+
+	TestTrue(TEXT("Deferred extract succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Deferred graph default is array"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Array);
+	TestEqual(TEXT("Deferred graph default is empty"), ExtractedValue.IsValid() ? ExtractedValue->AsArray().Num() : -1, 0);
 	return true;
 }
 

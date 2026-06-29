@@ -3,10 +3,12 @@
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "AssetDocumentRegionRuntime.h"
 #include "Profiles/WidgetBlueprintAnimationAdapter.h"
 #include "Profiles/WidgetBlueprintBindingAdapter.h"
 #include "Profiles/WidgetBlueprintGraphAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
 #include "Blueprint/UserWidget.h"
@@ -40,6 +42,19 @@ bool IsGraphBodyKey(const FString& BodyKey)
 	return BodyKey == TEXT("UbergraphPages")
 		|| BodyKey == TEXT("FunctionGraphs")
 		|| BodyKey == TEXT("MacroGraphs");
+}
+
+bool IsDeferredGraphBodyKey(const FString& BodyKey)
+{
+	return BodyKey == TEXT("FunctionGraphs")
+		|| BodyKey == TEXT("MacroGraphs");
+}
+
+bool IsNullOrEmptyArray(const TSharedPtr<FJsonValue>& Value)
+{
+	return !Value.IsValid()
+		|| Value->Type == EJson::Null
+		|| (Value->Type == EJson::Array && Value->AsArray().Num() == 0);
 }
 
 FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
@@ -240,6 +255,46 @@ FAssetDocumentCapabilityResult RequireEmptyObject(const TSharedPtr<FJsonValue>& 
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentRegionContext MakeDeferredRegionContext(
+	const FAssetDocumentCapabilityContext& CapabilityContext,
+	const FString& BodyKey,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = CapabilityContext.Asset;
+	RegionContext.AssetClass = CapabilityContext.AssetClass;
+	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
+	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
+	RegionContext.Definitions = CapabilityContext.Definitions;
+	RegionContext.Result = CapabilityContext.Result;
+	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
+	RegionContext.Policy = &Policy;
+	RegionContext.RegionId = Policy.RegionId;
+	RegionContext.BodyPath = Policy.BodyPath;
+	RegionContext.JsonPointer = FString::Printf(TEXT("/Body/%s"), *BodyKey);
+	return RegionContext;
+}
+
+FAssetDocumentCapabilityResult ValidateDeferredWidgetBlueprintRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const FString& BodyKey,
+	const TSharedPtr<FJsonValue>& Value,
+	const EAssetDocumentRegionKind RegionKind)
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = FName(*FString::Printf(TEXT("Body.%s"), *BodyKey));
+	Policy.BodyPath = Policy.RegionId.ToString();
+	Policy.RegionKind = RegionKind;
+	Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
+
+	const FAssetDocumentDeferredRegionAdapter Adapter(
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+		TEXT("UnsupportedWidgetBlueprintRegion"),
+		FString::Printf(TEXT("Body.%s is not supported yet for non-empty WidgetBlueprint documents"), *BodyKey));
+	const FAssetDocumentRegionContext RegionContext = MakeDeferredRegionContext(Context, BodyKey, Policy);
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, Value, Adapter);
 }
 
 FAssetDocumentCapabilityResult RequireObjectSection(
@@ -2017,7 +2072,14 @@ FName FWidgetBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FWidgetBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("WidgetBlueprintBody"), TEXT("WidgetBlueprintTree"), TEXT("WidgetBlueprintBindings"), TEXT("WidgetBlueprintAnimations"), TEXT("WidgetBlueprintEmptyAssetContract")};
+	return {
+		TEXT("WidgetBlueprintBody"),
+		TEXT("WidgetBlueprintTree"),
+		TEXT("WidgetBlueprintBindings"),
+		TEXT("WidgetBlueprintAnimations"),
+		TEXT("WidgetBlueprintEmptyAssetContract"),
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+	};
 }
 
 int32 FWidgetBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -2896,11 +2958,21 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 		}
 		else if (IsGraphBodyKey(Pair.Key))
 		{
+			if (IsDeferredGraphBodyKey(Pair.Key) && IsNullOrEmptyArray(Pair.Value))
+			{
+				const FAssetDocumentCapabilityResult DeferredGraphResult =
+					ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value, EAssetDocumentRegionKind::Graph);
+				if (!DeferredGraphResult.bSuccess)
+				{
+					return DeferredGraphResult;
+				}
+			}
 			continue;
 		}
 		else
 		{
-			const FAssetDocumentCapabilityResult ArrayResult = RequireEmptyArray(Pair.Value, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Pair.Key);
+			const FAssetDocumentCapabilityResult ArrayResult =
+				ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value, EAssetDocumentRegionKind::Array);
 			if (!ArrayResult.bSuccess)
 			{
 				return ArrayResult;

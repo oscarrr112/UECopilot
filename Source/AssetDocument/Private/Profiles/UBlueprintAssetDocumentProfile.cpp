@@ -37,6 +37,11 @@ bool MakeRegionPolicy(
 	}
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
+
+void MarkDeferredRegionPolicy(FAssetDocumentRegionPolicy& Policy)
+{
+	Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
+}
 }
 
 UClass* FUBlueprintAssetDocumentProfile::GetExactClass() const
@@ -137,14 +142,17 @@ TArray<FAssetDocumentRegionPolicy> FUBlueprintAssetDocumentProfile::GetRegionPol
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy))
 	{
+		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy))
 	{
+		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Timelines"), EAssetDocumentRegionKind::Timeline, {TEXT("Timelines")}, Policy))
 	{
+		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 
