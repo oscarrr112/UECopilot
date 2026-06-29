@@ -627,6 +627,62 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicateBodyKeyConfigTest:
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicateBindingRegionIdConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsDuplicateBindingRegionIdConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicateBindingRegionIdConfigTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter FirstAdapter(TEXT("FirstAdapter"));
+	FTestRegionAdapter SecondAdapter(TEXT("SecondAdapter"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{
+			MakeBinding(TEXT("First"), TEXT("SharedRegion"), TEXT("FirstAdapter")),
+			MakeBinding(TEXT("Second"), TEXT("SharedRegion"), TEXT("SecondAdapter")),
+		},
+		{MakePolicy(TEXT("SharedRegion"), TEXT("Body.First"))},
+		{&FirstAdapter, &SecondAdapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("First"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Duplicate binding RegionId config is rejected before dispatch"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate binding RegionId diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("First adapter validate is not called"), FirstAdapter.ValidateCalls, 0);
+	TestEqual(TEXT("Second adapter validate is not called"), SecondAdapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicatePolicyRegionIdConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsDuplicatePolicyRegionIdConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicatePolicyRegionIdConfigTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{
+			MakePolicy(TEXT("Preview"), TEXT("Body.Preview")),
+			MakePolicy(TEXT("Preview"), TEXT("Body.PreviewCopy")),
+		},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Duplicate policy RegionId config is rejected before dispatch"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate policy RegionId diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("Adapter validate is not called"), Adapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeBodyDispatcherRejectsEmptyAdapterNameConfigTest,
 	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsEmptyAdapterNameConfig",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
