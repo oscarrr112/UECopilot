@@ -145,6 +145,32 @@ FAssetDocumentCapabilityResult ValidateDispatcherConfig(
 				FString::Printf(TEXT("Missing adapter %s for Body.%s"), *Binding.AdapterName.ToString(), *Binding.BodyKey.ToString()),
 				MakeRegionJsonPointer(Binding));
 		}
+
+		const FAssetDocumentRegionPolicy* Policy = RegionPolicies.FindByPredicate(
+			[&Binding](const FAssetDocumentRegionPolicy& Candidate)
+			{
+				return Candidate.RegionId == Binding.RegionId;
+			});
+		IAssetDocumentRegionAdapter* const* Adapter = AdaptersByName.Find(Binding.AdapterName);
+		if (!Policy || !Adapter || !*Adapter)
+		{
+			return ConfigFailure(
+				FString::Printf(TEXT("Missing runtime configuration for Body.%s"), *Binding.BodyKey.ToString()),
+				MakeRegionJsonPointer(Binding));
+		}
+
+		const FAssetDocumentCapabilityContext EmptyCapabilityContext;
+		const FAssetDocumentRegionContext RegionContext = MakeRegionContext(EmptyCapabilityContext, Binding, *Policy);
+		if (!(*Adapter)->SupportsRegion(RegionContext))
+		{
+			return ConfigFailure(
+				FString::Printf(
+					TEXT("Adapter %s does not support Body.%s region %s"),
+					*Binding.AdapterName.ToString(),
+					*Binding.BodyKey.ToString(),
+					*Binding.RegionId.ToString()),
+				MakeRegionJsonPointer(Binding));
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success();

@@ -476,11 +476,11 @@ bool FAssetDocumentRegionRuntimeDispatchDiffAllowsAdapterHandledEmptyResultTest:
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentRegionRuntimeDispatchDefaultDiffEntryUsesJsonPointerTest,
-	"AssetFactory.AssetDocument.RegionRuntime.Dispatch.DefaultDiffEntryUsesJsonPointer",
+	FAssetDocumentRegionRuntimeDispatchDiffEntryUsesJsonPointerTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Dispatch.DiffEntryUsesJsonPointer",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentRegionRuntimeDispatchDefaultDiffEntryUsesJsonPointerTest::RunTest(const FString& Parameters)
+bool FAssetDocumentRegionRuntimeDispatchDiffEntryUsesJsonPointerTest::RunTest(const FString& Parameters)
 {
 	FTestRegionAdapter Adapter(TEXT("Fake"));
 	Adapter.CurrentValue = MakeShared<FJsonValueString>(TEXT("Current"));
@@ -711,13 +711,11 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsUnsupportedAdapterTest::Run
 		{&Adapter});
 
 	const FAssetDocumentCapabilityContext Context;
-	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
-		Context,
-		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(Context, MakeObjectRef(MakeShared<FJsonObject>()));
 
-	TestFalse(TEXT("Unsupported adapter is rejected"), Result.bSuccess);
-	TestEqual(TEXT("Unsupported adapter diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedRegionAdapter")));
-	TestEqual(TEXT("Adapter validate is not called after support failure"), Adapter.ValidateCalls, 0);
+	TestFalse(TEXT("Unsupported optional adapter is rejected as invalid config"), Result.bSuccess);
+	TestEqual(TEXT("Unsupported adapter diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("Adapter validate is not called after config failure"), Adapter.ValidateCalls, 0);
 	return true;
 }
 
