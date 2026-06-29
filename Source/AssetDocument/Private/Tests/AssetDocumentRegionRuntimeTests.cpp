@@ -326,8 +326,9 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesDiffTest::RunTest(const FS
 		return FAssetDocumentCapabilityResult::Success(TEXT("diffed widget graph region"));
 	};
 	FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
-	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphs"), TEXT("Body.WidgetBlueprintGraphs"));
-	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphs"), TEXT("/Body"), &Policy);
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("Body.WidgetBlueprintGraphRegions"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("/Body"), &Policy);
+	Context.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Diff(
@@ -339,6 +340,25 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesDiffTest::RunTest(const FS
 	TestTrue(TEXT("Diff succeeds through wrapper"), Result.bSuccess);
 	TestEqual(TEXT("Diff hook is called once"), DiffCalls, 1);
 	TestEqual(TEXT("Diff entry is produced by hook"), DiffEntries.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperRejectsNonSyntheticGraphRegionTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.RejectsNonSyntheticGraphRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperRejectsNonSyntheticGraphRegionTest::RunTest(const FString& Parameters)
+{
+	FWidgetBlueprintGraphRegionAdapter Adapter;
+
+	const FAssetDocumentRegionPolicy WrongBodyPolicy = MakePolicy(TEXT("Body.WidgetBlueprintGraphs"), TEXT("Body.WidgetBlueprintGraphs"));
+	const FAssetDocumentRegionContext WrongBodyContext = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphs"), TEXT("/Body"), &WrongBodyPolicy);
+	TestFalse(TEXT("Graph wrapper rejects wrong body-level region id"), Adapter.SupportsRegion(WrongBodyContext));
+
+	const FAssetDocumentRegionPolicy SingleGraphKeyPolicy = MakePolicy(TEXT("Body.UbergraphPages"), TEXT("Body.UbergraphPages"));
+	const FAssetDocumentRegionContext SingleGraphKeyContext = MakeRuntimeContext(TEXT("Body.UbergraphPages"), TEXT("/Body/UbergraphPages"), &SingleGraphKeyPolicy);
+	TestFalse(TEXT("Graph wrapper rejects individual graph body key"), Adapter.SupportsRegion(SingleGraphKeyContext));
 	return true;
 }
 

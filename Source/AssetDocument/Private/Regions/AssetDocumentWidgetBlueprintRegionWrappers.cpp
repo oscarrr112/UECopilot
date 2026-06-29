@@ -74,12 +74,10 @@ FAssetDocumentCapabilityContext ToCapabilityContext(const FAssetDocumentRegionCo
 
 bool SupportsGraphBodyRegion(const FAssetDocumentRegionContext& Context)
 {
-	return Context.RegionId == TEXT("Body.WidgetBlueprintGraphRegions")
-		|| Context.BodyPath == TEXT("Body.WidgetBlueprintGraphRegions")
-		|| Context.JsonPointer == TEXT("/Body")
-		|| SupportsBodyKey(Context, TEXT("UbergraphPages"))
-		|| SupportsBodyKey(Context, TEXT("FunctionGraphs"))
-		|| SupportsBodyKey(Context, TEXT("MacroGraphs"));
+	const bool bIsSyntheticGraphRegion =
+		Context.RegionId == TEXT("Body.WidgetBlueprintGraphRegions")
+		|| Context.BodyPath == TEXT("Body.WidgetBlueprintGraphRegions");
+	return bIsSyntheticGraphRegion && Context.JsonPointer == TEXT("/Body");
 }
 }
 
