@@ -44,6 +44,47 @@ UClass* FAnimSequenceAssetDocumentProfile::GetExactClass() const
 	return UAnimSequence::StaticClass();
 }
 
+TArray<FAssetDocumentRegionBinding> FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings()
+{
+	return {
+		{TEXT("Preview"), TEXT("Body.Preview"), TEXT("AnimSequenceObjectRegionAdapter"), 10, false},
+		{TEXT("Playback"), TEXT("Body.Playback"), TEXT("AnimSequenceObjectRegionAdapter"), 20, false},
+		{TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter"), 30, false},
+	};
+}
+
+TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies()
+{
+	TArray<FAssetDocumentRegionPolicy> Policies;
+	Policies.Reserve(3);
+
+	FAssetDocumentRegionPolicy Policy;
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Preview"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("PreviewSkeletalMesh")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Playback"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("RateScale")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy, TEXT("AnimSequencePostApply")))
+	{
+		Policies.Add(Policy);
+	}
+
+	return Policies;
+}
+
 TSharedRef<FJsonObject> FAnimSequenceAssetDocumentProfile::GetDocumentShape() const
 {
 	TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
@@ -103,29 +144,12 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 	Policies.Reserve(13);
 
 	FAssetDocumentRegionPolicy Policy;
+	Policies.Append(MakePilotRegionPolicies());
 	if (MakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.References"),
 		EAssetDocumentRegionKind::Object,
 		{TEXT("Skeleton"), TEXT("RetargetSource"), TEXT("RetargetSourceAsset")},
-		Policy))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(
-		TEXT("DefaultDiff"),
-		TEXT("Body.Preview"),
-		EAssetDocumentRegionKind::Object,
-		{TEXT("PreviewSkeletalMesh")},
-		Policy))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(
-		TEXT("DefaultDiff"),
-		TEXT("Body.Playback"),
-		EAssetDocumentRegionKind::Object,
-		{TEXT("RateScale")},
 		Policy))
 	{
 		Policies.Add(Policy);
@@ -168,10 +192,6 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy, TEXT("AnimSequencePostApply")))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}

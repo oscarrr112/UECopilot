@@ -969,6 +969,106 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequencePilotRegionCompositionTest,
+	"AssetFactory.AssetDocument.AnimSequence.PilotRegionComposition",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString&)
+{
+	const TArray<FAssetDocumentRegionBinding> Bindings = FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings();
+	TestEqual(TEXT("AnimSequence pilot declares three region bindings"), Bindings.Num(), 3);
+
+	auto FindBinding = [&Bindings](FName BodyKey) -> const FAssetDocumentRegionBinding*
+	{
+		return Bindings.FindByPredicate([BodyKey](const FAssetDocumentRegionBinding& Binding)
+		{
+			return Binding.BodyKey == BodyKey;
+		});
+	};
+
+	const FAssetDocumentRegionBinding* PreviewBinding = FindBinding(TEXT("Preview"));
+	const FAssetDocumentRegionBinding* PlaybackBinding = FindBinding(TEXT("Playback"));
+	const FAssetDocumentRegionBinding* NotifyTracksBinding = FindBinding(TEXT("NotifyTracks"));
+	TestNotNull(TEXT("Preview pilot binding exists"), PreviewBinding);
+	TestNotNull(TEXT("Playback pilot binding exists"), PlaybackBinding);
+	TestNotNull(TEXT("NotifyTracks pilot binding exists"), NotifyTracksBinding);
+	if (PreviewBinding)
+	{
+		TestEqual(TEXT("Preview pilot uses object adapter"), PreviewBinding->AdapterName, FName(TEXT("AnimSequenceObjectRegionAdapter")));
+		TestEqual(TEXT("Preview pilot region id"), PreviewBinding->RegionId, FName(TEXT("Body.Preview")));
+	}
+	if (PlaybackBinding)
+	{
+		TestEqual(TEXT("Playback pilot uses object adapter"), PlaybackBinding->AdapterName, FName(TEXT("AnimSequenceObjectRegionAdapter")));
+		TestEqual(TEXT("Playback pilot region id"), PlaybackBinding->RegionId, FName(TEXT("Body.Playback")));
+	}
+	if (NotifyTracksBinding)
+	{
+		TestEqual(TEXT("NotifyTracks pilot uses named-array adapter"), NotifyTracksBinding->AdapterName, FName(TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter")));
+		TestEqual(TEXT("NotifyTracks pilot region id"), NotifyTracksBinding->RegionId, FName(TEXT("Body.NotifyTracks")));
+	}
+
+	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
+	TestEqual(TEXT("AnimSequence pilot declares three profile-owned policies"), Policies.Num(), 3);
+	auto FindPolicy = [&Policies](FName RegionId) -> const FAssetDocumentRegionPolicy*
+	{
+		return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
+		{
+			return Policy.RegionId == RegionId;
+		});
+	};
+	const FAssetDocumentRegionPolicy* PreviewPolicy = FindPolicy(TEXT("Body.Preview"));
+	const FAssetDocumentRegionPolicy* PlaybackPolicy = FindPolicy(TEXT("Body.Playback"));
+	const FAssetDocumentRegionPolicy* NotifyTracksPolicy = FindPolicy(TEXT("Body.NotifyTracks"));
+	TestTrue(TEXT("Preview pilot policy comes from profile"), PreviewPolicy && PreviewPolicy->RegionKind == EAssetDocumentRegionKind::Object);
+	TestTrue(TEXT("Playback pilot policy comes from profile"), PlaybackPolicy && PlaybackPolicy->RegionKind == EAssetDocumentRegionKind::Object);
+	TestTrue(TEXT("NotifyTracks pilot policy comes from profile"), NotifyTracksPolicy && NotifyTracksPolicy->RegionKind == EAssetDocumentRegionKind::Array);
+
+	FAnimSequenceAssetDocumentCapability Capability;
+	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequencePilotApply"));
+	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, TestPreviewMeshPath);
+	TestNotNull(TEXT("Pilot apply fixture creates sequence"), Sequence);
+	TestNotNull(TEXT("Pilot apply fixture loads preview mesh"), PreviewMesh);
+	if (!Sequence || !PreviewMesh)
+	{
+		return true;
+	}
+
+	Sequence->SetPreviewMesh(nullptr, false);
+	Sequence->RateScale = 1.0f;
+	Sequence->AnimNotifyTracks = {FAnimNotifyTrack(FName(TEXT("Old")), FLinearColor::White)};
+
+	auto MakeTrackObject = [](const TCHAR* TrackName)
+	{
+		TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
+		Track->SetStringField(TEXT("TrackName"), TrackName);
+		return Track;
+	};
+	TSharedRef<FJsonObject> Body = MakePlaybackRateBody(2.5);
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	Body->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeTrackObject(TEXT("Upper")),
+		MakeTrackObject(TEXT("Default")),
+	}));
+
+	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(Body));
+	TestTrue(TEXT("Pilot regions apply through AnimSequence capability"), ApplyResult.bSuccess);
+	TestEqual(TEXT("Pilot apply writes Preview.PreviewMesh"), Sequence->GetPreviewMesh(), PreviewMesh);
+	TestEqual(TEXT("Pilot apply writes Playback.RateScale"), Sequence->RateScale, 2.5f);
+	TestEqual(TEXT("Pilot apply writes NotifyTracks count"), Sequence->AnimNotifyTracks.Num(), 2);
+	if (Sequence->AnimNotifyTracks.Num() == 2)
+	{
+		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order first"), Sequence->AnimNotifyTracks[0].TrackName, FName(TEXT("Upper")));
+		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order second"), Sequence->AnimNotifyTracks[1].TrackName, FName(TEXT("Default")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimSequenceScalarRegionsTest,
 	"AssetFactory.AssetDocument.AnimSequence.ScalarRegions",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
