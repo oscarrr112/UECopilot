@@ -34,4 +34,10 @@ struct FAssetDocumentRegionRuntime
 		const TSharedPtr<FJsonValue>& DesiredValue,
 		const IAssetDocumentRegionAdapter& Adapter,
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries);
+
+	static FAssetDocumentCapabilityResult DiffByCanonicalExtract(
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		const IAssetDocumentRegionAdapter& Adapter,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries);
 };

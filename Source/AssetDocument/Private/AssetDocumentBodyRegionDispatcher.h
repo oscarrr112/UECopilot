@@ -20,6 +20,8 @@ struct FAssetDocumentBodyRegionDispatcherHooks
 class FAssetDocumentBodyRegionDispatcher
 {
 public:
+	// The dispatcher stores non-owning adapter pointers. Callers must keep adapters alive
+	// for the dispatcher's full lifetime.
 	FAssetDocumentBodyRegionDispatcher(
 		TArray<FAssetDocumentRegionBinding> InRegionBindings,
 		TArray<FAssetDocumentRegionPolicy> InRegionPolicies,
@@ -54,4 +56,5 @@ private:
 	TMap<FName, FAssetDocumentRegionPolicy> PoliciesByRegionId;
 	TMap<FName, IAssetDocumentRegionAdapter*> AdaptersByName;
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	FAssetDocumentCapabilityResult ConfigValidationResult;
 };

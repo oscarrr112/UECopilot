@@ -68,6 +68,8 @@ struct FTestRegionAdapter : IAssetDocumentRegionAdapter
 	FName Name;
 	bool bSupportsRegion = true;
 	bool bApplyChanged = true;
+	bool bValidateSucceeds = true;
+	bool bApplySucceeds = true;
 	TSharedPtr<FJsonValue> CurrentValue = MakeShared<FJsonValueString>(TEXT("Current"));
 	TArray<FName>* ApplyLog = nullptr;
 	mutable int32 ValidateCalls = 0;
@@ -99,6 +101,10 @@ struct FTestRegionAdapter : IAssetDocumentRegionAdapter
 	{
 		++ValidateCalls;
 		LastJsonPointer = Context.JsonPointer;
+		if (!bValidateSucceeds)
+		{
+			return FAssetDocumentCapabilityResult::Failure(TEXT("validate failed"), Context.JsonPointer, TEXT("AdapterValidateFailed"));
+		}
 		return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
 	}
 
@@ -120,6 +126,10 @@ struct FTestRegionAdapter : IAssetDocumentRegionAdapter
 		if (ApplyLog)
 		{
 			ApplyLog->Add(Context.RegionId);
+		}
+		if (!bApplySucceeds)
+		{
+			return FAssetDocumentCapabilityResult::Failure(TEXT("apply failed"), Context.JsonPointer, TEXT("AdapterApplyFailed"));
 		}
 		bOutChanged = bApplyChanged;
 		return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
@@ -441,11 +451,11 @@ bool FAssetDocumentRegionRuntimeDispatchApplyReturnsChangedFlagTest::RunTest(con
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentRegionRuntimeDispatchDiffEntryUsesJsonPointerTest,
-	"AssetFactory.AssetDocument.RegionRuntime.Dispatch.DiffEntryUsesJsonPointer",
+	FAssetDocumentRegionRuntimeDispatchDiffAllowsAdapterHandledEmptyResultTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Dispatch.DiffAllowsAdapterHandledEmptyResult",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentRegionRuntimeDispatchDiffEntryUsesJsonPointerTest::RunTest(const FString& Parameters)
+bool FAssetDocumentRegionRuntimeDispatchDiffAllowsAdapterHandledEmptyResultTest::RunTest(const FString& Parameters)
 {
 	FTestRegionAdapter Adapter(TEXT("Fake"));
 	Adapter.CurrentValue = MakeShared<FJsonValueString>(TEXT("Current"));
@@ -460,13 +470,38 @@ bool FAssetDocumentRegionRuntimeDispatchDiffEntryUsesJsonPointerTest::RunTest(co
 		DiffEntries);
 
 	TestTrue(TEXT("Runtime diff succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Adapter-handled empty diff stays empty"), DiffEntries.Num(), 0);
+	TestEqual(TEXT("Runtime does not infer fallback extraction"), Adapter.ExtractCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeDispatchDefaultDiffEntryUsesJsonPointerTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Dispatch.DefaultDiffEntryUsesJsonPointer",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeDispatchDefaultDiffEntryUsesJsonPointerTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	Adapter.CurrentValue = MakeShared<FJsonValueString>(TEXT("Current"));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Display/Name"), TEXT("Body.Display/Name"));
+	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Display/Name"), TEXT("/Body/Display~1Name"), &Policy);
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::DiffByCanonicalExtract(
+		Context,
+		MakeShared<FJsonValueString>(TEXT("Desired")),
+		Adapter,
+		DiffEntries);
+
+	TestTrue(TEXT("Default runtime diff succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Default diff emits one changed entry"), DiffEntries.Num(), 1);
 	if (DiffEntries.Num() < 1 || !DiffEntries[0].IsValid() || DiffEntries[0]->Type != EJson::Object)
 	{
 		return false;
 	}
 	TestEqual(TEXT("Diff entry path uses region JSON pointer"), DiffEntries[0]->AsObject()->GetStringField(TEXT("path")), FString(TEXT("/Body/Display~1Name")));
-	TestEqual(TEXT("Adapter diff hook is called"), Adapter.DiffCalls, 1);
+	TestEqual(TEXT("Default diff does not call adapter semantic diff hook"), Adapter.DiffCalls, 0);
 	TestEqual(TEXT("Runtime extracts current value for default diff"), Adapter.ExtractCalls, 1);
 	return true;
 }
@@ -562,6 +597,131 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherRequiresConfiguredRegionTest::RunT
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicateBodyKeyConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsDuplicateBodyKeyConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsDuplicateBodyKeyConfigTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{
+			MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake")),
+			MakeBinding(TEXT("Preview"), TEXT("PreviewCopy"), TEXT("Fake")),
+		},
+		{
+			MakePolicy(TEXT("Preview"), TEXT("Body.Preview")),
+			MakePolicy(TEXT("PreviewCopy"), TEXT("Body.Preview")),
+		},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Duplicate BodyKey config is rejected before dispatch"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate BodyKey diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("Adapter validate is not called"), Adapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsEmptyAdapterNameConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsEmptyAdapterNameConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsEmptyAdapterNameConfigTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), NAME_None)},
+		{MakePolicy(TEXT("Preview"), TEXT("Body.Preview"))},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Empty adapter name config is rejected before dispatch"), Result.bSuccess);
+	TestEqual(TEXT("Empty adapter diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("Adapter validate is not called"), Adapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsMissingAdapterConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsMissingAdapterConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsMissingAdapterConfigTest::RunTest(const FString& Parameters)
+{
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{MakePolicy(TEXT("Preview"), TEXT("Body.Preview"))},
+		{});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Missing adapter config is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Missing adapter diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsMissingPolicyConfigTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsMissingPolicyConfig",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsMissingPolicyConfigTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Missing policy config is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Missing policy diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidRegionDispatcherConfig")));
+	TestEqual(TEXT("Adapter validate is not called"), Adapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherRejectsUnsupportedAdapterTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.RejectsUnsupportedAdapter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherRejectsUnsupportedAdapterTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	Adapter.bSupportsRegion = false;
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{MakePolicy(TEXT("Preview"), TEXT("Body.Preview"))},
+		{&Adapter});
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()))));
+
+	TestFalse(TEXT("Unsupported adapter is rejected"), Result.bSuccess);
+	TestEqual(TEXT("Unsupported adapter diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedRegionAdapter")));
+	TestEqual(TEXT("Adapter validate is not called after support failure"), Adapter.ValidateCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeBodyDispatcherAppliesInConfiguredOrderTest,
 	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.AppliesInConfiguredOrder",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -637,6 +797,132 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherCallsCrossRegionHookTest::RunTest(
 
 	TestTrue(TEXT("Validate succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Cross-region hook is called once"), CrossRegionCalls, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherDiffValidatesRegionBeforeCrossRegionHookTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.DiffValidatesRegionBeforeCrossRegionHook",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherDiffValidatesRegionBeforeCrossRegionHookTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter Adapter(TEXT("Fake"));
+	int32 CrossRegionCalls = 0;
+	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	Hooks.ValidateCrossRegion = [&CrossRegionCalls](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+	{
+		++CrossRegionCalls;
+		return FAssetDocumentCapabilityResult::Success(TEXT("cross-region ok"));
+	};
+
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{MakeBinding(TEXT("Preview"), TEXT("Preview"), TEXT("Fake"))},
+		{MakePolicy(TEXT("Preview"), TEXT("Body.Preview"))},
+		{&Adapter},
+		MoveTemp(Hooks));
+
+	const FAssetDocumentCapabilityContext Context;
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.DiffBody(
+		Context,
+		MakeObjectRef(MakeBodyWithField(TEXT("Preview"), MakeShared<FJsonValueNull>())),
+		DiffEntries);
+
+	TestFalse(TEXT("Invalid region fails diff"), Result.bSuccess);
+	TestEqual(TEXT("Cross-region hook is not called before region validation"), CrossRegionCalls, 0);
+	TestEqual(TEXT("Unexpected null diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnexpectedNullBodySection")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherValidateStopsAfterAdapterFailureTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.ValidateStopsAfterAdapterFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherValidateStopsAfterAdapterFailureTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter FirstAdapter(TEXT("FirstAdapter"));
+	FTestRegionAdapter SecondAdapter(TEXT("SecondAdapter"));
+	FirstAdapter.bValidateSucceeds = false;
+	int32 CrossRegionCalls = 0;
+	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	Hooks.ValidateCrossRegion = [&CrossRegionCalls](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+	{
+		++CrossRegionCalls;
+		return FAssetDocumentCapabilityResult::Success(TEXT("cross-region ok"));
+	};
+
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{
+			MakeBinding(TEXT("First"), TEXT("FirstRegion"), TEXT("FirstAdapter"), 10),
+			MakeBinding(TEXT("Second"), TEXT("SecondRegion"), TEXT("SecondAdapter"), 20),
+		},
+		{
+			MakePolicy(TEXT("FirstRegion"), TEXT("Body.First")),
+			MakePolicy(TEXT("SecondRegion"), TEXT("Body.Second")),
+		},
+		{&FirstAdapter, &SecondAdapter},
+		MoveTemp(Hooks));
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("First"), TEXT("A"));
+	Body->SetStringField(TEXT("Second"), TEXT("B"));
+
+	const FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ValidateBody(Context, MakeObjectRef(Body));
+
+	TestFalse(TEXT("Adapter validate failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("First adapter validate is called once"), FirstAdapter.ValidateCalls, 1);
+	TestEqual(TEXT("Second adapter is not called after failure"), SecondAdapter.ValidateCalls, 0);
+	TestEqual(TEXT("Cross-region hook is not called after failure"), CrossRegionCalls, 0);
+	TestEqual(TEXT("Adapter failure diagnostic code propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("AdapterValidateFailed")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeBodyDispatcherApplyStopsAfterAdapterFailureTest,
+	"AssetFactory.AssetDocument.RegionRuntime.BodyDispatcher.ApplyStopsAfterAdapterFailure",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeBodyDispatcherApplyStopsAfterAdapterFailureTest::RunTest(const FString& Parameters)
+{
+	FTestRegionAdapter FirstAdapter(TEXT("FirstAdapter"));
+	FTestRegionAdapter SecondAdapter(TEXT("SecondAdapter"));
+	FirstAdapter.bApplySucceeds = false;
+	int32 RepairCalls = 0;
+	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	Hooks.PostApplyRepair = [&RepairCalls](FAssetDocumentCapabilityContext&, const TSet<FName>&)
+	{
+		++RepairCalls;
+		return FAssetDocumentCapabilityResult::Success(TEXT("repair ok"));
+	};
+
+	const FAssetDocumentBodyRegionDispatcher Dispatcher = MakeDispatcher(
+		{
+			MakeBinding(TEXT("First"), TEXT("FirstRegion"), TEXT("FirstAdapter"), 10),
+			MakeBinding(TEXT("Second"), TEXT("SecondRegion"), TEXT("SecondAdapter"), 20),
+		},
+		{
+			MakePolicy(TEXT("FirstRegion"), TEXT("Body.First")),
+			MakePolicy(TEXT("SecondRegion"), TEXT("Body.Second")),
+		},
+		{&FirstAdapter, &SecondAdapter},
+		MoveTemp(Hooks));
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(TEXT("First"), TEXT("A"));
+	Body->SetStringField(TEXT("Second"), TEXT("B"));
+
+	FAssetDocumentCapabilityContext Context;
+	TSet<FName> AppliedRegions;
+	const FAssetDocumentCapabilityResult Result = Dispatcher.ApplyBody(Context, MakeObjectRef(Body), AppliedRegions);
+
+	TestFalse(TEXT("Adapter apply failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("First adapter apply is called once"), FirstAdapter.ApplyCalls, 1);
+	TestEqual(TEXT("Second adapter is not called after failure"), SecondAdapter.ApplyCalls, 0);
+	TestEqual(TEXT("Repair hook is not called after failure"), RepairCalls, 0);
+	TestEqual(TEXT("Adapter failure diagnostic code propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("AdapterApplyFailed")));
 	return true;
 }
 

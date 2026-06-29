@@ -136,16 +136,19 @@ FAssetDocumentCapabilityResult FAssetDocumentRegionRuntime::Diff(
 		return CheckResult;
 	}
 
-	const int32 InitialDiffEntryCount = OutDiffEntries.Num();
-	const FAssetDocumentCapabilityResult AdapterDiffResult = Adapter.DiffRegion(Context, DesiredValue, OutDiffEntries);
-	if (!AdapterDiffResult.bSuccess)
-	{
-		return AdapterDiffResult;
-	}
+	return Adapter.DiffRegion(Context, DesiredValue, OutDiffEntries);
+}
 
-	if (OutDiffEntries.Num() > InitialDiffEntryCount)
+FAssetDocumentCapabilityResult FAssetDocumentRegionRuntime::DiffByCanonicalExtract(
+	const FAssetDocumentRegionContext& Context,
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	const IAssetDocumentRegionAdapter& Adapter,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	const FAssetDocumentCapabilityResult CheckResult = CheckDesiredRegion(Context, DesiredValue, Adapter);
+	if (!CheckResult.bSuccess)
 	{
-		return AdapterDiffResult;
+		return CheckResult;
 	}
 
 	TSharedPtr<FJsonValue> CurrentValue;
@@ -166,5 +169,5 @@ FAssetDocumentCapabilityResult FAssetDocumentRegionRuntime::Diff(
 			DesiredValue);
 	}
 
-	return AdapterDiffResult;
+	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed region by canonical extract"));
 }
