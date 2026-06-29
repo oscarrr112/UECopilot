@@ -1008,6 +1008,19 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 		TestEqual(TEXT("NotifyTracks pilot region id"), NotifyTracksBinding->RegionId, FName(TEXT("Body.NotifyTracks")));
 	}
 
+	const FAssetDocumentNamedArrayRegionAdapterConfig NotifyTracksConfig =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig();
+	TestEqual(TEXT("NotifyTracks config owns named-array adapter name"), NotifyTracksConfig.Name, FName(TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter")));
+	TestEqual(TEXT("NotifyTracks config identity field is profile-visible"), NotifyTracksConfig.IdentityField, FString(TEXT("TrackName")));
+	TestEqual(TEXT("NotifyTracks config exposes one identity alias"), NotifyTracksConfig.IdentityAliases.Num(), 1);
+	if (NotifyTracksConfig.IdentityAliases.Num() == 1)
+	{
+		TestEqual(TEXT("NotifyTracks config identity alias is profile-visible"), NotifyTracksConfig.IdentityAliases[0], FString(TEXT("Name")));
+	}
+	TestEqual(TEXT("NotifyTracks config missing identity code is profile-visible"), NotifyTracksConfig.MissingIdentityCode, FString(TEXT("InvalidStringField")));
+	TestEqual(TEXT("NotifyTracks config duplicate identity code is profile-visible"), NotifyTracksConfig.DuplicateIdentityCode, FString(TEXT("DuplicateNotifyTrackName")));
+	TestTrue(TEXT("NotifyTracks config preserves authored apply order"), NotifyTracksConfig.bPreserveAuthoredApplyOrder);
+
 	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
 	TestEqual(TEXT("AnimSequence pilot declares three profile-owned policies"), Policies.Num(), 3);
 	auto FindPolicy = [&Policies](FName RegionId) -> const FAssetDocumentRegionPolicy*

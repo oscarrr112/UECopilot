@@ -44,12 +44,44 @@ UClass* FAnimSequenceAssetDocumentProfile::GetExactClass() const
 	return UAnimSequence::StaticClass();
 }
 
+FName FAnimSequenceAssetDocumentProfile::PilotObjectRegionAdapterName()
+{
+	return TEXT("AnimSequenceObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName()
+{
+	return TEXT("AnimSequencePreviewObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName()
+{
+	return TEXT("AnimSequencePlaybackObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::NotifyTracksNamedArrayRegionAdapterName()
+{
+	return TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter");
+}
+
+FAssetDocumentNamedArrayRegionAdapterConfig FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig()
+{
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.Name = NotifyTracksNamedArrayRegionAdapterName();
+	Config.IdentityField = TEXT("TrackName");
+	Config.IdentityAliases = {TEXT("Name")};
+	Config.MissingIdentityCode = TEXT("InvalidStringField");
+	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.bPreserveAuthoredApplyOrder = true;
+	return Config;
+}
+
 TArray<FAssetDocumentRegionBinding> FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings()
 {
 	return {
-		{TEXT("Preview"), TEXT("Body.Preview"), TEXT("AnimSequenceObjectRegionAdapter"), 10, false},
-		{TEXT("Playback"), TEXT("Body.Playback"), TEXT("AnimSequenceObjectRegionAdapter"), 20, false},
-		{TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter"), 30, false},
+		{TEXT("Preview"), TEXT("Body.Preview"), PilotObjectRegionAdapterName(), 10, false},
+		{TEXT("Playback"), TEXT("Body.Playback"), PilotObjectRegionAdapterName(), 20, false},
+		{TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), NotifyTracksNamedArrayRegionAdapterName(), 30, false},
 	};
 }
 

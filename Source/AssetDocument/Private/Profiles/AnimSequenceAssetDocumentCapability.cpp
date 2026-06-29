@@ -1603,13 +1603,9 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		return FAssetDocumentCapabilityResult::Success();
 	};
 
-	FAssetDocumentNamedArrayRegionAdapterConfig Config;
-	Config.IdentityField = TEXT("TrackName");
-	Config.IdentityAliases = {TEXT("Name")};
-	Config.MissingIdentityCode = TEXT("InvalidStringField");
-	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
-	Config.bPreserveAuthoredApplyOrder = true;
-	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	FAssetDocumentNamedArrayRegionAdapter Adapter(
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig(),
+		MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("NotifyTracks"), Policy))
 	{
@@ -2880,7 +2876,7 @@ FAssetDocumentCapabilityResult ParseAnimSequencePreviewRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Parsed AnimSequence Preview region"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePreviewObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Preview"), Policy))
 	{
@@ -2921,7 +2917,7 @@ FAssetDocumentCapabilityResult ParseAnimSequencePlaybackRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Parsed AnimSequence Playback region"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePlaybackObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Playback"), Policy))
 	{
@@ -2949,16 +2945,9 @@ FAssetDocumentCapabilityResult ValidateAnimSequencePilotRegionsThroughDispatcher
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& BodyObject)
 {
-	FAssetDocumentObjectRegionAdapter ObjectAdapter(TEXT("AnimSequenceObjectRegionAdapter"));
-
-	FAssetDocumentNamedArrayRegionAdapterConfig NamedArrayConfig;
-	NamedArrayConfig.Name = TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter");
-	NamedArrayConfig.IdentityField = TEXT("TrackName");
-	NamedArrayConfig.IdentityAliases = {TEXT("Name")};
-	NamedArrayConfig.MissingIdentityCode = TEXT("InvalidStringField");
-	NamedArrayConfig.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
-	NamedArrayConfig.bPreserveAuthoredApplyOrder = true;
-	FAssetDocumentNamedArrayRegionAdapter NamedArrayAdapter(NamedArrayConfig);
+	FAssetDocumentObjectRegionAdapter ObjectAdapter(FAnimSequenceAssetDocumentProfile::PilotObjectRegionAdapterName());
+	FAssetDocumentNamedArrayRegionAdapter NamedArrayAdapter(
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig());
 
 	const TArray<FAssetDocumentRegionBinding> Bindings = FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings();
 	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
@@ -2993,7 +2982,7 @@ FAssetDocumentCapabilityResult ApplyAnimSequencePreviewRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimSequence Preview region"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePreviewObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Preview"), Policy))
 	{
@@ -3025,7 +3014,7 @@ FAssetDocumentCapabilityResult ApplyAnimSequencePlaybackRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimSequence Playback region"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePlaybackObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Playback"), Policy))
 	{
@@ -3056,14 +3045,9 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceNotifyTracksRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimSequence NotifyTracks region"));
 	};
 
-	FAssetDocumentNamedArrayRegionAdapterConfig Config;
-	Config.Name = TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter");
-	Config.IdentityField = TEXT("TrackName");
-	Config.IdentityAliases = {TEXT("Name")};
-	Config.MissingIdentityCode = TEXT("InvalidStringField");
-	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
-	Config.bPreserveAuthoredApplyOrder = true;
-	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	FAssetDocumentNamedArrayRegionAdapter Adapter(
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig(),
+		MoveTemp(Hooks));
 
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("NotifyTracks"), Policy))
@@ -3567,10 +3551,10 @@ TArray<FName> FAnimSequenceAssetDocumentCapability::GetInternalAdapterNames() co
 {
 	return {
 		GetName(),
-		TEXT("AnimSequenceObjectRegionAdapter"),
-		TEXT("AnimSequencePreviewObjectRegionAdapter"),
-		TEXT("AnimSequencePlaybackObjectRegionAdapter"),
-		TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter"),
+		FAnimSequenceAssetDocumentProfile::PilotObjectRegionAdapterName(),
+		FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName(),
+		FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName(),
+		FAnimSequenceAssetDocumentProfile::NotifyTracksNamedArrayRegionAdapterName(),
 	};
 }
 
@@ -4084,7 +4068,7 @@ FAssetDocumentCapabilityResult ExtractAnimSequencePreviewRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence Preview"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePreviewObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Preview"), Policy))
 	{
@@ -4107,7 +4091,7 @@ FAssetDocumentCapabilityResult ExtractAnimSequencePlaybackRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence Playback"));
 	};
 
-	FAssetDocumentObjectRegionAdapter Adapter(TEXT("AnimSequencePlaybackObjectRegionAdapter"), MoveTemp(Hooks));
+	FAssetDocumentObjectRegionAdapter Adapter(FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName(), MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("Playback"), Policy))
 	{
@@ -4140,13 +4124,9 @@ FAssetDocumentCapabilityResult ExtractAnimSequenceNotifyTracksRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence NotifyTracks"));
 	};
 
-	FAssetDocumentNamedArrayRegionAdapterConfig Config;
-	Config.IdentityField = TEXT("TrackName");
-	Config.IdentityAliases = {TEXT("Name")};
-	Config.MissingIdentityCode = TEXT("InvalidStringField");
-	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
-	Config.bPreserveAuthoredApplyOrder = true;
-	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	FAssetDocumentNamedArrayRegionAdapter Adapter(
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig(),
+		MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("NotifyTracks"), Policy))
 	{
@@ -4226,13 +4206,9 @@ FAssetDocumentCapabilityResult DiffAnimSequenceNotifyTracksPilotRegion(
 		return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimSequence NotifyTracks pilot region"));
 	};
 
-	FAssetDocumentNamedArrayRegionAdapterConfig Config;
-	Config.IdentityField = TEXT("TrackName");
-	Config.IdentityAliases = {TEXT("Name")};
-	Config.MissingIdentityCode = TEXT("InvalidStringField");
-	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
-	Config.bPreserveAuthoredApplyOrder = true;
-	FAssetDocumentNamedArrayRegionAdapter Adapter(Config, MoveTemp(Hooks));
+	FAssetDocumentNamedArrayRegionAdapter Adapter(
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig(),
+		MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("NotifyTracks"), Policy))
 	{

@@ -5,10 +5,16 @@
 #include "AssetDocumentRegion.h"
 #include "AssetDocumentProfile.h"
 #include "Profiles/AnimSequenceAssetDocumentCapability.h"
+#include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 
 class FAnimSequenceAssetDocumentProfile final : public IAssetDocumentProfile
 {
 public:
+	static FName PilotObjectRegionAdapterName();
+	static FName PreviewObjectRegionAdapterName();
+	static FName PlaybackObjectRegionAdapterName();
+	static FName NotifyTracksNamedArrayRegionAdapterName();
+	static FAssetDocumentNamedArrayRegionAdapterConfig MakeNotifyTracksNamedArrayConfig();
 	static TArray<FAssetDocumentRegionBinding> MakePilotRegionBindings();
 	static TArray<FAssetDocumentRegionPolicy> MakePilotRegionPolicies();
 
