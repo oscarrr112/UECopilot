@@ -1569,23 +1569,40 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 	}
 
 	bOutHasTracks = true;
+	const FAssetDocumentNamedArrayRegionAdapterConfig NotifyTracksConfig =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig();
+	const TArray<FString> NotifyTracksIdentityFields =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames();
 	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
-	Hooks.ValidateElement = [&OutTracks](const FAssetDocumentRegionContext&, const TSharedRef<FJsonObject>& TrackObject, const int32 Index)
+	Hooks.ValidateElement = [&OutTracks, NotifyTracksConfig, NotifyTracksIdentityFields](const FAssetDocumentRegionContext&, const TSharedRef<FJsonObject>& TrackObject, const int32 Index)
 	{
-		FAssetDocumentCapabilityResult Result = RejectUnknownArrayObjectFields(TrackObject, TEXT("NotifyTracks"), Index, { TEXT("TrackName"), TEXT("Name") });
+		FAssetDocumentCapabilityResult Result = RejectUnknownArrayObjectFields(TrackObject, TEXT("NotifyTracks"), Index, NotifyTracksIdentityFields);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		if (TrackObject->Values.Contains(TEXT("Name")) && TrackObject->Values.Contains(TEXT("TrackName")))
+		for (const FString& AliasField : NotifyTracksConfig.IdentityAliases)
 		{
-			return BodyFailure(TEXT("NotifyTracks item cannot author both Name and TrackName"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("AmbiguousTrackNameAlias"));
+			if (TrackObject->Values.Contains(AliasField) && TrackObject->Values.Contains(NotifyTracksConfig.IdentityField))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("NotifyTracks item cannot author both %s and %s"), *AliasField, *NotifyTracksConfig.IdentityField),
+					FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(Index),
+					TEXT("AmbiguousTrackNameAlias"));
+			}
 		}
 
 		FString NameString;
-		if (!TrackObject->TryGetStringField(TEXT("TrackName"), NameString) || NameString.TrimStartAndEnd().IsEmpty())
+		if (!TrackObject->TryGetStringField(NotifyTracksConfig.IdentityField, NameString) || NameString.TrimStartAndEnd().IsEmpty())
 		{
-			Result = ReadRequiredStringField(TrackObject, TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), NameString);
+			const FString& FallbackField = NotifyTracksConfig.IdentityAliases.Num() > 0
+				? NotifyTracksConfig.IdentityAliases[0]
+				: NotifyTracksConfig.IdentityField;
+			Result = ReadRequiredStringField(
+				TrackObject,
+				*FallbackField,
+				FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(Index),
+				NameString);
 			if (!Result.bSuccess)
 			{
 				return Result;
@@ -1594,7 +1611,10 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 		const FName TrackName(*NameString);
 		if (TrackName.IsNone())
 		{
-			return BodyFailure(TEXT("Notify track name cannot be None"), BodyArrayFieldPath(TEXT("NotifyTracks"), Index, TEXT("TrackName")), TEXT("InvalidNotifyTrackName"));
+			return BodyFailure(
+				TEXT("Notify track name cannot be None"),
+				FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(Index),
+				TEXT("InvalidNotifyTrackName"));
 		}
 
 		FParsedAnimSequenceNotifyTrack ParsedTrack;
@@ -1604,7 +1624,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 	};
 
 	FAssetDocumentNamedArrayRegionAdapter Adapter(
-		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig(),
+		NotifyTracksConfig,
 		MoveTemp(Hooks));
 	FAssetDocumentRegionPolicy Policy;
 	if (!FindAnimSequencePilotPolicy(TEXT("NotifyTracks"), Policy))

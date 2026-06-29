@@ -76,6 +76,22 @@ FAssetDocumentNamedArrayRegionAdapterConfig FAnimSequenceAssetDocumentProfile::M
 	return Config;
 }
 
+TArray<FString> FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames()
+{
+	const FAssetDocumentNamedArrayRegionAdapterConfig Config = MakeNotifyTracksNamedArrayConfig();
+	TArray<FString> FieldNames;
+	FieldNames.Reserve(1 + Config.IdentityAliases.Num());
+	FieldNames.Add(Config.IdentityField);
+	FieldNames.Append(Config.IdentityAliases);
+	return FieldNames;
+}
+
+FString FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(int32 Index)
+{
+	const FAssetDocumentNamedArrayRegionAdapterConfig Config = MakeNotifyTracksNamedArrayConfig();
+	return FString::Printf(TEXT("/Body/NotifyTracks/%d/%s"), Index, *Config.IdentityField);
+}
+
 TArray<FAssetDocumentRegionBinding> FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings()
 {
 	return {

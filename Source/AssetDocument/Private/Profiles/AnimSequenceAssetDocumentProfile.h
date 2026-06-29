@@ -15,6 +15,8 @@ public:
 	static FName PlaybackObjectRegionAdapterName();
 	static FName NotifyTracksNamedArrayRegionAdapterName();
 	static FAssetDocumentNamedArrayRegionAdapterConfig MakeNotifyTracksNamedArrayConfig();
+	static TArray<FString> MakeNotifyTracksIdentityFieldNames();
+	static FString MakeNotifyTracksIdentityJsonPointer(int32 Index);
 	static TArray<FAssetDocumentRegionBinding> MakePilotRegionBindings();
 	static TArray<FAssetDocumentRegionPolicy> MakePilotRegionPolicies();
 

@@ -1021,6 +1021,19 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 	TestEqual(TEXT("NotifyTracks config duplicate identity code is profile-visible"), NotifyTracksConfig.DuplicateIdentityCode, FString(TEXT("DuplicateNotifyTrackName")));
 	TestTrue(TEXT("NotifyTracks config preserves authored apply order"), NotifyTracksConfig.bPreserveAuthoredApplyOrder);
 
+	const TArray<FString> NotifyTracksIdentityFields =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames();
+	TestEqual(TEXT("NotifyTracks identity helper exposes primary plus alias"), NotifyTracksIdentityFields.Num(), 2);
+	if (NotifyTracksIdentityFields.Num() == 2)
+	{
+		TestEqual(TEXT("NotifyTracks identity helper uses config primary first"), NotifyTracksIdentityFields[0], NotifyTracksConfig.IdentityField);
+		TestEqual(TEXT("NotifyTracks identity helper uses config alias second"), NotifyTracksIdentityFields[1], NotifyTracksConfig.IdentityAliases[0]);
+	}
+	TestEqual(
+		TEXT("NotifyTracks identity path helper targets primary field"),
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(3),
+		FString(TEXT("/Body/NotifyTracks/3/TrackName")));
+
 	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
 	TestEqual(TEXT("AnimSequence pilot declares three profile-owned policies"), Policies.Num(), 3);
 	auto FindPolicy = [&Policies](FName RegionId) -> const FAssetDocumentRegionPolicy*
