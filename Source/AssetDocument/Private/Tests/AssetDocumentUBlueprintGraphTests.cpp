@@ -1725,7 +1725,7 @@ bool FAssetDocumentUBlueprintGraphApplyUsesNodeAdaptersForMemberBindingTest::Run
 {
 	const FString K2GraphAdapterPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(
 		FPaths::ProjectPluginsDir(),
-		TEXT("UECopilot/Source/AssetDocument/Private/Graphs/K2GraphAdapter.cpp")));
+		TEXT("AssetFactory/Source/AssetDocument/Private/Graphs/K2GraphAdapter.cpp")));
 
 	FString Source;
 	TestTrue(TEXT("K2GraphAdapter source is available to architecture test"), FFileHelper::LoadFileToString(Source, *K2GraphAdapterPath));

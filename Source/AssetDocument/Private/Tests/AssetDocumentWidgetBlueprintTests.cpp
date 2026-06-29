@@ -5,6 +5,7 @@
 #include "AssetDocumentService.h"
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
@@ -225,6 +226,14 @@ bool ResultHasDiagnosticPath(const FAssetDocumentResult& Result, const FString& 
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedPath](const FAssetDocumentDiagnostic& Diagnostic)
 	{
 		return Diagnostic.Path == ExpectedPath;
+	});
+}
+
+bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& ExpectedCode)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == ExpectedCode;
 	});
 }
 
@@ -820,6 +829,12 @@ bool FAssetDocumentWidgetBlueprintProfileTest::RunTest(const FString&)
 	TestTrue(TEXT("FunctionGraphs body key is registered"), BodyKeys.Contains(TEXT("FunctionGraphs")));
 	TestTrue(TEXT("WidgetVariableGuids body key is registered"), BodyKeys.Contains(TEXT("WidgetVariableGuids")));
 
+	const FWidgetBlueprintAssetDocumentCapability Capability;
+	const TArray<FName> InternalAdapterNames = Capability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("Internal adapters include deferred region adapter"),
+		InternalAdapterNames.Contains(FAssetDocumentDeferredRegionAdapter::DefaultAdapterName()));
+
 	FAssetDocumentTemplateContext Context;
 	Context.Target = TEXT("/Game/AssetDocumentTests/WBP_Template");
 	Context.ClassPath = TEXT("/Script/UMGEditor.WidgetBlueprint");
@@ -856,6 +871,48 @@ bool FAssetDocumentWidgetBlueprintProfileTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("WidgetVariableGuids uses canonicalizer"), WidgetVariableGuidsPolicy->CanonicalizerHookName, FName(TEXT("WidgetBlueprintWidgetVariableGuids")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintDeferredGraphRegionsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.DeferredGraphRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintDeferredGraphRegionsTest::RunTest(const FString&)
+{
+	const FWidgetBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs")})
+	{
+		TSharedRef<FJsonObject> EmptyBody = MakeDefaultWidgetBlueprintBody();
+		EmptyBody->SetArrayField(DeferredRegion, {});
+		TestTrue(
+			FString::Printf(TEXT("Empty %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(Context, MakeBodyJsonValue(EmptyBody)).bSuccess);
+
+		TSharedRef<FJsonObject> NullBody = MakeDefaultWidgetBlueprintBody();
+		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
+		TestTrue(
+			FString::Printf(TEXT("Null %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(Context, MakeBodyJsonValue(NullBody)).bSuccess);
+
+		TSharedRef<FJsonObject> NonEmptyBody = MakeDefaultWidgetBlueprintBody();
+		NonEmptyBody->SetArrayField(DeferredRegion, {MakeShared<FJsonValueObject>(MakeShared<FJsonObject>())});
+		const FAssetDocumentCapabilityResult NonEmptyResult = Capability.Validate(Context, MakeBodyJsonValue(NonEmptyBody));
+		TestFalse(
+			FString::Printf(TEXT("Malformed non-empty %s fails through graph validation"), *DeferredRegion),
+			NonEmptyResult.bSuccess);
+		TestFalse(
+			FString::Printf(TEXT("Non-empty %s is not rejected by deferred adapter"), *DeferredRegion),
+			ResultHasDiagnosticCode(NonEmptyResult, TEXT("UnsupportedWidgetBlueprintRegion")));
+		TestTrue(
+			FString::Printf(TEXT("Non-empty %s reaches graph adapter diagnostics"), *DeferredRegion),
+			ResultHasDiagnosticCode(NonEmptyResult, TEXT("MissingGraphName")));
+	}
+
 	return true;
 }
 

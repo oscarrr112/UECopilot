@@ -15,6 +15,14 @@ public:
 		FString InUnsupportedRegionMessage = TEXT(""));
 
 	static FName DefaultAdapterName();
+	static bool FindDeclaredPolicyForBodyKey(
+		const TArray<FAssetDocumentRegionPolicy>& RegionPolicies,
+		const FString& BodyKey,
+		FAssetDocumentRegionPolicy& OutPolicy);
+	static FAssetDocumentRegionContext MakeContextFromDeclaredPolicy(
+		const FAssetDocumentCapabilityContext& CapabilityContext,
+		const FString& BodyKey,
+		const FAssetDocumentRegionPolicy& Policy);
 
 	virtual FName GetName() const override;
 	virtual bool SupportsRegion(const FAssetDocumentRegionContext& Context) const override;

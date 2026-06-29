@@ -80,6 +80,43 @@ FName FAssetDocumentDeferredRegionAdapter::DefaultAdapterName()
 	return TEXT("AssetDocumentDeferredRegionAdapter");
 }
 
+bool FAssetDocumentDeferredRegionAdapter::FindDeclaredPolicyForBodyKey(
+	const TArray<FAssetDocumentRegionPolicy>& RegionPolicies,
+	const FString& BodyKey,
+	FAssetDocumentRegionPolicy& OutPolicy)
+{
+	const FString DeclaredBodyPath = FString::Printf(TEXT("Body.%s"), *BodyKey);
+	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+	{
+		if (Policy.BodyPath == DeclaredBodyPath || Policy.RegionId.ToString() == DeclaredBodyPath)
+		{
+			OutPolicy = Policy;
+			return true;
+		}
+	}
+	return false;
+}
+
+FAssetDocumentRegionContext FAssetDocumentDeferredRegionAdapter::MakeContextFromDeclaredPolicy(
+	const FAssetDocumentCapabilityContext& CapabilityContext,
+	const FString& BodyKey,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = CapabilityContext.Asset;
+	RegionContext.AssetClass = CapabilityContext.AssetClass;
+	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
+	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
+	RegionContext.Definitions = CapabilityContext.Definitions;
+	RegionContext.Result = CapabilityContext.Result;
+	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
+	RegionContext.Policy = &Policy;
+	RegionContext.RegionId = Policy.RegionId;
+	RegionContext.BodyPath = Policy.BodyPath;
+	RegionContext.JsonPointer = FAssetDocumentJsonRegionUtils::MakeBodyPath(BodyKey);
+	return RegionContext;
+}
+
 FName FAssetDocumentDeferredRegionAdapter::GetName() const
 {
 	return Name;

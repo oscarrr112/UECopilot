@@ -8,6 +8,7 @@
 #include "Profiles/WidgetBlueprintBindingAdapter.h"
 #include "Profiles/WidgetBlueprintGraphAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
+#include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
@@ -196,104 +197,27 @@ FAssetDocumentCapabilityResult RequireBodyObject(const TSharedRef<FJsonValue>& B
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult RequireEmptyArray(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey)
-{
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	if (Value->Type != EJson::Array)
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s must be an array when authored"), *BodyKey),
-			Path,
-			TEXT("InvalidBodySectionType"));
-	}
-
-	if (Value->AsArray().Num() > 0)
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s is not supported yet for non-empty WidgetBlueprint documents"), *BodyKey),
-			Path,
-			TEXT("UnsupportedWidgetBlueprintRegion"));
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
-}
-
-FAssetDocumentCapabilityResult RequireEmptyObject(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey)
-{
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	if (Value->Type != EJson::Object)
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s must be an object when authored"), *BodyKey),
-			Path,
-			TEXT("InvalidBodySectionType"));
-	}
-
-	const TSharedPtr<FJsonObject> Object = Value->AsObject();
-	if (!Object.IsValid())
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s must be an object when authored"), *BodyKey),
-			Path,
-			TEXT("InvalidBodySectionType"));
-	}
-
-	if (Object->Values.Num() > 0)
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s is not supported yet for non-empty WidgetBlueprint documents"), *BodyKey),
-			Path,
-			TEXT("UnsupportedWidgetBlueprintRegion"));
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
-}
-
-FAssetDocumentRegionContext MakeDeferredRegionContext(
-	const FAssetDocumentCapabilityContext& CapabilityContext,
-	const FString& BodyKey,
-	const FAssetDocumentRegionPolicy& Policy)
-{
-	FAssetDocumentRegionContext RegionContext;
-	RegionContext.Asset = CapabilityContext.Asset;
-	RegionContext.AssetClass = CapabilityContext.AssetClass;
-	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
-	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
-	RegionContext.Definitions = CapabilityContext.Definitions;
-	RegionContext.Result = CapabilityContext.Result;
-	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
-	RegionContext.Policy = &Policy;
-	RegionContext.RegionId = Policy.RegionId;
-	RegionContext.BodyPath = Policy.BodyPath;
-	RegionContext.JsonPointer = FString::Printf(TEXT("/Body/%s"), *BodyKey);
-	return RegionContext;
-}
-
 FAssetDocumentCapabilityResult ValidateDeferredWidgetBlueprintRegion(
 	const FAssetDocumentCapabilityContext& Context,
 	const FString& BodyKey,
-	const TSharedPtr<FJsonValue>& Value,
-	const EAssetDocumentRegionKind RegionKind)
+	const TSharedPtr<FJsonValue>& Value)
 {
+	const FWidgetBlueprintAssetDocumentProfile Profile;
 	FAssetDocumentRegionPolicy Policy;
-	Policy.RegionId = FName(*FString::Printf(TEXT("Body.%s"), *BodyKey));
-	Policy.BodyPath = Policy.RegionId.ToString();
-	Policy.RegionKind = RegionKind;
-	Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
+	if (!FAssetDocumentDeferredRegionAdapter::FindDeclaredPolicyForBodyKey(Profile.GetRegionPolicies(), BodyKey, Policy))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("Missing deferred WidgetBlueprint region policy for Body.%s"), *BodyKey),
+			FString::Printf(TEXT("/Body/%s"), *BodyKey),
+			TEXT("MissingDeferredRegionPolicy"));
+	}
 
 	const FAssetDocumentDeferredRegionAdapter Adapter(
 		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
 		TEXT("UnsupportedWidgetBlueprintRegion"),
 		FString::Printf(TEXT("Body.%s is not supported yet for non-empty WidgetBlueprint documents"), *BodyKey));
-	const FAssetDocumentRegionContext RegionContext = MakeDeferredRegionContext(Context, BodyKey, Policy);
+	const FAssetDocumentRegionContext RegionContext =
+		FAssetDocumentDeferredRegionAdapter::MakeContextFromDeclaredPolicy(Context, BodyKey, Policy);
 	return FAssetDocumentRegionRuntime::Validate(RegionContext, Value, Adapter);
 }
 
@@ -2961,7 +2885,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 			if (IsDeferredGraphBodyKey(Pair.Key) && IsNullOrEmptyArray(Pair.Value))
 			{
 				const FAssetDocumentCapabilityResult DeferredGraphResult =
-					ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value, EAssetDocumentRegionKind::Graph);
+					ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value);
 				if (!DeferredGraphResult.bSuccess)
 				{
 					return DeferredGraphResult;
@@ -2972,7 +2896,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 		else
 		{
 			const FAssetDocumentCapabilityResult ArrayResult =
-				ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value, EAssetDocumentRegionKind::Array);
+				ValidateDeferredWidgetBlueprintRegion(Context, Pair.Key, Pair.Value);
 			if (!ArrayResult.bSuccess)
 			{
 				return ArrayResult;

@@ -4,6 +4,7 @@
 #include "AssetDocumentService.h"
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 #include "Profiles/UBlueprintAssetDocumentProfile.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Dom/JsonValue.h"
 #include "EdGraphSchema_K2.h"
@@ -385,6 +386,11 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	}
 	TestNotNull(TEXT("Body root resolves adapter"), Profile.ResolveBodyAdapter(TEXT("Body")));
 
+	const TArray<FName> InternalAdapterNames = Capability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("Internal adapters include deferred region adapter"),
+		InternalAdapterNames.Contains(FAssetDocumentDeferredRegionAdapter::DefaultAdapterName()));
+
 	FAssetDocumentTemplateContext Context;
 	Context.Target = TEXT("/Game/AssetDocumentTests/BP_Template");
 	Context.ClassPath = TEXT("/Script/Engine.Blueprint");
@@ -472,6 +478,16 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	ValidEmptyBody->SetArrayField(TEXT("MacroGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("Timelines"), {});
 	TestTrue(TEXT("Empty protected regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
+
+	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs"), TEXT("Timelines")})
+	{
+		TSharedRef<FJsonObject> NullBody = MakeShared<FJsonObject>();
+		NullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
+		TestTrue(
+			FString::Printf(TEXT("Null %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(CapabilityContext, MakeBodyValue(NullBody)).bSuccess);
+	}
 
 	TSharedRef<FJsonObject> UnknownBody = MakeShared<FJsonObject>();
 	UnknownBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
