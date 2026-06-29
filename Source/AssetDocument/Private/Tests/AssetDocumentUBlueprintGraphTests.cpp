@@ -22,6 +22,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
@@ -36,6 +37,28 @@ namespace
 TSharedRef<FJsonValue> MakeBodyValue(const TSharedRef<FJsonObject>& Body)
 {
 	return StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(Body));
+}
+
+FString ResolveAssetFactoryPluginBaseDir()
+{
+	if (const TSharedPtr<IPlugin> AssetFactoryPlugin = IPluginManager::Get().FindPlugin(TEXT("AssetFactory")))
+	{
+		return AssetFactoryPlugin->GetBaseDir();
+	}
+
+	TArray<FString> CandidatePluginFiles;
+	IFileManager::Get().FindFilesRecursive(
+		CandidatePluginFiles,
+		*FPaths::ProjectPluginsDir(),
+		TEXT("AssetFactory.uplugin"),
+		true,
+		false,
+		false);
+
+	CandidatePluginFiles.Sort();
+	return CandidatePluginFiles.Num() > 0
+		? FPaths::ConvertRelativePathToFull(FPaths::GetPath(CandidatePluginFiles[0]))
+		: FString();
 }
 
 TSharedRef<FJsonObject> MakeActorParentClassRef()
@@ -1723,12 +1746,25 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentUBlueprintGraphApplyUsesNodeAdaptersForMemberBindingTest::RunTest(const FString&)
 {
+	const FString AssetFactoryPluginBaseDir = ResolveAssetFactoryPluginBaseDir();
+	TestFalse(TEXT("AssetFactory plugin base dir resolves"), AssetFactoryPluginBaseDir.IsEmpty());
+	if (AssetFactoryPluginBaseDir.IsEmpty())
+	{
+		return false;
+	}
+
 	const FString K2GraphAdapterPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(
-		FPaths::ProjectPluginsDir(),
-		TEXT("AssetFactory/Source/AssetDocument/Private/Graphs/K2GraphAdapter.cpp")));
+		AssetFactoryPluginBaseDir,
+		TEXT("Source/AssetDocument/Private/Graphs/K2GraphAdapter.cpp")));
 
 	FString Source;
-	TestTrue(TEXT("K2GraphAdapter source is available to architecture test"), FFileHelper::LoadFileToString(Source, *K2GraphAdapterPath));
+	const bool bLoadedSource = FFileHelper::LoadFileToString(Source, *K2GraphAdapterPath);
+	TestTrue(TEXT("K2GraphAdapter source is available to architecture test"), bLoadedSource);
+	if (!bLoadedSource)
+	{
+		return false;
+	}
+
 	TestFalse(TEXT("K2GraphAdapter apply does not centralize member binding in ConfigureNodeFromSpec"), Source.Contains(TEXT("ConfigureNodeFromSpec")));
 	TestFalse(TEXT("Event member binding lives in node adapter"), Source.Contains(TEXT("EventReference.SetExternalMember")));
 	TestFalse(TEXT("CallFunction member binding lives in node adapter"), Source.Contains(TEXT("FunctionReference.SetFromField")));
