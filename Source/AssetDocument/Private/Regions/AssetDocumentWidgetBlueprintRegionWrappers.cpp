@@ -352,6 +352,14 @@ FWidgetBlueprintGraphRegionAdapter::FWidgetBlueprintGraphRegionAdapter(FWidgetBl
 {
 }
 
+FWidgetBlueprintGraphRegionAdapter::FWidgetBlueprintGraphRegionAdapter(
+	UBlueprint* InDesiredStateBlueprint,
+	FWidgetBlueprintRegionAdapterHooks InHooks)
+	: Hooks(MoveTemp(InHooks))
+	, DesiredStateBlueprint(InDesiredStateBlueprint)
+{
+}
+
 FName FWidgetBlueprintGraphRegionAdapter::AdapterName()
 {
 	return TEXT("WidgetBlueprintGraph");
@@ -406,7 +414,10 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::PreflightRegi
 		return ObjectResult;
 	}
 	FAssetDocumentCapabilityContext CapabilityContext = ToCapabilityContext(Context);
-	return FWidgetBlueprintGraphAdapter().PreflightRegions(CapabilityContext, BodyObject.ToSharedRef());
+	return FWidgetBlueprintGraphAdapter().PreflightRegions(
+		CapabilityContext,
+		BodyObject.ToSharedRef(),
+		DesiredStateBlueprint ? DesiredStateBlueprint : Cast<UBlueprint>(Context.Asset));
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::ApplyRegion(

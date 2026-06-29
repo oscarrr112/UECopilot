@@ -6,6 +6,8 @@
 
 #include "CoreMinimal.h"
 
+class UBlueprint;
+
 struct FWidgetBlueprintRegionAdapterHooks
 {
 	TFunction<FAssetDocumentCapabilityResult(
@@ -131,6 +133,7 @@ class FWidgetBlueprintGraphRegionAdapter final : public IAssetDocumentRegionAdap
 {
 public:
 	explicit FWidgetBlueprintGraphRegionAdapter(FWidgetBlueprintRegionAdapterHooks InHooks = {});
+	explicit FWidgetBlueprintGraphRegionAdapter(UBlueprint* InDesiredStateBlueprint, FWidgetBlueprintRegionAdapterHooks InHooks = {});
 
 	static FName AdapterName();
 
@@ -157,4 +160,5 @@ public:
 
 private:
 	FWidgetBlueprintRegionAdapterHooks Hooks;
+	UBlueprint* DesiredStateBlueprint = nullptr;
 };

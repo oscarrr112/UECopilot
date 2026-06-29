@@ -343,6 +343,101 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesDiffTest::RunTest(const FS
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperBodyLevelGraphLifecycleTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.BodyLevelGraphLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperBodyLevelGraphLifecycleTest::RunTest(const FString& Parameters)
+{
+	int32 ValidateCalls = 0;
+	int32 PreflightCalls = 0;
+	int32 ApplyCalls = 0;
+	int32 ExtractCalls = 0;
+	int32 DiffCalls = 0;
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Validate = [&ValidateCalls](const FAssetDocumentRegionContext& Context, const TSharedPtr<FJsonValue>& DesiredValue)
+	{
+		++ValidateCalls;
+		return Context.JsonPointer == TEXT("/Body") && DesiredValue.IsValid() && DesiredValue->Type == EJson::Object
+			? FAssetDocumentCapabilityResult::Success(TEXT("validated body-level graph wrapper"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("graph wrapper requires body object context"), Context.JsonPointer, TEXT("InvalidGraphWrapperContext"));
+	};
+	Hooks.Preflight = [&PreflightCalls](FAssetDocumentRegionContext& Context, const TSharedPtr<FJsonValue>& DesiredValue)
+	{
+		++PreflightCalls;
+		return Context.RegionId == TEXT("Body.WidgetBlueprintGraphRegions") && DesiredValue.IsValid() && DesiredValue->Type == EJson::Object
+			? FAssetDocumentCapabilityResult::Success(TEXT("preflighted body-level graph wrapper"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("graph wrapper requires synthetic region id"), Context.JsonPointer, TEXT("InvalidGraphWrapperContext"));
+	};
+	Hooks.Apply = [&ApplyCalls](
+		FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		bool& bOutChanged)
+	{
+		++ApplyCalls;
+		bOutChanged = true;
+		return Context.BodyPath == TEXT("Body.WidgetBlueprintGraphRegions") && DesiredValue.IsValid() && DesiredValue->Type == EJson::Object
+			? FAssetDocumentCapabilityResult::Success(TEXT("applied body-level graph wrapper"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("graph wrapper requires synthetic body path"), Context.JsonPointer, TEXT("InvalidGraphWrapperContext"));
+	};
+	Hooks.Extract = [&ExtractCalls](const FAssetDocumentRegionContext& Context, TSharedPtr<FJsonValue>& OutCurrentValue)
+	{
+		++ExtractCalls;
+		TSharedRef<FJsonObject> BodyObject = MakeShared<FJsonObject>();
+		BodyObject->SetArrayField(TEXT("UbergraphPages"), {});
+		BodyObject->SetArrayField(TEXT("FunctionGraphs"), {});
+		BodyObject->SetArrayField(TEXT("MacroGraphs"), {});
+		OutCurrentValue = MakeShared<FJsonValueObject>(BodyObject);
+		return Context.JsonPointer == TEXT("/Body")
+			? FAssetDocumentCapabilityResult::Success(TEXT("extracted body-level graph wrapper"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("graph wrapper extracts at body pointer"), Context.JsonPointer, TEXT("InvalidGraphWrapperContext"));
+	};
+	Hooks.Diff = [&DiffCalls](
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		++DiffCalls;
+		FAssetDocumentJsonRegionUtils::AddDiffEntry(
+			OutDiffEntries,
+			TEXT("/Body/UbergraphPages"),
+			TEXT("changed"),
+			MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>()),
+			DesiredValue);
+		return Context.JsonPointer == TEXT("/Body")
+			? FAssetDocumentCapabilityResult::Success(TEXT("diffed body-level graph wrapper"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("graph wrapper diffs at body pointer"), Context.JsonPointer, TEXT("InvalidGraphWrapperContext"));
+	};
+
+	FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("Body.WidgetBlueprintGraphRegions"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("/Body"), &Policy);
+	Context.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
+	TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+	DesiredBody->SetArrayField(TEXT("UbergraphPages"), {});
+	const TSharedPtr<FJsonValue> DesiredValue = MakeObjectValue(DesiredBody);
+
+	TestTrue(TEXT("Graph wrapper supports synthetic body-level region"), Adapter.SupportsRegion(Context));
+	TestTrue(TEXT("Validate dispatches body-level graph wrapper"), FAssetDocumentRegionRuntime::Validate(Context, DesiredValue, Adapter).bSuccess);
+	TestTrue(TEXT("Preflight dispatches body-level graph wrapper"), FAssetDocumentRegionRuntime::Preflight(Context, DesiredValue, Adapter).bSuccess);
+	bool bChanged = false;
+	TestTrue(TEXT("Apply dispatches body-level graph wrapper"), FAssetDocumentRegionRuntime::Apply(Context, DesiredValue, Adapter, bChanged).bSuccess);
+	TestTrue(TEXT("Apply returns graph wrapper changed flag"), bChanged);
+	TSharedPtr<FJsonValue> ExtractedValue;
+	TestTrue(TEXT("Extract dispatches body-level graph wrapper"), FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue).bSuccess);
+	TestTrue(TEXT("Extract keeps graph body object shape"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Object);
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	TestTrue(TEXT("Diff dispatches body-level graph wrapper"), FAssetDocumentRegionRuntime::Diff(Context, DesiredValue, Adapter, DiffEntries).bSuccess);
+	TestEqual(TEXT("Validate hook count"), ValidateCalls, 1);
+	TestEqual(TEXT("Preflight hook count"), PreflightCalls, 1);
+	TestEqual(TEXT("Apply hook count"), ApplyCalls, 1);
+	TestEqual(TEXT("Extract hook count"), ExtractCalls, 1);
+	TestEqual(TEXT("Diff hook count"), DiffCalls, 1);
+	TestEqual(TEXT("Diff entries from graph wrapper"), DiffEntries.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeJsonUtilsRequireObjectTest,
 	"AssetFactory.AssetDocument.RegionRuntime.JsonUtils.RequireObject",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

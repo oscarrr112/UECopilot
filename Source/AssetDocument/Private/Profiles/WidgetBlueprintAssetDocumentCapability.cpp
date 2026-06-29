@@ -3,10 +3,10 @@
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
 #include "Profiles/WidgetBlueprintAnimationAdapter.h"
 #include "Profiles/WidgetBlueprintBindingAdapter.h"
-#include "Profiles/WidgetBlueprintGraphAdapter.h"
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
@@ -263,6 +263,44 @@ FAssetDocumentRegionContext MakeWidgetBlueprintRegionContext(
 	return RegionContext;
 }
 
+FName WidgetBlueprintGraphRegionId()
+{
+	return TEXT("Body.WidgetBlueprintGraphRegions");
+}
+
+FAssetDocumentRegionPolicy MakeWidgetBlueprintGraphRegionPolicy()
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = WidgetBlueprintGraphRegionId();
+	Policy.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
+	Policy.RegionKind = EAssetDocumentRegionKind::Graph;
+	Policy.ManagedUePropertyPaths = {
+		TEXT("UbergraphPages"),
+		TEXT("FunctionGraphs"),
+		TEXT("MacroGraphs"),
+	};
+	return Policy;
+}
+
+FAssetDocumentRegionContext MakeWidgetBlueprintGraphRegionContext(
+	const FAssetDocumentCapabilityContext& CapabilityContext,
+	const FAssetDocumentRegionPolicy& Policy)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = CapabilityContext.Asset;
+	RegionContext.AssetClass = CapabilityContext.AssetClass;
+	RegionContext.TargetAssetPath = CapabilityContext.TargetAssetPath;
+	RegionContext.SourceDocumentPath = CapabilityContext.SourceDocumentPath;
+	RegionContext.Definitions = CapabilityContext.Definitions;
+	RegionContext.Result = CapabilityContext.Result;
+	RegionContext.bIsDryRun = CapabilityContext.bIsDryRun;
+	RegionContext.Policy = &Policy;
+	RegionContext.RegionId = Policy.RegionId;
+	RegionContext.BodyPath = Policy.BodyPath;
+	RegionContext.JsonPointer = TEXT("/Body");
+	return RegionContext;
+}
+
 FAssetDocumentCapabilityResult ValidateWrappedWidgetBlueprintRegion(
 	const FAssetDocumentCapabilityContext& Context,
 	const FString& BodyKey,
@@ -348,6 +386,83 @@ FAssetDocumentCapabilityResult DiffWrappedWidgetBlueprintRegion(
 	const FAssetDocumentRegionContext RegionContext =
 		MakeWidgetBlueprintRegionContext(Context, BodyKey, Policy);
 	return FAssetDocumentRegionRuntime::Diff(RegionContext, Value, Adapter, OutDiffEntries);
+}
+
+FAssetDocumentCapabilityResult ValidateWidgetBlueprintGraphRegionsThroughRuntime(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeWidgetBlueprintGraphRegionPolicy();
+	const FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context, Policy);
+	const FWidgetBlueprintGraphRegionAdapter Adapter;
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, MakeShared<FJsonValueObject>(BodyObject), Adapter);
+}
+
+FAssetDocumentCapabilityResult PreflightWidgetBlueprintGraphRegionsThroughRuntime(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject,
+	UBlueprint* DesiredStateBlueprint = nullptr)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeWidgetBlueprintGraphRegionPolicy();
+	FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context, Policy);
+	const FWidgetBlueprintGraphRegionAdapter Adapter(DesiredStateBlueprint);
+	return FAssetDocumentRegionRuntime::Preflight(RegionContext, MakeShared<FJsonValueObject>(BodyObject), Adapter);
+}
+
+FAssetDocumentCapabilityResult ApplyWidgetBlueprintGraphRegionsThroughRuntime(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool& bOutChanged)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeWidgetBlueprintGraphRegionPolicy();
+	FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context, Policy);
+	FWidgetBlueprintGraphRegionAdapter Adapter;
+	return FAssetDocumentRegionRuntime::Apply(RegionContext, MakeShared<FJsonValueObject>(BodyObject), Adapter, bOutChanged);
+}
+
+FAssetDocumentCapabilityResult ExtractWidgetBlueprintGraphRegionsThroughRuntime(
+	const FAssetDocumentCapabilityContext& Context,
+	TSharedRef<FJsonObject>& OutBodyJson)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeWidgetBlueprintGraphRegionPolicy();
+	const FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context, Policy);
+	const FWidgetBlueprintGraphRegionAdapter Adapter;
+	TSharedPtr<FJsonValue> GraphBodyValue;
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Extract(RegionContext, Adapter, GraphBodyValue);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> GraphBodyObject;
+	const FAssetDocumentCapabilityResult ObjectResult =
+		FAssetDocumentJsonRegionUtils::RequireObjectValue(GraphBodyValue, TEXT("/Body"), GraphBodyObject);
+	if (!ObjectResult.bSuccess)
+	{
+		return ObjectResult;
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : GraphBodyObject->Values)
+	{
+		OutBodyJson->SetField(Pair.Key, Pair.Value);
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted WidgetBlueprint graph regions through runtime"));
+}
+
+FAssetDocumentCapabilityResult DiffWidgetBlueprintGraphRegionsThroughRuntime(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeWidgetBlueprintGraphRegionPolicy();
+	const FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context, Policy);
+	const FWidgetBlueprintGraphRegionAdapter Adapter;
+	return FAssetDocumentRegionRuntime::Diff(
+		RegionContext,
+		MakeShared<FJsonValueObject>(DesiredBody),
+		Adapter,
+		OutDiffEntries);
 }
 
 FAssetDocumentCapabilityResult RequireObjectSection(
@@ -1948,7 +2063,7 @@ FAssetDocumentCapabilityResult PreflightGraphsAgainstDesiredWidgetBlueprint(
 		return ScratchResult;
 	}
 
-	return FWidgetBlueprintGraphAdapter().PreflightRegions(SourceContext, DesiredBody, Scratch.Blueprint);
+	return PreflightWidgetBlueprintGraphRegionsThroughRuntime(SourceContext, DesiredBody, Scratch.Blueprint);
 }
 
 FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
@@ -1996,7 +2111,7 @@ FAssetDocumentCapabilityResult PreflightBindingsAgainstDesiredWidgetBlueprint(
 	ScratchContext.AssetClass = UWidgetBlueprint::StaticClass();
 	bool bScratchGraphsChanged = false;
 	const FAssetDocumentCapabilityResult GraphApplyResult =
-		FWidgetBlueprintGraphAdapter().ApplyRegions(ScratchContext, DesiredBody, bScratchGraphsChanged);
+		ApplyWidgetBlueprintGraphRegionsThroughRuntime(ScratchContext, DesiredBody, bScratchGraphsChanged);
 	if (!GraphApplyResult.bSuccess)
 	{
 		return GraphApplyResult;
@@ -2510,7 +2625,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Apply(FA
 
 	bool bGraphsChanged = false;
 	const FAssetDocumentCapabilityResult GraphApplyResult =
-		FWidgetBlueprintGraphAdapter().ApplyRegions(Context, BodyObject.ToSharedRef(), bGraphsChanged);
+		ApplyWidgetBlueprintGraphRegionsThroughRuntime(Context, BodyObject.ToSharedRef(), bGraphsChanged);
 	if (!GraphApplyResult.bSuccess)
 	{
 		return GraphApplyResult;
@@ -2676,7 +2791,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Extract(
 	}
 	OutBodyJson->SetField(TEXT("Animations"), AnimationValues.IsValid() ? AnimationValues : MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>()));
 	const FAssetDocumentCapabilityResult GraphExtractResult =
-		FWidgetBlueprintGraphAdapter().ExtractRegions(Context, OutBodyJson);
+		ExtractWidgetBlueprintGraphRegionsThroughRuntime(Context, OutBodyJson);
 	if (!GraphExtractResult.bSuccess)
 	{
 		return GraphExtractResult;
@@ -2844,7 +2959,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 			if (!bDiffedGraphRegions)
 			{
 				const FAssetDocumentCapabilityResult GraphDiffResult =
-					FWidgetBlueprintGraphAdapter().DiffRegions(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
+					DiffWidgetBlueprintGraphRegionsThroughRuntime(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
 				if (!GraphDiffResult.bSuccess)
 				{
 					return GraphDiffResult;
@@ -3047,7 +3162,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Validate
 	}
 
 	const FAssetDocumentCapabilityResult GraphValidateResult =
-		FWidgetBlueprintGraphAdapter().ValidateRegions(Context, BodyObject);
+		ValidateWidgetBlueprintGraphRegionsThroughRuntime(Context, BodyObject);
 	if (!GraphValidateResult.bSuccess)
 	{
 		return GraphValidateResult;
