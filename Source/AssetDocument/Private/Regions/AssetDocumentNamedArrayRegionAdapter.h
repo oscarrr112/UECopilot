@@ -13,6 +13,7 @@ struct FAssetDocumentNamedArrayRegionAdapterConfig
 	TArray<FString> IdentityAliases;
 	FString MissingIdentityCode = TEXT("MissingNamedArrayIdentity");
 	FString DuplicateIdentityCode = TEXT("DuplicateNamedArrayIdentity");
+	TFunction<FString(const FString&)> NormalizeIdentity;
 	bool bCanonicalizeByIdentity = true;
 	bool bPreserveAuthoredApplyOrder = false;
 };
@@ -86,6 +87,7 @@ private:
 		FString& OutIdentity,
 		FString& OutIdentityField) const;
 
+	FString NormalizeIdentity(const FString& Identity) const;
 	TArray<TSharedRef<FJsonObject>> SortElementsForCanonicalOrder(TArray<TSharedRef<FJsonObject>> Elements) const;
 	TSharedPtr<FJsonValue> MakeArrayValueFromElements(TArray<TSharedRef<FJsonObject>> Elements, bool bCanonicalize) const;
 

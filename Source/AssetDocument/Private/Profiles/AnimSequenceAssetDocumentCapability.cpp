@@ -3047,13 +3047,14 @@ FAssetDocumentCapabilityResult ApplyAnimSequencePlaybackRegion(
 
 FAssetDocumentCapabilityResult ApplyAnimSequenceNotifyTracksRegion(
 	FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	const FParsedAnimSequenceBody& ParsedBody,
 	TArray<FAnimNotifyTrack>& StagedTracks,
 	bool& bOutChanged)
 {
 	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
-	Hooks.ApplyElements = [&ParsedBody, &StagedTracks](FAssetDocumentRegionContext&, const TArray<TSharedRef<FJsonObject>>&, bool& bHookChanged)
+	Hooks.ApplyElements = [Sequence, &ParsedBody, &StagedTracks](FAssetDocumentRegionContext&, const TArray<TSharedRef<FJsonObject>>&, bool& bHookChanged)
 	{
 		StagedTracks.Reset();
 		StagedTracks.Reserve(ParsedBody.NotifyTracks.Num());
@@ -3061,7 +3062,18 @@ FAssetDocumentCapabilityResult ApplyAnimSequenceNotifyTracksRegion(
 		{
 			StagedTracks.Add(FAnimNotifyTrack(Track.Name, FLinearColor::White));
 		}
-		bHookChanged = true;
+		bHookChanged = !Sequence || Sequence->AnimNotifyTracks.Num() != StagedTracks.Num();
+		if (!bHookChanged && Sequence)
+		{
+			for (int32 Index = 0; Index < StagedTracks.Num(); ++Index)
+			{
+				if (Sequence->AnimNotifyTracks[Index].TrackName != StagedTracks[Index].TrackName)
+				{
+					bHookChanged = true;
+					break;
+				}
+			}
+		}
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimSequence NotifyTracks region"));
 	};
 
@@ -3721,7 +3733,7 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Apply(FAsse
 			}
 			bool bNotifyTracksChanged = false;
 			const FAssetDocumentCapabilityResult NotifyTracksApplyResult =
-				ApplyAnimSequenceNotifyTracksRegion(Context, *NotifyTracksValue, ParsedBody, StagedTracks, bNotifyTracksChanged);
+				ApplyAnimSequenceNotifyTracksRegion(Context, Sequence, *NotifyTracksValue, ParsedBody, StagedTracks, bNotifyTracksChanged);
 			if (!NotifyTracksApplyResult.bSuccess)
 			{
 				return NotifyTracksApplyResult;

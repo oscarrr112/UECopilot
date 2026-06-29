@@ -72,6 +72,10 @@ FAssetDocumentNamedArrayRegionAdapterConfig FAnimSequenceAssetDocumentProfile::M
 	Config.IdentityAliases = {TEXT("Name")};
 	Config.MissingIdentityCode = TEXT("InvalidStringField");
 	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.NormalizeIdentity = [](const FString& Identity)
+	{
+		return FName(*Identity).ToString().ToLower();
+	};
 	Config.bPreserveAuthoredApplyOrder = true;
 	return Config;
 }

@@ -1091,6 +1091,19 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order second"), Sequence->AnimNotifyTracks[1].TrackName, FName(TEXT("Default")));
 	}
 
+	TSharedRef<FJsonObject> DuplicateTracksBody = MakeShared<FJsonObject>();
+	DuplicateTracksBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeTrackObject(TEXT("Default")),
+		MakeTrackObject(TEXT("default")),
+	}));
+	const FAssetDocumentCapabilityResult DuplicateTracksResult =
+		Capability.Validate(Context, MakeBodyValue(DuplicateTracksBody));
+	TestFalse(TEXT("NotifyTracks duplicate validation uses FName identity semantics"), DuplicateTracksResult.bSuccess);
+	TestEqual(
+		TEXT("NotifyTracks duplicate validation keeps diagnostic code"),
+		DuplicateTracksResult.Diagnostics.Num() > 0 ? DuplicateTracksResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("DuplicateNotifyTrackName")));
+
 	return true;
 }
 

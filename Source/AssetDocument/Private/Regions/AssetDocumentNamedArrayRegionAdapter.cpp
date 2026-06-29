@@ -137,6 +137,11 @@ bool FAssetDocumentNamedArrayRegionAdapter::TryReadIdentity(
 	return false;
 }
 
+FString FAssetDocumentNamedArrayRegionAdapter::NormalizeIdentity(const FString& Identity) const
+{
+	return Config.NormalizeIdentity ? Config.NormalizeIdentity(Identity) : Identity;
+}
+
 FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseElements(
 	const FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& Value,
@@ -175,7 +180,8 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 				FString::Printf(TEXT("%s is required for named array elements"), *Config.IdentityField));
 		}
 
-		if (SeenIdentities.Contains(Identity))
+		const FString NormalizedIdentity = NormalizeIdentity(Identity);
+		if (SeenIdentities.Contains(NormalizedIdentity))
 		{
 			return Failure(
 				Context,
@@ -184,7 +190,7 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 				Config.DuplicateIdentityCode,
 				FString::Printf(TEXT("Duplicate named array identity %s"), *Identity));
 		}
-		SeenIdentities.Add(Identity);
+		SeenIdentities.Add(NormalizedIdentity);
 
 		if (Hooks.ValidateElement)
 		{
@@ -213,9 +219,11 @@ TArray<TSharedRef<FJsonObject>> FAssetDocumentNamedArrayRegionAdapter::SortEleme
 			FString RightField;
 			TryReadIdentity(Left, LeftIdentity, LeftField);
 			TryReadIdentity(Right, RightIdentity, RightField);
-			if (LeftIdentity != RightIdentity)
+			const FString NormalizedLeftIdentity = NormalizeIdentity(LeftIdentity);
+			const FString NormalizedRightIdentity = NormalizeIdentity(RightIdentity);
+			if (NormalizedLeftIdentity != NormalizedRightIdentity)
 			{
-				return LeftIdentity < RightIdentity;
+				return NormalizedLeftIdentity < NormalizedRightIdentity;
 			}
 			return FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeShared<FJsonValueObject>(Left)) <
 				FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeShared<FJsonValueObject>(Right));
