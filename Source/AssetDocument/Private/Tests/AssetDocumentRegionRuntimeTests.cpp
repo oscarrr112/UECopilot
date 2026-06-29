@@ -6,6 +6,7 @@
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
+#include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -200,6 +201,145 @@ FAssetDocumentBodyRegionDispatcher MakeDispatcher(
 		AdapterMap,
 		MoveTemp(Hooks));
 }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperDelegatesValidateTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.DelegatesValidate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesValidateTest::RunTest(const FString& Parameters)
+{
+	int32 ValidateCalls = 0;
+	FString SeenPointer;
+	TSharedPtr<FJsonValue> SeenDesired;
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Validate = [&ValidateCalls, &SeenPointer, &SeenDesired](
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue)
+	{
+		++ValidateCalls;
+		SeenPointer = Context.JsonPointer;
+		SeenDesired = DesiredValue;
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated widget region"));
+	};
+	FWidgetBlueprintTreeRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetTree"), TEXT("Body.WidgetTree"));
+	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetTree"), TEXT("/Body/WidgetTree"), &Policy);
+	const TSharedPtr<FJsonValue> Desired = MakeObjectValue(MakeShared<FJsonObject>());
+
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(Context, Desired, Adapter);
+
+	TestTrue(TEXT("Validate succeeds through wrapper"), Result.bSuccess);
+	TestEqual(TEXT("Validate hook is called once"), ValidateCalls, 1);
+	TestEqual(TEXT("Validate receives region pointer"), SeenPointer, FString(TEXT("/Body/WidgetTree")));
+	TestTrue(TEXT("Validate receives desired value"), SeenDesired == Desired);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperDelegatesPreflightTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.DelegatesPreflight",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesPreflightTest::RunTest(const FString& Parameters)
+{
+	int32 PreflightCalls = 0;
+	UObject* SentinelAsset = reinterpret_cast<UObject*>(0x1234);
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Preflight = [&PreflightCalls, &SentinelAsset](
+		FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>&)
+	{
+		++PreflightCalls;
+		return Context.Asset == SentinelAsset
+			? FAssetDocumentCapabilityResult::Success(TEXT("preflighted widget region"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("missing context asset"), Context.JsonPointer, TEXT("MissingContextAsset"));
+	};
+	FWidgetBlueprintBindingRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Bindings"), TEXT("Body.Bindings"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Bindings"), TEXT("/Body/Bindings"), &Policy);
+	Context.Asset = SentinelAsset;
+
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Preflight(
+		Context,
+		MakeArrayValue({}),
+		Adapter);
+
+	TestTrue(TEXT("Preflight succeeds through wrapper"), Result.bSuccess);
+	TestEqual(TEXT("Preflight hook is called once"), PreflightCalls, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperDelegatesExtractTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.DelegatesExtract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesExtractTest::RunTest(const FString& Parameters)
+{
+	int32 ExtractCalls = 0;
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Extract = [&ExtractCalls](
+		const FAssetDocumentRegionContext&,
+		TSharedPtr<FJsonValue>& OutCurrentValue)
+	{
+		++ExtractCalls;
+		OutCurrentValue = MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Animation"))});
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted widget region"));
+	};
+	FWidgetBlueprintAnimationRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Animations"), TEXT("Body.Animations"));
+	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Animations"), TEXT("/Body/Animations"), &Policy);
+
+	TSharedPtr<FJsonValue> Extracted;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Extract(Context, Adapter, Extracted);
+
+	TestTrue(TEXT("Extract succeeds through wrapper"), Result.bSuccess);
+	TestEqual(TEXT("Extract hook is called once"), ExtractCalls, 1);
+	TestTrue(TEXT("Extract returns hook value"), Extracted.IsValid() && Extracted->Type == EJson::Array);
+	TestEqual(TEXT("Extracted array contains hook value"), Extracted.IsValid() ? Extracted->AsArray().Num() : 0, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperDelegatesDiffTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.DelegatesDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesDiffTest::RunTest(const FString& Parameters)
+{
+	int32 DiffCalls = 0;
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Diff = [&DiffCalls](
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		++DiffCalls;
+		FAssetDocumentJsonRegionUtils::AddDiffEntry(
+			OutDiffEntries,
+			Context.JsonPointer,
+			TEXT("changed"),
+			MakeShared<FJsonValueNull>(),
+			DesiredValue);
+		return FAssetDocumentCapabilityResult::Success(TEXT("diffed widget graph region"));
+	};
+	FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphs"), TEXT("Body.WidgetBlueprintGraphs"));
+	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphs"), TEXT("/Body"), &Policy);
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Diff(
+		Context,
+		MakeObjectValue(MakeShared<FJsonObject>()),
+		Adapter,
+		DiffEntries);
+
+	TestTrue(TEXT("Diff succeeds through wrapper"), Result.bSuccess);
+	TestEqual(TEXT("Diff hook is called once"), DiffCalls, 1);
+	TestEqual(TEXT("Diff entry is produced by hook"), DiffEntries.Num(), 1);
+	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
