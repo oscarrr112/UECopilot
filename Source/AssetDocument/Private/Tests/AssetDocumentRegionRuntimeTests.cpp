@@ -356,9 +356,23 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperRejectsNonSyntheticGraphRegionTest:
 	const FAssetDocumentRegionContext WrongBodyContext = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphs"), TEXT("/Body"), &WrongBodyPolicy);
 	TestFalse(TEXT("Graph wrapper rejects wrong body-level region id"), Adapter.SupportsRegion(WrongBodyContext));
 
-	const FAssetDocumentRegionPolicy SingleGraphKeyPolicy = MakePolicy(TEXT("Body.UbergraphPages"), TEXT("Body.UbergraphPages"));
-	const FAssetDocumentRegionContext SingleGraphKeyContext = MakeRuntimeContext(TEXT("Body.UbergraphPages"), TEXT("/Body/UbergraphPages"), &SingleGraphKeyPolicy);
-	TestFalse(TEXT("Graph wrapper rejects individual graph body key"), Adapter.SupportsRegion(SingleGraphKeyContext));
+	const TArray<FString> SingleGraphKeys = {
+		TEXT("UbergraphPages"),
+		TEXT("FunctionGraphs"),
+		TEXT("MacroGraphs"),
+	};
+	for (const FString& SingleGraphKey : SingleGraphKeys)
+	{
+		const FString RegionId = FString::Printf(TEXT("Body.%s"), *SingleGraphKey);
+		const FAssetDocumentRegionPolicy SingleGraphKeyPolicy = MakePolicy(*RegionId, *RegionId);
+		const FAssetDocumentRegionContext SingleGraphKeyContext = MakeRuntimeContext(
+			*RegionId,
+			*FString::Printf(TEXT("/Body/%s"), *SingleGraphKey),
+			&SingleGraphKeyPolicy);
+		TestFalse(
+			FString::Printf(TEXT("Graph wrapper rejects individual graph body key %s"), *SingleGraphKey),
+			Adapter.SupportsRegion(SingleGraphKeyContext));
+	}
 	return true;
 }
 
