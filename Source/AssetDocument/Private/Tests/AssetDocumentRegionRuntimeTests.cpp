@@ -41,6 +41,20 @@ TSharedRef<FJsonObject> MakeBodyWithField(const FString& FieldName, const TShare
 	return Body;
 }
 
+TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return Entry;
+		}
+	}
+	return nullptr;
+}
+
 FAssetDocumentRegionPolicy MakePolicy(const FName RegionId, const FString& BodyPath)
 {
 	FAssetDocumentRegionPolicy Policy;
@@ -2201,8 +2215,155 @@ bool FAssetDocumentRegionRuntimePreviewApplyDiffCanonicalAndOverrideTest::RunTes
 
 	TestTrue(TEXT("Preview apply diff succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Two entries emitted"), DiffEntries.Num(), 2);
-	TestEqual(TEXT("Canonical object order stays unchanged"), DiffEntries.Num() > 0 ? DiffEntries[0]->AsObject()->GetStringField(TEXT("status")) : FString(), FString(TEXT("unchanged")));
-	TestEqual(TEXT("Override entry path"), DiffEntries.Num() > 1 ? DiffEntries[1]->AsObject()->GetStringField(TEXT("path")) : FString(), FString(TEXT("/Body/Override")));
+	const TSharedPtr<FJsonObject> OrderedEntry = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Ordered"));
+	const TSharedPtr<FJsonObject> OverrideEntry = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Override"));
+	TestTrue(TEXT("Ordered entry exists"), OrderedEntry.IsValid());
+	TestTrue(TEXT("Override entry exists"), OverrideEntry.IsValid());
+	TestEqual(TEXT("Canonical object order stays unchanged"), OrderedEntry.IsValid() ? OrderedEntry->GetStringField(TEXT("status")) : FString(), FString(TEXT("unchanged")));
+	TestEqual(TEXT("Override entry status"), OverrideEntry.IsValid() ? OverrideEntry->GetStringField(TEXT("status")) : FString(), FString(TEXT("changed")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimePreviewApplyDiffRejectsInvalidPreviewContextTest,
+	"AssetFactory.AssetDocument.RegionRuntime.PreviewApplyDiff.RejectsInvalidPreviewContext",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimePreviewApplyDiffRejectsInvalidPreviewContextTest::RunTest(const FString&)
+{
+	int32 ApplyCalls = 0;
+	const auto RunInvalidPreviewContextCase = [this, &ApplyCalls](
+		const FString& CaseName,
+		TFunction<FAssetDocumentCapabilityContext(const FAssetDocumentCapabilityContext&, UObject*)> MakePreviewContext)
+	{
+		FAssetDocumentPreviewApplyDiffHooks Hooks;
+		Hooks.ValidateDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+		};
+		Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext&, UObject*& OutPreviewAsset)
+		{
+			OutPreviewAsset = CreatePackage(TEXT("/Temp/PreviewApplyDiffInvalidPreviewAsset"));
+			return FAssetDocumentCapabilityResult::Success(TEXT("duplicated"));
+		};
+		Hooks.MakePreviewContext = MoveTemp(MakePreviewContext);
+		Hooks.ApplyDesiredBody = [&ApplyCalls](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&)
+		{
+			++ApplyCalls;
+			return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+		};
+		Hooks.ExtractBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("extracted"));
+		};
+
+		TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+		DesiredBody->SetStringField(TEXT("Playback"), TEXT("desired"));
+		FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = GetTransientPackage();
+		const FAssetDocumentCapabilityResult Result =
+			Adapter.DiffBody(Context, MakeShared<FJsonValueObject>(DesiredBody), DiffEntries);
+
+		TestFalse(CaseName + TEXT(" fails"), Result.bSuccess);
+		TestEqual(CaseName + TEXT(" diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidPreviewApplyDiffAdapter")));
+		TestEqual(CaseName + TEXT(" diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body")));
+	};
+
+	RunInvalidPreviewContextCase(
+		TEXT("Preview context returns original context"),
+		[](const FAssetDocumentCapabilityContext& Context, UObject*)
+		{
+			FAssetDocumentCapabilityContext PreviewContext = Context;
+			PreviewContext.bIsDryRun = true;
+			return PreviewContext;
+		});
+
+	RunInvalidPreviewContextCase(
+		TEXT("Preview context is not dry-run"),
+		[](const FAssetDocumentCapabilityContext& Context, UObject* PreviewAsset)
+		{
+			FAssetDocumentCapabilityContext PreviewContext = Context;
+			PreviewContext.Asset = PreviewAsset;
+			PreviewContext.bIsDryRun = false;
+			return PreviewContext;
+		});
+
+	TestEqual(TEXT("Apply is not called for invalid preview contexts"), ApplyCalls, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimePreviewApplyDiffIsolatesBodyMutationTest,
+	"AssetFactory.AssetDocument.RegionRuntime.PreviewApplyDiff.IsolatesBodyMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimePreviewApplyDiffIsolatesBodyMutationTest::RunTest(const FString&)
+{
+	TArray<FString> TraversedKeys;
+	FAssetDocumentPreviewApplyDiffHooks Hooks;
+	Hooks.ValidateDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>& Body)
+	{
+		Body->SetStringField(TEXT("Injected"), TEXT("validate"));
+		TSharedPtr<FJsonObject> Nested = Body->GetObjectField(TEXT("Nested"));
+		Nested->SetStringField(TEXT("InjectedNested"), TEXT("validate"));
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+	};
+	Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext&, UObject*& OutPreviewAsset)
+	{
+		OutPreviewAsset = GetTransientPackage();
+		return FAssetDocumentCapabilityResult::Success(TEXT("duplicated"));
+	};
+	Hooks.MakePreviewContext = [](const FAssetDocumentCapabilityContext& Context, UObject* PreviewAsset)
+	{
+		FAssetDocumentCapabilityContext PreviewContext = Context;
+		PreviewContext.Asset = PreviewAsset;
+		PreviewContext.bIsDryRun = true;
+		return PreviewContext;
+	};
+	Hooks.ApplyDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>& DesiredBody)
+	{
+		DesiredBody->AsObject()->SetStringField(TEXT("Injected"), TEXT("apply"));
+		DesiredBody->AsObject()->GetObjectField(TEXT("Nested"))->SetStringField(TEXT("InjectedNestedApply"), TEXT("apply"));
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+	};
+	Hooks.ExtractBody = [](const FAssetDocumentCapabilityContext& ExtractContext, const TSharedRef<FJsonObject>& OutBody)
+	{
+		OutBody->SetStringField(TEXT("Playback"), ExtractContext.bIsDryRun ? TEXT("preview") : TEXT("current"));
+		TSharedRef<FJsonObject> Nested = MakeShared<FJsonObject>();
+		Nested->SetStringField(TEXT("Value"), TEXT("current"));
+		OutBody->SetObjectField(TEXT("Nested"), Nested);
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted"));
+	};
+	Hooks.DiffBodyKey = [&TraversedKeys](
+		const FAssetDocumentPreviewApplyDiffBodyKeyContext& KeyContext,
+		TArray<TSharedPtr<FJsonValue>>&,
+		bool& bOutHandled)
+	{
+		TraversedKeys.Add(KeyContext.BodyKey);
+		bOutHandled = false;
+		return FAssetDocumentCapabilityResult::Success(TEXT("not handled"));
+	};
+
+	TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+	DesiredBody->SetStringField(TEXT("Playback"), TEXT("desired"));
+	TSharedRef<FJsonObject> Nested = MakeShared<FJsonObject>();
+	Nested->SetStringField(TEXT("Value"), TEXT("desired"));
+	DesiredBody->SetObjectField(TEXT("Nested"), Nested);
+
+	FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	FAssetDocumentCapabilityContext Context;
+	const FAssetDocumentCapabilityResult Result =
+		Adapter.DiffBody(Context, MakeShared<FJsonValueObject>(DesiredBody), DiffEntries);
+
+	TestTrue(TEXT("Preview apply diff succeeds"), Result.bSuccess);
+	TestFalse(TEXT("Injected key is not traversed"), TraversedKeys.Contains(TEXT("Injected")));
+	TestFalse(TEXT("Injected key does not produce diff"), FindDiffEntryByPath(DiffEntries, TEXT("/Body/Injected")).IsValid());
+	TestFalse(TEXT("Caller desired body is not mutated at top level"), DesiredBody->HasField(TEXT("Injected")));
+	TestFalse(TEXT("Caller desired body nested object is not mutated"), Nested->HasField(TEXT("InjectedNested")));
+	TestFalse(TEXT("Caller desired body nested object is not mutated by apply"), Nested->HasField(TEXT("InjectedNestedApply")));
 	return true;
 }
 

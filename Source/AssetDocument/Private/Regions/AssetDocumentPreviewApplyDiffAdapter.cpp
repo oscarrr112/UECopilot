@@ -13,6 +13,65 @@ FAssetDocumentCapabilityResult InvalidHookFailure(const FString& HookName)
 		TEXT("InvalidPreviewApplyDiffAdapter"),
 		FString::Printf(TEXT("Preview apply diff adapter is missing %s hook"), *HookName));
 }
+
+TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value);
+
+TSharedRef<FJsonObject> CloneJsonObject(const TSharedRef<FJsonObject>& Object)
+{
+	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		Clone->SetField(Pair.Key, CloneJsonValue(Pair.Value));
+	}
+	return Clone;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::Object:
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		if (!Object.IsValid())
+		{
+			return MakeShared<FJsonValueNull>();
+		}
+		return MakeShared<FJsonValueObject>(CloneJsonObject(Object.ToSharedRef()));
+	}
+	case EJson::Array:
+	{
+		TArray<TSharedPtr<FJsonValue>> ClonedArray;
+		for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
+		{
+			ClonedArray.Add(CloneJsonValue(Item));
+		}
+		return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
+	}
+	case EJson::String:
+		return MakeShared<FJsonValueString>(Value->AsString());
+	case EJson::Number:
+		return MakeShared<FJsonValueNumber>(Value->AsNumber());
+	case EJson::Boolean:
+		return MakeShared<FJsonValueBoolean>(Value->AsBool());
+	case EJson::Null:
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+FAssetDocumentCapabilityResult InvalidPreviewContextFailure()
+{
+	return FAssetDocumentJsonRegionUtils::Failure(
+		TEXT("/Body"),
+		TEXT("InvalidPreviewApplyDiffAdapter"),
+		TEXT("MakePreviewContext must return a dry-run context for the duplicated preview asset"));
+}
 }
 
 FAssetDocumentPreviewApplyDiffAdapter::FAssetDocumentPreviewApplyDiffAdapter(FAssetDocumentPreviewApplyDiffHooks InHooks)
@@ -22,13 +81,7 @@ FAssetDocumentPreviewApplyDiffAdapter::FAssetDocumentPreviewApplyDiffAdapter(FAs
 
 TSharedRef<FJsonObject> FAssetDocumentPreviewApplyDiffAdapter::MakeBodyObjectForDiff(const TSharedRef<FJsonObject>& BodyObject)
 {
-	if (!BodyObject->HasField(TEXT("_Skipped")))
-	{
-		return BodyObject;
-	}
-
-	TSharedRef<FJsonObject> DiffBody = MakeShared<FJsonObject>();
-	DiffBody->Values = BodyObject->Values;
+	TSharedRef<FJsonObject> DiffBody = CloneJsonObject(BodyObject);
 	DiffBody->RemoveField(TEXT("_Skipped"));
 	return DiffBody;
 }
@@ -49,14 +102,16 @@ FAssetDocumentCapabilityResult FAssetDocumentPreviewApplyDiffAdapter::DiffBody(
 		return FAssetDocumentJsonRegionUtils::Failure(TEXT("/Body"), TEXT("InvalidBodyType"), TEXT("Body must be a JSON object"));
 	}
 
-	const TSharedRef<FJsonObject> DesiredBodyForDiff = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
-	const TSharedRef<FJsonValue> DesiredJsonForDiff = MakeShared<FJsonValueObject>(DesiredBodyForDiff);
+	const TSharedRef<FJsonObject> DesiredBodyForValidation = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
+	const TSharedRef<FJsonObject> DesiredBodyForApply = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
+	const TSharedRef<FJsonObject> DesiredBodyForTraversal = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
+	const TSharedRef<FJsonValue> DesiredJsonForApply = MakeShared<FJsonValueObject>(DesiredBodyForApply);
 
 	if (!Hooks.ValidateDesiredBody)
 	{
 		return InvalidHookFailure(TEXT("ValidateDesiredBody"));
 	}
-	FAssetDocumentCapabilityResult Result = Hooks.ValidateDesiredBody(Context, DesiredBodyForDiff);
+	FAssetDocumentCapabilityResult Result = Hooks.ValidateDesiredBody(Context, DesiredBodyForValidation);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -82,12 +137,16 @@ FAssetDocumentCapabilityResult FAssetDocumentPreviewApplyDiffAdapter::DiffBody(
 		return InvalidHookFailure(TEXT("MakePreviewContext"));
 	}
 	FAssetDocumentCapabilityContext PreviewContext = Hooks.MakePreviewContext(Context, PreviewAsset);
+	if (!PreviewContext.Asset || PreviewContext.Asset != PreviewAsset || !PreviewContext.bIsDryRun)
+	{
+		return InvalidPreviewContextFailure();
+	}
 
 	if (!Hooks.ApplyDesiredBody)
 	{
 		return InvalidHookFailure(TEXT("ApplyDesiredBody"));
 	}
-	Result = Hooks.ApplyDesiredBody(PreviewContext, DesiredJsonForDiff);
+	Result = Hooks.ApplyDesiredBody(PreviewContext, DesiredJsonForApply);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -113,7 +172,7 @@ FAssetDocumentCapabilityResult FAssetDocumentPreviewApplyDiffAdapter::DiffBody(
 	}
 	PreviewBody = MakeBodyObjectForDiff(PreviewBody);
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBodyForDiff->Values)
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBodyForTraversal->Values)
 	{
 		if (Pair.Key == TEXT("_Skipped"))
 		{
