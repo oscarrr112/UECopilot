@@ -10,6 +10,7 @@
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentIdentityArrayDiffHelper.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
@@ -2919,13 +2920,18 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				return InterfaceParseResult;
 			}
 
-			TMap<FString, UClass*> DesiredByPath;
+			TArray<FAssetDocumentIdentityArrayDiffElement> DesiredInterfaceElements;
 			for (const FWidgetBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
 			{
-				DesiredByPath.Add(GetClassPath(DesiredInterface.InterfaceClass), DesiredInterface.InterfaceClass);
+				const FString DesiredPath = GetClassPath(DesiredInterface.InterfaceClass);
+				DesiredInterfaceElements.Add({
+					DesiredPath,
+					DesiredPath,
+					MakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
+				});
 			}
 
-			TSet<FString> SeenCurrentInterfaces;
+			TArray<FAssetDocumentIdentityArrayDiffElement> CurrentInterfaceElements;
 			if (const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Context.Asset))
 			{
 				for (const FBPInterfaceDescription& CurrentInterface : WidgetBlueprint->ImplementedInterfaces)
@@ -2935,29 +2941,40 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 						continue;
 					}
 					const FString CurrentPath = GetClassPath(CurrentInterface.Interface);
-					SeenCurrentInterfaces.Add(CurrentPath);
-					UClass* const* DesiredInterface = DesiredByPath.Find(CurrentPath);
-					AddBodyDiffEntry(
-						OutDiffEntries,
-						FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *CurrentPath),
-						DesiredInterface ? TEXT("unchanged") : TEXT("changed"),
-						MakeInterfaceDiffValue(CurrentInterface.Interface),
-						DesiredInterface ? MakeInterfaceDiffValue(*DesiredInterface) : MakeInterfaceDiffValue(nullptr));
+					CurrentInterfaceElements.Add({
+						CurrentPath,
+						CurrentPath,
+						MakeInterfaceDiffValue(CurrentInterface.Interface)
+					});
 				}
 			}
 
-			for (const FWidgetBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
+			FAssetDocumentIdentityArrayDiffOptions InterfaceDiffOptions;
+			InterfaceDiffOptions.RegionPath = TEXT("/Body/ImplementedInterfaces");
+			InterfaceDiffOptions.ExtraChange.Reset();
+			InterfaceDiffOptions.MissingChange.Reset();
+			InterfaceDiffOptions.ChangedChange.Reset();
+
+			FAssetDocumentIdentityArrayDiffHooks InterfaceDiffHooks;
+			InterfaceDiffHooks.AreElementsEqual = [](const FAssetDocumentIdentityArrayDiffEntryContext&)
 			{
-				const FString DesiredPath = GetClassPath(DesiredInterface.InterfaceClass);
-				if (!SeenCurrentInterfaces.Contains(DesiredPath))
-				{
-					AddBodyDiffEntry(
-						OutDiffEntries,
-						FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *DesiredPath),
-						TEXT("changed"),
-						MakeShared<FJsonValueNull>(),
-						MakeShared<FJsonValueObject>(InterfaceToJsonObject(DesiredInterface.InterfaceClass)));
-				}
+				return true;
+			};
+			InterfaceDiffHooks.MakePath = [](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+			{
+				return FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *Entry.Identity);
+			};
+
+			const FAssetDocumentCapabilityResult InterfaceDiffResult =
+				FAssetDocumentIdentityArrayDiffHelper::Diff(
+					InterfaceDiffOptions,
+					CurrentInterfaceElements,
+					DesiredInterfaceElements,
+					InterfaceDiffHooks,
+					OutDiffEntries);
+			if (!InterfaceDiffResult.bSuccess)
+			{
+				return InterfaceDiffResult;
 			}
 		}
 		else if (IsGraphBodyKey(BodyKey))

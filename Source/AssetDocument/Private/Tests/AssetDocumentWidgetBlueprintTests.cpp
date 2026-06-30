@@ -275,6 +275,20 @@ bool DiffPayloadHasChangedEntries(const TSharedPtr<FJsonObject>& Payload)
 		&& Changed->Num() > 0;
 }
 
+TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return Entry;
+		}
+	}
+	return nullptr;
+}
+
 bool DiffPayloadHasFailedCode(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedCode)
 {
 	if (!Payload.IsValid())
@@ -3534,6 +3548,42 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfaceRoundTripTest::RunTest(con
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Implemented interface diff succeeds"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Implemented interface diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.Diff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest::RunTest(const FString&)
+{
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InterfaceDiff"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InterfaceBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InterfaceBody, {MakeImplementedInterface(InterfacePath)});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InterfaceBody)));
+	TestTrue(TEXT("Initial implemented interface apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> EmptyBody = MakeDefaultWidgetBlueprintBody();
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, EmptyBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Implemented interface diff succeeds"), DiffResult.IsSuccess());
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("diff payload includes changed"), DiffResult.Payload.IsValid() && DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TSharedPtr<FJsonObject> InterfaceDiff = Changed
+		? FindDiffEntryByPath(*Changed, TEXT("/Body/ImplementedInterfaces//Script/Engine.ActorSoundParameterInterface"))
+		: nullptr;
+	TestTrue(TEXT("changed includes current-only interface semantic path"), InterfaceDiff.IsValid());
+	if (InterfaceDiff.IsValid())
+	{
+		TestEqual(TEXT("current-only implemented interface is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestFalse(TEXT("WidgetBlueprint implemented interface diff keeps no change field"), InterfaceDiff->HasField(TEXT("change")));
+	}
 	return true;
 }
 

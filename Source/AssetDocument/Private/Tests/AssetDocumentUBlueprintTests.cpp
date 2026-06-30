@@ -1844,6 +1844,7 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	if (InterfaceDiff.IsValid())
 	{
 		TestEqual(TEXT("Missing interface diff is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Missing interface diff keeps missing change"), InterfaceDiff->GetStringField(TEXT("change")), FString(TEXT("missing")));
 	}
 	return true;
 }
