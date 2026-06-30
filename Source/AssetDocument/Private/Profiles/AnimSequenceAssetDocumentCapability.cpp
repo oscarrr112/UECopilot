@@ -4535,7 +4535,12 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Diff(const 
 	};
 
 	FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
-	return Adapter.DiffBody(Context, DesiredJson, OutDiffEntries);
+	const FAssetDocumentCapabilityResult DiffResult = Adapter.DiffBody(Context, DesiredJson, OutDiffEntries);
+	if (!DiffResult.bSuccess)
+	{
+		return DiffResult;
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body diffed"));
 }
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::ValidateBodyObject(const TSharedRef<FJsonObject>& BodyObject) const
