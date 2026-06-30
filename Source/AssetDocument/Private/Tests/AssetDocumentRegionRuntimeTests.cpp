@@ -2206,4 +2206,125 @@ bool FAssetDocumentRegionRuntimePreviewApplyDiffCanonicalAndOverrideTest::RunTes
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimePreviewApplyDiffPropagatesHookFailuresTest,
+	"AssetFactory.AssetDocument.RegionRuntime.PreviewApplyDiff.PropagatesHookFailures",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimePreviewApplyDiffPropagatesHookFailuresTest::RunTest(const FString&)
+{
+	const auto RunFailureCase = [this](
+		const FString& CaseName,
+		const FString& ExpectedPath,
+		const FString& ExpectedCode,
+		TFunction<void(FAssetDocumentPreviewApplyDiffHooks&)> ConfigureFailure)
+	{
+		FAssetDocumentPreviewApplyDiffHooks Hooks;
+		Hooks.ValidateDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+		};
+		Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext&, UObject*& OutPreviewAsset)
+		{
+			OutPreviewAsset = GetTransientPackage();
+			return FAssetDocumentCapabilityResult::Success(TEXT("duplicated"));
+		};
+		Hooks.MakePreviewContext = [](const FAssetDocumentCapabilityContext& Context, UObject* PreviewAsset)
+		{
+			FAssetDocumentCapabilityContext PreviewContext = Context;
+			PreviewContext.Asset = PreviewAsset;
+			PreviewContext.bIsDryRun = true;
+			return PreviewContext;
+		};
+		Hooks.ApplyDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+		};
+		Hooks.ExtractBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("extracted"));
+		};
+
+		ConfigureFailure(Hooks);
+
+		TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+		DesiredBody->SetStringField(TEXT("Playback"), TEXT("desired"));
+		FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
+		TArray<TSharedPtr<FJsonValue>> DiffEntries;
+		FAssetDocumentCapabilityContext Context;
+		const FAssetDocumentCapabilityResult Result =
+			Adapter.DiffBody(Context, MakeShared<FJsonValueObject>(DesiredBody), DiffEntries);
+
+		TestFalse(CaseName + TEXT(" fails"), Result.bSuccess);
+		TestEqual(CaseName + TEXT(" diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), ExpectedCode);
+		TestEqual(CaseName + TEXT(" diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), ExpectedPath);
+	};
+
+	RunFailureCase(
+		TEXT("ValidateDesiredBody"),
+		TEXT("/Body/ValidateFailure"),
+		TEXT("ValidateHookFailed"),
+		[](FAssetDocumentPreviewApplyDiffHooks& Hooks)
+		{
+			Hooks.ValidateDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+			{
+				return FAssetDocumentCapabilityResult::Failure(TEXT("validate failed"), TEXT("/Body/ValidateFailure"), TEXT("ValidateHookFailed"));
+			};
+		});
+
+	RunFailureCase(
+		TEXT("DuplicatePreviewAsset"),
+		TEXT("/Body/DuplicateFailure"),
+		TEXT("DuplicateHookFailed"),
+		[](FAssetDocumentPreviewApplyDiffHooks& Hooks)
+		{
+			Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext&, UObject*&)
+			{
+				return FAssetDocumentCapabilityResult::Failure(TEXT("duplicate failed"), TEXT("/Body/DuplicateFailure"), TEXT("DuplicateHookFailed"));
+			};
+		});
+
+	RunFailureCase(
+		TEXT("ApplyDesiredBody"),
+		TEXT("/Body/ApplyFailure"),
+		TEXT("ApplyHookFailed"),
+		[](FAssetDocumentPreviewApplyDiffHooks& Hooks)
+		{
+			Hooks.ApplyDesiredBody = [](const FAssetDocumentCapabilityContext&, const TSharedRef<FJsonValue>&)
+			{
+				return FAssetDocumentCapabilityResult::Failure(TEXT("apply failed"), TEXT("/Body/ApplyFailure"), TEXT("ApplyHookFailed"));
+			};
+		});
+
+	RunFailureCase(
+		TEXT("Current ExtractBody"),
+		TEXT("/Body/CurrentExtractFailure"),
+		TEXT("CurrentExtractHookFailed"),
+		[](FAssetDocumentPreviewApplyDiffHooks& Hooks)
+		{
+			Hooks.ExtractBody = [](const FAssetDocumentCapabilityContext& ExtractContext, const TSharedRef<FJsonObject>&)
+			{
+				return ExtractContext.bIsDryRun
+					? FAssetDocumentCapabilityResult::Success(TEXT("preview extracted"))
+					: FAssetDocumentCapabilityResult::Failure(TEXT("current extract failed"), TEXT("/Body/CurrentExtractFailure"), TEXT("CurrentExtractHookFailed"));
+			};
+		});
+
+	RunFailureCase(
+		TEXT("Preview ExtractBody"),
+		TEXT("/Body/PreviewExtractFailure"),
+		TEXT("PreviewExtractHookFailed"),
+		[](FAssetDocumentPreviewApplyDiffHooks& Hooks)
+		{
+			Hooks.ExtractBody = [](const FAssetDocumentCapabilityContext& ExtractContext, const TSharedRef<FJsonObject>&)
+			{
+				return ExtractContext.bIsDryRun
+					? FAssetDocumentCapabilityResult::Failure(TEXT("preview extract failed"), TEXT("/Body/PreviewExtractFailure"), TEXT("PreviewExtractHookFailed"))
+					: FAssetDocumentCapabilityResult::Success(TEXT("current extracted"));
+			};
+		});
+
+	return true;
+}
+
 #endif
