@@ -345,6 +345,7 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 		RequireObject(TEXT("Preview")),
 		RequireObject(TEXT("Sync")),
 		RequireObject(TEXT("RootMotion")),
+		RequireArray(TEXT("Metadata")),
 		RequireObject(TEXT("SectionMetadata")),
 		RequireObject(TEXT("TimeStretch")),
 		RequireArray(TEXT("Curves")),
