@@ -3291,6 +3291,80 @@ bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const 
 	TestEqual(TEXT("Hook failure path propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments/0/Kind")));
 	TestEqual(TEXT("Hook failure message propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Message : FString(), FString(TEXT("validate failed")));
 
+	bool bApplyCalledAfterFailedValidate = false;
+	FAssetDocumentFragmentArrayHooks ApplyValidationHooks;
+	ApplyValidationHooks.Validate = [](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&)
+	{
+		return FAssetDocumentCapabilityResult::Failure(TEXT("semantic validate failed"), TEXT("/Body/TestFragments/0"), TEXT("FragmentSemanticInvalid"));
+	};
+	ApplyValidationHooks.Apply = [&bApplyCalledAfterFailedValidate](
+		FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentFragmentArrayEntry>&,
+		bool& bOutChanged)
+	{
+		bApplyCalledAfterFailedValidate = true;
+		bOutChanged = true;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+	};
+	FAssetDocumentFragmentArrayRegionConfig ApplyValidationConfig;
+	ApplyValidationConfig.AdapterName = TEXT("ApplyValidationFragmentArray");
+	ApplyValidationConfig.RegionId = TEXT("Body.TestFragments");
+	ApplyValidationConfig.BodyPath = TEXT("Body.TestFragments");
+	ApplyValidationConfig.JsonPointer = TEXT("/Body/TestFragments");
+	FAssetDocumentFragmentArrayRegionAdapter ApplyValidationAdapter(
+		MoveTemp(ApplyValidationConfig),
+		MoveTemp(ApplyValidationHooks));
+
+	TArray<TSharedPtr<FJsonValue>> ApplyValidationEntries;
+	ApplyValidationEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
+	bool bApplyValidationChanged = true;
+	const FAssetDocumentCapabilityResult ApplyValidationResult =
+		ApplyValidationAdapter.ApplyRegion(Context, MakeArrayValue(MoveTemp(ApplyValidationEntries)), bApplyValidationChanged);
+	TestFalse(TEXT("Apply validation failure fails"), ApplyValidationResult.bSuccess);
+	TestFalse(TEXT("Apply validation failure does not call apply hook"), bApplyCalledAfterFailedValidate);
+	TestFalse(TEXT("Apply validation failure resets changed"), bApplyValidationChanged);
+	TestEqual(
+		TEXT("Apply validation failure code propagates"),
+		ApplyValidationResult.Diagnostics.Num() > 0 ? ApplyValidationResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("FragmentSemanticInvalid")));
+	TestEqual(
+		TEXT("Apply validation failure path propagates"),
+		ApplyValidationResult.Diagnostics.Num() > 0 ? ApplyValidationResult.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body/TestFragments/0")));
+
+	bool bPreflightValidateCalled = false;
+	FAssetDocumentFragmentArrayHooks PreflightValidationHooks;
+	PreflightValidationHooks.Validate = [&bPreflightValidateCalled](
+		const FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
+	{
+		bPreflightValidateCalled = Entries.Num() == 1 && Entries[0].Index == 0;
+		return FAssetDocumentCapabilityResult::Failure(TEXT("preflight validate failed"), TEXT("/Body/TestFragments/0"), TEXT("FragmentPreflightInvalid"));
+	};
+	FAssetDocumentFragmentArrayRegionConfig PreflightValidationConfig;
+	PreflightValidationConfig.AdapterName = TEXT("PreflightValidationFragmentArray");
+	PreflightValidationConfig.RegionId = TEXT("Body.TestFragments");
+	PreflightValidationConfig.BodyPath = TEXT("Body.TestFragments");
+	PreflightValidationConfig.JsonPointer = TEXT("/Body/TestFragments");
+	FAssetDocumentFragmentArrayRegionAdapter PreflightValidationAdapter(
+		MoveTemp(PreflightValidationConfig),
+		MoveTemp(PreflightValidationHooks));
+
+	TArray<TSharedPtr<FJsonValue>> PreflightValidationEntries;
+	PreflightValidationEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
+	const FAssetDocumentCapabilityResult PreflightValidationResult =
+		PreflightValidationAdapter.PreflightRegion(Context, MakeArrayValue(MoveTemp(PreflightValidationEntries)));
+	TestFalse(TEXT("Preflight validation failure fails"), PreflightValidationResult.bSuccess);
+	TestTrue(TEXT("Preflight without hook still runs validate"), bPreflightValidateCalled);
+	TestEqual(
+		TEXT("Preflight validation failure code propagates"),
+		PreflightValidationResult.Diagnostics.Num() > 0 ? PreflightValidationResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("FragmentPreflightInvalid")));
+	TestEqual(
+		TEXT("Preflight validation failure path propagates"),
+		PreflightValidationResult.Diagnostics.Num() > 0 ? PreflightValidationResult.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body/TestFragments/0")));
+
 	return true;
 }
 
@@ -3346,6 +3420,45 @@ bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(
 	TestTrue(TEXT("Default diff succeeds"), DiffResult.bSuccess);
 	TestEqual(TEXT("Default diff emits one entry"), DiffEntries.Num(), 1);
 	TestEqual(TEXT("Default diff path"), GetDiffEntryPath(DiffEntries, 0), FString(TEXT("/Body/TestFragments")));
+
+	bool bDiffCalledAfterFailedValidate = false;
+	FAssetDocumentFragmentArrayRegionConfig DiffValidationConfig;
+	DiffValidationConfig.AdapterName = TEXT("DiffValidationFragmentArray");
+	DiffValidationConfig.RegionId = TEXT("Body.TestFragments");
+	DiffValidationConfig.BodyPath = TEXT("Body.TestFragments");
+	DiffValidationConfig.JsonPointer = TEXT("/Body/TestFragments");
+	FAssetDocumentFragmentArrayHooks DiffValidationHooks;
+	DiffValidationHooks.Validate = [](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&)
+	{
+		return FAssetDocumentCapabilityResult::Failure(TEXT("diff validate failed"), TEXT("/Body/TestFragments/0"), TEXT("FragmentDiffInvalid"));
+	};
+	DiffValidationHooks.Diff = [&bDiffCalledAfterFailedValidate](
+		const FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentFragmentArrayEntry>&,
+		TArray<TSharedPtr<FJsonValue>>&)
+	{
+		bDiffCalledAfterFailedValidate = true;
+		return FAssetDocumentCapabilityResult::Success(TEXT("diffed"));
+	};
+	FAssetDocumentFragmentArrayRegionAdapter DiffValidationAdapter(
+		MoveTemp(DiffValidationConfig),
+		MoveTemp(DiffValidationHooks));
+
+	TArray<TSharedPtr<FJsonValue>> DiffValidationDesiredEntries;
+	DiffValidationDesiredEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("Desired"))));
+	TArray<TSharedPtr<FJsonValue>> FailedValidationDiffEntries;
+	const FAssetDocumentCapabilityResult FailedValidationDiffResult =
+		DiffValidationAdapter.DiffRegion(Context, MakeArrayValue(MoveTemp(DiffValidationDesiredEntries)), FailedValidationDiffEntries);
+	TestFalse(TEXT("Diff validation failure fails"), FailedValidationDiffResult.bSuccess);
+	TestFalse(TEXT("Diff validation failure does not call diff hook"), bDiffCalledAfterFailedValidate);
+	TestEqual(
+		TEXT("Diff validation failure code propagates"),
+		FailedValidationDiffResult.Diagnostics.Num() > 0 ? FailedValidationDiffResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("FragmentDiffInvalid")));
+	TestEqual(
+		TEXT("Diff validation failure path propagates"),
+		FailedValidationDiffResult.Diagnostics.Num() > 0 ? FailedValidationDiffResult.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body/TestFragments/0")));
 
 	FAssetDocumentFragmentArrayRegionConfig MissingConfig;
 	MissingConfig.AdapterName = TEXT("MissingHookFragmentArray");

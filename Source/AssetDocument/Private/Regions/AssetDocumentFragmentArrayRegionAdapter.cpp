@@ -36,6 +36,24 @@ FAssetDocumentCapabilityResult UnsupportedLifecycleFailure(
 			*Context.RegionId.ToString(),
 			Lifecycle));
 }
+
+FAssetDocumentCapabilityResult ValidateEntriesForLifecycle(
+	const FAssetDocumentFragmentArrayRegionConfig& Config,
+	const FAssetDocumentFragmentArrayHooks& Hooks,
+	const FAssetDocumentRegionContext& Context,
+	const TArray<FAssetDocumentFragmentArrayEntry>& Entries,
+	const TCHAR* Lifecycle,
+	const bool bRequireValidate)
+{
+	if (!Hooks.Validate)
+	{
+		return bRequireValidate
+			? UnsupportedLifecycleFailure(Config, Context, Lifecycle)
+			: FAssetDocumentCapabilityResult::Success(TEXT("No fragment array validate hook"));
+	}
+
+	return Hooks.Validate(Context, Entries);
+}
 }
 
 FString FAssetDocumentFragmentArrayUtils::MakeEntryPath(const FString& BasePath, const int32 Index)
@@ -165,6 +183,12 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::Preflig
 		return Result;
 	}
 
+	Result = ValidateEntriesForLifecycle(Config, Hooks, Context, Entries, TEXT("validate"), false);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	if (!Hooks.Preflight)
 	{
 		return FAssetDocumentCapabilityResult::Success(TEXT("Fragment array preflight no-op"));
@@ -183,6 +207,12 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::ApplyRe
 	TArray<FAssetDocumentFragmentArrayEntry> Entries;
 	FAssetDocumentCapabilityResult Result =
 		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), Entries);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateEntriesForLifecycle(Config, Hooks, Context, Entries, TEXT("validate"), true);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -225,6 +255,12 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::DiffReg
 	TArray<FAssetDocumentFragmentArrayEntry> DesiredEntries;
 	FAssetDocumentCapabilityResult Result =
 		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), DesiredEntries);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateEntriesForLifecycle(Config, Hooks, Context, DesiredEntries, TEXT("validate"), false);
 	if (!Result.bSuccess)
 	{
 		return Result;
