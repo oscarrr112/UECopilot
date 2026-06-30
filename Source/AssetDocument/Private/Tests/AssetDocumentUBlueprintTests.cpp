@@ -355,6 +355,46 @@ void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObj
 		ExpectedClassPath);
 }
 
+void TestVariableDiffValue(
+	FAutomationTestBase* Test,
+	const TSharedPtr<FJsonObject>& Entry,
+	const TCHAR* FieldName,
+	const FString& ExpectedName,
+	const FString& ExpectedDefaultValue)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	Test->TestTrue(FString::Printf(TEXT("%s is a variable object"), FieldName), ValueObject.IsValid());
+	if (!ValueObject.IsValid())
+	{
+		return;
+	}
+
+	FString Name;
+	Test->TestTrue(FString::Printf(TEXT("%s variable has Name"), FieldName), ValueObject->TryGetStringField(TEXT("Name"), Name));
+	Test->TestEqual(FString::Printf(TEXT("%s variable Name"), FieldName), Name, ExpectedName);
+
+	FString DefaultValue;
+	Test->TestTrue(FString::Printf(TEXT("%s variable has DefaultValue"), FieldName), ValueObject->TryGetStringField(TEXT("DefaultValue"), DefaultValue));
+	Test->TestEqual(FString::Printf(TEXT("%s variable DefaultValue"), FieldName), DefaultValue, ExpectedDefaultValue);
+
+	const TSharedPtr<FJsonObject>* Type = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s variable has Type"), FieldName),
+		ValueObject->TryGetObjectField(TEXT("Type"), Type) && Type && Type->IsValid());
+	if (!Type || !Type->IsValid())
+	{
+		return;
+	}
+
+	FString PinCategory;
+	FString PinSubCategory;
+	Test->TestTrue(FString::Printf(TEXT("%s variable Type has PinCategory"), FieldName), (*Type)->TryGetStringField(TEXT("PinCategory"), PinCategory));
+	Test->TestTrue(FString::Printf(TEXT("%s variable Type has PinSubCategory"), FieldName), (*Type)->TryGetStringField(TEXT("PinSubCategory"), PinSubCategory));
+	Test->TestEqual(FString::Printf(TEXT("%s variable PinCategory"), FieldName), PinCategory, FString(TEXT("real")));
+	Test->TestEqual(FString::Printf(TEXT("%s variable PinSubCategory"), FieldName), PinSubCategory, FString(TEXT("float")));
+}
+
 bool IsUnchangedDiffEntry(const TSharedPtr<FJsonObject>& Entry)
 {
 	if (!Entry.IsValid())
@@ -1868,6 +1908,28 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	if (HealthDiff.IsValid())
 	{
 		TestEqual(TEXT("Extra variable diff is changed"), HealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Extra variable keeps extra change"), HealthDiff->GetStringField(TEXT("change")), FString(TEXT("extra")));
+		TestTrue(TEXT("Extra variable diff has current"), HealthDiff->HasField(TEXT("current")));
+		TestVariableDiffValue(this, HealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestDiffEntryFieldIsNull(this, HealthDiff, TEXT("desired"));
+	}
+
+	TSharedRef<FJsonObject> DesiredVariableBody = MakeShared<FJsonObject>();
+	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	DesiredVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("NewScore"), TEXT("7.0"))}));
+	TArray<TSharedPtr<FJsonValue>> DesiredVariableDiffEntries;
+	const FAssetDocumentCapabilityResult DesiredVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(DesiredVariableBody), DesiredVariableDiffEntries);
+	TestTrue(TEXT("Desired-only variable diff succeeds"), DesiredVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> NewVariableDiff = FindDiffEntryByPath(DesiredVariableDiffEntries, TEXT("/Body/Variables/NewScore"));
+	TestTrue(TEXT("Desired-only variable uses semantic path"), NewVariableDiff.IsValid());
+	if (NewVariableDiff.IsValid())
+	{
+		TestEqual(TEXT("Desired-only variable is changed"), NewVariableDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Desired-only variable keeps missing change"), NewVariableDiff->GetStringField(TEXT("change")), FString(TEXT("missing")));
+		TestDiffEntryFieldIsNull(this, NewVariableDiff, TEXT("current"));
+		TestTrue(TEXT("Desired-only variable diff has desired"), NewVariableDiff->HasField(TEXT("desired")));
+		TestVariableDiffValue(this, NewVariableDiff, TEXT("desired"), TEXT("NewScore"), TEXT("7.0"));
 	}
 
 	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");

@@ -3173,62 +3173,76 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			return VariableParseResult;
 		}
 
-		TMap<FName, FUBlueprintVariableSpec> DesiredByName;
-		for (const FUBlueprintVariableSpec& Variable : DesiredVariables)
-		{
-			DesiredByName.Add(Variable.Name, Variable);
-		}
-
-		TSet<FName> SeenCurrent;
+		TArray<FAssetDocumentIdentityArrayDiffElement> CurrentVariables;
 		for (const FBPVariableDescription& CurrentVariable : Blueprint->NewVariables)
 		{
-			SeenCurrent.Add(CurrentVariable.VarName);
-			const FUBlueprintVariableSpec* DesiredVariable = DesiredByName.Find(CurrentVariable.VarName);
-			const FString Path = FString::Printf(TEXT("/Body/Variables/%s"), *CurrentVariable.VarName.ToString());
-			if (!DesiredVariable)
+			const FString VariableName = CurrentVariable.VarName.ToString();
+			CurrentVariables.Add({
+				VariableName,
+				VariableName,
+				MakeVariableDiffValue(Blueprint, CurrentVariable)
+			});
+		}
+
+		TMap<FString, FUBlueprintVariableSpec> DesiredVariableSpecsByName;
+		TArray<FAssetDocumentIdentityArrayDiffElement> DesiredVariableElements;
+		for (const FUBlueprintVariableSpec& DesiredVariable : DesiredVariables)
+		{
+			const FString VariableName = DesiredVariable.Name.ToString();
+			DesiredVariableSpecsByName.Add(VariableName, DesiredVariable);
+			DesiredVariableElements.Add({
+				VariableName,
+				VariableName,
+				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(DesiredVariable))
+			});
+		}
+
+		FAssetDocumentIdentityArrayDiffOptions VariableDiffOptions;
+		VariableDiffOptions.RegionPath = TEXT("/Body/Variables");
+
+		FAssetDocumentIdentityArrayDiffHooks VariableDiffHooks;
+		VariableDiffHooks.AreElementsEqual =
+			[Blueprint, &DesiredVariableSpecsByName](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+		{
+			if (!Entry.bHasCurrent || !Entry.bHasDesired)
 			{
-				AddBodyDiffEntry(
-					OutDiffEntries,
-					Path,
-					TEXT("changed"),
-					MakeVariableDiffValue(Blueprint, CurrentVariable),
-					MakeShared<FJsonValueNull>(),
-					TEXT("extra"));
-				continue;
+				return false;
 			}
 
-			const bool bTypeChanged = AuthoredPinTypesDiffer(CurrentVariable.VarType, DesiredVariable->Type);
-			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, CurrentVariable);
-			const bool bDefaultChanged = AuthoredDefaultValuesDiffer(CurrentVariable.VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
+			const FBPVariableDescription* CurrentVariable = Blueprint->NewVariables.FindByPredicate(
+				[&Entry](const FBPVariableDescription& Candidate)
+				{
+					return Candidate.VarName.ToString() == Entry.Identity;
+				});
+			const FUBlueprintVariableSpec* DesiredVariable = DesiredVariableSpecsByName.Find(Entry.Identity);
+			if (!CurrentVariable || !DesiredVariable)
+			{
+				return false;
+			}
+
+			const bool bTypeChanged = AuthoredPinTypesDiffer(CurrentVariable->VarType, DesiredVariable->Type);
+			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, *CurrentVariable);
+			const bool bDefaultChanged = AuthoredDefaultValuesDiffer(CurrentVariable->VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
 			const FString DesiredCategory = DesiredVariable->Category.IsSet() ? DesiredVariable->Category.GetValue() : FString();
-			const bool bCategoryChanged = CurrentVariable.Category.ToString() != DesiredCategory;
-			const FString CurrentTooltip = CurrentVariable.HasMetaData(FBlueprintMetadata::MD_Tooltip)
-				? CurrentVariable.GetMetaData(FBlueprintMetadata::MD_Tooltip)
+			const bool bCategoryChanged = CurrentVariable->Category.ToString() != DesiredCategory;
+			const FString CurrentTooltip = CurrentVariable->HasMetaData(FBlueprintMetadata::MD_Tooltip)
+				? CurrentVariable->GetMetaData(FBlueprintMetadata::MD_Tooltip)
 				: FString();
 			const FString DesiredTooltip = DesiredVariable->Tooltip.IsSet() ? DesiredVariable->Tooltip.GetValue() : FString();
 			const bool bTooltipChanged = CurrentTooltip != DesiredTooltip;
+			return !(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged);
+		};
 
-			AddBodyDiffEntry(
-				OutDiffEntries,
-				Path,
-				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : TEXT("unchanged"),
-				MakeVariableDiffValue(Blueprint, CurrentVariable),
-				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(*DesiredVariable)),
-				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : FString());
-		}
-
-		for (const FUBlueprintVariableSpec& DesiredVariable : DesiredVariables)
+		const FAssetDocumentCapabilityResult VariableDiffResult =
+			FAssetDocumentIdentityArrayDiffHelper::Diff(
+				VariableDiffOptions,
+				CurrentVariables,
+				DesiredVariableElements,
+				VariableDiffHooks,
+				OutDiffEntries);
+		if (!VariableDiffResult.bSuccess)
 		{
-			if (!SeenCurrent.Contains(DesiredVariable.Name))
-			{
-				AddBodyDiffEntry(
-					OutDiffEntries,
-					FString::Printf(TEXT("/Body/Variables/%s"), *DesiredVariable.Name.ToString()),
-					TEXT("changed"),
-					MakeShared<FJsonValueNull>(),
-					MakeShared<FJsonValueObject>(VariableSpecToJsonObject(DesiredVariable)),
-					TEXT("missing"));
-			}
+			return VariableDiffResult;
 		}
 	}
 
