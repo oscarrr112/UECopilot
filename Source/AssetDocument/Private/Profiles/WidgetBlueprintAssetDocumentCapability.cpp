@@ -10,6 +10,7 @@
 #include "Profiles/WidgetBlueprintTreeAdapter.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
 #include "Animation/WidgetAnimation.h"
@@ -514,22 +515,26 @@ FAssetDocumentCapabilityResult ValidatePaletteSection(const TSharedPtr<FJsonObje
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Palette->Values)
-	{
-		if (Pair.Key != TEXT("Category"))
-		{
-			return BodyFailure(
-				FString::Printf(TEXT("Unknown Body.Palette field '%s'"), *Pair.Key),
-				FString::Printf(TEXT("/Body/Palette/%s"), *Pair.Key),
-				TEXT("UnknownPaletteField"));
-		}
-		if (!Pair.Value.IsValid() || Pair.Value->Type != EJson::String)
-		{
-			return BodyFailure(TEXT("Body.Palette.Category must be a string"), TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory"));
-		}
-	}
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = TEXT("Body.Palette");
+	RegionContext.BodyPath = TEXT("Body.Palette");
+	RegionContext.JsonPointer = TEXT("/Body/Palette");
 
-	return FAssetDocumentCapabilityResult::Success();
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownPaletteField");
+	Schema.UnknownFieldMessageFormat = TEXT("Unknown Body.Palette field '%s'");
+	Schema.Fields.Add({
+		TEXT("Category"),
+		EJson::String,
+		false,
+		TEXT("MissingPaletteCategory"),
+		TEXT("InvalidPaletteCategory"),
+		TEXT("Body.Palette.Category must be a string")
+	});
+	return FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(
+		RegionContext,
+		Palette.ToSharedRef(),
+		Schema);
 }
 
 FAssetDocumentCapabilityResult ValidateEditorOptionsSection(const TSharedPtr<FJsonObject>& EditorOptions)
@@ -539,25 +544,26 @@ FAssetDocumentCapabilityResult ValidateEditorOptionsSection(const TSharedPtr<FJs
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : EditorOptions->Values)
-	{
-		if (Pair.Key != TEXT("bCanCallInitializedWithoutPlayerContext"))
-		{
-			return BodyFailure(
-				FString::Printf(TEXT("Unknown Body.EditorOptions field '%s'"), *Pair.Key),
-				FString::Printf(TEXT("/Body/EditorOptions/%s"), *Pair.Key),
-				TEXT("UnknownEditorOption"));
-		}
-		if (!Pair.Value.IsValid() || Pair.Value->Type != EJson::Boolean)
-		{
-			return BodyFailure(
-				TEXT("Body.EditorOptions.bCanCallInitializedWithoutPlayerContext must be a boolean"),
-				TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"),
-				TEXT("InvalidEditorOption"));
-		}
-	}
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = TEXT("Body.EditorOptions");
+	RegionContext.BodyPath = TEXT("Body.EditorOptions");
+	RegionContext.JsonPointer = TEXT("/Body/EditorOptions");
 
-	return FAssetDocumentCapabilityResult::Success();
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownEditorOption");
+	Schema.UnknownFieldMessageFormat = TEXT("Unknown Body.EditorOptions field '%s'");
+	Schema.Fields.Add({
+		TEXT("bCanCallInitializedWithoutPlayerContext"),
+		EJson::Boolean,
+		false,
+		TEXT("MissingEditorOption"),
+		TEXT("InvalidEditorOption"),
+		TEXT("Body.EditorOptions.bCanCallInitializedWithoutPlayerContext must be a boolean")
+	});
+	return FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(
+		RegionContext,
+		EditorOptions.ToSharedRef(),
+		Schema);
 }
 
 bool IsSupportedClassDefaultProperty(FProperty* Property)

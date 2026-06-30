@@ -229,6 +229,14 @@ bool ResultHasDiagnosticPath(const FAssetDocumentResult& Result, const FString& 
 	});
 }
 
+bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedPath, const FString& ExpectedCode)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedPath, &ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == ExpectedPath && Diagnostic.Code == ExpectedCode;
+	});
+}
+
 bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& ExpectedCode)
 {
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
@@ -1320,12 +1328,15 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 	FAssetDocumentService Service;
 
 	TSharedRef<FJsonObject> PaletteUnknownBody = MakeDefaultWidgetBlueprintBody();
-	PaletteUnknownBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Unexpected"), TEXT("value"));
+	PaletteUnknownBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Unexpected/Bad~Field"), TEXT("value"));
 	const FAssetDocumentResult PaletteUnknownResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteUnknown")),
 		PaletteUnknownBody)));
 	TestFalse(TEXT("Unknown Palette field rejects apply"), PaletteUnknownResult.IsSuccess());
 	TestTrue(TEXT("Unknown Palette diagnostic is reported"), ResultHasDiagnosticCode(PaletteUnknownResult, TEXT("UnknownPaletteField")));
+	TestTrue(
+		TEXT("Unknown Palette diagnostic path is reported"),
+		ResultHasDiagnostic(PaletteUnknownResult, TEXT("/Body/Palette/Unexpected~1Bad~0Field"), TEXT("UnknownPaletteField")));
 
 	TSharedRef<FJsonObject> PaletteTypeBody = MakeDefaultWidgetBlueprintBody();
 	PaletteTypeBody->GetObjectField(TEXT("Palette"))->SetBoolField(TEXT("Category"), true);
@@ -1334,6 +1345,20 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		PaletteTypeBody)));
 	TestFalse(TEXT("Non-string Palette.Category rejects apply"), PaletteTypeResult.IsSuccess());
 	TestTrue(TEXT("Invalid Palette.Category diagnostic is reported"), ResultHasDiagnosticCode(PaletteTypeResult, TEXT("InvalidPaletteCategory")));
+	TestTrue(
+		TEXT("Invalid Palette.Category diagnostic path is reported"),
+		ResultHasDiagnostic(PaletteTypeResult, TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory")));
+
+	TSharedRef<FJsonObject> EditorUnknownBody = MakeDefaultWidgetBlueprintBody();
+	EditorUnknownBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("Unexpected/Bad~Field"), TEXT("value"));
+	const FAssetDocumentResult EditorUnknownResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
+		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorUnknown")),
+		EditorUnknownBody)));
+	TestFalse(TEXT("Unknown EditorOptions field rejects apply"), EditorUnknownResult.IsSuccess());
+	TestTrue(TEXT("Unknown EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorUnknownResult, TEXT("UnknownEditorOption")));
+	TestTrue(
+		TEXT("Unknown EditorOptions diagnostic path is reported"),
+		ResultHasDiagnostic(EditorUnknownResult, TEXT("/Body/EditorOptions/Unexpected~1Bad~0Field"), TEXT("UnknownEditorOption")));
 
 	TSharedRef<FJsonObject> EditorTypeBody = MakeDefaultWidgetBlueprintBody();
 	EditorTypeBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("bCanCallInitializedWithoutPlayerContext"), TEXT("true"));
@@ -1342,6 +1367,9 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		EditorTypeBody)));
 	TestFalse(TEXT("Non-bool EditorOptions flag rejects apply"), EditorTypeResult.IsSuccess());
 	TestTrue(TEXT("Invalid EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorTypeResult, TEXT("InvalidEditorOption")));
+	TestTrue(
+		TEXT("Invalid EditorOptions diagnostic path is reported"),
+		ResultHasDiagnostic(EditorTypeResult, TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"), TEXT("InvalidEditorOption")));
 	return true;
 }
 
