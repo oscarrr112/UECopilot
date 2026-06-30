@@ -4,6 +4,7 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentGraphRegionWrapperAdapter.h"
 #include "Regions/AssetDocumentIdentityArrayDiffHelper.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
@@ -726,6 +727,232 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperBodyLevelGraphLifecycleTest::RunTes
 	TestEqual(TEXT("Extract hook count"), ExtractCalls, 1);
 	TestEqual(TEXT("Diff hook count"), DiffCalls, 1);
 	TestEqual(TEXT("Diff entries from graph wrapper"), DiffEntries.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeGraphWrapperSupportsSyntheticBodyTest,
+	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.SupportsSyntheticBody",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeGraphWrapperSupportsSyntheticBodyTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("TestGraphWrapper");
+	Config.RegionId = TEXT("Body.TestGraphRegions");
+	Config.BodyPath = TEXT("Body.TestGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+	Config.SchemaLabel = TEXT("TestGraphRegions");
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	FAssetDocumentGraphRegionWrapperAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+
+	FAssetDocumentRegionContext Context;
+	Context.RegionId = TEXT("Body.TestGraphRegions");
+	Context.BodyPath = TEXT("Body.TestGraphRegions");
+	Context.JsonPointer = TEXT("/Body");
+	TestTrue(TEXT("Region id is supported"), Adapter.SupportsRegion(Context));
+
+	Context.RegionId = TEXT("Different.Region");
+	TestTrue(TEXT("Body path is supported"), Adapter.SupportsRegion(Context));
+
+	Context.JsonPointer = TEXT("/Body/UbergraphPages");
+	TestFalse(TEXT("Non-body pointer is rejected"), Adapter.SupportsRegion(Context));
+
+	Context.JsonPointer = TEXT("/Body");
+	const TSharedRef<FJsonObject> SchemaHint = Adapter.GetSchemaHint(Context);
+	TestEqual(TEXT("Schema hint reports adapter"), SchemaHint->GetStringField(TEXT("Adapter")), FString(TEXT("TestGraphWrapper")));
+	TestEqual(TEXT("Schema hint reports label"), SchemaHint->GetStringField(TEXT("Label")), FString(TEXT("TestGraphRegions")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeGraphWrapperDispatchesHooksTest,
+	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.DispatchesHooks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeGraphWrapperDispatchesHooksTest::RunTest(const FString& Parameters)
+{
+	int32 ValidateCalls = 0;
+	int32 PreflightCalls = 0;
+	int32 ApplyCalls = 0;
+	int32 ExtractCalls = 0;
+	int32 DiffCalls = 0;
+
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("TestGraphWrapper");
+	Config.RegionId = TEXT("Body.TestGraphRegions");
+	Config.BodyPath = TEXT("Body.TestGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	Hooks.Validate = [&ValidateCalls](
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject)
+	{
+		++ValidateCalls;
+		return BodyObject->HasField(TEXT("Graphs")) && Context.bIsDryRun
+			? FAssetDocumentCapabilityResult::Success(TEXT("validated"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("missing graphs"), TEXT("/Body/Graphs"), TEXT("MissingGraphs"));
+	};
+	Hooks.Preflight = [&PreflightCalls](
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject)
+	{
+		++PreflightCalls;
+		return BodyObject->HasField(TEXT("Graphs")) && Context.bIsDryRun
+			? FAssetDocumentCapabilityResult::Success(TEXT("preflighted"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("missing preflight context"), TEXT("/Body"), TEXT("MissingPreflightContext"));
+	};
+	Hooks.Apply = [&ApplyCalls](
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject,
+		bool& bOutChanged)
+	{
+		++ApplyCalls;
+		bOutChanged = BodyObject->HasField(TEXT("Graphs")) && Context.bIsDryRun;
+		return bOutChanged
+			? FAssetDocumentCapabilityResult::Success(TEXT("applied"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("missing apply context"), TEXT("/Body"), TEXT("MissingApplyContext"));
+	};
+	Hooks.Extract = [&ExtractCalls](
+		const FAssetDocumentCapabilityContext& Context,
+		TSharedRef<FJsonObject>& OutBodyObject)
+	{
+		++ExtractCalls;
+		if (!Context.bIsDryRun)
+		{
+			return FAssetDocumentCapabilityResult::Failure(TEXT("missing extract context"), TEXT("/Body"), TEXT("MissingExtractContext"));
+		}
+		OutBodyObject->SetStringField(TEXT("Graphs"), TEXT("current"));
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted"));
+	};
+	Hooks.Diff = [&DiffCalls](
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		++DiffCalls;
+		if (!BodyObject->HasField(TEXT("Graphs")) || !Context.bIsDryRun)
+		{
+			return FAssetDocumentCapabilityResult::Failure(TEXT("missing diff context"), TEXT("/Body"), TEXT("MissingDiffContext"));
+		}
+		FAssetDocumentJsonRegionUtils::AddDiffEntry(OutDiffEntries, TEXT("/Body/Graphs"), TEXT("changed"), nullptr, nullptr);
+		return FAssetDocumentCapabilityResult::Success(TEXT("diffed"));
+	};
+
+	FAssetDocumentGraphRegionWrapperAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = TEXT("Body.TestGraphRegions");
+	RegionContext.BodyPath = TEXT("Body.TestGraphRegions");
+	RegionContext.JsonPointer = TEXT("/Body");
+	RegionContext.bIsDryRun = true;
+
+	TSharedRef<FJsonObject> BodyObject = MakeShared<FJsonObject>();
+	BodyObject->SetArrayField(TEXT("Graphs"), {});
+	const TSharedRef<FJsonValueObject> BodyValue = MakeShared<FJsonValueObject>(BodyObject);
+
+	TestTrue(TEXT("Validate succeeds"), Adapter.ValidateRegion(RegionContext, BodyValue).bSuccess);
+	FAssetDocumentRegionContext PreflightContext = RegionContext;
+	TestTrue(TEXT("Preflight succeeds"), Adapter.PreflightRegion(PreflightContext, BodyValue).bSuccess);
+	bool bChanged = false;
+	TestTrue(TEXT("Apply succeeds"), Adapter.ApplyRegion(RegionContext, BodyValue, bChanged).bSuccess);
+	TestTrue(TEXT("Apply propagates changed"), bChanged);
+	TSharedPtr<FJsonValue> ExtractedValue;
+	TestTrue(TEXT("Extract succeeds"), Adapter.ExtractRegion(RegionContext, ExtractedValue).bSuccess);
+	TestTrue(TEXT("Extract returns object"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Object);
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	TestTrue(TEXT("Diff succeeds"), Adapter.DiffRegion(RegionContext, BodyValue, DiffEntries).bSuccess);
+
+	TestEqual(TEXT("Validate calls"), ValidateCalls, 1);
+	TestEqual(TEXT("Preflight calls"), PreflightCalls, 1);
+	TestEqual(TEXT("Apply calls"), ApplyCalls, 1);
+	TestEqual(TEXT("Extract calls"), ExtractCalls, 1);
+	TestEqual(TEXT("Diff calls"), DiffCalls, 1);
+	TestEqual(TEXT("One diff entry"), DiffEntries.Num(), 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeGraphWrapperRejectsInvalidBodyAndMissingHooksTest,
+	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.RejectsInvalidBodyAndMissingHooks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeGraphWrapperRejectsInvalidBodyAndMissingHooksTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("TestGraphWrapper");
+	Config.RegionId = TEXT("Body.TestGraphRegions");
+	Config.BodyPath = TEXT("Body.TestGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	FAssetDocumentGraphRegionWrapperAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = TEXT("Body.TestGraphRegions");
+	RegionContext.BodyPath = TEXT("Body.TestGraphRegions");
+	RegionContext.JsonPointer = TEXT("/Body");
+
+	const FAssetDocumentCapabilityResult InvalidBodyResult =
+		Adapter.ValidateRegion(RegionContext, MakeShared<FJsonValueString>(TEXT("not object")));
+	TestFalse(TEXT("Invalid body fails"), InvalidBodyResult.bSuccess);
+	TestEqual(
+		TEXT("Invalid body code"),
+		InvalidBodyResult.Diagnostics.Num() > 0 ? InvalidBodyResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("InvalidBodySectionType")));
+	TestEqual(
+		TEXT("Invalid body path"),
+		InvalidBodyResult.Diagnostics.Num() > 0 ? InvalidBodyResult.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body")));
+
+	TSharedRef<FJsonObject> BodyObject = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult MissingHookResult =
+		Adapter.ValidateRegion(RegionContext, MakeShared<FJsonValueObject>(BodyObject));
+	TestFalse(TEXT("Missing hook fails"), MissingHookResult.bSuccess);
+	TestEqual(
+		TEXT("Missing hook code"),
+		MissingHookResult.Diagnostics.Num() > 0 ? MissingHookResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedGraphRegionLifecycle")));
+
+	FAssetDocumentRegionContext PreflightContext = RegionContext;
+	const FAssetDocumentCapabilityResult MissingPreflightResult =
+		Adapter.PreflightRegion(PreflightContext, MakeShared<FJsonValueObject>(BodyObject));
+	TestFalse(TEXT("Missing preflight hook fails"), MissingPreflightResult.bSuccess);
+	TestEqual(
+		TEXT("Missing preflight hook code"),
+		MissingPreflightResult.Diagnostics.Num() > 0 ? MissingPreflightResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedGraphRegionLifecycle")));
+
+	bool bMissingApplyChanged = false;
+	const FAssetDocumentCapabilityResult MissingApplyResult =
+		Adapter.ApplyRegion(RegionContext, MakeShared<FJsonValueObject>(BodyObject), bMissingApplyChanged);
+	TestFalse(TEXT("Missing apply hook fails"), MissingApplyResult.bSuccess);
+	TestEqual(
+		TEXT("Missing apply hook code"),
+		MissingApplyResult.Diagnostics.Num() > 0 ? MissingApplyResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedGraphRegionLifecycle")));
+
+	TSharedPtr<FJsonValue> MissingExtractValue;
+	const FAssetDocumentCapabilityResult MissingExtractResult = Adapter.ExtractRegion(RegionContext, MissingExtractValue);
+	TestFalse(TEXT("Missing extract hook fails"), MissingExtractResult.bSuccess);
+	TestEqual(
+		TEXT("Missing extract hook code"),
+		MissingExtractResult.Diagnostics.Num() > 0 ? MissingExtractResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedGraphRegionLifecycle")));
+
+	TArray<TSharedPtr<FJsonValue>> MissingDiffEntries;
+	const FAssetDocumentCapabilityResult MissingDiffResult =
+		Adapter.DiffRegion(RegionContext, MakeShared<FJsonValueObject>(BodyObject), MissingDiffEntries);
+	TestFalse(TEXT("Missing diff hook fails"), MissingDiffResult.bSuccess);
+	TestEqual(
+		TEXT("Missing diff hook code"),
+		MissingDiffResult.Diagnostics.Num() > 0 ? MissingDiffResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedGraphRegionLifecycle")));
+
+	bool bChanged = true;
+	const FAssetDocumentCapabilityResult InvalidApplyBodyResult =
+		Adapter.ApplyRegion(RegionContext, MakeShared<FJsonValueString>(TEXT("not object")), bChanged);
+	TestFalse(TEXT("Invalid apply body fails"), InvalidApplyBodyResult.bSuccess);
+	TestFalse(TEXT("Invalid apply resets changed"), bChanged);
 	return true;
 }
 
