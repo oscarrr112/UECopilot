@@ -274,6 +274,10 @@ Deferral note:
 
 - AnimMontage `AssetUserData` remains deferred because the current AnimMontage profile/capability does not expose `Body.AssetUserData`; this ring does not add new authoring surface. Checked files: `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentProfile.cpp`, `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentCapability.cpp`, and `Source/AssetDocument/Private/Tests/AssetDocumentAnimMontageTests.cpp`.
 
+Ring 6 status:
+
+- AnimMontage `SectionMetadata` implemented via `FAssetDocumentFragmentArrayUtils` per section. The Montage capability still owns the `map<SectionName,array<EmbeddedObject|DefinitionRef>>` shape, section target validation against `CompositeSections`, staging outer, `UAnimMetaData::StaticClass()` compile path, and section writeback semantics; only the repeated per-section fragment array entry parsing and extraction value construction now reuse the fragment-array utility. This intentionally does not introduce a `MapOfFragmentArraysAdapter` or migrate `SectionMetadata` to `FAssetDocumentFragmentArrayRegionAdapter`.
+
 明确不做：
 
 - 不把 fragment compiler 合并进 adapter。

@@ -26,6 +26,13 @@
 
 namespace
 {
+FAssetDocumentCapabilityResult ExtractMetadataObject(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	UObject* OwnerAsset,
+	UAnimMetaData* MetadataObject,
+	const FString& JsonPath,
+	TSharedRef<FJsonObject>& OutFragment);
+
 bool IsKnownBodyKey(const FString& BodyKey)
 {
 	for (const FName& KnownBodyKey : FAnimMontageAssetDocumentCapability::GetCanonicalBodyKeys())
@@ -1694,6 +1701,40 @@ TArray<TSharedPtr<FJsonValue>> FragmentArrayEntriesToValues(
 	return Values;
 }
 
+FAssetDocumentCapabilityResult ExtractMetadataObjectsToFragmentEntries(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const UAnimMontage* Montage,
+	const TArray<UAnimMetaData*>& MetadataObjects,
+	const FString& BasePath,
+	TArray<TSharedRef<FJsonObject>>& OutEntries)
+{
+	OutEntries.Reset();
+	OutEntries.Reserve(MetadataObjects.Num());
+	for (int32 MetadataIndex = 0; MetadataIndex < MetadataObjects.Num(); ++MetadataIndex)
+	{
+		UAnimMetaData* MetadataObject = MetadataObjects[MetadataIndex];
+		if (!MetadataObject)
+		{
+			continue;
+		}
+
+		TSharedRef<FJsonObject> MetadataFragment = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = ExtractMetadataObject(
+			Compiler,
+			const_cast<UAnimMontage*>(Montage),
+			MetadataObject,
+			FAssetDocumentFragmentArrayUtils::MakeEntryPath(BasePath, MetadataIndex),
+			MetadataFragment);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutEntries.Add(MetadataFragment);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimMontage metadata fragments"));
+}
+
 void CollectSectionNames(const TArray<FCompositeSection>& Sections, TSet<FName>& OutSectionNames)
 {
 	for (const FCompositeSection& Section : Sections)
@@ -1717,7 +1758,7 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 
 	const TSharedPtr<FJsonValue>* SectionMetadataValue = BodyObject->Values.Find(TEXT("SectionMetadata"));
 	TSharedPtr<FJsonObject> SectionMetadataObject;
-	TMap<FName, const TArray<TSharedPtr<FJsonValue>>*> SectionMetadataArrays;
+	TMap<FName, TArray<FAssetDocumentFragmentArrayEntry>> SectionMetadataArrays;
 	if (SectionMetadataValue)
 	{
 		FAssetDocumentCapabilityResult Result = RequireObjectValue(*SectionMetadataValue, TEXT("/Body/SectionMetadata"), SectionMetadataObject);
@@ -1749,22 +1790,23 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 					TEXT("UnknownSectionMetadataTarget"));
 			}
 
-			const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-			Result = RequireArrayValue(Pair.Value, SectionPath, Values);
+			TArray<FAssetDocumentFragmentArrayEntry> Entries;
+			Result = FAssetDocumentFragmentArrayUtils::ParseObjectEntries(Pair.Value, SectionPath, Entries);
 			if (!Result.bSuccess)
 			{
 				return Result;
 			}
 
+			const TArray<TSharedPtr<FJsonValue>> Values = FragmentArrayEntriesToValues(Entries);
 			Result = bResolveFragments
-				? ValidateMetadataArrayShape(*Values, SectionPath)
-				: ValidateMetadataArray(Context, *Values, SectionPath);
+				? ValidateMetadataArrayShape(Values, SectionPath)
+				: ValidateMetadataArray(Context, Values, SectionPath);
 			if (!Result.bSuccess)
 			{
 				return Result;
 			}
 
-			SectionMetadataArrays.Add(SectionName, Values);
+			SectionMetadataArrays.Add(SectionName, MoveTemp(Entries));
 		}
 	}
 
@@ -1845,15 +1887,16 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 	if (SectionMetadataValue)
 	{
 		OutParsed.bHasSectionMetadata = true;
-		for (const TPair<FName, const TArray<TSharedPtr<FJsonValue>>*>& Pair : SectionMetadataArrays)
+		for (const TPair<FName, TArray<FAssetDocumentFragmentArrayEntry>>& Pair : SectionMetadataArrays)
 		{
 			TArray<TObjectPtr<UAnimMetaData>> CompiledMetadata;
+			const TArray<TSharedPtr<FJsonValue>> Values = FragmentArrayEntriesToValues(Pair.Value);
 			FAssetDocumentCapabilityResult Result = CompileMetadataArray(
 				*Compiler,
 				Context,
 				Montage,
 				MetadataStagingOuter,
-				*Pair.Value,
+				Values,
 				FString::Printf(TEXT("/Body/SectionMetadata/%s"), *Pair.Key.ToString()),
 				CompiledMetadata);
 			if (!Result.bSuccess)
@@ -2014,32 +2057,12 @@ FAssetDocumentCapabilityResult ExtractMetadataFragmentArrayRegion(
 		const FAssetDocumentRegionContext&,
 		TArray<TSharedRef<FJsonObject>>& OutEntries)
 	{
-		OutEntries.Reset();
-		const TArray<UAnimMetaData*>& AssetMetadata = Montage->GetMetaData();
-		OutEntries.Reserve(AssetMetadata.Num());
-		for (int32 MetadataIndex = 0; MetadataIndex < AssetMetadata.Num(); ++MetadataIndex)
-		{
-			UAnimMetaData* MetadataObject = AssetMetadata[MetadataIndex];
-			if (!MetadataObject)
-			{
-				continue;
-			}
-
-			TSharedRef<FJsonObject> MetadataFragment = MakeShared<FJsonObject>();
-			FAssetDocumentCapabilityResult Result = ExtractMetadataObject(
-				Compiler,
-				const_cast<UAnimMontage*>(Montage),
-				MetadataObject,
-				FString::Printf(TEXT("/Body/Metadata/%d"), MetadataIndex),
-				MetadataFragment);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
-			OutEntries.Add(MetadataFragment);
-		}
-
-		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimMontage Metadata fragments"));
+		return ExtractMetadataObjectsToFragmentEntries(
+			Compiler,
+			Montage,
+			Montage->GetMetaData(),
+			TEXT("/Body/Metadata"),
+			OutEntries);
 	};
 
 	const FAssetDocumentFragmentArrayRegionAdapter Adapter(
@@ -2672,30 +2695,21 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 	TSharedRef<FJsonObject> SectionMetadata = MakeShared<FJsonObject>();
 	for (const FCompositeSection& Section : Montage->CompositeSections)
 	{
-		TArray<TSharedPtr<FJsonValue>> SectionMetadataValues;
+		TArray<TSharedRef<FJsonObject>> SectionMetadataEntries;
 		const TArray<UAnimMetaData*>& SectionMetadataObjects = Section.GetMetaData();
-		for (int32 MetadataIndex = 0; MetadataIndex < SectionMetadataObjects.Num(); ++MetadataIndex)
+		const FAssetDocumentCapabilityResult Result = ExtractMetadataObjectsToFragmentEntries(
+			Compiler,
+			Montage,
+			SectionMetadataObjects,
+			FString::Printf(TEXT("/Body/SectionMetadata/%s"), *Section.SectionName.ToString()),
+			SectionMetadataEntries);
+		if (!Result.bSuccess)
 		{
-			UAnimMetaData* MetadataObject = SectionMetadataObjects[MetadataIndex];
-			if (!MetadataObject)
-			{
-				continue;
-			}
-
-			TSharedRef<FJsonObject> MetadataFragment = MakeShared<FJsonObject>();
-			FAssetDocumentCapabilityResult Result = ExtractMetadataObject(
-				Compiler,
-				const_cast<UAnimMontage*>(Montage),
-				MetadataObject,
-				FString::Printf(TEXT("/Body/SectionMetadata/%s/%d"), *Section.SectionName.ToString(), MetadataIndex),
-				MetadataFragment);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
-			SectionMetadataValues.Add(MakeShared<FJsonValueObject>(MetadataFragment));
+			return Result;
 		}
-		SectionMetadata->SetArrayField(Section.SectionName.ToString(), SectionMetadataValues);
+		SectionMetadata->SetField(
+			Section.SectionName.ToString(),
+			FAssetDocumentFragmentArrayUtils::MakeArrayValue(SectionMetadataEntries));
 	}
 	OutBodyJson->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
 
