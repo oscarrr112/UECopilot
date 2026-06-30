@@ -1914,6 +1914,25 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 		TestDiffEntryFieldIsNull(this, HealthDiff, TEXT("desired"));
 	}
 
+	TSharedRef<FJsonObject> ChangedVariableBody = MakeShared<FJsonObject>();
+	ChangedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	ChangedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("125.0"))}));
+	TArray<TSharedPtr<FJsonValue>> ChangedVariableDiffEntries;
+	const FAssetDocumentCapabilityResult ChangedVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(ChangedVariableBody), ChangedVariableDiffEntries);
+	TestTrue(TEXT("Matched changed variable diff succeeds"), ChangedVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> ChangedHealthDiff = FindDiffEntryByPath(ChangedVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Changed variable uses semantic path"), ChangedHealthDiff.IsValid());
+	if (ChangedHealthDiff.IsValid())
+	{
+		TestEqual(TEXT("Changed variable diff is changed"), ChangedHealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Changed variable keeps changed change"), ChangedHealthDiff->GetStringField(TEXT("change")), FString(TEXT("changed")));
+		TestTrue(TEXT("Changed variable diff has current"), ChangedHealthDiff->HasField(TEXT("current")));
+		TestTrue(TEXT("Changed variable diff has desired"), ChangedHealthDiff->HasField(TEXT("desired")));
+		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("desired"), TEXT("Health"), TEXT("125.0"));
+	}
+
 	TSharedRef<FJsonObject> DesiredVariableBody = MakeShared<FJsonObject>();
 	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 	DesiredVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("NewScore"), TEXT("7.0"))}));
