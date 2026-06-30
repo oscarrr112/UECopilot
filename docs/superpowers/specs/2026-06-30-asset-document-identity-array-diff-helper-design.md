@@ -28,7 +28,7 @@
 
 - 提供公共 helper，统一 identity array 的 diff scaffold。
 - Profile 只声明如何从 current / desired 元素取 identity、如何构造 path、如何判断元素是否 changed、如何生成 current / desired JSON value。
-- Helper 负责 current-only、desired-only、both-present 的遍历顺序、seen set、entry status、reason、稳定 path 和 JSON cloning。
+- Helper 负责 current-only、desired-only、both-present 的遍历顺序、seen set、entry status、change、稳定 path 和 JSON cloning。
 - 保留资产语义在 hook 中：component alias、interface class loading、variable type/default compare、notify track order policy 都不进入公共层。
 - 第一版至少迁移一个 Blueprint profile 和一个非 Blueprint 或第二 profile 的同形态切片，证明 helper 不被单一资产绑死。
 
@@ -72,9 +72,9 @@ struct FAssetDocumentIdentityArrayDiffEntryContext
 struct FAssetDocumentIdentityArrayDiffOptions
 {
 	FString RegionPath;
-	FString ExtraReason = TEXT("extra");
-	FString MissingReason = TEXT("missing");
-	FString ChangedReason = TEXT("changed");
+	FString ExtraChange = TEXT("extra");
+	FString MissingChange = TEXT("missing");
+	FString ChangedChange = TEXT("changed");
 	bool bEmitUnchanged = true;
 };
 
@@ -82,7 +82,7 @@ struct FAssetDocumentIdentityArrayDiffHooks
 {
 	TFunction<bool(const FAssetDocumentIdentityArrayDiffEntryContext&)> AreElementsEqual;
 	TFunction<FString(const FAssetDocumentIdentityArrayDiffEntryContext&)> MakePath;
-	TFunction<FString(const FAssetDocumentIdentityArrayDiffEntryContext&)> MakeChangedReason;
+	TFunction<FString(const FAssetDocumentIdentityArrayDiffEntryContext&)> MakeChange;
 };
 ```
 
@@ -118,10 +118,10 @@ Implementation plan 可以调整命名和形参，但必须保持以下约束：
 
 默认行为：
 
-- current 和 desired 都存在且 equal：`status = "unchanged"`，reason 为空。
-- current 和 desired 都存在但不 equal：`status = "changed"`，reason 默认为 `"changed"`。
-- current-only：`status = "changed"`，reason 默认为 `"extra"`，desired value 为 null。
-- desired-only：`status = "changed"`，reason 默认为 `"missing"`，current value 为 null。
+- current 和 desired 都存在且 equal：`status = "unchanged"`，change 为空。
+- current 和 desired 都存在但不 equal：`status = "changed"`，change 默认为 `"changed"`。
+- current-only：`status = "changed"`，change 默认为 `"extra"`，desired value 为 null。
+- desired-only：`status = "changed"`，change 默认为 `"missing"`，current value 为 null。
 
 顺序要求：
 
@@ -195,8 +195,8 @@ Duplicate 策略建议第一版保守处理：
 
 验收点：
 
-- current-only interface 仍是 changed/extra 或现有 profile 可接受的等价 reason。
-- desired-only interface 仍是 changed/missing 或现有 profile 可接受的等价 reason。
+- current-only interface 仍是 changed/extra 或现有 profile 可接受的等价 change。
+- desired-only interface 仍是 changed/missing 或现有 profile 可接受的等价 change。
 - unchanged interface path 不变。
 - UBlueprint 与 WidgetBlueprint 共享同一 helper，不复制对齐循环。
 
@@ -228,7 +228,7 @@ Duplicate 策略建议第一版保守处理：
 
 - diff path 稳定，不从 `/Body/Variables/Health` 退化成 `/Body/Variables/0`。
 - status 仍为现有消费者理解的 `changed` / `unchanged`。
-- reason 字段如现有 profile 使用 `extra` / `missing` / `changed`，必须保留或在 spec review 中明确批准变更。
+- change 字段如现有 profile 使用 `extra` / `missing` / `changed`，必须保留或在 spec review 中明确批准变更。
 - current / desired value shape 不变。
 - parse / validate failure 的 diagnostic path 不变；helper 不应该接管 parse failure。
 - omitted region 与 explicit empty region 的语义不变。
@@ -239,7 +239,7 @@ Duplicate 策略建议第一版保守处理：
 
 - 放在 `Source/AssetDocument/Private/Tests/AssetDocumentRegionRuntimeTests.cpp` 或更合适的 region runtime test 文件。
 - 覆盖 add/remove/change/unchanged、custom path、escape、duplicate failure。
-- 断言 diff entry 的 path/status/reason/current/desired。
+- 断言 diff entry 的 path/status/change/current/desired。
 
 Profile tests：
 
@@ -262,7 +262,7 @@ Reviewer 重点：
 
 - Helper 是否只处理 identity diff scaffold，没有资产分支。
 - `UBlueprint` 与 `WidgetBlueprint` 是否真的共享 helper。
-- path/status/reason/value shape 是否兼容。
+- path/status/change/value shape 是否兼容。
 - 是否把 component alias、variable type compare、interface class loading 等语义留在 profile hook。
 - 是否没有绕过 existing validation。
 
@@ -284,6 +284,6 @@ Reviewer 重点：
 - 存在公共 `FAssetDocumentIdentityArrayDiffHelper` 或等价命名的 helper。
 - 至少两个 profile 或两个独立 region 使用同一 helper，其中至少一个来自 Blueprint/WidgetBlueprint 的 `ImplementedInterfaces` 同形态重复。
 - Helper 没有资产类型依赖、没有 region name switch、没有继承要求。
-- 迁移区域的 diff path/status/reason/current/desired 兼容旧行为。
+- 迁移区域的 diff path/status/change/current/desired 兼容旧行为。
 - 对 public helper 和迁移 profile 都有自动化覆盖。
 - 下一环 `Graph Wrapper Adapter Consolidation` 可以在不重新解决 identity diff scaffold 的前提下继续推进。
