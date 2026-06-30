@@ -5,6 +5,7 @@
 #include "AssetDocumentRegionRuntime.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
+#include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 #include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
@@ -1880,6 +1881,107 @@ bool FAssetDocumentRegionRuntimeBodyDispatcherCallsPostApplyRepairHookTest::RunT
 	TestTrue(TEXT("Apply succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Repair hook is called once"), RepairCalls, 1);
 	TestTrue(TEXT("Repair hook receives applied region"), RepairRegions.Contains(TEXT("Preview")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectFieldSchemaAcceptsValidObjectTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.AcceptsValidObject",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectFieldSchemaAcceptsValidObjectTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Palette"), TEXT("/Body/Palette"));
+	Context.BodyPath = TEXT("Body.Palette");
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownPaletteField");
+	Schema.Fields.Add({TEXT("Category"), EJson::String, false, TEXT("MissingPaletteCategory"), TEXT("InvalidPaletteCategory")});
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Category"), TEXT("AssetDocument"));
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(Context, Object, Schema);
+
+	TestTrue(TEXT("Valid object field schema succeeds"), Result.bSuccess);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsUnknownFieldTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.RejectsUnknownField",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsUnknownFieldTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Palette"), TEXT("/Body/Palette"));
+	Context.BodyPath = TEXT("Body.Palette");
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownPaletteField");
+	Schema.UnknownFieldMessageFormat = TEXT("Unknown Body.Palette field '%s'");
+	Schema.Fields.Add({TEXT("Category"), EJson::String, false, TEXT("MissingPaletteCategory"), TEXT("InvalidPaletteCategory")});
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Category/With~Escape"), TEXT("invalid"));
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(Context, Object, Schema);
+
+	TestFalse(TEXT("Unknown field schema fails"), Result.bSuccess);
+	TestEqual(TEXT("Unknown field diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnknownPaletteField")));
+	TestEqual(TEXT("Unknown field path escapes JSON Pointer tokens"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Palette/Category~1With~0Escape")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsWrongTypeTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.RejectsWrongType",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsWrongTypeTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.EditorOptions"), TEXT("/Body/EditorOptions"));
+	Context.BodyPath = TEXT("Body.EditorOptions");
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownEditorOption");
+	Schema.Fields.Add({
+		TEXT("bCanCallInitializedWithoutPlayerContext"),
+		EJson::Boolean,
+		false,
+		TEXT("MissingEditorOption"),
+		TEXT("InvalidEditorOption"),
+		TEXT("Body.EditorOptions.bCanCallInitializedWithoutPlayerContext must be a boolean")
+	});
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("bCanCallInitializedWithoutPlayerContext"), TEXT("true"));
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(Context, Object, Schema);
+
+	TestFalse(TEXT("Wrong field type schema fails"), Result.bSuccess);
+	TestEqual(TEXT("Wrong type diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidEditorOption")));
+	TestEqual(TEXT("Wrong type diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsMissingRequiredFieldTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.RejectsMissingRequiredField",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsMissingRequiredFieldTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Required"), TEXT("/Body/Required"));
+	Context.BodyPath = TEXT("Body.Required");
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnknownRequiredField");
+	Schema.Fields.Add({TEXT("Name"), EJson::String, true, TEXT("MissingRequiredName"), TEXT("InvalidRequiredName")});
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(Context, Object, Schema);
+
+	TestFalse(TEXT("Missing required field schema fails"), Result.bSuccess);
+	TestEqual(TEXT("Missing field diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRequiredName")));
+	TestEqual(TEXT("Missing field diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Required/Name")));
 	return true;
 }
 
