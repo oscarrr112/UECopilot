@@ -731,6 +731,94 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperBodyLevelGraphLifecycleTest::RunTes
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperPreservesLegacyHookContextTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.PreservesLegacyHookContext",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperPreservesLegacyHookContextTest::RunTest(const FString& Parameters)
+{
+	int32 PreflightCalls = 0;
+	int32 ApplyCalls = 0;
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Preflight = [&PreflightCalls](FAssetDocumentRegionContext& Context, const TSharedPtr<FJsonValue>& DesiredValue)
+	{
+		++PreflightCalls;
+		const bool bHasOriginalPolicy =
+			Context.Policy && Context.Policy->RegionId == TEXT("Body.WidgetBlueprintGraphRegions");
+		Context.SourceDocumentPath = TEXT("preflight-mutated-original-context");
+		return bHasOriginalPolicy && DesiredValue.IsValid() && DesiredValue->Type == EJson::Object
+			? FAssetDocumentCapabilityResult::Success(TEXT("preflight saw original context"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("preflight lost original context"), TEXT("/Body"), TEXT("LostOriginalContext"));
+	};
+	Hooks.Apply = [&ApplyCalls](
+		FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		bool& bOutChanged)
+	{
+		++ApplyCalls;
+		const bool bHasOriginalPolicy =
+			Context.Policy && Context.Policy->RegionId == TEXT("Body.WidgetBlueprintGraphRegions");
+		bOutChanged = true;
+		return bHasOriginalPolicy && Context.SourceDocumentPath == TEXT("preflight-mutated-original-context")
+			&& DesiredValue.IsValid() && DesiredValue->Type == EJson::Object
+			? FAssetDocumentCapabilityResult::Success(TEXT("apply saw original context"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("apply lost original context"), TEXT("/Body"), TEXT("LostOriginalContext"));
+	};
+
+	FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("Body.WidgetBlueprintGraphRegions"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("/Body"), &Policy);
+	Context.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
+	TSharedRef<FJsonObject> DesiredBody = MakeShared<FJsonObject>();
+	DesiredBody->SetArrayField(TEXT("UbergraphPages"), {});
+	const TSharedPtr<FJsonValue> DesiredValue = MakeObjectValue(DesiredBody);
+
+	TestTrue(TEXT("Preflight succeeds with original context"), FAssetDocumentRegionRuntime::Preflight(Context, DesiredValue, Adapter).bSuccess);
+	TestEqual(TEXT("Preflight mutation is visible to caller"), Context.SourceDocumentPath, FString(TEXT("preflight-mutated-original-context")));
+	bool bChanged = false;
+	TestTrue(TEXT("Apply succeeds with original context"), FAssetDocumentRegionRuntime::Apply(Context, DesiredValue, Adapter, bChanged).bSuccess);
+	TestTrue(TEXT("Apply changed flag propagates"), bChanged);
+	TestEqual(TEXT("Preflight hook count"), PreflightCalls, 1);
+	TestEqual(TEXT("Apply hook count"), ApplyCalls, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperRejectsInvalidExtractHookResultTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.RejectsInvalidExtractHookResult",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperRejectsInvalidExtractHookResultTest::RunTest(const FString& Parameters)
+{
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Extract = [](const FAssetDocumentRegionContext&, TSharedPtr<FJsonValue>& OutCurrentValue)
+	{
+		OutCurrentValue = MakeShared<FJsonValueString>(TEXT("not an object"));
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted invalid graph hook value"));
+	};
+
+	const FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("Body.WidgetBlueprintGraphRegions"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("/Body"), &Policy);
+	Context.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+
+	TestFalse(TEXT("Invalid extract hook result fails"), Result.bSuccess);
+	TestEqual(
+		TEXT("Invalid extract hook result code"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
+		FString(TEXT("InvalidGraphRegionHookResult")));
+	TestEqual(
+		TEXT("Invalid extract hook result path"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body")));
+	TestFalse(TEXT("Invalid extract hook result is not returned"), ExtractedValue.IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeGraphWrapperSupportsSyntheticBodyTest,
 	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.SupportsSyntheticBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

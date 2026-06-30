@@ -52,22 +52,6 @@ void AddCanonicalDiffEntry(
 		DesiredValue);
 }
 
-FAssetDocumentRegionContext MakeWidgetBlueprintGraphRegionContext(const FAssetDocumentCapabilityContext& Context)
-{
-	FAssetDocumentRegionContext RegionContext;
-	RegionContext.Asset = Context.Asset;
-	RegionContext.AssetClass = Context.AssetClass;
-	RegionContext.TargetAssetPath = Context.TargetAssetPath;
-	RegionContext.SourceDocumentPath = Context.SourceDocumentPath;
-	RegionContext.Definitions = Context.Definitions;
-	RegionContext.bIsDryRun = Context.bIsDryRun;
-	RegionContext.Result = Context.Result;
-	RegionContext.RegionId = TEXT("Body.WidgetBlueprintGraphRegions");
-	RegionContext.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
-	RegionContext.JsonPointer = TEXT("/Body");
-	return RegionContext;
-}
-
 FAssetDocumentGraphRegionWrapperConfig MakeWidgetBlueprintGraphWrapperConfig()
 {
 	FAssetDocumentGraphRegionWrapperConfig Config;
@@ -81,57 +65,74 @@ FAssetDocumentGraphRegionWrapperConfig MakeWidgetBlueprintGraphWrapperConfig()
 
 FAssetDocumentGraphRegionWrapperHooks MakeWidgetBlueprintGraphWrapperHooks(
 	UBlueprint* DesiredStateBlueprint,
-	const FWidgetBlueprintRegionAdapterHooks& Hooks)
+	const FWidgetBlueprintRegionAdapterHooks& Hooks,
+	const FAssetDocumentRegionContext* OriginalContext,
+	FAssetDocumentRegionContext* MutableOriginalContext)
 {
 	FAssetDocumentGraphRegionWrapperHooks GraphHooks;
-	GraphHooks.Validate = [&Hooks](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject)
+	GraphHooks.Validate = [&Hooks, OriginalContext](
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject)
 	{
 		if (Hooks.Validate)
 		{
-			return Hooks.Validate(MakeWidgetBlueprintGraphRegionContext(Context), MakeShared<FJsonValueObject>(BodyObject));
+			return Hooks.Validate(*OriginalContext, MakeShared<FJsonValueObject>(BodyObject));
 		}
 		return FWidgetBlueprintGraphAdapter().ValidateRegions(Context, BodyObject);
 	};
-	GraphHooks.Preflight = [DesiredStateBlueprint, &Hooks](FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject)
+	GraphHooks.Preflight = [DesiredStateBlueprint, &Hooks, MutableOriginalContext](
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject)
 	{
 		if (Hooks.Preflight)
 		{
-			FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context);
-			return Hooks.Preflight(RegionContext, MakeShared<FJsonValueObject>(BodyObject));
+			return Hooks.Preflight(*MutableOriginalContext, MakeShared<FJsonValueObject>(BodyObject));
 		}
 		return FWidgetBlueprintGraphAdapter().PreflightRegions(
 			Context,
 			BodyObject,
 			DesiredStateBlueprint ? DesiredStateBlueprint : Cast<UBlueprint>(Context.Asset));
 	};
-	GraphHooks.Apply = [&Hooks](FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject, bool& bOutChanged)
+	GraphHooks.Apply = [&Hooks, MutableOriginalContext](
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& BodyObject,
+		bool& bOutChanged)
 	{
 		if (Hooks.Apply)
 		{
-			FAssetDocumentRegionContext RegionContext = MakeWidgetBlueprintGraphRegionContext(Context);
-			return Hooks.Apply(RegionContext, MakeShared<FJsonValueObject>(BodyObject), bOutChanged);
+			return Hooks.Apply(*MutableOriginalContext, MakeShared<FJsonValueObject>(BodyObject), bOutChanged);
 		}
 		return FWidgetBlueprintGraphAdapter().ApplyRegions(Context, BodyObject, bOutChanged);
 	};
-	GraphHooks.Extract = [&Hooks](const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyObject)
+	GraphHooks.Extract = [&Hooks, OriginalContext](
+		const FAssetDocumentCapabilityContext& Context,
+		TSharedRef<FJsonObject>& OutBodyObject)
 	{
 		if (Hooks.Extract)
 		{
 			TSharedPtr<FJsonValue> ExtractedValue;
 			const FAssetDocumentCapabilityResult Result =
-				Hooks.Extract(MakeWidgetBlueprintGraphRegionContext(Context), ExtractedValue);
-			if (Result.bSuccess && ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Object)
+				Hooks.Extract(*OriginalContext, ExtractedValue);
+			if (!Result.bSuccess)
 			{
-				for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedValue->AsObject()->Values)
-				{
-					OutBodyObject->SetField(Pair.Key, Pair.Value);
-				}
+				return Result;
+			}
+			if (!ExtractedValue.IsValid() || ExtractedValue->Type != EJson::Object)
+			{
+				return FAssetDocumentCapabilityResult::Failure(
+					TEXT("Custom WidgetBlueprint graph extract hook must return an object"),
+					TEXT("/Body"),
+					TEXT("InvalidGraphRegionHookResult"));
+			}
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedValue->AsObject()->Values)
+			{
+				OutBodyObject->SetField(Pair.Key, Pair.Value);
 			}
 			return Result;
 		}
 		return FWidgetBlueprintGraphAdapter().ExtractRegions(Context, OutBodyObject);
 	};
-	GraphHooks.Diff = [&Hooks](
+	GraphHooks.Diff = [&Hooks, OriginalContext](
 		const FAssetDocumentCapabilityContext& Context,
 		const TSharedRef<FJsonObject>& BodyObject,
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
@@ -139,7 +140,7 @@ FAssetDocumentGraphRegionWrapperHooks MakeWidgetBlueprintGraphWrapperHooks(
 		if (Hooks.Diff)
 		{
 			return Hooks.Diff(
-				MakeWidgetBlueprintGraphRegionContext(Context),
+				*OriginalContext,
 				MakeShared<FJsonValueObject>(BodyObject),
 				OutDiffEntries);
 		}
@@ -150,11 +151,13 @@ FAssetDocumentGraphRegionWrapperHooks MakeWidgetBlueprintGraphWrapperHooks(
 
 FAssetDocumentGraphRegionWrapperAdapter MakeWidgetBlueprintGraphWrapperAdapter(
 	UBlueprint* DesiredStateBlueprint,
-	const FWidgetBlueprintRegionAdapterHooks& Hooks)
+	const FWidgetBlueprintRegionAdapterHooks& Hooks,
+	const FAssetDocumentRegionContext* OriginalContext,
+	FAssetDocumentRegionContext* MutableOriginalContext = nullptr)
 {
 	return FAssetDocumentGraphRegionWrapperAdapter(
 		MakeWidgetBlueprintGraphWrapperConfig(),
-		MakeWidgetBlueprintGraphWrapperHooks(DesiredStateBlueprint, Hooks));
+		MakeWidgetBlueprintGraphWrapperHooks(DesiredStateBlueprint, Hooks, OriginalContext, MutableOriginalContext));
 }
 }
 
@@ -447,27 +450,29 @@ FName FWidgetBlueprintGraphRegionAdapter::GetName() const
 
 bool FWidgetBlueprintGraphRegionAdapter::SupportsRegion(const FAssetDocumentRegionContext& Context) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).SupportsRegion(Context);
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context).SupportsRegion(Context);
 }
 
 TSharedRef<FJsonObject> FWidgetBlueprintGraphRegionAdapter::GetSchemaHint(
 	const FAssetDocumentRegionContext& Context) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).GetSchemaHint(Context);
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context).GetSchemaHint(Context);
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::ValidateRegion(
 	const FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).ValidateRegion(Context, DesiredValue);
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context).ValidateRegion(Context, DesiredValue);
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::PreflightRegion(
 	FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).PreflightRegion(Context, DesiredValue);
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context, &Context).PreflightRegion(
+		Context,
+		DesiredValue);
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::ApplyRegion(
@@ -475,7 +480,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::ApplyRegion(
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	bool& bOutChanged)
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).ApplyRegion(
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context, &Context).ApplyRegion(
 		Context,
 		DesiredValue,
 		bOutChanged);
@@ -485,7 +490,9 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::ExtractRegion
 	const FAssetDocumentRegionContext& Context,
 	TSharedPtr<FJsonValue>& OutCurrentValue) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).ExtractRegion(Context, OutCurrentValue);
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context).ExtractRegion(
+		Context,
+		OutCurrentValue);
 }
 
 FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::DiffRegion(
@@ -493,7 +500,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphRegionAdapter::DiffRegion(
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks).DiffRegion(
+	return MakeWidgetBlueprintGraphWrapperAdapter(DesiredStateBlueprint, Hooks, &Context).DiffRegion(
 		Context,
 		DesiredValue,
 		OutDiffEntries);
