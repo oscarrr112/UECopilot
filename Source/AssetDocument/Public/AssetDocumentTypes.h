@@ -22,6 +22,7 @@ struct ASSETDOCUMENT_API FAssetDocumentDiagnostic
 struct ASSETDOCUMENT_API FAssetDocumentApplyRequest
 {
 	TSharedPtr<FJsonObject> Document;
+	FString SourceDocumentPath;
 	bool bWriteSidecar = false;
 	bool bSaveAsset = true;
 };
@@ -30,7 +31,7 @@ struct ASSETDOCUMENT_API FAssetDocumentApplyFileRequest
 {
 	FString FilePath;
 	bool bSaveAsset = true;
-	// Reserved for future sidecar normalization after apply; current implementation only reads sidecars.
+	// Allows ApplyFile to rewrite the sidecar with refreshed _meta.sync state after a verified apply.
 	bool bAllowSidecarRewrite = true;
 	bool bTriggeredByWatcher = false;
 };
@@ -38,6 +39,17 @@ struct ASSETDOCUMENT_API FAssetDocumentApplyFileRequest
 struct ASSETDOCUMENT_API FAssetDocumentInspectRequest
 {
 	FString ClassOrAsset;
+};
+
+struct ASSETDOCUMENT_API FAssetDocumentProfileRequest
+{
+	FString ClassOrAsset;
+};
+
+struct ASSETDOCUMENT_API FAssetDocumentTemplateRequest
+{
+	FString Class;
+	FString Target;
 };
 
 struct ASSETDOCUMENT_API FAssetDocumentExtractRequest

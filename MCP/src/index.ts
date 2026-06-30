@@ -353,6 +353,41 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "inspect_asset_document_profile",
+    description:
+      "Inspect the generic AssetDocument profile for a class or existing asset by calling /assetfactory/assetdocument/profile.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        class_or_asset: {
+          type: "string",
+          description:
+            "Class name/path or asset path to inspect (e.g., TestDataAsset, /Script/AssetFactory.TestDataAsset, or /Game/Data/DA_Test)",
+        },
+      },
+      required: ["class_or_asset"],
+    },
+  },
+  {
+    name: "create_asset_document_template",
+    description:
+      "Create a generic AssetDocument template for a class and target by calling /assetfactory/assetdocument/template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        class: {
+          type: "string",
+          description: "Class name/path for the AssetDocument template (e.g., /Script/AssetFactory.TestDataAsset).",
+        },
+        target: {
+          type: "string",
+          description: "Target asset path for the template (e.g., /Game/Data/DA_Test).",
+        },
+      },
+      required: ["class", "target"],
+    },
+  },
+  {
     name: "validate_asset_document",
     description:
       "Validate exactly one AssetDocument JSON document or sidecar file by calling /assetfactory/assetdocument/validate.",
@@ -974,6 +1009,15 @@ const toolHandlers: Record<string, ToolHandler> = {
     const classOrAsset = requireStringArg(args, "class_or_asset");
     return callAssetDocumentApi(`/assetdocument/inspect?class_or_asset=${encodeURIComponent(classOrAsset)}`, "GET");
   },
+  inspect_asset_document_profile: async (args) => {
+    const classOrAsset = requireStringArg(args, "class_or_asset");
+    return callAssetDocumentApi(`/assetdocument/profile?class_or_asset=${encodeURIComponent(classOrAsset)}`, "GET");
+  },
+  create_asset_document_template: async (args) =>
+    callAssetDocumentApi("/assetdocument/template", "POST", {
+      Class: requireStringArg(args, "class"),
+      Target: requireStringArg(args, "target"),
+    }),
   validate_asset_document: async (args) =>
     callAssetDocumentApi("/assetdocument/validate", "POST", assetDocumentBodyArg(args)),
   diff_asset_document: async (args) =>

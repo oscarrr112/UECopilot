@@ -4,7 +4,12 @@
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentFileWatcher.h"
 #include "AssetDocumentHttpRoutes.h"
+#include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "Profiles/AnimMontageAssetDocumentProfile.h"
+#include "Profiles/AnimSequenceAssetDocumentProfile.h"
+#include "Profiles/UBlueprintAssetDocumentProfile.h"
+#include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 
 DEFINE_LOG_CATEGORY(LogAssetDocument);
 
@@ -14,6 +19,10 @@ FAssetDocumentModule::~FAssetDocumentModule() = default;
 void FAssetDocumentModule::StartupModule()
 {
 	UE_LOG(LogAssetDocument, Log, TEXT("AssetDocument module starting up"));
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimMontageAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimSequenceAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FUBlueprintAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FWidgetBlueprintAssetDocumentProfile>());
 	Service = MakeShared<FAssetDocumentService>();
 	HttpRoutes = MakeUnique<FAssetDocumentHttpRoutes>(Service.ToSharedRef());
 	HttpRoutes->Register();

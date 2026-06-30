@@ -23,8 +23,13 @@ public class AssetDocument : ModuleRules
 			"UnrealEd",
 			"AssetRegistry",
 			"AssetTools",
+			"BlueprintGraph",
 			"DirectoryWatcher",
-			"Projects"
+			"Projects",
+			"UMG",
+			"UMGEditor",
+			"MovieScene",
+			"MovieSceneTracks"
 		});
 	}
 }

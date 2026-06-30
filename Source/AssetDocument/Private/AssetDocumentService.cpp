@@ -3,9 +3,15 @@
 #include "AssetDocumentService.h"
 
 #include "AssetDocumentClassResolver.h"
+#include "AssetDocumentCanonicalJson.h"
+#include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
+#include "AssetDocumentPolicyRegistry.h"
+#include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
+#include "AssetDocumentSidecarDelta.h"
+#include "AssetDocumentSyncStateStore.h"
 
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
@@ -13,6 +19,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
+
+#include <initializer_list>
 
 namespace
 {
@@ -112,6 +120,473 @@ UObject* LoadAssetFromPackageOrObjectPath(const FString& PackageOrObjectPath)
 	return Asset;
 }
 
+TSharedPtr<FJsonObject> MakeDiffDocument(TSharedPtr<FJsonObject> Document)
+{
+	if (!Document.IsValid())
+	{
+		return Document;
+	}
+
+	const TSharedPtr<FJsonObject>* BodyObject = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), BodyObject) || !BodyObject || !BodyObject->IsValid() || !(*BodyObject)->HasField(TEXT("_Skipped")))
+	{
+		return Document;
+	}
+
+	TSharedPtr<FJsonObject> DiffDocument = MakeShared<FJsonObject>();
+	DiffDocument->Values = Document->Values;
+
+	TSharedPtr<FJsonObject> DiffBody = MakeShared<FJsonObject>();
+	DiffBody->Values = (*BodyObject)->Values;
+	DiffBody->RemoveField(TEXT("_Skipped"));
+	DiffDocument->SetObjectField(TEXT("Body"), DiffBody);
+	return DiffDocument;
+}
+
+struct FAssetDocumentResolvedTarget
+{
+	UObject* Asset = nullptr;
+	UClass* Class = nullptr;
+	FString Target;
+	FString AssetPath;
+};
+
+FAssetDocumentResult ResolveClassOrAssetTarget(const FString& ClassOrAsset, const FString& OperationName, FAssetDocumentResolvedTarget& OutTarget)
+{
+	if (ClassOrAsset.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(FString::Printf(TEXT("%s requires a class name or asset path"), *OperationName));
+	}
+
+	OutTarget.Target = ClassOrAsset;
+
+	if (ClassOrAsset.StartsWith(TEXT("/Game/")))
+	{
+		OutTarget.Asset = LoadAssetFromPackageOrObjectPath(ClassOrAsset);
+		if (!OutTarget.Asset)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *ClassOrAsset));
+			Result.Target = ClassOrAsset;
+			Result.AssetPath = ToObjectPath(ClassOrAsset);
+			return Result;
+		}
+
+		OutTarget.Class = OutTarget.Asset->GetClass();
+		OutTarget.Target = NormalizeValidateTarget(ClassOrAsset);
+		OutTarget.AssetPath = OutTarget.Asset->GetPathName();
+		return FAssetDocumentResult::Success(TEXT("Resolved class or asset target"));
+	}
+
+	FString Error;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassOrAsset, OutTarget.Class, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = ClassOrAsset;
+		return Result;
+	}
+
+	return FAssetDocumentResult::Success(TEXT("Resolved class or asset target"));
+}
+
+FAssetDocumentResult ResolveClassTarget(const FString& ClassName, UClass*& OutClass)
+{
+	if (ClassName.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("CreateTemplate requires a class"));
+	}
+
+	FString Error;
+	if (!FAssetDocumentClassResolver::ResolveClass(ClassName, OutClass, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = ClassName;
+		return Result;
+	}
+
+	return FAssetDocumentResult::Success(TEXT("Resolved class target"));
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeStringArray(std::initializer_list<const TCHAR*> Values)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const TCHAR* Value : Values)
+	{
+		Result.Add(MakeShared<FJsonValueString>(Value));
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeFragmentKindArray()
+{
+	return MakeStringArray({
+		TEXT("AssetRef"),
+		TEXT("ClassRef"),
+		TEXT("StructValue"),
+		TEXT("EmbeddedObject"),
+		TEXT("DefinitionRef"),
+	});
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeRegionPolicyArray(const TArray<FAssetDocumentRegionPolicy>& Policies)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FAssetDocumentRegionPolicy& Policy : Policies)
+	{
+		Result.Add(MakeShared<FJsonValueObject>(FAssetDocumentPolicyRegistry::ExportPolicyToJson(Policy)));
+	}
+	return Result;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeRegionPolicyPresetArray()
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	for (const FAssetDocumentRegionPolicyPreset& Preset : FAssetDocumentPolicyRegistry::GetBuiltinPresets())
+	{
+		Result.Add(MakeShared<FJsonValueObject>(FAssetDocumentPolicyRegistry::ExportPresetToJson(Preset)));
+	}
+	return Result;
+}
+
+TSharedRef<FJsonObject> MakeGenericDocumentShape()
+{
+	TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
+	Shape->SetStringField(TEXT("Definitions"), TEXT("map<string, Fragment>"));
+	Shape->SetStringField(TEXT("Properties"), TEXT("reflected CDO-diff properties"));
+	Shape->SetObjectField(TEXT("Body"), MakeShared<FJsonObject>());
+	return Shape;
+}
+
+struct FAssetDocumentProfileResolution
+{
+	UClass* Class = nullptr;
+	TSharedPtr<IAssetDocumentProfile> ExactProfile;
+};
+
+FAssetDocumentProfileResolution ResolveAssetDocumentProfile(const FAssetDocumentProfileRegistry& Registry, UClass* Class)
+{
+	FAssetDocumentProfileResolution Resolution;
+	Resolution.Class = Class;
+	Resolution.ExactProfile = Registry.FindForClass(Class);
+	return Resolution;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValuePreservingFields(const TSharedPtr<FJsonValue>& Value);
+
+TSharedRef<FJsonObject> CloneJsonObjectPreservingFields(const TSharedRef<FJsonObject>& Object)
+{
+	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		Clone->SetField(Pair.Key, CloneJsonValuePreservingFields(Pair.Value));
+	}
+	return Clone;
+}
+
+TSharedPtr<FJsonValue> CloneJsonValuePreservingFields(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid() || Value->Type == EJson::Null || Value->Type == EJson::None)
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	switch (Value->Type)
+	{
+	case EJson::String:
+		return MakeShared<FJsonValueString>(Value->AsString());
+	case EJson::Number:
+		return MakeShared<FJsonValueNumber>(Value->AsNumber());
+	case EJson::Boolean:
+		return MakeShared<FJsonValueBoolean>(Value->AsBool());
+	case EJson::Array:
+		{
+			TArray<TSharedPtr<FJsonValue>> ClonedArray;
+			for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+			{
+				ClonedArray.Add(CloneJsonValuePreservingFields(Entry));
+			}
+			return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
+		}
+	case EJson::Object:
+		{
+			const TSharedPtr<FJsonObject> Object = Value->AsObject();
+			if (Object.IsValid())
+			{
+				return MakeShared<FJsonValueObject>(CloneJsonObjectPreservingFields(Object.ToSharedRef()));
+			}
+			return MakeShared<FJsonValueNull>();
+		}
+	default:
+		return MakeShared<FJsonValueNull>();
+	}
+}
+
+bool ExtractAssetBodyEvidenceDocument(
+	UObject* Asset,
+	const TSharedRef<FJsonObject>& SidecarDocument,
+	const FString& SourceDocumentPath,
+	const FAssetDocumentProfileResolution& ProfileResolution,
+	TSharedRef<FJsonObject>& OutEvidenceDocument,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!Asset)
+	{
+		OutError = TEXT("Asset is required");
+		return false;
+	}
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		OutError = FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *Asset->GetClass()->GetPathName());
+		return false;
+	}
+
+	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+	if (!BodyAdapter)
+	{
+		OutError = TEXT("Exact AssetDocument profile has no Body adapter");
+		return false;
+	}
+
+	FString Target;
+	SidecarDocument->TryGetStringField(TEXT("Target"), Target);
+	Target = NormalizeValidateTarget(Target);
+	if (Target.IsEmpty())
+	{
+		Target = Asset->GetPathName();
+	}
+
+	TSharedRef<FJsonObject> EvidenceBody = MakeShared<FJsonObject>();
+	FAssetDocumentCapabilityContext CapabilityContext;
+	CapabilityContext.Asset = Asset;
+	CapabilityContext.AssetClass = Asset->GetClass();
+	CapabilityContext.TargetAssetPath = Target;
+	CapabilityContext.SourceDocumentPath = SourceDocumentPath;
+
+	const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(CapabilityContext, EvidenceBody);
+	if (!ExtractResult.bSuccess)
+	{
+		OutError = ExtractResult.Message.IsEmpty() ? TEXT("Failed to extract asset evidence") : ExtractResult.Message;
+		return false;
+	}
+
+	OutEvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
+	return true;
+}
+
+bool TryWriteApplyFileSyncState(
+	const FString& SidecarFilePath,
+	UObject* AppliedAsset,
+	const FAssetDocumentResult& ApplyResult,
+	FString& OutSkipReason)
+{
+	OutSkipReason.Reset();
+	if (SidecarFilePath.IsEmpty() || !AppliedAsset)
+	{
+		OutSkipReason = TEXT("Missing sidecar path or applied asset");
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> SourceDocument;
+	FString Error;
+	if (!FAssetDocumentSidecar::LoadJsonFile(SidecarFilePath, SourceDocument, Error) || !SourceDocument.IsValid())
+	{
+		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to reload source sidecar") : Error;
+		return false;
+	}
+
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), AppliedAsset->GetClass());
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		OutSkipReason = FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *AppliedAsset->GetClass()->GetPathName());
+		return false;
+	}
+
+	const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
+	if (RegionPolicies.Num() == 0)
+	{
+		OutSkipReason = TEXT("Exact AssetDocument profile has no region policies");
+		return false;
+	}
+
+	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+	if (!BodyAdapter)
+	{
+		OutSkipReason = TEXT("Exact AssetDocument profile has no Body adapter");
+		return false;
+	}
+
+	FString Target;
+	SourceDocument->TryGetStringField(TEXT("Target"), Target);
+	Target = NormalizeValidateTarget(Target);
+	if (Target.IsEmpty())
+	{
+		Target = ApplyResult.Target;
+	}
+
+	TSharedRef<FJsonObject> EvidenceDocument = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> EvidenceBody = MakeShared<FJsonObject>();
+	FAssetDocumentCapabilityContext CapabilityContext;
+	CapabilityContext.Asset = AppliedAsset;
+	CapabilityContext.AssetClass = AppliedAsset->GetClass();
+	CapabilityContext.TargetAssetPath = Target;
+	CapabilityContext.SourceDocumentPath = SidecarFilePath;
+
+	const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(CapabilityContext, EvidenceBody);
+	if (!ExtractResult.bSuccess)
+	{
+		OutSkipReason = ExtractResult.Message.IsEmpty() ? TEXT("Failed to extract post-apply asset evidence") : ExtractResult.Message;
+		return false;
+	}
+	EvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
+
+	FAssetDocumentSyncState SyncState;
+	FString SyncError;
+	if (!FAssetDocumentSyncStateStore::LoadFromDocumentJson(SourceDocument.ToSharedRef(), SyncState, SyncError))
+	{
+		OutSkipReason = SyncError.IsEmpty() ? TEXT("Malformed existing sync state") : SyncError;
+		return false;
+	}
+	SyncState.AssetObjectPath = AppliedAsset->GetPathName();
+	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+	bool bUpdatedAnyRegion = false;
+	for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+	{
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			SourceDocument.ToSharedRef(),
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored,
+			AppliedAsset->GetClass());
+		if (SidecarHash.IsEmpty())
+		{
+			continue;
+		}
+
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			EvidenceDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence,
+			AppliedAsset->GetClass());
+		if (AssetEvidenceHash.IsEmpty())
+		{
+			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash is empty for region '%s'"), *Policy.RegionId.ToString());
+			return false;
+		}
+		if (SidecarHash != AssetEvidenceHash)
+		{
+			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash differs for region '%s'"), *Policy.RegionId.ToString());
+			return false;
+		}
+
+		FAssetDocumentRegionSyncState RegionState;
+		RegionState.SidecarHash = SidecarHash;
+		RegionState.AssetEvidenceHash = AssetEvidenceHash;
+		RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+		FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+		bUpdatedAnyRegion = true;
+	}
+
+	if (!bUpdatedAnyRegion)
+	{
+		OutSkipReason = TEXT("No writable sync regions were found");
+		return false;
+	}
+
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(SourceDocument.ToSharedRef(), SyncState);
+	FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarFilePath);
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarFilePath, SourceDocument, Error);
+	if (!bWrote)
+	{
+		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to write sidecar sync state") : Error;
+	}
+	return bWrote;
+}
+
+TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileResolution& Resolution)
+{
+	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetStringField(TEXT("Class"), Resolution.Class ? Resolution.Class->GetPathName() : FString());
+	Payload->SetObjectField(TEXT("DocumentShape"), MakeGenericDocumentShape());
+	Payload->SetArrayField(TEXT("BodySections"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+	Payload->SetArrayField(TEXT("InternalAdapters"), TArray<TSharedPtr<FJsonValue>>());
+	Payload->SetArrayField(TEXT("RegionPolicies"), TArray<TSharedPtr<FJsonValue>>());
+	return Payload;
+}
+
+TSharedRef<FJsonObject> MakeExactProfilePayload(const FAssetDocumentProfileResolution& Resolution)
+{
+	TSharedRef<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetStringField(TEXT("Class"), Resolution.Class ? Resolution.Class->GetPathName() : FString());
+	Payload->SetObjectField(TEXT("DocumentShape"), Resolution.ExactProfile->GetDocumentShape());
+
+	TArray<TSharedPtr<FJsonValue>> BodySections;
+	for (const FName& BodyKey : Resolution.ExactProfile->GetBodyKeys())
+	{
+		BodySections.Add(MakeShared<FJsonValueString>(BodyKey.ToString()));
+	}
+	Payload->SetArrayField(TEXT("BodySections"), BodySections);
+	Payload->SetArrayField(TEXT("FragmentKinds"), MakeFragmentKindArray());
+
+	TArray<TSharedPtr<FJsonValue>> InternalAdapters;
+	TSet<FName> SeenAdapterNames;
+	auto AddInternalAdapterNames = [&InternalAdapters, &SeenAdapterNames](const IAssetDocumentCapability* BodyAdapter)
+	{
+		if (!BodyAdapter)
+		{
+			return;
+		}
+
+		for (const FName& AdapterName : BodyAdapter->GetInternalAdapterNames())
+		{
+			if (!SeenAdapterNames.Contains(AdapterName))
+			{
+				SeenAdapterNames.Add(AdapterName);
+				InternalAdapters.Add(MakeShared<FJsonValueString>(AdapterName.ToString()));
+			}
+		}
+	};
+
+	if (const IAssetDocumentCapability* BodyAdapter = Resolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+	{
+		AddInternalAdapterNames(BodyAdapter);
+	}
+	for (const FName& BodyKey : Resolution.ExactProfile->GetBodyKeys())
+	{
+		AddInternalAdapterNames(Resolution.ExactProfile->ResolveBodyAdapter(BodyKey));
+	}
+	Payload->SetArrayField(TEXT("InternalAdapters"), InternalAdapters);
+	Payload->SetArrayField(TEXT("RegionPolicies"), MakeRegionPolicyArray(Resolution.ExactProfile->GetRegionPolicies()));
+	return Payload;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeRegisteredProfileArray(const FAssetDocumentProfileRegistry& Registry)
+{
+	TArray<TSharedPtr<FJsonValue>> RegisteredProfiles;
+	for (const TSharedRef<IAssetDocumentProfile>& Profile : Registry.GetAllProfiles())
+	{
+		UClass* ExactClass = Profile->GetExactClass();
+		if (!ExactClass)
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("Class"), ExactClass->GetPathName());
+
+		TArray<TSharedPtr<FJsonValue>> BodySections;
+		for (const FName& BodyKey : Profile->GetBodyKeys())
+		{
+			BodySections.Add(MakeShared<FJsonValueString>(BodyKey.ToString()));
+		}
+		Entry->SetArrayField(TEXT("BodySections"), BodySections);
+		Entry->SetArrayField(TEXT("RegionPolicies"), MakeRegionPolicyArray(Profile->GetRegionPolicies()));
+		RegisteredProfiles.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+	return RegisteredProfiles;
+}
+
 FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
 {
 	TSharedPtr<FJsonObject> Wrapper = MakeShared<FJsonObject>();
@@ -127,6 +602,8 @@ void AddNamedValueEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& 
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
+	Entry->SetStringField(TEXT("status"), TEXT("unchanged"));
 	Entry->SetField(TEXT("value"), Value.IsValid() ? Value : MakeShared<FJsonValueNull>());
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
@@ -135,6 +612,8 @@ void AddChangedEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Nam
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
+	Entry->SetStringField(TEXT("status"), TEXT("changed"));
 	Entry->SetField(TEXT("before"), Before.IsValid() ? Before : MakeShared<FJsonValueNull>());
 	Entry->SetField(TEXT("after"), After.IsValid() ? After : MakeShared<FJsonValueNull>());
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
@@ -144,9 +623,70 @@ void AddReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Name
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("name"), Name);
+	Entry->SetStringField(TEXT("path"), FString::Printf(TEXT("/Properties/%s"), *Name));
 	Entry->SetStringField(TEXT("code"), Code);
 	Entry->SetStringField(TEXT("message"), Message);
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void AddPathReasonEntry(TArray<TSharedPtr<FJsonValue>>& Entries, const FString& Path, const FString& Status, const FString& Code, const FString& Message)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), Path);
+	Entry->SetStringField(TEXT("status"), Status);
+	Entry->SetStringField(TEXT("code"), Code);
+	Entry->SetStringField(TEXT("message"), Message);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+}
+
+void RouteCapabilityDiffEntries(
+	const TArray<TSharedPtr<FJsonValue>>& Entries,
+	TArray<TSharedPtr<FJsonValue>>& Changed,
+	TArray<TSharedPtr<FJsonValue>>& Unchanged,
+	TArray<TSharedPtr<FJsonValue>>& Skipped,
+	TArray<TSharedPtr<FJsonValue>>& Failed)
+{
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		if (!EntryObject.IsValid())
+		{
+			Failed.Add(EntryValue.IsValid() ? EntryValue : MakeShared<FJsonValueNull>());
+			continue;
+		}
+
+		FString Status;
+		EntryObject->TryGetStringField(TEXT("status"), Status);
+		if (Status == TEXT("changed"))
+		{
+			Changed.Add(EntryValue);
+		}
+		else if (Status == TEXT("unchanged"))
+		{
+			Unchanged.Add(EntryValue);
+		}
+		else if (Status == TEXT("skipped"))
+		{
+			Skipped.Add(EntryValue);
+		}
+		else
+		{
+			Failed.Add(EntryValue);
+		}
+	}
+}
+
+FAssetDocumentResult MakeCapabilityValidationFailure(const FAssetDocumentCapabilityResult& CapabilityResult, const FString& Target, const FString& NormalizedFilePath)
+{
+	FAssetDocumentResult Result = FAssetDocumentResult::Failure(CapabilityResult.Message);
+	Result.Target = Target;
+	Result.SidecarFilePath = NormalizedFilePath;
+	Result.Diagnostics = CapabilityResult.Diagnostics;
+	if (CapabilityResult.Payload.IsValid())
+	{
+		Result.Payload = CapabilityResult.Payload;
+	}
+	return Result;
 }
 
 FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Document, const FString& NormalizedFilePath, bool bPreflightProperties)
@@ -173,8 +713,16 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		return MakeFailure(TEXT("SchemaVersion must be 1"));
 	}
 
+	const bool bHasStructuredShape = Document->HasField(TEXT("Body")) || Document->HasField(TEXT("Definitions"));
 	FString AssetType;
-	if (!Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	if (Document->TryGetStringField(TEXT("AssetType"), AssetType))
+	{
+		if (AssetType != TEXT("GenericAsset"))
+		{
+			return MakeFailure(TEXT("AssetType must be GenericAsset"));
+		}
+	}
+	else if (!bHasStructuredShape)
 	{
 		return MakeFailure(TEXT("AssetType must be GenericAsset"));
 	}
@@ -220,6 +768,15 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		return MakeFailure(Error);
 	}
 
+	const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
+	if (Document->HasField(TEXT("Definitions")))
+	{
+		if (!Document->TryGetObjectField(TEXT("Definitions"), DefinitionsPtr) || !DefinitionsPtr)
+		{
+			return MakeFailure(TEXT("Definitions must be a JSON object"));
+		}
+	}
+
 	TSharedPtr<FJsonObject> Properties;
 	if (Document->HasField(TEXT("Properties")))
 	{
@@ -229,6 +786,52 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 			return MakeFailure(TEXT("Properties must be a JSON object"));
 		}
 		Properties = *PropertiesPtr;
+	}
+
+	if (Document->HasField(TEXT("Body")))
+	{
+		TSharedPtr<FJsonValue> BodyValue = Document->TryGetField(TEXT("Body"));
+		if (!BodyValue.IsValid())
+		{
+			return MakeFailure(TEXT("Body is required when present"));
+		}
+
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+		if (!ProfileResolution.ExactProfile.IsValid())
+		{
+			FAssetDocumentResult Result = MakeFailure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingProfile");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
+		if (!BodyAdapter)
+		{
+			FAssetDocumentResult Result = MakeFailure(FString::Printf(TEXT("Profile for class '%s' does not provide Body validation"), *ResolvedClass->GetPathName()));
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingBodyAdapter");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		FAssetDocumentCapabilityContext CapabilityContext;
+		CapabilityContext.AssetClass = ResolvedClass;
+		CapabilityContext.TargetAssetPath = Target;
+		CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+		CapabilityContext.Definitions = DefinitionsPtr;
+		CapabilityContext.bIsDryRun = true;
+
+		const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Validate(CapabilityContext, BodyValue.ToSharedRef());
+		if (!CapabilityResult.bSuccess)
+		{
+			return MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedFilePath);
+		}
 	}
 
 	if (bPreflightProperties)
@@ -250,6 +853,144 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
 	return Result;
 }
+}
+
+FAssetDocumentResult RegenerateSidecarRegionsFromAsset(
+	UObject* Asset,
+	const TSharedRef<FJsonObject>& SidecarDocument,
+	const TArray<FName>& RegionIds,
+	const FString& SourceDocumentPath)
+{
+	if (!Asset)
+	{
+		return FAssetDocumentResult::Failure(TEXT("RegenerateSidecarRegionsFromAsset requires an asset"));
+	}
+
+	if (RegionIds.Num() == 0)
+	{
+		return FAssetDocumentResult::Failure(TEXT("RegenerateSidecarRegionsFromAsset requires at least one region id"));
+	}
+
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
+	if (!ProfileResolution.ExactProfile.IsValid())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+			FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *Asset->GetClass()->GetPathName()));
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	TArray<FAssetDocumentRegionPolicy> RequestedPolicies;
+	RequestedPolicies.Reserve(RegionIds.Num());
+	for (const FName& RegionId : RegionIds)
+	{
+		FAssetDocumentRegionPolicy Policy;
+		if (!ProfileResolution.ExactProfile->GetRegionPolicy(RegionId, Policy))
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Requested region '%s' is not declared by profile '%s'"), *RegionId.ToString(), *Asset->GetClass()->GetPathName()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		RequestedPolicies.Add(MoveTemp(Policy));
+	}
+
+	TSharedRef<FJsonObject> EvidenceDocument = MakeShared<FJsonObject>();
+	FString Error;
+	if (!ExtractAssetBodyEvidenceDocument(Asset, SidecarDocument, SourceDocumentPath, ProfileResolution, EvidenceDocument, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	FAssetDocumentSyncState SyncState;
+	if (!FAssetDocumentSyncStateStore::LoadFromDocumentJson(SidecarDocument, SyncState, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error.IsEmpty() ? TEXT("Malformed existing sync state") : Error);
+		Result.AssetPath = Asset->GetPathName();
+		return Result;
+	}
+
+	TSharedRef<FJsonObject> StagedDocument = CloneJsonObjectPreservingFields(SidecarDocument);
+	SyncState.AssetObjectPath = Asset->GetPathName();
+	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+	TArray<TSharedPtr<FJsonValue>> RegeneratedRegionIds;
+	for (const FAssetDocumentRegionPolicy& Policy : RequestedPolicies)
+	{
+		const FAssetDocumentSidecarRegionValue EvidenceRegion = FAssetDocumentSidecarDelta::FindRegionValue(EvidenceDocument, Policy);
+		if (EvidenceRegion.State == EAssetDocumentSidecarRegionState::Unset)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Asset evidence for requested region '%s' is missing"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const FString AssetEvidenceHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			EvidenceDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence,
+			Asset->GetClass());
+		if (AssetEvidenceHash.IsEmpty())
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Asset evidence hash is empty for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const TSharedPtr<FJsonValue> RegionValue = FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(EvidenceRegion.Value, &Policy);
+		if (!FAssetDocumentSidecarDelta::SetRegionValue(StagedDocument, Policy, RegionValue, Error))
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error.IsEmpty()
+				? FString::Printf(TEXT("Failed to set requested region '%s'"), *Policy.RegionId.ToString())
+				: Error);
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		const FString SidecarHash = FAssetDocumentSidecarDelta::HashSidecarRegion(
+			StagedDocument,
+			Policy,
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored,
+			Asset->GetClass());
+		if (SidecarHash.IsEmpty())
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Regenerated sidecar hash is empty for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+		if (SidecarHash != AssetEvidenceHash)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+				FString::Printf(TEXT("Regenerated sidecar hash differs from asset evidence hash for requested region '%s'"), *Policy.RegionId.ToString()));
+			Result.AssetPath = Asset->GetPathName();
+			return Result;
+		}
+
+		FAssetDocumentRegionSyncState RegionState;
+		RegionState.SidecarHash = SidecarHash;
+		RegionState.AssetEvidenceHash = AssetEvidenceHash;
+		RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+		FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+		RegeneratedRegionIds.Add(MakeShared<FJsonValueString>(Policy.RegionId.ToString()));
+	}
+
+	FAssetDocumentSyncStateStore::WriteToDocumentJson(StagedDocument, SyncState);
+	SidecarDocument->Values = StagedDocument->Values;
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument sidecar regions regenerated from asset"));
+	Result.Target = NormalizeValidateTarget(Asset->GetPathName());
+	Result.AssetPath = Asset->GetPathName();
+	Result.SidecarFilePath = SourceDocumentPath;
+	Result.Payload = MakeShared<FJsonObject>();
+	Result.Payload->SetArrayField(TEXT("regenerated_regions"), MoveTemp(RegeneratedRegionIds));
+	return Result;
 }
 
 FAssetDocumentResult FAssetDocumentResult::Success(const FString& InMessage)
@@ -298,6 +1039,12 @@ TSharedPtr<FJsonObject> FAssetDocumentResult::ToJson() const
 	return Json;
 }
 
+FAssetDocumentProfileRegistry& FAssetDocumentService::GetProfileRegistry()
+{
+	static FAssetDocumentProfileRegistry Registry;
+	return Registry;
+}
+
 FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyRequest& Request)
 {
 	if (!Request.Document.IsValid())
@@ -305,14 +1052,24 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return FAssetDocumentResult::Failure(TEXT("Apply requires a JSON document"));
 	}
 
+	const FString NormalizedSourceDocumentPath = NormalizeValidateFilePath(Request.SourceDocumentPath);
+
 	double SchemaVersion = 0.0;
 	if (!Request.Document->TryGetNumberField(TEXT("SchemaVersion"), SchemaVersion) || SchemaVersion != 1.0)
 	{
 		return FAssetDocumentResult::Failure(TEXT("SchemaVersion must be 1"));
 	}
 
+	const bool bHasStructuredShape = Request.Document->HasField(TEXT("Body")) || Request.Document->HasField(TEXT("Definitions"));
 	FString AssetType;
-	if (!Request.Document->TryGetStringField(TEXT("AssetType"), AssetType) || AssetType != TEXT("GenericAsset"))
+	if (Request.Document->TryGetStringField(TEXT("AssetType"), AssetType))
+	{
+		if (AssetType != TEXT("GenericAsset"))
+		{
+			return FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
+		}
+	}
+	else if (!bHasStructuredShape)
 	{
 		return FAssetDocumentResult::Failure(TEXT("AssetType must be GenericAsset"));
 	}
@@ -364,6 +1121,18 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return Result;
 	}
 
+	const TSharedPtr<FJsonObject>* DefinitionsPtr = nullptr;
+	if (Request.Document->HasField(TEXT("Definitions")))
+	{
+		if (!Request.Document->TryGetObjectField(TEXT("Definitions"), DefinitionsPtr) || !DefinitionsPtr)
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Definitions must be a JSON object"));
+			Result.Target = Target;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			return Result;
+		}
+	}
+
 	TSharedPtr<FJsonObject> Properties;
 	const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
 	if (Request.Document->TryGetObjectField(TEXT("Properties"), PropertiesPtr) && PropertiesPtr)
@@ -376,17 +1145,126 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PreflightResult.Message);
 		Result.Target = Target;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		Result.Diagnostics = PreflightResult.Diagnostics;
 		return Result;
 	}
 
-	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action);
+	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action, Request.Document);
+	if (!LifecycleResult.Error.IsEmpty())
+	{
+		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		return Result;
+	}
+
 	if (!LifecycleResult.Asset)
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		return Result;
+	}
+
+	TSharedPtr<FJsonValue> BodyValue;
+	TArray<const IAssetDocumentCapability*> BodyAdapters;
+	if (Request.Document->HasField(TEXT("Body")))
+	{
+		BodyValue = Request.Document->TryGetField(TEXT("Body"));
+		if (!BodyValue.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body is required when present"));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			return Result;
+		}
+
+		const TSharedPtr<FJsonObject> BodyObject = BodyValue->AsObject();
+		if (!BodyObject.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Body must be a JSON object"));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("InvalidBodyType");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+		if (!ProfileResolution.ExactProfile.IsValid())
+		{
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Body");
+			Diagnostic.Code = TEXT("MissingProfile");
+			Diagnostic.Message = Result.Message;
+			Result.Diagnostics.Add(MoveTemp(Diagnostic));
+			return Result;
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
+		{
+			const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(FName(*Pair.Key));
+			if (!BodyAdapter)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Profile for class '%s' does not provide Body adapter for '%s'"), *ResolvedClass->GetPathName(), *Pair.Key));
+				Result.Target = Target;
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				Result.SidecarFilePath = NormalizedSourceDocumentPath;
+				FAssetDocumentDiagnostic Diagnostic;
+				Diagnostic.Path = FString::Printf(TEXT("/Body/%s"), *Pair.Key);
+				Diagnostic.Code = TEXT("MissingBodyAdapter");
+				Diagnostic.Message = Result.Message;
+				Result.Diagnostics.Add(MoveTemp(Diagnostic));
+				return Result;
+			}
+
+			BodyAdapters.AddUnique(BodyAdapter);
+		}
+
+		if (BodyAdapters.Num() == 0)
+		{
+			if (const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+			{
+				BodyAdapters.Add(BodyAdapter);
+			}
+		}
+
+		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
+		{
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = LifecycleResult.Asset;
+			CapabilityContext.AssetClass = ResolvedClass;
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedSourceDocumentPath;
+			CapabilityContext.Definitions = DefinitionsPtr;
+			CapabilityContext.bIsDryRun = true;
+
+			const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Preflight(CapabilityContext, BodyValue.ToSharedRef());
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedSourceDocumentPath);
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				return Result;
+			}
+		}
 	}
 
 	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
@@ -396,14 +1274,43 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		Result.Diagnostics = PropertyResult.Diagnostics;
 		return Result;
+	}
+
+	TArray<FAssetDocumentDiagnostic> Diagnostics = PropertyResult.Diagnostics;
+	if (Request.Document->HasField(TEXT("Body")))
+	{
+		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
+		{
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = LifecycleResult.Asset;
+			CapabilityContext.AssetClass = ResolvedClass;
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedSourceDocumentPath;
+			CapabilityContext.Definitions = DefinitionsPtr;
+			CapabilityContext.bIsDryRun = false;
+
+			FAssetDocumentCapabilityResult CapabilityResult = const_cast<IAssetDocumentCapability*>(BodyAdapter)->Apply(CapabilityContext, BodyValue.ToSharedRef());
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedSourceDocumentPath);
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				Result.Diagnostics.Insert(Diagnostics, 0);
+				return Result;
+			}
+
+			Diagnostics.Append(CapabilityResult.Diagnostics);
+		}
 	}
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
 	Result.Target = Target;
 	Result.AssetPath = LifecycleResult.ObjectPath;
-	Result.Diagnostics = PropertyResult.Diagnostics;
+	Result.SidecarFilePath = NormalizedSourceDocumentPath;
+	Result.Diagnostics = Diagnostics;
 	Result.bWroteSidecar = false;
 
 	if (Request.bSaveAsset)
@@ -420,7 +1327,8 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
-			Result.Diagnostics = PropertyResult.Diagnostics;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			Result.Diagnostics = Diagnostics;
 			Result.bSavedAsset = false;
 			Result.bWroteSidecar = false;
 			return Result;
@@ -463,11 +1371,26 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 	FAssetDocumentApplyRequest ApplyRequest;
 	ApplyRequest.Document = Document;
+	ApplyRequest.SourceDocumentPath = NormalizedFilePath;
 	ApplyRequest.bSaveAsset = Request.bSaveAsset;
 	ApplyRequest.bWriteSidecar = false;
 
 	FAssetDocumentResult Result = Apply(ApplyRequest);
 	Result.SidecarFilePath = NormalizedFilePath;
+	FString SidecarSyncUpdateSkipReason;
+	if (Result.IsSuccess() && Request.bAllowSidecarRewrite)
+	{
+		UObject* AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.AssetPath);
+		if (!AppliedAsset)
+		{
+			AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.Target);
+		}
+		Result.bWroteSidecar = TryWriteApplyFileSyncState(NormalizedFilePath, AppliedAsset, Result, SidecarSyncUpdateSkipReason);
+	}
+	else
+	{
+		Result.bWroteSidecar = false;
+	}
 
 	if (!Result.Payload.IsValid())
 	{
@@ -475,60 +1398,137 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 	}
 	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
 	Result.Payload->SetBoolField(TEXT("triggered_by_watcher"), Request.bTriggeredByWatcher);
+	if (Result.IsSuccess() && Request.bAllowSidecarRewrite && !Result.bWroteSidecar && !SidecarSyncUpdateSkipReason.IsEmpty())
+	{
+		Result.Payload->SetBoolField(TEXT("sidecar_sync_update_skipped"), true);
+		Result.Payload->SetStringField(TEXT("sidecar_sync_update_skip_reason"), SidecarSyncUpdateSkipReason);
+	}
 
 	return Result;
 }
 
 FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectRequest& Request) const
 {
-	if (Request.ClassOrAsset.IsEmpty())
+	FAssetDocumentResolvedTarget ResolvedTarget;
+	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("Inspect"), ResolvedTarget);
+	if (!ResolveResult.IsSuccess())
 	{
-		return FAssetDocumentResult::Failure(TEXT("Inspect requires a class name or asset path"));
+		return ResolveResult;
 	}
 
-	UObject* Asset = nullptr;
-	UClass* Class = nullptr;
-	FString Target = Request.ClassOrAsset;
-	FString Error;
-
-	if (Request.ClassOrAsset.StartsWith(TEXT("/Game/")))
-	{
-		Asset = LoadAssetFromPackageOrObjectPath(Request.ClassOrAsset);
-		if (!Asset)
-		{
-			FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Request.ClassOrAsset));
-			Result.Target = Request.ClassOrAsset;
-			Result.AssetPath = ToObjectPath(Request.ClassOrAsset);
-			return Result;
-		}
-		Class = Asset->GetClass();
-		Target = NormalizeValidateTarget(Request.ClassOrAsset);
-	}
-	else if (!FAssetDocumentClassResolver::ResolveClass(Request.ClassOrAsset, Class, Error))
-	{
-		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
-		Result.Target = Request.ClassOrAsset;
-		return Result;
-	}
-
-	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(Class, Asset);
+	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(ResolvedTarget.Class, ResolvedTarget.Asset);
 	if (!Payload.IsValid())
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Failed to inspect reflected properties"));
-		Result.Target = Target;
-		if (Asset)
-		{
-			Result.AssetPath = Asset->GetPathName();
-		}
+		Result.Target = ResolvedTarget.Target;
+		Result.AssetPath = ResolvedTarget.AssetPath;
 		return Result;
 	}
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument inspected"));
-	Result.Target = Target;
-	if (Asset)
+	Result.Target = ResolvedTarget.Target;
+	Result.AssetPath = ResolvedTarget.AssetPath;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::InspectProfile(const FAssetDocumentProfileRequest& Request) const
+{
+	FAssetDocumentResolvedTarget ResolvedTarget;
+	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("InspectProfile"), ResolvedTarget);
+	if (!ResolveResult.IsSuccess())
 	{
-		Result.AssetPath = Asset->GetPathName();
+		return ResolveResult;
 	}
+
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), ResolvedTarget.Class);
+	TSharedPtr<FJsonObject> Payload = ProfileResolution.ExactProfile.IsValid()
+		? MakeExactProfilePayload(ProfileResolution)
+		: MakeGenericProfilePayload(ProfileResolution);
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument profile inspected"));
+	Result.Target = ResolvedTarget.Target;
+	Result.AssetPath = ResolvedTarget.AssetPath;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::CreateTemplate(const FAssetDocumentTemplateRequest& Request) const
+{
+	const FString NormalizedTarget = NormalizeValidateTarget(Request.Target);
+	if (NormalizedTarget.IsEmpty())
+	{
+		return FAssetDocumentResult::Failure(TEXT("CreateTemplate requires a target"));
+	}
+
+	FString Error;
+	if (!ValidateApplyTarget(NormalizedTarget, Error))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
+		Result.Target = NormalizedTarget;
+		return Result;
+	}
+
+	UClass* ResolvedClass = nullptr;
+	FAssetDocumentResult ResolveResult = ResolveClassTarget(Request.Class, ResolvedClass);
+	if (!ResolveResult.IsSuccess())
+	{
+		return ResolveResult;
+	}
+
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), ResolvedClass);
+	if (ProfileResolution.ExactProfile.IsValid())
+	{
+		FAssetDocumentTemplateContext Context;
+		Context.Target = NormalizedTarget;
+		Context.ClassPath = ResolvedClass->GetPathName();
+
+		FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument template created"));
+		Result.Target = NormalizedTarget;
+		Result.Payload = ProfileResolution.ExactProfile->CreateTemplate(Context);
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetNumberField(TEXT("SchemaVersion"), 1);
+	Payload->SetStringField(TEXT("Target"), NormalizedTarget);
+	Payload->SetStringField(TEXT("Class"), ResolvedClass->GetPathName());
+	Payload->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Payload->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Payload->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument template created"));
+	Result.Target = NormalizedTarget;
+	Result.Payload = Payload;
+	return Result;
+}
+
+FAssetDocumentResult FAssetDocumentService::GetSchema() const
+{
+	TSharedPtr<FJsonObject> FieldNaming = MakeShared<FJsonObject>();
+	FieldNaming->SetBoolField(TEXT("ban_abbreviations"), true);
+	FieldNaming->SetBoolField(TEXT("use_ue_stable_field_names"), true);
+
+	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
+	Payload->SetNumberField(TEXT("schema_version"), 1);
+	Payload->SetStringField(TEXT("asset_type"), TEXT("GenericAsset"));
+	Payload->SetArrayField(TEXT("asset_document_tools"), MakeStringArray({
+		TEXT("get_asset_document_schema"),
+		TEXT("inspect_asset_document_target"),
+		TEXT("inspect_asset_document_profile"),
+		TEXT("create_asset_document_template"),
+		TEXT("extract_asset_document"),
+		TEXT("validate_asset_document"),
+		TEXT("diff_asset_document"),
+		TEXT("apply_asset_document"),
+		TEXT("apply_asset_document_file"),
+	}));
+	Payload->SetArrayField(TEXT("fragment_kinds"), MakeFragmentKindArray());
+	Payload->SetObjectField(TEXT("field_naming"), FieldNaming);
+	Payload->SetArrayField(TEXT("RegionPolicyPresets"), MakeRegionPolicyPresetArray());
+	Payload->SetArrayField(TEXT("registered_profiles"), MakeRegisteredProfileArray(GetProfileRegistry()));
+
+	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument schema described"));
 	Result.Payload = Payload;
 	return Result;
 }
@@ -564,6 +1564,59 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 	Document->SetStringField(TEXT("Class"), Asset->GetClass()->GetPathName());
 	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 	Document->SetObjectField(TEXT("Properties"), Properties);
+
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
+	if (ProfileResolution.ExactProfile.IsValid())
+	{
+		if (const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
+		{
+			TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = Asset;
+			CapabilityContext.AssetClass = Asset->GetClass();
+			CapabilityContext.TargetAssetPath = Target;
+
+			const FAssetDocumentCapabilityResult CapabilityResult = BodyAdapter->Extract(CapabilityContext, Body);
+			if (!CapabilityResult.bSuccess)
+			{
+				FAssetDocumentResult Result = FAssetDocumentResult::Failure(CapabilityResult.Message);
+				Result.Target = Target;
+				Result.AssetPath = Asset->GetPathName();
+				Result.Diagnostics = CapabilityResult.Diagnostics;
+				return Result;
+			}
+
+			Document->SetObjectField(TEXT("Body"), Body);
+		}
+
+		const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
+		if (RegionPolicies.Num() > 0)
+		{
+			FAssetDocumentSyncState SyncState;
+			SyncState.AssetObjectPath = Asset->GetPathName();
+			SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
+
+			for (const FAssetDocumentRegionPolicy& Policy : RegionPolicies)
+			{
+				const FString RegionHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document.ToSharedRef(), Policy);
+				if (RegionHash.IsEmpty())
+				{
+					continue;
+				}
+
+				FAssetDocumentRegionSyncState RegionState;
+				RegionState.SidecarHash = RegionHash;
+				RegionState.AssetEvidenceHash = RegionHash;
+				RegionState.LastSyncedAtUtc = SyncState.UpdatedAtUtc;
+				FAssetDocumentSyncStateStore::UpdateRegionState(SyncState, Policy.RegionId, RegionState);
+			}
+
+			if (SyncState.Regions.Num() > 0)
+			{
+				FAssetDocumentSyncStateStore::WriteToDocumentJson(Document.ToSharedRef(), SyncState);
+			}
+		}
+	}
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument extracted"));
 	Result.Target = Target;
@@ -617,6 +1670,8 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 			return Result;
 		}
 	}
+
+	Document = MakeDiffDocument(Document);
 
 	const FAssetDocumentResult ValidateResult = ValidateGenericAssetDocument(Document, NormalizedFilePath, false);
 	if (!ValidateResult.IsSuccess())
@@ -713,6 +1768,43 @@ FAssetDocumentResult FAssetDocumentService::Diff(const FAssetDocumentDiffRequest
 		else
 		{
 			AddChangedEntry(Changed, Pair.Key, BeforeValue, AfterValue);
+		}
+	}
+
+	const TSharedPtr<FJsonValue>* BodyValue = Document->Values.Find(TEXT("Body"));
+	if (BodyValue && BodyValue->IsValid())
+	{
+		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), Asset->GetClass());
+		const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile.IsValid()
+			? ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"))
+			: nullptr;
+		if (!BodyAdapter)
+		{
+			AddPathReasonEntry(Skipped, TEXT("/Body"), TEXT("skipped"), TEXT("MissingBodyAdapter"), TEXT("No AssetDocument Body adapter is registered for this asset class"));
+		}
+		else
+		{
+			const TSharedPtr<FJsonObject>* Definitions = nullptr;
+			Document->TryGetObjectField(TEXT("Definitions"), Definitions);
+
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = Asset;
+			CapabilityContext.AssetClass = Asset->GetClass();
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+			CapabilityContext.Definitions = Definitions;
+			CapabilityContext.bIsDryRun = true;
+
+			TArray<TSharedPtr<FJsonValue>> BodyDiffEntries;
+			const FAssetDocumentCapabilityResult BodyDiffResult = BodyAdapter->Diff(CapabilityContext, BodyValue->ToSharedRef(), BodyDiffEntries);
+			if (!BodyDiffResult.bSuccess)
+			{
+				AddPathReasonEntry(Failed, TEXT("/Body"), TEXT("failed"), BodyDiffResult.Diagnostics.Num() > 0 ? BodyDiffResult.Diagnostics[0].Code : TEXT("BodyDiffFailed"), BodyDiffResult.Message);
+			}
+			else
+			{
+				RouteCapabilityDiffEntries(BodyDiffEntries, Changed, Unchanged, Skipped, Failed);
+			}
 		}
 	}
 

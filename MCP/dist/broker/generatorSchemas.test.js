@@ -129,6 +129,8 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
             "apply_asset_document_file",
             "get_asset_document_schema",
             "inspect_asset_document_target",
+            "inspect_asset_document_profile",
+            "create_asset_document_template",
             "extract_asset_document",
             "validate_asset_document",
             "diff_asset_document",
@@ -150,13 +152,29 @@ test("AssetDocument tools are listed and schema documentation is readable", asyn
             /untyped/i,
             /no subtype/i,
             /inspect_asset_document_target/,
+            /RegionPolicies/,
+            /RegionPolicyPresets/,
+            /\/Script\/Engine\.AnimSequence/,
+            /post-import only/i,
+            /RawTracks/,
+            /CompressedData/,
+            /_Skipped/,
             /extract_asset_document/,
             /validate_asset_document/,
             /diff_asset_document/,
             /file watcher/i,
+            /\/Script\/UMGEditor\.WidgetBlueprint/,
+            /Body\.WidgetTree/,
+            /Body\.Bindings/,
+            /Body\.Animations/,
+            /FunctionGraphs/,
+            /WidgetVariableGuids/,
+            /UnsupportedWidgetAnimationTrack/,
         ]) {
             assert.match(text, pattern, `AssetDocument schema should include ${pattern}`);
         }
+        assert.doesNotMatch(text, /"AssetType"\s*:\s*"WidgetBlueprint"/, "AssetDocument schema should not present generator-only WidgetBlueprint AssetType input");
+        assert.doesNotMatch(text, /empty until WidgetBlueprint interface adapter lands/i, "WidgetBlueprint ImplementedInterfaces must not be documented as an unimplemented placeholder");
     });
 });
 test("AssetDocument validate and diff require exactly one document source", async () => {

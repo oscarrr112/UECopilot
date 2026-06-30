@@ -1,0 +1,167 @@
+// Copyright ProjectRPG. All Rights Reserved.
+
+#include "AssetDocumentFragment.h"
+
+#include "Utils/PropertySetterUtils.h"
+
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
+
+namespace
+{
+UScriptStruct* ResolveScriptStruct(const FString& StructName)
+{
+	FString NormalizedStructName = StructName;
+	NormalizedStructName.TrimStartAndEndInline();
+	if (NormalizedStructName.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	if (UScriptStruct* Struct = LoadObject<UScriptStruct>(nullptr, *NormalizedStructName))
+	{
+		return Struct;
+	}
+
+	return FindObject<UScriptStruct>(nullptr, *NormalizedStructName);
+}
+
+bool CanStoreStructBytesWithoutDestructor(const UScriptStruct* Struct)
+{
+	return Struct && (Struct->StructFlags & STRUCT_NoDestructor) != 0;
+}
+
+TSharedPtr<FJsonObject> ExtractStructPropertiesToJson(UScriptStruct* Struct, const void* ValuePtr)
+{
+	if (!Struct || !ValuePtr)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Property = *It;
+		const void* FieldPtr = Property->ContainerPtrToValuePtr<void>(ValuePtr);
+		if (TSharedPtr<FJsonValue> JsonValue = FPropertySetterUtils::ExtractPropertyToJson(Property, FieldPtr))
+		{
+			Properties->SetField(Property->GetName(), JsonValue);
+		}
+	}
+	return Properties;
+}
+
+class FAssetDocumentStructValueFragmentAdapter final : public IAssetDocumentFragmentAdapter
+{
+public:
+	virtual FName GetKind() const override
+	{
+		return TEXT("StructValue");
+	}
+
+	virtual bool SupportsContext(const FAssetDocumentFragmentContext& Context) const override
+	{
+		return true;
+	}
+
+	virtual FAssetDocumentFragmentResult Validate(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const override
+	{
+		FString StructName;
+		if (!FragmentJson->TryGetStringField(TEXT("Struct"), StructName) || StructName.TrimStartAndEnd().IsEmpty())
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue field 'Struct' is required."), Context.JsonPath, TEXT("missing-structvalue-struct"));
+		}
+
+		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+		if (!FragmentJson->TryGetObjectField(TEXT("Properties"), PropertiesPtr) || !PropertiesPtr || !PropertiesPtr->IsValid())
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue field 'Properties' is required."), Context.JsonPath, TEXT("missing-structvalue-properties"));
+		}
+
+		return FAssetDocumentFragmentResult::Success();
+	}
+
+	virtual FAssetDocumentFragmentResult Compile(const TSharedRef<FJsonObject>& FragmentJson, const FAssetDocumentFragmentContext& Context) const override
+	{
+		FString StructName;
+		if (!FragmentJson->TryGetStringField(TEXT("Struct"), StructName) || StructName.TrimStartAndEnd().IsEmpty())
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue field 'Struct' is required."), Context.JsonPath, TEXT("missing-structvalue-struct"));
+		}
+
+		const TSharedPtr<FJsonObject>* PropertiesPtr = nullptr;
+		if (!FragmentJson->TryGetObjectField(TEXT("Properties"), PropertiesPtr) || !PropertiesPtr || !PropertiesPtr->IsValid())
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue field 'Properties' is required."), Context.JsonPath, TEXT("missing-structvalue-properties"));
+		}
+		TSharedPtr<FJsonObject> Properties = *PropertiesPtr;
+
+		UScriptStruct* Struct = ResolveScriptStruct(StructName);
+		if (!Struct)
+		{
+			return FAssetDocumentFragmentResult::Failure(
+				FString::Printf(TEXT("Failed to resolve struct '%s'."), *StructName),
+				Context.JsonPath,
+				TEXT("structvalue-resolve-failed"));
+		}
+
+		if (Context.ExpectedStruct && Struct != Context.ExpectedStruct)
+		{
+			return FAssetDocumentFragmentResult::Failure(
+				FString::Printf(TEXT("Struct '%s' does not match expected struct '%s'."), *Struct->GetName(), *Context.ExpectedStruct->GetName()),
+				Context.JsonPath,
+				TEXT("structvalue-struct-mismatch"));
+		}
+
+		if (!CanStoreStructBytesWithoutDestructor(Struct))
+		{
+			return FAssetDocumentFragmentResult::Failure(
+				FString::Printf(TEXT("Struct '%s' requires destructor handling and is not supported by StructValue bytes."), *Struct->GetName()),
+				Context.JsonPath,
+				TEXT("structvalue-unsupported-lifecycle"));
+		}
+
+		FAssetDocumentFragmentResult Result = FAssetDocumentFragmentResult::Success();
+		Result.StructType = Struct;
+		Result.StructBytes.SetNumUninitialized(Struct->GetStructureSize());
+		Struct->InitializeStruct(Result.StructBytes.GetData());
+
+		if (!FPropertySetterUtils::SetStructFromJson(Struct, Result.StructBytes.GetData(), MakeShared<FJsonValueObject>(Properties)))
+		{
+			Struct->DestroyStruct(Result.StructBytes.GetData());
+			return FAssetDocumentFragmentResult::Failure(
+				FString::Printf(TEXT("Failed to apply properties to struct '%s'."), *Struct->GetName()),
+				Context.JsonPath,
+				TEXT("structvalue-apply-failed"));
+		}
+
+		Result.Value = MakeShared<FJsonValueObject>(Properties);
+		return Result;
+	}
+
+	virtual FAssetDocumentFragmentResult Extract(const FAssetDocumentFragmentExtractContext& Context, TSharedRef<FJsonObject>& OutFragmentJson) const override
+	{
+		if (!Context.StructType || !Context.StructValue)
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue extraction requires StructType and StructValue."), Context.JsonPath, TEXT("structvalue-extract-missing-value"));
+		}
+
+		OutFragmentJson->SetStringField(TEXT("Kind"), GetKind().ToString());
+		OutFragmentJson->SetStringField(TEXT("Struct"), Context.StructType->GetPathName());
+		TSharedPtr<FJsonObject> Properties = ExtractStructPropertiesToJson(Context.StructType, Context.StructValue);
+		if (!Properties)
+		{
+			return FAssetDocumentFragmentResult::Failure(TEXT("StructValue extraction failed to read Properties."), Context.JsonPath, TEXT("structvalue-extract-properties-failed"));
+		}
+		OutFragmentJson->SetObjectField(TEXT("Properties"), Properties.ToSharedRef());
+		return FAssetDocumentFragmentResult::Success();
+	}
+};
+}
+
+TSharedRef<IAssetDocumentFragmentAdapter> CreateAssetDocumentStructValueFragmentAdapter()
+{
+	return MakeShared<FAssetDocumentStructValueFragmentAdapter>();
+}

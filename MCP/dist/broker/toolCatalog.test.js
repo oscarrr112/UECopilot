@@ -10,6 +10,8 @@ test("buildVisibleTools returns shared asset tools, shared editor tools, and BSL
         "generate_assets",
         "get_asset_document_schema",
         "inspect_asset_document_target",
+        "inspect_asset_document_profile",
+        "create_asset_document_template",
         "validate_asset_document",
         "diff_asset_document",
         "extract_asset_document",
@@ -44,6 +46,31 @@ test("buildVisibleTools returns the modern BSL-only catalog for generic", () => 
     assert.deepEqual(visibleTools.map((tool) => tool.name), buildVisibleTools(ALL_TOOLS, "codex").map((tool) => tool.name));
     assert.ok(!visibleTools.some((tool) => tool.name === "apply_blueprint_change"));
     assert.ok(!visibleTools.some((tool) => tool.name === "chat_completion"));
+});
+test("AssetDocument catalog exposes only generic AssetDocument tools", () => {
+    const visibleTools = buildVisibleTools(ALL_TOOLS, "codex");
+    const toolNames = visibleTools.map((tool) => tool.name);
+    for (const toolName of [
+        "inspect_asset_document_profile",
+        "create_asset_document_template",
+        "validate_asset_document",
+        "diff_asset_document",
+        "apply_asset_document",
+    ]) {
+        assert.ok(toolNames.includes(toolName), `${toolName} should be visible`);
+    }
+    for (const forbidden of [
+        "inspect_anim_montage_document",
+        "create_anim_montage_document",
+        "diff_anim_montage_document",
+        "apply_anim_montage_document",
+        "inspect_anim_sequence_document",
+        "create_anim_sequence_document",
+        "diff_anim_sequence_document",
+        "apply_anim_sequence_document",
+    ]) {
+        assert.ok(!toolNames.includes(forbidden), `${forbidden} should not be visible`);
+    }
 });
 test("Codex blueprint descriptions prefer the BSL path", () => {
     const visibleTools = buildVisibleTools(ALL_TOOLS, "codex");

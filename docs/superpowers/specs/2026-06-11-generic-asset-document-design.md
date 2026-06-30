@@ -181,7 +181,20 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 这些值是否合法，必须由目标属性的反射类型决定，而不是由 `type` 字符串里的 subtype 决定。
 
-### 4.4 更新已有资产
+### 4.4 AssetDocument 字段命名
+
+AssetDocument 是 Agent-facing canonical JSON，不是人类友好 DSL。公开字段名必须稳定、完整、可被 schema 和 diagnostics 精确引用。
+
+命名规则：
+
+- 禁止为了省 token 或可读性发明缩写，例如 `AnimRef`、`SlotTracks`、`CompSections`、`Noti`；
+- 禁止为 UE 已有稳定字段发明短别名，例如用 `Slots` 代替 `SlotAnimTracks`，或用 `Animation` 代替 `AnimReference`；
+- `Properties` 下的 reflected property 默认使用 UE 反射属性名；
+- profile-owned `Body` 字段优先使用 UE 稳定结构/字段名；
+- 只有在 UE 字段已 deprecated、必须通过 lifecycle API 写入，或原字段不是安全 source-of-truth 时，才允许定义语义字段名；
+- 任何语义字段名都必须在 profile schema/template 中明确说明目标 UE 行为和拒绝直接使用原字段的原因。
+
+### 4.5 更新已有资产
 
 ```json
 {
@@ -197,7 +210,7 @@ Object、Class、Enum 等值也使用无 subtype 的 `type`：
 
 更新时 `Class` 可选。如果提供 `Class`，`AssetDocumentCompiler` / lifecycle adapter 应验证它与已有资产 class 兼容；如果不提供，则使用已有资产 class。
 
-### 4.5 Sidecar hook 行为
+### 4.6 Sidecar hook 行为
 
 第一版应注册 editor hook，使 sidecar 与 `.uasset` 一起移动：
 
@@ -325,7 +338,7 @@ ValidateTargetMatchesSidecar(FilePath, Document)
 
 sidecar 必须使用 UTF-8 JSON。写入时保持稳定字段顺序，方便 git diff。
 
-第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释，后续如果需要人工注释，可以单独讨论 JSONC/YAML frontend，但 UE 侧 canonical sidecar 先保持 JSON。
+第一版不需要实现复杂 formatting/preserve comments。JSON 不支持注释；AssetDocument 的 canonical sidecar 保持 JSON，不规划 JSONC/YAML/source-language frontend。
 
 ### 5.4 创建策略
 
@@ -624,6 +637,8 @@ get_asset_document_schema()
 
 `apply_asset_document` 接收 inline JSON。`apply_asset_document_file` 从 `.assetdoc.json` 路径读取文档，并从 sidecar 文件位置推导目标 `/Game/...` 路径。`get_asset_document_schema` 返回 AssetDocument schema，而不是复用 `get_generator_schema`。
 
+AssetDocument 不按资产类型新增 MCP tools。后续 `AnimMontage`、`WidgetTree`、`MaterialGraph`、`NiagaraGraph`、`AnimationBlueprint` 等能力只应扩展 profile/schema/template/compiler adapters，并继续通过同一组 AssetDocument tools 暴露。MCP tool catalog 不应出现 `create_anim_montage`、`update_montage_slots`、`create_material_graph` 这类资产专用入口。
+
 同时新增 read-side MCP/HTTP 能力：
 
 ```text
@@ -815,10 +830,11 @@ POST /assetdocument/diff
 1. **Structured Asset Adapter Spec**：使用 `AnimMontage` 或 `BlendSpace` 验证薄 adapter。
 2. **Blueprint Lifecycle Adapter Spec**：把 Blueprint CDO/default properties 接入通用框架。
 3. **WidgetTree Domain Spec**：将 WidgetTree 作为 tree domain 接入。
-4. **MaterialGraph Domain Spec**：新增 Material DSL -> canonical IR -> expression builder。
-5. **AnimationBlueprint Domain Specs**：复用同一套 `Domains[]` 管线接入 AnimGraph、StateMachine 和 BSLFragment。
+4. **GraphIR Substrate Spec**：定义 Agent-facing canonical JSON graph shape，包括 `Graphs`、`Nodes`、`Edges`、`Outputs`、typed pins、stable IDs、JSON Pointer diagnostics 和 profile-driven schema/template。
+5. **MaterialGraph Domain Spec**：使用 AssetDocument `Body.Graphs.Material` JSON GraphIR 作为唯一 Agent-facing 输入，再由 Material graph adapter 生成 UE material expressions。
+6. **AnimationBlueprint Domain Specs**：复用同一套 `Body.Graphs` / profile 管线接入 AnimGraph、StateMachine 和 Blueprint/EventGraph。不要新增 AnimGraphDSL、StateMachineDSL 或 BSLFragment 作为下一阶段主入口。
 
-这些后续工作都不应修改第一版 `GenericAsset` 的核心契约，而应通过 lifecycle/content/domain adapter 增量扩展。
+这些后续工作都不应修改第一版 `GenericAsset` 的核心契约，而应通过 lifecycle/content/domain adapter 增量扩展。图资产的长期方向是 typed JSON GraphIR，而不是“自定义语言 -> JSON IR -> UE 图”的管线。已有 BSL 工具可以作为历史 Blueprint 工具继续存在，但新的 AssetDocument 图能力不再把可选源码前端列为目标。
 
 ---
 
