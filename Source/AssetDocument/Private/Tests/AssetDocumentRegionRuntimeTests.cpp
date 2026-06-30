@@ -50,6 +50,20 @@ TSharedPtr<FJsonValue> MakeIdentityValue(const FString& Name, const int32 Count)
 	return MakeShared<FJsonValueObject>(Object);
 }
 
+FString GetDiffEntryPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const int32 Index)
+{
+	const TSharedPtr<FJsonObject> Entry = Entries.IsValidIndex(Index) && Entries[Index].IsValid()
+		? Entries[Index]->AsObject()
+		: nullptr;
+	return Entry.IsValid() ? Entry->GetStringField(TEXT("path")) : FString();
+}
+
+int32 GetIdentityCount(const TSharedPtr<FJsonValue>& Value)
+{
+	const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+	return Object.IsValid() ? FMath::RoundToInt(Object->GetNumberField(TEXT("Count"))) : INDEX_NONE;
+}
+
 TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
 {
 	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
@@ -255,14 +269,19 @@ bool FAssetDocumentIdentityArrayDiffHelperBasicTest::RunTest(const FString&)
 
 	TestTrue(TEXT("identity array diff succeeds"), Result.bSuccess);
 	TestEqual(TEXT("diff emits current-first plus desired-only entries"), Entries.Num(), 4);
-	TestEqual(
-		TEXT("first entry keeps current order"),
-		Entries.Num() > 0 ? Entries[0]->AsObject()->GetStringField(TEXT("path")) : FString(),
-		FString(TEXT("/Body/TestArray/Alpha")));
-	TestEqual(
-		TEXT("desired-only entry keeps desired order after current traversal"),
-		Entries.Num() > 3 ? Entries[3]->AsObject()->GetStringField(TEXT("path")) : FString(),
-		FString(TEXT("/Body/TestArray/Desired~1Only~0Escaped")));
+	const TArray<FString> ExpectedOrder = {
+		TEXT("/Body/TestArray/Alpha"),
+		TEXT("/Body/TestArray/Beta"),
+		TEXT("/Body/TestArray/CurrentOnly"),
+		TEXT("/Body/TestArray/Desired~1Only~0Escaped"),
+	};
+	for (int32 Index = 0; Index < ExpectedOrder.Num(); ++Index)
+	{
+		TestEqual(
+			FString::Printf(TEXT("diff entry %d keeps exact traversal order"), Index),
+			GetDiffEntryPath(Entries, Index),
+			ExpectedOrder[Index]);
+	}
 
 	const TSharedPtr<FJsonObject> Alpha = FindDiffEntryByPath(Entries, TEXT("/Body/TestArray/Alpha"));
 	TestTrue(TEXT("Alpha entry exists"), Alpha.IsValid());
@@ -278,6 +297,8 @@ bool FAssetDocumentIdentityArrayDiffHelperBasicTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("Beta changed"), Beta->GetStringField(TEXT("status")), FString(TEXT("changed")));
 		TestEqual(TEXT("Beta changed change"), Beta->GetStringField(TEXT("change")), FString(TEXT("changed")));
+		TestEqual(TEXT("Beta current value shape"), GetIdentityCount(Beta->TryGetField(TEXT("current"))), 2);
+		TestEqual(TEXT("Beta desired value shape"), GetIdentityCount(Beta->TryGetField(TEXT("desired"))), 20);
 	}
 
 	const TSharedPtr<FJsonObject> CurrentOnly = FindDiffEntryByPath(Entries, TEXT("/Body/TestArray/CurrentOnly"));
@@ -300,6 +321,21 @@ bool FAssetDocumentIdentityArrayDiffHelperBasicTest::RunTest(const FString&)
 		TestTrue(TEXT("desired-only current is null"), CurrentValue.IsValid() && CurrentValue->IsNull());
 	}
 
+	FAssetDocumentIdentityArrayDiffOptions SuppressUnchangedOptions = Options;
+	SuppressUnchangedOptions.bEmitUnchanged = false;
+	TArray<TSharedPtr<FJsonValue>> SuppressedEntries;
+	const FAssetDocumentCapabilityResult SuppressedResult =
+		FAssetDocumentIdentityArrayDiffHelper::Diff(SuppressUnchangedOptions, Current, Desired, {}, SuppressedEntries);
+	TestTrue(TEXT("suppressed unchanged diff succeeds"), SuppressedResult.bSuccess);
+	TestEqual(TEXT("suppressed unchanged emits only changed/current-only/desired-only entries"), SuppressedEntries.Num(), 3);
+	TestEqual(
+		TEXT("suppressed unchanged does not re-emit matched desired as desired-only"),
+		FindDiffEntryByPath(SuppressedEntries, TEXT("/Body/TestArray/Alpha")).IsValid(),
+		false);
+	TestEqual(TEXT("suppressed entry 0 order"), GetDiffEntryPath(SuppressedEntries, 0), FString(TEXT("/Body/TestArray/Beta")));
+	TestEqual(TEXT("suppressed entry 1 order"), GetDiffEntryPath(SuppressedEntries, 1), FString(TEXT("/Body/TestArray/CurrentOnly")));
+	TestEqual(TEXT("suppressed entry 2 order"), GetDiffEntryPath(SuppressedEntries, 2), FString(TEXT("/Body/TestArray/Desired~1Only~0Escaped")));
+
 	return true;
 }
 
@@ -321,13 +357,44 @@ bool FAssetDocumentIdentityArrayDiffHelperHooksAndDuplicateTest::RunTest(const F
 	Desired.Add({TEXT("Equal"), TEXT("Equal"), MakeIdentityValue(TEXT("Equal"), 99)});
 	Desired.Add({TEXT("Changed"), TEXT("Changed"), MakeIdentityValue(TEXT("Changed"), 20)});
 
+	bool bPathHookSawEqualCurrent = false;
+	bool bPathHookSawEqualDesired = false;
+	int32 PathHookEqualCurrentCount = INDEX_NONE;
+	int32 PathHookEqualDesiredCount = INDEX_NONE;
+	bool bPathHookSawChangedCurrent = false;
+	bool bPathHookSawChangedDesired = false;
+	int32 PathHookChangedCurrentCount = INDEX_NONE;
+	int32 PathHookChangedDesiredCount = INDEX_NONE;
+
 	FAssetDocumentIdentityArrayDiffHooks Hooks;
 	Hooks.AreElementsEqual = [](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
 	{
 		return Entry.Identity == TEXT("Equal");
 	};
-	Hooks.MakePath = [](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+	Hooks.MakePath = [
+		&bPathHookSawEqualCurrent,
+		&bPathHookSawEqualDesired,
+		&PathHookEqualCurrentCount,
+		&PathHookEqualDesiredCount,
+		&bPathHookSawChangedCurrent,
+		&bPathHookSawChangedDesired,
+		&PathHookChangedCurrentCount,
+		&PathHookChangedDesiredCount](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
 	{
+		if (Entry.Identity == TEXT("Equal"))
+		{
+			bPathHookSawEqualCurrent = Entry.bHasCurrent;
+			bPathHookSawEqualDesired = Entry.bHasDesired;
+			PathHookEqualCurrentCount = GetIdentityCount(Entry.CurrentValue);
+			PathHookEqualDesiredCount = GetIdentityCount(Entry.DesiredValue);
+		}
+		else if (Entry.Identity == TEXT("Changed"))
+		{
+			bPathHookSawChangedCurrent = Entry.bHasCurrent;
+			bPathHookSawChangedDesired = Entry.bHasDesired;
+			PathHookChangedCurrentCount = GetIdentityCount(Entry.CurrentValue);
+			PathHookChangedDesiredCount = GetIdentityCount(Entry.DesiredValue);
+		}
 		return FString::Printf(TEXT("/Custom/%s"), *Entry.Identity);
 	};
 	Hooks.MakeChange = [](const FAssetDocumentIdentityArrayDiffEntryContext&)
@@ -340,6 +407,14 @@ bool FAssetDocumentIdentityArrayDiffHelperHooksAndDuplicateTest::RunTest(const F
 		FAssetDocumentIdentityArrayDiffHelper::Diff(Options, Current, Desired, Hooks, Entries);
 	TestTrue(TEXT("custom hook diff succeeds"), Result.bSuccess);
 	TestEqual(TEXT("custom hook emits two entries"), Entries.Num(), 2);
+	TestTrue(TEXT("path hook sees matched current flag for Equal"), bPathHookSawEqualCurrent);
+	TestTrue(TEXT("path hook sees matched desired flag for Equal"), bPathHookSawEqualDesired);
+	TestEqual(TEXT("path hook sees Equal current value"), PathHookEqualCurrentCount, 1);
+	TestEqual(TEXT("path hook sees Equal desired value"), PathHookEqualDesiredCount, 99);
+	TestTrue(TEXT("path hook sees matched current flag for Changed"), bPathHookSawChangedCurrent);
+	TestTrue(TEXT("path hook sees matched desired flag for Changed"), bPathHookSawChangedDesired);
+	TestEqual(TEXT("path hook sees Changed current value"), PathHookChangedCurrentCount, 2);
+	TestEqual(TEXT("path hook sees Changed desired value"), PathHookChangedDesiredCount, 20);
 
 	const TSharedPtr<FJsonObject> EqualEntry = FindDiffEntryByPath(Entries, TEXT("/Custom/Equal"));
 	TestTrue(TEXT("custom equality entry exists"), EqualEntry.IsValid());
@@ -369,6 +444,19 @@ bool FAssetDocumentIdentityArrayDiffHelperHooksAndDuplicateTest::RunTest(const F
 	TestTrue(
 		TEXT("duplicate diagnostic code is stable"),
 		DuplicateResult.Diagnostics.Num() > 0 && DuplicateResult.Diagnostics[0].Code == TEXT("DuplicateIdentityArrayDiffIdentity"));
+
+	TArray<FAssetDocumentIdentityArrayDiffElement> DesiredWithDuplicate = Desired;
+	DesiredWithDuplicate.Add({TEXT("Equal"), TEXT("DuplicateDesired"), MakeIdentityValue(TEXT("DuplicateDesired"), 3)});
+	TArray<TSharedPtr<FJsonValue>> DesiredDuplicateEntries;
+	const FAssetDocumentCapabilityResult DesiredDuplicateResult =
+		FAssetDocumentIdentityArrayDiffHelper::Diff(Options, Desired, DesiredWithDuplicate, Hooks, DesiredDuplicateEntries);
+	TestFalse(TEXT("desired duplicate identity fails"), DesiredDuplicateResult.bSuccess);
+	TestTrue(
+		TEXT("desired duplicate diagnostic path is region path"),
+		DesiredDuplicateResult.Diagnostics.Num() > 0 && DesiredDuplicateResult.Diagnostics[0].Path == TEXT("/Body/TestArray"));
+	TestTrue(
+		TEXT("desired duplicate diagnostic code is stable"),
+		DesiredDuplicateResult.Diagnostics.Num() > 0 && DesiredDuplicateResult.Diagnostics[0].Code == TEXT("DuplicateIdentityArrayDiffIdentity"));
 
 	return true;
 }
