@@ -1290,6 +1290,24 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TEXT("Unknown Body.Preview field diagnostic uses escaped field path"),
 		HasDiagnostic(UnknownPreviewResult, TEXT("/Body/Preview/PreviewMesh~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
 
+	TSharedRef<FJsonObject> UnknownPlaybackFieldBody = MakePlaybackRateBody(4.7);
+	UnknownPlaybackFieldBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale/Bad~Field"), TEXT("unexpected"));
+	const FAssetDocumentCapabilityResult UnknownPlaybackResult =
+		Capability.Validate(Context, MakeBodyValue(UnknownPlaybackFieldBody));
+	TestFalse(TEXT("Validate rejects unknown Body.Playback field"), UnknownPlaybackResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown Body.Playback field diagnostic uses escaped field path"),
+		HasDiagnostic(UnknownPlaybackResult, TEXT("/Body/Playback/RateScale~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+
+	TSharedRef<FJsonObject> InvalidPlaybackRateTypeBody = MakePlaybackRateBody(4.8);
+	InvalidPlaybackRateTypeBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
+	const FAssetDocumentCapabilityResult InvalidPlaybackRateTypeResult =
+		Capability.Validate(Context, MakeBodyValue(InvalidPlaybackRateTypeBody));
+	TestFalse(TEXT("Validate rejects non-number Body.Playback.RateScale"), InvalidPlaybackRateTypeResult.bSuccess);
+	TestTrue(
+		TEXT("Invalid Body.Playback.RateScale diagnostic is stable"),
+		HasDiagnostic(InvalidPlaybackRateTypeResult, TEXT("/Body/Playback/RateScale"), TEXT("InvalidNumericField")));
+
 	TSharedRef<FJsonObject> InvalidPlaybackBody = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> InvalidPlayback = MakeShared<FJsonObject>();
 	InvalidPlayback->SetNumberField(TEXT("PlayLength"), 3.0);

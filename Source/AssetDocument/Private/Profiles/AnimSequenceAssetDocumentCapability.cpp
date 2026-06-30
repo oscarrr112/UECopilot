@@ -779,6 +779,23 @@ FAssetDocumentObjectFieldSchema MakeAnimSequencePreviewSchema()
 	return Schema;
 }
 
+FAssetDocumentObjectFieldSchema MakeAnimSequencePlaybackSchema()
+{
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.Fields.Add({
+		TEXT("RateScale"),
+		EJson::Number,
+		false,
+		TEXT("MissingRateScale"),
+		TEXT("InvalidNumericField"),
+		TEXT("RateScale must be a number"),
+	});
+	Schema.bRejectUnknownFields = true;
+	Schema.UnknownFieldCode = TEXT("UnsupportedAuthoredField");
+	Schema.UnknownFieldMessageFormat = TEXT("Body.Playback.%s is not supported by the AnimSequence Task 2 scalar capability");
+	return Schema;
+}
+
 FAssetDocumentCapabilityResult ValidateAnimSequenceObjectFieldSchema(
 	const TSharedRef<FJsonObject>& BodyObject,
 	const TCHAR* SectionName,
@@ -3289,7 +3306,7 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 	const TArray<FAssetDocumentCapabilityResult> FieldResults = {
 		RejectUnknownObjectFields(BodyObject, TEXT("References"), { TEXT("Skeleton"), TEXT("RetargetSource"), TEXT("RetargetSourceAsset") }),
 		ValidateAnimSequenceObjectFieldSchema(BodyObject, TEXT("Preview"), MakeAnimSequencePreviewSchema()),
-		RejectUnknownObjectFields(BodyObject, TEXT("Playback"), { TEXT("RateScale") }),
+		ValidateAnimSequenceObjectFieldSchema(BodyObject, TEXT("Playback"), MakeAnimSequencePlaybackSchema()),
 		RejectUnknownObjectFields(BodyObject, TEXT("Additive"), { TEXT("AdditiveAnimType"), TEXT("RefPoseType"), TEXT("RefFrameIndex"), TEXT("RefPoseSeq") }),
 		RejectUnknownObjectFields(BodyObject, TEXT("RootMotion"), { TEXT("bEnableRootMotion"), TEXT("RootMotionRootLock"), TEXT("bForceRootLock"), TEXT("bUseNormalizedRootMotionScale") }),
 		RejectUnknownObjectFields(BodyObject, TEXT("Compression"), { TEXT("CompressionErrorThresholdScale"), TEXT("BoneCompressionSettings"), TEXT("CurveCompressionSettings"), TEXT("bDoNotOverrideCompression") }),
