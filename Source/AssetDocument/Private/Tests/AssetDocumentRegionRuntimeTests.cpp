@@ -819,6 +819,41 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperRejectsInvalidExtractHookResultTest
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeWidgetWrapperRejectsNullObjectExtractHookResultTest,
+	"AssetFactory.AssetDocument.RegionRuntime.WidgetWrapper.RejectsNullObjectExtractHookResult",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeWidgetWrapperRejectsNullObjectExtractHookResultTest::RunTest(const FString& Parameters)
+{
+	FWidgetBlueprintRegionAdapterHooks Hooks;
+	Hooks.Extract = [](const FAssetDocumentRegionContext&, TSharedPtr<FJsonValue>& OutCurrentValue)
+	{
+		OutCurrentValue = MakeShared<FJsonValueObject>(TSharedPtr<FJsonObject>());
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted null graph hook object"));
+	};
+
+	const FWidgetBlueprintGraphRegionAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("Body.WidgetBlueprintGraphRegions"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.WidgetBlueprintGraphRegions"), TEXT("/Body"), &Policy);
+	Context.BodyPath = TEXT("Body.WidgetBlueprintGraphRegions");
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
+
+	TestFalse(TEXT("Null object extract hook result fails"), Result.bSuccess);
+	TestEqual(
+		TEXT("Null object extract hook result code"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
+		FString(TEXT("InvalidGraphRegionHookResult")));
+	TestEqual(
+		TEXT("Null object extract hook result path"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
+		FString(TEXT("/Body")));
+	TestFalse(TEXT("Null object extract hook result is not returned"), ExtractedValue.IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeGraphWrapperSupportsSyntheticBodyTest,
 	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.SupportsSyntheticBody",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

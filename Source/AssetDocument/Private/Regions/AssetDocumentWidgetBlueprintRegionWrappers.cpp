@@ -117,14 +117,17 @@ FAssetDocumentGraphRegionWrapperHooks MakeWidgetBlueprintGraphWrapperHooks(
 			{
 				return Result;
 			}
-			if (!ExtractedValue.IsValid() || ExtractedValue->Type != EJson::Object)
+			const TSharedPtr<FJsonObject> ExtractedObject = ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Object
+				? ExtractedValue->AsObject()
+				: nullptr;
+			if (!ExtractedValue.IsValid() || ExtractedValue->Type != EJson::Object || !ExtractedObject.IsValid())
 			{
 				return FAssetDocumentCapabilityResult::Failure(
 					TEXT("Custom WidgetBlueprint graph extract hook must return an object"),
 					TEXT("/Body"),
 					TEXT("InvalidGraphRegionHookResult"));
 			}
-			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedValue->AsObject()->Values)
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedObject->Values)
 			{
 				OutBodyObject->SetField(Pair.Key, Pair.Value);
 			}
