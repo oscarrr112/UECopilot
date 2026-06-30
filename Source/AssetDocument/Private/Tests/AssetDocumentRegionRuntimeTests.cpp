@@ -873,6 +873,52 @@ bool FAssetDocumentRegionRuntimeGraphWrapperDispatchesHooksTest::RunTest(const F
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeGraphWrapperPropagatesHookFailuresTest,
+	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.PropagatesHookFailures",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeGraphWrapperPropagatesHookFailuresTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("TestGraphWrapper");
+	Config.RegionId = TEXT("Body.TestGraphRegions");
+	Config.BodyPath = TEXT("Body.TestGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	Hooks.Validate = [](
+		const FAssetDocumentCapabilityContext&,
+		const TSharedRef<FJsonObject>&)
+	{
+		return FAssetDocumentCapabilityResult::Failure(
+			TEXT("validate failed"),
+			TEXT("/Body/Graphs/0"),
+			TEXT("GraphValidateFailed"));
+	};
+
+	FAssetDocumentGraphRegionWrapperAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = TEXT("Body.TestGraphRegions");
+	RegionContext.BodyPath = TEXT("Body.TestGraphRegions");
+	RegionContext.JsonPointer = TEXT("/Body");
+
+	TSharedRef<FJsonObject> BodyObject = MakeShared<FJsonObject>();
+	BodyObject->SetArrayField(TEXT("Graphs"), {});
+	const FAssetDocumentCapabilityResult Result =
+		Adapter.ValidateRegion(RegionContext, MakeShared<FJsonValueObject>(BodyObject));
+	TestFalse(TEXT("Validate hook failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("Failure reports one diagnostic"), Result.Diagnostics.Num(), 1);
+	if (Result.Diagnostics.Num() < 1)
+	{
+		return false;
+	}
+	TestEqual(TEXT("Failure path is preserved"), Result.Diagnostics[0].Path, FString(TEXT("/Body/Graphs/0")));
+	TestEqual(TEXT("Failure code is preserved"), Result.Diagnostics[0].Code, FString(TEXT("GraphValidateFailed")));
+	TestEqual(TEXT("Failure message is preserved"), Result.Diagnostics[0].Message, FString(TEXT("validate failed")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeGraphWrapperRejectsInvalidBodyAndMissingHooksTest,
 	"AssetFactory.AssetDocument.RegionRuntime.GraphWrapper.RejectsInvalidBodyAndMissingHooks",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
