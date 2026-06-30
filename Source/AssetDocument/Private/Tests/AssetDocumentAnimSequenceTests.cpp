@@ -1279,6 +1279,17 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TestEqual(FString::Printf(TEXT("Rejected Body.%s.%s does not partially mutate RateScale"), *RejectedField.Key, *RejectedField.Value), Sequence->RateScale, RateScaleBeforeInvalidField);
 	}
 
+	TSharedRef<FJsonObject> UnknownPreviewFieldBody = MakePlaybackRateBody(4.6);
+	TSharedRef<FJsonObject> UnknownPreview = MakeShared<FJsonObject>();
+	UnknownPreview->SetStringField(TEXT("PreviewMesh/Bad~Field"), TEXT("unexpected"));
+	UnknownPreviewFieldBody->SetObjectField(TEXT("Preview"), UnknownPreview);
+	const FAssetDocumentCapabilityResult UnknownPreviewResult =
+		Capability.Validate(Context, MakeBodyValue(UnknownPreviewFieldBody));
+	TestFalse(TEXT("Validate rejects unknown Body.Preview field"), UnknownPreviewResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown Body.Preview field diagnostic uses escaped field path"),
+		HasDiagnostic(UnknownPreviewResult, TEXT("/Body/Preview/PreviewMesh~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+
 	TSharedRef<FJsonObject> InvalidPlaybackBody = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> InvalidPlayback = MakeShared<FJsonObject>();
 	InvalidPlayback->SetNumberField(TEXT("PlayLength"), 3.0);

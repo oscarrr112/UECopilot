@@ -10,6 +10,7 @@
 #include "AssetDocumentRegionRuntime.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
+#include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
@@ -760,6 +761,43 @@ FAssetDocumentCapabilityResult RejectUnknownObjectFields(
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentObjectFieldSchema MakeAnimSequencePreviewSchema()
+{
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.Fields.Add({
+		TEXT("PreviewMesh"),
+		EJson::Object,
+		false,
+		TEXT("MissingPreviewMesh"),
+		TEXT("InvalidObjectReference"),
+	});
+	Schema.bRejectUnknownFields = true;
+	Schema.UnknownFieldCode = TEXT("UnsupportedAuthoredField");
+	Schema.UnknownFieldMessageFormat = TEXT("Body.Preview.%s is not supported by the AnimSequence Task 2 scalar capability");
+	return Schema;
+}
+
+FAssetDocumentCapabilityResult ValidateAnimSequenceObjectFieldSchema(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TCHAR* SectionName,
+	const FAssetDocumentObjectFieldSchema& Schema)
+{
+	const TSharedPtr<FJsonObject>* SectionObject = nullptr;
+	if (!BodyObject->TryGetObjectField(SectionName, SectionObject) || !SectionObject || !SectionObject->IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.RegionId = *FString::Printf(TEXT("Body.%s"), SectionName);
+	RegionContext.BodyPath = FString::Printf(TEXT("Body.%s"), SectionName);
+	RegionContext.JsonPointer = FString::Printf(TEXT("/Body/%s"), SectionName);
+	return FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(
+		RegionContext,
+		(*SectionObject).ToSharedRef(),
+		Schema);
 }
 
 struct FParsedAnimSequenceCurve
@@ -3250,7 +3288,7 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 
 	const TArray<FAssetDocumentCapabilityResult> FieldResults = {
 		RejectUnknownObjectFields(BodyObject, TEXT("References"), { TEXT("Skeleton"), TEXT("RetargetSource"), TEXT("RetargetSourceAsset") }),
-		RejectUnknownObjectFields(BodyObject, TEXT("Preview"), { TEXT("PreviewMesh") }),
+		ValidateAnimSequenceObjectFieldSchema(BodyObject, TEXT("Preview"), MakeAnimSequencePreviewSchema()),
 		RejectUnknownObjectFields(BodyObject, TEXT("Playback"), { TEXT("RateScale") }),
 		RejectUnknownObjectFields(BodyObject, TEXT("Additive"), { TEXT("AdditiveAnimType"), TEXT("RefPoseType"), TEXT("RefFrameIndex"), TEXT("RefPoseSeq") }),
 		RejectUnknownObjectFields(BodyObject, TEXT("RootMotion"), { TEXT("bEnableRootMotion"), TEXT("RootMotionRootLock"), TEXT("bForceRootLock"), TEXT("bUseNormalizedRootMotionScale") }),
