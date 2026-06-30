@@ -7,6 +7,7 @@
 #include "Profiles/UBlueprintGraphRegionAdapter.h"
 #include "Profiles/UBlueprintAssetDocumentProfile.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentGraphRegionWrapperAdapter.h"
 #include "Regions/AssetDocumentIdentityArrayDiffHelper.h"
 
 #include "Utils/PropertySetterUtils.h"
@@ -219,6 +220,66 @@ TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
 FAssetDocumentCapabilityResult ReadBodyObject(const TSharedRef<FJsonValue>& BodyJson, TSharedPtr<FJsonObject>& OutBody)
 {
 	return RequireObjectValue(BodyJson, TEXT("/Body"), OutBody);
+}
+
+FAssetDocumentRegionContext MakeUBlueprintGraphRegionContext(const FAssetDocumentCapabilityContext& Context)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = Context.Asset;
+	RegionContext.AssetClass = Context.AssetClass;
+	RegionContext.TargetAssetPath = Context.TargetAssetPath;
+	RegionContext.SourceDocumentPath = Context.SourceDocumentPath;
+	RegionContext.Definitions = Context.Definitions;
+	RegionContext.bIsDryRun = Context.bIsDryRun;
+	RegionContext.Result = Context.Result;
+	RegionContext.RegionId = TEXT("Body.UBlueprintGraphRegions");
+	RegionContext.BodyPath = TEXT("Body.UBlueprintGraphRegions");
+	RegionContext.JsonPointer = TEXT("/Body");
+	return RegionContext;
+}
+
+FAssetDocumentGraphRegionWrapperConfig MakeUBlueprintGraphWrapperConfig()
+{
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("UBlueprintGraphRegionAdapter");
+	Config.RegionId = TEXT("Body.UBlueprintGraphRegions");
+	Config.BodyPath = TEXT("Body.UBlueprintGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+	Config.SchemaLabel = TEXT("UBlueprintGraphRegions");
+	return Config;
+}
+
+FAssetDocumentGraphRegionWrapperHooks MakeUBlueprintGraphWrapperHooks()
+{
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	Hooks.Validate = [](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject)
+	{
+		return FUBlueprintGraphRegionAdapter().ValidateRegions(Context, BodyObject);
+	};
+	Hooks.Preflight = [](FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("UBlueprint graph preflight is handled by validate/apply hooks"));
+	};
+	Hooks.Apply = [](FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject, bool& bOutChanged)
+	{
+		return ApplyUBlueprintGraphRegions(Context, BodyObject, bOutChanged);
+	};
+	Hooks.Extract = [](const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyObject)
+	{
+		return FUBlueprintGraphRegionAdapter().ExtractRegions(Context, OutBodyObject);
+	};
+	Hooks.Diff = [](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		return FUBlueprintGraphRegionAdapter().DiffRegions(Context, BodyObject, OutDiffEntries);
+	};
+	return Hooks;
+}
+
+FAssetDocumentGraphRegionWrapperAdapter MakeUBlueprintGraphWrapperAdapter()
+{
+	return FAssetDocumentGraphRegionWrapperAdapter(
+		MakeUBlueprintGraphWrapperConfig(),
+		MakeUBlueprintGraphWrapperHooks());
 }
 
 FAssetDocumentCapabilityResult ReadClassRef(const TSharedPtr<FJsonObject>& Object, const FString& Path, UClass*& OutClass)
@@ -1137,12 +1198,14 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 	UClass* EffectiveParentClass,
 	const TArray<FUBlueprintVariableSpec>& VariableSpecs)
 {
-	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
 	const TSharedPtr<FJsonValue>* UbergraphPagesValue = BodyObject->Values.Find(TEXT("UbergraphPages"));
 	const UBlueprint* SourceBlueprint = Cast<UBlueprint>(Context.Asset);
 	if (!UbergraphPagesValue || !SourceBlueprint || !EffectiveParentClass)
 	{
-		return GraphRegionAdapter.ValidateRegions(Context, BodyObject);
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+		return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
+			GraphRegionContext,
+			MakeShared<FJsonValueObject>(BodyObject));
 	}
 
 	const FName ValidationBlueprintName = MakeUniqueObjectName(
@@ -1187,7 +1250,10 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 
 	FAssetDocumentCapabilityContext GraphContext = Context;
 	GraphContext.Asset = ValidationBlueprint;
-	return GraphRegionAdapter.ValidateRegions(GraphContext, BodyObject);
+	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(GraphContext);
+	return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
+		GraphRegionContext,
+		MakeShared<FJsonValueObject>(BodyObject));
 }
 
 FAssetDocumentCapabilityResult ApplyInterfaces(UBlueprint* Blueprint, const TArray<FUBlueprintInterfaceSpec>& Interfaces, bool& bOutChanged)
@@ -2930,8 +2996,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	{
 		bool bGraphChanged = false;
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphApplyResult =
-			ApplyUBlueprintGraphRegions(Context, BodyObject.ToSharedRef(), bGraphChanged);
+			MakeUBlueprintGraphWrapperAdapter().ApplyRegion(
+				GraphRegionContext,
+				MakeShared<FJsonValueObject>(BodyObject.ToSharedRef()),
+				bGraphChanged);
 		if (!GraphApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, GraphApplyResult);
@@ -3119,11 +3189,24 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	}
-	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
-	const FAssetDocumentCapabilityResult GraphExtractResult = GraphRegionAdapter.ExtractRegions(Context, OutBodyJson);
+	TSharedPtr<FJsonValue> ExtractedGraphBodyValue;
+	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+	const FAssetDocumentCapabilityResult GraphExtractResult =
+		MakeUBlueprintGraphWrapperAdapter().ExtractRegion(GraphRegionContext, ExtractedGraphBodyValue);
 	if (!GraphExtractResult.bSuccess)
 	{
 		return GraphExtractResult;
+	}
+	if (!ExtractedGraphBodyValue.IsValid() || ExtractedGraphBodyValue->Type != EJson::Object)
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract must return a Body object"),
+			TEXT("/Body"),
+			TEXT("InvalidGraphExtractBody"));
+	}
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedGraphBodyValue->AsObject()->Values)
+	{
+		OutBodyJson->SetField(Pair.Key, Pair.Value);
 	}
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
@@ -3161,9 +3244,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	}
 
 	{
-		const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphDiffResult =
-			GraphRegionAdapter.DiffRegions(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
+			MakeUBlueprintGraphWrapperAdapter().DiffRegion(
+				GraphRegionContext,
+				MakeShared<FJsonValueObject>(DesiredBody.ToSharedRef()),
+				OutDiffEntries);
 		if (!GraphDiffResult.bSuccess)
 		{
 			return GraphDiffResult;
