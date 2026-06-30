@@ -2365,6 +2365,66 @@ void AddSkippedVariableEvidence(TSharedRef<FJsonObject>& OutBodyJson, const FStr
 	VariablesDiagnostic->SetObjectField(VariableName, VariableDiagnostic);
 }
 
+FAssetDocumentCapabilityResult MergeSkippedEvidence(
+	TSharedRef<FJsonObject>& OutBodyJson,
+	const TSharedPtr<FJsonValue>& IncomingSkippedValue)
+{
+	if (!IncomingSkippedValue.IsValid() || IncomingSkippedValue->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if (IncomingSkippedValue->Type != EJson::Object)
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
+			TEXT("/Body/_Skipped"),
+			TEXT("InvalidGraphRegionHookResult"));
+	}
+
+	TSharedPtr<FJsonObject> Skipped;
+	const TSharedPtr<FJsonObject>* ExistingSkipped = nullptr;
+	if (OutBodyJson->TryGetObjectField(TEXT("_Skipped"), ExistingSkipped) && ExistingSkipped && ExistingSkipped->IsValid())
+	{
+		Skipped = *ExistingSkipped;
+	}
+	else
+	{
+		Skipped = MakeShared<FJsonObject>();
+		OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
+	}
+
+	const TSharedPtr<FJsonObject> IncomingSkipped = IncomingSkippedValue->AsObject();
+	if (!IncomingSkipped.IsValid())
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
+			TEXT("/Body/_Skipped"),
+			TEXT("InvalidGraphRegionHookResult"));
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : IncomingSkipped->Values)
+	{
+		const TSharedPtr<FJsonObject> IncomingRegion =
+			Pair.Value.IsValid() && Pair.Value->Type == EJson::Object ? Pair.Value->AsObject() : nullptr;
+		const TSharedPtr<FJsonValue>* ExistingValue = Skipped->Values.Find(Pair.Key);
+		const TSharedPtr<FJsonObject> ExistingRegion =
+			ExistingValue && ExistingValue->IsValid() && (*ExistingValue)->Type == EJson::Object ? (*ExistingValue)->AsObject() : nullptr;
+		if (IncomingRegion.IsValid() && ExistingRegion.IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& RegionPair : IncomingRegion->Values)
+			{
+				ExistingRegion->SetField(RegionPair.Key, RegionPair.Value);
+			}
+		}
+		else
+		{
+			Skipped->SetField(Pair.Key, Pair.Value);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 void RestoreBlueprintState(
 	UBlueprint* Blueprint,
 	UClass* PreviousParentClass,
@@ -3206,7 +3266,18 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	}
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedGraphBodyValue->AsObject()->Values)
 	{
-		OutBodyJson->SetField(Pair.Key, Pair.Value);
+		if (Pair.Key == TEXT("_Skipped"))
+		{
+			const FAssetDocumentCapabilityResult MergeSkippedResult = MergeSkippedEvidence(OutBodyJson, Pair.Value);
+			if (!MergeSkippedResult.bSuccess)
+			{
+				return MergeSkippedResult;
+			}
+		}
+		else
+		{
+			OutBodyJson->SetField(Pair.Key, Pair.Value);
+		}
 	}
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});

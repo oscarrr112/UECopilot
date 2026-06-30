@@ -7,6 +7,7 @@
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Components/SphereComponent.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -18,6 +19,9 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
+#include "K2Node_IfThenElse.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -220,6 +224,48 @@ bool HasBlueprintVariable(const UBlueprint* Blueprint, FName Name)
 	{
 		return Variable.VarName == Name;
 	});
+}
+
+UBlueprint* CreateTransientActorBlueprint(const TCHAR* NamePrefix)
+{
+	const FName BlueprintName(*FString::Printf(TEXT("%s_%s"), NamePrefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		BlueprintName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (Blueprint)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	}
+	return Blueprint;
+}
+
+template <typename NodeType>
+NodeType* AddK2Node(UEdGraph* Graph, int32 X, int32 Y)
+{
+	NodeType* Node = Graph ? NewObject<NodeType>(Graph) : nullptr;
+	if (!Node)
+	{
+		return nullptr;
+	}
+
+	Graph->AddNode(Node, true, false);
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	return Node;
+}
+
+UK2Node_IfThenElse* AddUnsupportedBranchNode(UEdGraph* Graph, int32 X, int32 Y)
+{
+	UK2Node_IfThenElse* Node = AddK2Node<UK2Node_IfThenElse>(Graph, X, Y);
+	if (Node)
+	{
+		Node->AllocateDefaultPins();
+	}
+	return Node;
 }
 
 bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
@@ -2056,8 +2102,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const FString&)
 {
-	UBlueprint* Blueprint = NewObject<UBlueprint>(GetTransientPackage(), UBlueprint::StaticClass());
-	Blueprint->ParentClass = AActor::StaticClass();
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_ExtractSkippedEvidence"));
+	TestNotNull(TEXT("Transient actor Blueprint is created"), Blueprint);
+	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Blueprint || !Graph)
+	{
+		return false;
+	}
 
 	FBPVariableDescription Scores;
 	Scores.VarName = TEXT("Scores");
@@ -2065,6 +2117,7 @@ bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const 
 	Scores.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
 	Scores.VarType.ContainerType = EPinContainerType::Array;
 	Blueprint->NewVariables.Add(Scores);
+	AddUnsupportedBranchNode(Graph, 320, 0);
 
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
@@ -2084,6 +2137,7 @@ bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const 
 	if (Skipped && Skipped->IsValid())
 	{
 		TestTrue(TEXT("Skipped diagnostics include Variables"), (*Skipped)->HasField(TEXT("Variables")));
+		TestTrue(TEXT("Skipped diagnostics include Graphs"), (*Skipped)->HasField(TEXT("Graphs")));
 	}
 	return true;
 }
