@@ -2531,19 +2531,64 @@ FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentFragmentArrayRegionConfig MakeAnimSequenceMetadataFragmentArrayConfig()
+struct FAnimSequenceManagedObjectFragmentArrayRegionSpec
+{
+	FName AdapterName;
+	FName RegionId;
+	FString BodyPath;
+	FString JsonPointer;
+	FString SchemaLabel;
+	const TCHAR* ArrayName = nullptr;
+	UClass* ExpectedBaseClass = nullptr;
+	const TCHAR* DuplicateCode = nullptr;
+	const TCHAR* UnsupportedAssetMessage = nullptr;
+};
+
+FAnimSequenceManagedObjectFragmentArrayRegionSpec MakeAnimSequenceMetadataFragmentArrayRegionSpec()
+{
+	FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec;
+	Spec.AdapterName = TEXT("AnimSequenceMetadataFragmentArray");
+	Spec.RegionId = TEXT("Body.Metadata");
+	Spec.BodyPath = TEXT("Body.Metadata");
+	Spec.JsonPointer = TEXT("/Body/Metadata");
+	Spec.SchemaLabel = TEXT("AnimSequence Metadata");
+	Spec.ArrayName = TEXT("Metadata");
+	Spec.ExpectedBaseClass = UAnimMetaData::StaticClass();
+	Spec.DuplicateCode = TEXT("DuplicateMetadataKey");
+	Spec.UnsupportedAssetMessage = TEXT("Object fragment resolution requires an AnimSequence asset");
+	return Spec;
+}
+
+FAnimSequenceManagedObjectFragmentArrayRegionSpec MakeAnimSequenceAssetUserDataFragmentArrayRegionSpec()
+{
+	FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec;
+	Spec.AdapterName = TEXT("AnimSequenceAssetUserDataFragmentArray");
+	Spec.RegionId = TEXT("Body.AssetUserData");
+	Spec.BodyPath = TEXT("Body.AssetUserData");
+	Spec.JsonPointer = TEXT("/Body/AssetUserData");
+	Spec.SchemaLabel = TEXT("AnimSequence AssetUserData");
+	Spec.ArrayName = TEXT("AssetUserData");
+	Spec.ExpectedBaseClass = UAssetUserData::StaticClass();
+	Spec.DuplicateCode = TEXT("DuplicateAssetUserDataKey");
+	Spec.UnsupportedAssetMessage = TEXT("Object fragment resolution requires an AnimSequence asset");
+	return Spec;
+}
+
+FAssetDocumentFragmentArrayRegionConfig MakeAnimSequenceManagedObjectFragmentArrayConfig(
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec& Spec)
 {
 	FAssetDocumentFragmentArrayRegionConfig Config;
-	Config.AdapterName = TEXT("AnimSequenceMetadataFragmentArray");
-	Config.RegionId = TEXT("Body.Metadata");
-	Config.BodyPath = TEXT("Body.Metadata");
-	Config.JsonPointer = TEXT("/Body/Metadata");
-	Config.SchemaLabel = TEXT("AnimSequence Metadata");
+	Config.AdapterName = Spec.AdapterName;
+	Config.RegionId = Spec.RegionId;
+	Config.BodyPath = Spec.BodyPath;
+	Config.JsonPointer = Spec.JsonPointer;
+	Config.SchemaLabel = Spec.SchemaLabel;
 	return Config;
 }
 
-FAssetDocumentRegionContext MakeAnimSequenceMetadataRegionContext(
-	const FAssetDocumentCapabilityContext& Context)
+FAssetDocumentRegionContext MakeAnimSequenceManagedObjectFragmentArrayRegionContext(
+	const FAssetDocumentCapabilityContext& Context,
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec& Spec)
 {
 	FAssetDocumentRegionContext RegionContext;
 	RegionContext.Asset = Context.Asset;
@@ -2553,9 +2598,9 @@ FAssetDocumentRegionContext MakeAnimSequenceMetadataRegionContext(
 	RegionContext.Definitions = Context.Definitions;
 	RegionContext.bIsDryRun = Context.bIsDryRun;
 	RegionContext.Result = Context.Result;
-	RegionContext.RegionId = TEXT("Body.Metadata");
-	RegionContext.BodyPath = TEXT("Body.Metadata");
-	RegionContext.JsonPointer = TEXT("/Body/Metadata");
+	RegionContext.RegionId = Spec.RegionId;
+	RegionContext.BodyPath = Spec.BodyPath;
+	RegionContext.JsonPointer = Spec.JsonPointer;
 	return RegionContext;
 }
 
@@ -2639,11 +2684,12 @@ FAssetDocumentCapabilityResult CompileManagedObjectFragments(
 		OutObjects);
 }
 
-FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
+FAssetDocumentCapabilityResult ParseManagedObjectFragmentArrayRegion(
 	const FAssetDocumentFragmentCompiler* Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	UAnimSequence* Sequence,
 	const TSharedRef<FJsonObject>& BodyObject,
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec& Spec,
 	bool bResolveFragments,
 	bool& bOutHasArray,
 	TArray<FParsedManagedObjectFragment>& OutObjects)
@@ -2651,22 +2697,22 @@ FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
 	bOutHasArray = false;
 	OutObjects.Reset();
 
-	const TSharedPtr<FJsonValue>* ArrayValue = BodyObject->Values.Find(TEXT("Metadata"));
+	const TSharedPtr<FJsonValue>* ArrayValue = BodyObject->Values.Find(Spec.ArrayName);
 	if (!ArrayValue)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
 	FAssetDocumentFragmentArrayHooks Hooks;
-	Hooks.Validate = [Compiler, &Context, Sequence, bResolveFragments, &OutObjects](
+	Hooks.Validate = [Compiler, &Context, Sequence, &Spec, bResolveFragments, &OutObjects](
 		const FAssetDocumentRegionContext&,
 		const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
 	{
 		FAssetDocumentCapabilityResult Result = ValidateManagedObjectFragmentEntries(
 			Entries,
-			TEXT("Metadata"),
-			UAnimMetaData::StaticClass(),
-			TEXT("DuplicateMetadataKey"));
+			Spec.ArrayName,
+			Spec.ExpectedBaseClass,
+			Spec.DuplicateCode);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -2678,7 +2724,7 @@ FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
 		}
 		if (!Compiler || !Sequence)
 		{
-			return BodyFailure(TEXT("Object fragment resolution requires an AnimSequence asset"), TEXT("/Body/Metadata"), TEXT("UnsupportedAsset"));
+			return BodyFailure(Spec.UnsupportedAssetMessage, Spec.JsonPointer, TEXT("UnsupportedAsset"));
 		}
 
 		UObject* FragmentOuter = NewObject<UAnimSequence>(GetTransientPackage(), UAnimSequence::StaticClass(), NAME_None, RF_Transient);
@@ -2688,16 +2734,16 @@ FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
 			Sequence,
 			FragmentOuter,
 			Entries,
-			TEXT("Metadata"),
-			UAnimMetaData::StaticClass(),
-			TEXT("DuplicateMetadataKey"),
+			Spec.ArrayName,
+			Spec.ExpectedBaseClass,
+			Spec.DuplicateCode,
 			OutObjects);
 	};
 
 	const FAssetDocumentFragmentArrayRegionAdapter Adapter(
-		MakeAnimSequenceMetadataFragmentArrayConfig(),
+		MakeAnimSequenceManagedObjectFragmentArrayConfig(Spec),
 		MoveTemp(Hooks));
-	const FAssetDocumentRegionContext RegionContext = MakeAnimSequenceMetadataRegionContext(Context);
+	const FAssetDocumentRegionContext RegionContext = MakeAnimSequenceManagedObjectFragmentArrayRegionContext(Context, Spec);
 	const FAssetDocumentCapabilityResult Result = Adapter.ValidateRegion(RegionContext, *ArrayValue);
 	if (Result.bSuccess)
 	{
@@ -2706,78 +2752,46 @@ FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
 	return Result;
 }
 
-FAssetDocumentCapabilityResult ParseManagedObjectFragmentArray(
+FAssetDocumentCapabilityResult ParseManagedMetadataFragmentArray(
 	const FAssetDocumentFragmentCompiler* Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	UAnimSequence* Sequence,
 	const TSharedRef<FJsonObject>& BodyObject,
-	const TCHAR* ArrayName,
-	UClass* ExpectedBaseClass,
-	const TCHAR* DuplicateCode,
 	bool bResolveFragments,
 	bool& bOutHasArray,
 	TArray<FParsedManagedObjectFragment>& OutObjects)
 {
-	bOutHasArray = false;
-	OutObjects.Reset();
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec = MakeAnimSequenceMetadataFragmentArrayRegionSpec();
+	return ParseManagedObjectFragmentArrayRegion(
+		Compiler,
+		Context,
+		Sequence,
+		BodyObject,
+		Spec,
+		bResolveFragments,
+		bOutHasArray,
+		OutObjects);
+}
 
-	const TSharedPtr<FJsonValue>* ArrayValue = BodyObject->Values.Find(ArrayName);
-	if (!ArrayValue)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
-	FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*ArrayValue, FString::Printf(TEXT("/Body/%s"), ArrayName), Values);
-	if (!ArrayResult.bSuccess)
-	{
-		return ArrayResult;
-	}
-	bOutHasArray = true;
-
-	TSet<FString> SemanticKeys;
-	for (int32 Index = 0; Index < Values->Num(); ++Index)
-	{
-		TSharedPtr<FJsonObject> EntryObject;
-		TSharedPtr<FJsonObject> FragmentObject;
-		FString ExplicitName;
-		FAssetDocumentCapabilityResult EntryResult = GetObjectFragmentFromArrayEntry((*Values)[Index], ArrayName, Index, EntryObject, FragmentObject, ExplicitName);
-		if (!EntryResult.bSuccess)
-		{
-			return EntryResult;
-		}
-
-		FString ClassName;
-		if (FragmentObject.IsValid() && FragmentObject->TryGetStringField(TEXT("Class"), ClassName) && !ClassName.IsEmpty())
-		{
-			const FString SemanticKey = ClassName / ExplicitName;
-			if (SemanticKeys.Contains(SemanticKey))
-			{
-				return BodyFailure(TEXT("Duplicate object fragment semantic key"), BodyArrayFieldPath(ArrayName, Index) / TEXT("Class"), DuplicateCode);
-			}
-			SemanticKeys.Add(SemanticKey);
-		}
-		if (FragmentObject.IsValid())
-		{
-			FAssetDocumentCapabilityResult ShapeResult = ValidateManagedObjectFragmentShape(FragmentObject.ToSharedRef(), ArrayName, Index, ExpectedBaseClass);
-			if (!ShapeResult.bSuccess)
-			{
-				return ShapeResult;
-			}
-		}
-	}
-
-	if (!bResolveFragments)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-	if (!Compiler || !Sequence)
-	{
-		return BodyFailure(TEXT("Object fragment resolution requires an AnimSequence asset"), FString::Printf(TEXT("/Body/%s"), ArrayName), TEXT("UnsupportedAsset"));
-	}
-
-	UObject* FragmentOuter = NewObject<UAnimSequence>(GetTransientPackage(), UAnimSequence::StaticClass(), NAME_None, RF_Transient);
-	return CompileManagedObjectFragments(*Compiler, Context, Sequence, FragmentOuter, *Values, ArrayName, ExpectedBaseClass, DuplicateCode, OutObjects);
+FAssetDocumentCapabilityResult ParseManagedAssetUserDataFragmentArray(
+	const FAssetDocumentFragmentCompiler* Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	UAnimSequence* Sequence,
+	const TSharedRef<FJsonObject>& BodyObject,
+	bool bResolveFragments,
+	bool& bOutHasArray,
+	TArray<FParsedManagedObjectFragment>& OutObjects)
+{
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec = MakeAnimSequenceAssetUserDataFragmentArrayRegionSpec();
+	return ParseManagedObjectFragmentArrayRegion(
+		Compiler,
+		Context,
+		Sequence,
+		BodyObject,
+		Spec,
+		bResolveFragments,
+		bOutHasArray,
+		OutObjects);
 }
 
 bool IsManagedObjectByName(const UObject* Object, const TCHAR* Prefix)
@@ -2952,47 +2966,68 @@ FAssetDocumentCapabilityResult ExtractManagedMetadata(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ExtractManagedMetadataRegion(
+FAssetDocumentCapabilityResult ExtractManagedObjectFragmentArrayRegion(
 	const FAssetDocumentFragmentCompiler& Compiler,
 	const FAssetDocumentCapabilityContext& Context,
 	const UAnimSequence* Sequence,
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec& Spec,
+	TFunctionRef<FAssetDocumentCapabilityResult(
+		const FAssetDocumentFragmentCompiler&,
+		const UAnimSequence*,
+		TArray<TSharedPtr<FJsonValue>>&)> ExtractObjects,
 	TSharedPtr<FJsonValue>& OutValue)
 {
 	FAssetDocumentFragmentArrayHooks Hooks;
-	Hooks.Extract = [&Compiler, Sequence](
+	Hooks.Extract = [&Compiler, Sequence, &Spec, ExtractObjects](
 		const FAssetDocumentRegionContext&,
 		TArray<TSharedRef<FJsonObject>>& OutEntries)
 	{
-		TArray<TSharedPtr<FJsonValue>> ExtractedMetadata;
-		FAssetDocumentCapabilityResult Result = ExtractManagedMetadata(Compiler, Sequence, ExtractedMetadata);
+		TArray<TSharedPtr<FJsonValue>> ExtractedObjects;
+		FAssetDocumentCapabilityResult Result = ExtractObjects(Compiler, Sequence, ExtractedObjects);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
 
 		OutEntries.Reset();
-		OutEntries.Reserve(ExtractedMetadata.Num());
-		for (int32 Index = 0; Index < ExtractedMetadata.Num(); ++Index)
+		OutEntries.Reserve(ExtractedObjects.Num());
+		for (int32 Index = 0; Index < ExtractedObjects.Num(); ++Index)
 		{
-			const TSharedPtr<FJsonValue>& EntryValue = ExtractedMetadata[Index];
+			const TSharedPtr<FJsonValue>& EntryValue = ExtractedObjects[Index];
 			if (!EntryValue.IsValid() || EntryValue->Type != EJson::Object || !EntryValue->AsObject().IsValid())
 			{
 				return BodyFailure(
 					TEXT("Expected a JSON object for fragment array entry"),
-					BodyArrayFieldPath(TEXT("Metadata"), Index),
+					BodyArrayFieldPath(Spec.ArrayName, Index),
 					TEXT("InvalidFragmentArrayEntryType"));
 			}
 			OutEntries.Add(EntryValue->AsObject().ToSharedRef());
 		}
 
-		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimSequence Metadata fragments"));
+		return FAssetDocumentCapabilityResult::Success(FString::Printf(TEXT("Extracted %s fragments"), *Spec.SchemaLabel));
 	};
 
 	const FAssetDocumentFragmentArrayRegionAdapter Adapter(
-		MakeAnimSequenceMetadataFragmentArrayConfig(),
+		MakeAnimSequenceManagedObjectFragmentArrayConfig(Spec),
 		MoveTemp(Hooks));
-	const FAssetDocumentRegionContext RegionContext = MakeAnimSequenceMetadataRegionContext(Context);
+	const FAssetDocumentRegionContext RegionContext = MakeAnimSequenceManagedObjectFragmentArrayRegionContext(Context, Spec);
 	return Adapter.ExtractRegion(RegionContext, OutValue);
+}
+
+FAssetDocumentCapabilityResult ExtractManagedMetadataRegion(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec = MakeAnimSequenceMetadataFragmentArrayRegionSpec();
+	return ExtractManagedObjectFragmentArrayRegion(
+		Compiler,
+		Context,
+		Sequence,
+		Spec,
+		ExtractManagedMetadata,
+		OutValue);
 }
 
 FAssetDocumentCapabilityResult ExtractManagedAssetUserData(
@@ -3044,6 +3079,22 @@ FAssetDocumentCapabilityResult ExtractManagedAssetUserData(
 		return JsonValueToComparableString(Left) < JsonValueToComparableString(Right);
 	});
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractManagedAssetUserDataRegion(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimSequence* Sequence,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	const FAnimSequenceManagedObjectFragmentArrayRegionSpec Spec = MakeAnimSequenceAssetUserDataFragmentArrayRegionSpec();
+	return ExtractManagedObjectFragmentArrayRegion(
+		Compiler,
+		Context,
+		Sequence,
+		Spec,
+		ExtractManagedAssetUserData,
+		OutValue);
 }
 
 TArray<TSharedPtr<FJsonValue>> ExtractAnimSequenceSyncMarkers(const UAnimSequence* Sequence)
@@ -3788,14 +3839,11 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 			return Result;
 		}
 
-		Result = ParseManagedObjectFragmentArray(
+		Result = ParseManagedAssetUserDataFragmentArray(
 			Compiler,
 			Context,
 			Sequence,
 			BodyObject,
-			TEXT("AssetUserData"),
-			UAssetUserData::StaticClass(),
-			TEXT("DuplicateAssetUserDataKey"),
 			bResolveFragments,
 			OutParsed.bHasAssetUserData,
 			OutParsed.AssetUserData);
@@ -4646,13 +4694,13 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 		return ObjectFragmentExtractResult;
 	}
 	OutBodyJson->SetField(TEXT("Metadata"), ExtractedMetadata);
-	TArray<TSharedPtr<FJsonValue>> ExtractedAssetUserData;
-	ObjectFragmentExtractResult = ExtractManagedAssetUserData(Compiler, Sequence, ExtractedAssetUserData);
+	TSharedPtr<FJsonValue> ExtractedAssetUserData;
+	ObjectFragmentExtractResult = ExtractManagedAssetUserDataRegion(Compiler, Context, Sequence, ExtractedAssetUserData);
 	if (!ObjectFragmentExtractResult.bSuccess)
 	{
 		return ObjectFragmentExtractResult;
 	}
-	OutBodyJson->SetArrayField(TEXT("AssetUserData"), ExtractedAssetUserData);
+	OutBodyJson->SetField(TEXT("AssetUserData"), ExtractedAssetUserData);
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body extracted"));
 }

@@ -2336,7 +2336,7 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	NonObjectUserDataItemBody->SetArrayField(TEXT("AssetUserData"), { MakeShared<FJsonValueString>(TEXT("not an object")) });
 	const FAssetDocumentCapabilityResult NonObjectUserDataItemResult = Capability.Validate(Context, MakeBodyValue(NonObjectUserDataItemBody));
 	TestFalse(TEXT("Validate rejects non-object AssetUserData item"), NonObjectUserDataItemResult.bSuccess);
-	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), HasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), HasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NullWrappedObjectBody = MakePlaybackRateBody(3.47);
 	TSharedRef<FJsonObject> NullWrappedObject = MakeShared<FJsonObject>();
