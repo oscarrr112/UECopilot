@@ -1126,8 +1126,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 {
-	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 52);
-	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 77);
+	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 3);
 
 	FAnimSequenceAssetDocumentCapability Capability;
 	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequenceScalarRegions"));
@@ -1233,6 +1233,16 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 			TestEqual(TEXT("Diff desired Playback.RateScale is authored value"), DesiredPlayback->GetNumberField(TEXT("RateScale")), 2.0);
 		}
 	}
+
+	TSharedRef<FJsonObject> PreviewDiffBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> PreviewDiff = MakeShared<FJsonObject>();
+	PreviewDiff->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	PreviewDiffBody->SetObjectField(TEXT("Preview"), PreviewDiff);
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult PreviewDiffResult = Capability.Diff(Context, MakeBodyValue(PreviewDiffBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for Preview pilot region"), PreviewDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> PreviewDiffEntry = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Preview"));
+	TestTrue(TEXT("Diff reports Preview path through pilot region"), PreviewDiffEntry.IsValid());
 
 	const FAssetDocumentCapabilityResult ApplyPlaybackForDiffResult = Capability.Apply(Context, MakeBodyValue(MakePlaybackRateBody(2.0)));
 	TestTrue(TEXT("Apply playback-only body for unchanged diff check"), ApplyPlaybackForDiffResult.bSuccess);

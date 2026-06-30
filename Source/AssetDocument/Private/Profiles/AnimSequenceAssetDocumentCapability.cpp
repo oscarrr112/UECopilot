@@ -12,6 +12,7 @@
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
+#include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
@@ -221,19 +222,6 @@ void AddBodyDiffEntry(
 	Entry->SetField(TEXT("current"), Current.IsValid() ? Current : MakeShared<FJsonValueNull>());
 	Entry->SetField(TEXT("desired"), Desired.IsValid() ? Desired : MakeShared<FJsonValueNull>());
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
-}
-
-TSharedRef<FJsonObject> MakeBodyObjectForDiff(const TSharedRef<FJsonObject>& BodyObject)
-{
-	if (!BodyObject->HasField(TEXT("_Skipped")))
-	{
-		return BodyObject;
-	}
-
-	TSharedRef<FJsonObject> DiffBody = MakeShared<FJsonObject>();
-	DiffBody->Values = BodyObject->Values;
-	DiffBody->RemoveField(TEXT("_Skipped"));
-	return DiffBody;
 }
 
 FAssetDocumentCapabilityResult RequireObjectValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, TSharedPtr<FJsonObject>& OutObject)
@@ -4455,111 +4443,99 @@ FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Extract(con
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::Diff(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	if (DesiredJson->Type != EJson::Object)
-	{
-		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	const TSharedPtr<FJsonObject> DesiredBody = DesiredJson->AsObject();
-	if (!DesiredBody.IsValid())
-	{
-		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	const bool bHasSkippedMetadata = DesiredBody->HasField(TEXT("_Skipped"));
-	const TSharedRef<FJsonObject> DesiredBodyForDiff = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
-	const TSharedRef<FJsonValue> DesiredJsonForDiff = bHasSkippedMetadata
-		? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(DesiredBodyForDiff))
-		: DesiredJson;
-
 	FAssetDocumentFragmentCompiler Compiler;
 	Compiler.RegisterBuiltInAdapters();
 
-	FParsedAnimSequenceBody ParsedForValidation;
-	const FAssetDocumentCapabilityResult ValidateResult = ParseAnimSequenceBody(&Compiler, Context, Cast<UAnimSequence>(Context.Asset), DesiredBodyForDiff, false, ParsedForValidation);
-	if (!ValidateResult.bSuccess)
+	FAssetDocumentPreviewApplyDiffHooks Hooks;
+	Hooks.ValidateDesiredBody = [&Compiler](
+		const FAssetDocumentCapabilityContext& ValidateContext,
+		const TSharedRef<FJsonObject>& DesiredBody)
 	{
-		return ValidateResult;
-	}
-
-	UAnimSequence* CurrentSequence = Cast<UAnimSequence>(Context.Asset);
-	if (!CurrentSequence)
+		FParsedAnimSequenceBody ParsedForValidation;
+		return ParseAnimSequenceBody(
+			&Compiler,
+			ValidateContext,
+			Cast<UAnimSequence>(ValidateContext.Asset),
+			DesiredBody,
+			false,
+			ParsedForValidation);
+	};
+	Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext& DiffContext, UObject*& OutPreviewAsset)
 	{
-		return BodyFailure(TEXT("AnimSequence body diff requires UAnimSequence asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
-	}
-
-	UAnimSequence* PreviewSequence = DuplicateObject<UAnimSequence>(CurrentSequence, GetTransientPackage());
-	if (!PreviewSequence)
-	{
-		return BodyFailure(TEXT("Failed to duplicate AnimSequence for Body diff"), TEXT("/Body"), TEXT("DuplicateFailed"));
-	}
-
-	FAssetDocumentCapabilityContext PreviewContext = Context;
-	PreviewContext.Asset = PreviewSequence;
-	PreviewContext.AssetClass = UAnimSequence::StaticClass();
-	PreviewContext.bIsDryRun = true;
-
-	FAssetDocumentCapabilityResult ApplyResult = const_cast<FAnimSequenceAssetDocumentCapability*>(this)->Apply(PreviewContext, DesiredJsonForDiff);
-	if (!ApplyResult.bSuccess)
-	{
-		return ApplyResult;
-	}
-
-	TSharedRef<FJsonObject> CurrentBody = MakeShared<FJsonObject>();
-	const FAssetDocumentCapabilityResult ExtractResult = Extract(Context, CurrentBody);
-	if (!ExtractResult.bSuccess)
-	{
-		return ExtractResult;
-	}
-	CurrentBody->RemoveField(TEXT("_Skipped"));
-
-	TSharedRef<FJsonObject> PreviewBody = MakeShared<FJsonObject>();
-	const FAssetDocumentCapabilityResult PreviewExtractResult = Extract(PreviewContext, PreviewBody);
-	if (!PreviewExtractResult.bSuccess)
-	{
-		return PreviewExtractResult;
-	}
-	PreviewBody->RemoveField(TEXT("_Skipped"));
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBodyForDiff->Values)
-	{
-		if (Pair.Key == TEXT("_Skipped"))
+		UAnimSequence* CurrentSequence = Cast<UAnimSequence>(DiffContext.Asset);
+		if (!CurrentSequence)
 		{
-			continue;
+			return BodyFailure(TEXT("AnimSequence body diff requires UAnimSequence asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 		}
 
-		const TSharedPtr<FJsonValue>* CurrentValue = CurrentBody->Values.Find(Pair.Key);
-		const TSharedPtr<FJsonValue> Current = CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>();
-		const TSharedPtr<FJsonValue>* DesiredValue = PreviewBody->Values.Find(Pair.Key);
-		const TSharedPtr<FJsonValue> Desired = DesiredValue ? *DesiredValue : MakeShared<FJsonValueNull>();
-		if (Pair.Key == TEXT("Preview") || Pair.Key == TEXT("Playback"))
+		UAnimSequence* PreviewSequence = DuplicateObject<UAnimSequence>(CurrentSequence, GetTransientPackage());
+		if (!PreviewSequence)
 		{
-			const FAssetDocumentCapabilityResult PilotDiffResult =
-				DiffAnimSequenceObjectPilotRegion(Context, FName(*Pair.Key), Current, Desired, OutDiffEntries);
-			if (!PilotDiffResult.bSuccess)
-			{
-				return PilotDiffResult;
-			}
-			continue;
-		}
-		if (Pair.Key == TEXT("NotifyTracks"))
-		{
-			const FAssetDocumentCapabilityResult PilotDiffResult =
-				DiffAnimSequenceNotifyTracksPilotRegion(Context, Current, Desired, OutDiffEntries);
-			if (!PilotDiffResult.bSuccess)
-			{
-				return PilotDiffResult;
-			}
-			continue;
+			return BodyFailure(TEXT("Failed to duplicate AnimSequence for Body diff"), TEXT("/Body"), TEXT("DuplicateFailed"));
 		}
 
-		const FString Status = JsonValueToComparableString(Current) == JsonValueToComparableString(Desired)
-			? TEXT("unchanged")
-			: TEXT("changed");
-		AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Status, Current, Desired);
-	}
+		OutPreviewAsset = PreviewSequence;
+		return FAssetDocumentCapabilityResult::Success(TEXT("Duplicated AnimSequence for Body diff"));
+	};
+	Hooks.MakePreviewContext = [](const FAssetDocumentCapabilityContext& DiffContext, UObject* PreviewAsset)
+	{
+		FAssetDocumentCapabilityContext PreviewContext = DiffContext;
+		PreviewContext.Asset = PreviewAsset;
+		PreviewContext.AssetClass = UAnimSequence::StaticClass();
+		PreviewContext.bIsDryRun = true;
+		return PreviewContext;
+	};
+	Hooks.ApplyDesiredBody = [this](
+		const FAssetDocumentCapabilityContext& PreviewContext,
+		const TSharedRef<FJsonValue>& DesiredBody)
+	{
+		FAssetDocumentCapabilityContext MutablePreviewContext = PreviewContext;
+		return const_cast<FAnimSequenceAssetDocumentCapability*>(this)->Apply(MutablePreviewContext, DesiredBody);
+	};
+	Hooks.ExtractBody = [this](
+		const FAssetDocumentCapabilityContext& ExtractContext,
+		const TSharedRef<FJsonObject>& OutBody)
+	{
+		TSharedRef<FJsonObject> MutableOutBody = OutBody;
+		return Extract(ExtractContext, MutableOutBody);
+	};
+	Hooks.DiffBodyKey = [](
+		const FAssetDocumentPreviewApplyDiffBodyKeyContext& KeyContext,
+		TArray<TSharedPtr<FJsonValue>>& OutEntries,
+		bool& bOutHandled)
+	{
+		bOutHandled = false;
+		if (!KeyContext.CurrentContext)
+		{
+			return FAssetDocumentCapabilityResult::Failure(
+				TEXT("Missing current diff context"),
+				TEXT("/Body"),
+				TEXT("InvalidPreviewApplyDiffAdapter"));
+		}
+		if (KeyContext.BodyKey == TEXT("Preview") || KeyContext.BodyKey == TEXT("Playback"))
+		{
+			bOutHandled = true;
+			return DiffAnimSequenceObjectPilotRegion(
+				*KeyContext.CurrentContext,
+				FName(*KeyContext.BodyKey),
+				KeyContext.CurrentValue,
+				KeyContext.DesiredValue,
+				OutEntries);
+		}
+		if (KeyContext.BodyKey == TEXT("NotifyTracks"))
+		{
+			bOutHandled = true;
+			return DiffAnimSequenceNotifyTracksPilotRegion(
+				*KeyContext.CurrentContext,
+				KeyContext.CurrentValue,
+				KeyContext.DesiredValue,
+				OutEntries);
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Default diff"));
+	};
 
-	return FAssetDocumentCapabilityResult::Success(TEXT("AnimSequence Body diffed"));
+	FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
+	return Adapter.DiffBody(Context, DesiredJson, OutDiffEntries);
 }
 
 FAssetDocumentCapabilityResult FAnimSequenceAssetDocumentCapability::ValidateBodyObject(const TSharedRef<FJsonObject>& BodyObject) const
