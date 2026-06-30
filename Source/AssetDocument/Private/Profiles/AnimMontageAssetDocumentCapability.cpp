@@ -6,6 +6,7 @@
 #include "AssetDocumentFragmentCompiler.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
+#include "Regions/AssetDocumentFragmentArrayRegionAdapter.h"
 #include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
 
 #include "Animation/AnimCurveTypes.h"
@@ -344,7 +345,6 @@ FAssetDocumentCapabilityResult ValidateBodyObjectShape(const TSharedRef<FJsonObj
 		RequireObject(TEXT("Preview")),
 		RequireObject(TEXT("Sync")),
 		RequireObject(TEXT("RootMotion")),
-		RequireArray(TEXT("Metadata")),
 		RequireObject(TEXT("SectionMetadata")),
 		RequireObject(TEXT("TimeStretch")),
 		RequireArray(TEXT("Curves")),
@@ -1653,6 +1653,46 @@ FAssetDocumentCapabilityResult ValidateMetadataArray(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentFragmentArrayRegionConfig MakeAnimMontageMetadataFragmentArrayConfig()
+{
+	FAssetDocumentFragmentArrayRegionConfig Config;
+	Config.AdapterName = TEXT("AnimMontageMetadataFragmentArray");
+	Config.RegionId = TEXT("Body.Metadata");
+	Config.BodyPath = TEXT("Body.Metadata");
+	Config.JsonPointer = TEXT("/Body/Metadata");
+	Config.SchemaLabel = TEXT("AnimMontage Metadata");
+	return Config;
+}
+
+FAssetDocumentRegionContext MakeAnimMontageMetadataFragmentArrayRegionContext(
+	const FAssetDocumentCapabilityContext& Context)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = Context.Asset;
+	RegionContext.AssetClass = Context.AssetClass;
+	RegionContext.TargetAssetPath = Context.TargetAssetPath;
+	RegionContext.SourceDocumentPath = Context.SourceDocumentPath;
+	RegionContext.Definitions = Context.Definitions;
+	RegionContext.bIsDryRun = Context.bIsDryRun;
+	RegionContext.Result = Context.Result;
+	RegionContext.RegionId = TEXT("Body.Metadata");
+	RegionContext.BodyPath = TEXT("Body.Metadata");
+	RegionContext.JsonPointer = TEXT("/Body/Metadata");
+	return RegionContext;
+}
+
+TArray<TSharedPtr<FJsonValue>> FragmentArrayEntriesToValues(
+	const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Reserve(Entries.Num());
+	for (const FAssetDocumentFragmentArrayEntry& Entry : Entries)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Entry.FragmentObject));
+	}
+	return Values;
+}
+
 void CollectSectionNames(const TArray<FCompositeSection>& Sections, TSet<FName>& OutSectionNames)
 {
 	for (const FCompositeSection& Section : Sections)
@@ -1673,23 +1713,6 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 	FParsedAnimMontageBody& OutParsed)
 {
 	const TSharedPtr<FJsonValue>* MetadataValue = BodyObject->Values.Find(TEXT("Metadata"));
-	const TArray<TSharedPtr<FJsonValue>>* MetadataArray = nullptr;
-	if (MetadataValue)
-	{
-		FAssetDocumentCapabilityResult Result = RequireArrayValue(*MetadataValue, TEXT("/Body/Metadata"), MetadataArray);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		Result = bResolveFragments
-			? ValidateMetadataArrayShape(*MetadataArray, TEXT("/Body/Metadata"))
-			: ValidateMetadataArray(Context, *MetadataArray, TEXT("/Body/Metadata"));
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-	}
 
 	const TSharedPtr<FJsonValue>* SectionMetadataValue = BodyObject->Values.Find(TEXT("SectionMetadata"));
 	TSharedPtr<FJsonObject> SectionMetadataObject;
@@ -1746,6 +1769,28 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 
 	if (!bResolveFragments)
 	{
+		if (MetadataValue)
+		{
+			FAssetDocumentFragmentArrayHooks MetadataHooks;
+			MetadataHooks.Validate = [&Context](
+				const FAssetDocumentRegionContext&,
+				const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
+			{
+				return ValidateMetadataArray(Context, FragmentArrayEntriesToValues(Entries), TEXT("/Body/Metadata"));
+			};
+
+			const FAssetDocumentFragmentArrayRegionAdapter MetadataAdapter(
+				MakeAnimMontageMetadataFragmentArrayConfig(),
+				MoveTemp(MetadataHooks));
+			const FAssetDocumentCapabilityResult Result = MetadataAdapter.ValidateRegion(
+				MakeAnimMontageMetadataFragmentArrayRegionContext(Context),
+				*MetadataValue);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+
 		OutParsed.bHasMetadata = MetadataValue != nullptr;
 		OutParsed.bHasSectionMetadata = SectionMetadataValue != nullptr;
 		return FAssetDocumentCapabilityResult::Success();
@@ -1757,15 +1802,39 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 	}
 
 	UObject* MetadataStagingOuter = nullptr;
-	if (MetadataArray || SectionMetadataValue)
+	if (MetadataValue || SectionMetadataValue)
 	{
 		MetadataStagingOuter = NewObject<UAnimMontage>(GetTransientPackage(), UAnimMontage::StaticClass(), NAME_None, RF_Transient);
 	}
 
-	if (MetadataArray)
+	if (MetadataValue)
 	{
-		OutParsed.bHasMetadata = true;
-		FAssetDocumentCapabilityResult Result = CompileMetadataArray(*Compiler, Context, Montage, MetadataStagingOuter, *MetadataArray, TEXT("/Body/Metadata"), OutParsed.Metadata);
+		FAssetDocumentFragmentArrayHooks MetadataHooks;
+		MetadataHooks.Validate = [Compiler, &Context, Montage, MetadataStagingOuter, &OutParsed](
+			const FAssetDocumentRegionContext&,
+			const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
+		{
+			const TArray<TSharedPtr<FJsonValue>> MetadataValues = FragmentArrayEntriesToValues(Entries);
+			FAssetDocumentCapabilityResult Result = ValidateMetadataArrayShape(MetadataValues, TEXT("/Body/Metadata"));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			Result = CompileMetadataArray(*Compiler, Context, Montage, MetadataStagingOuter, MetadataValues, TEXT("/Body/Metadata"), OutParsed.Metadata);
+			if (Result.bSuccess)
+			{
+				OutParsed.bHasMetadata = true;
+			}
+			return Result;
+		};
+
+		const FAssetDocumentFragmentArrayRegionAdapter MetadataAdapter(
+			MakeAnimMontageMetadataFragmentArrayConfig(),
+			MoveTemp(MetadataHooks));
+		const FAssetDocumentCapabilityResult Result = MetadataAdapter.ValidateRegion(
+			MakeAnimMontageMetadataFragmentArrayRegionContext(Context),
+			*MetadataValue);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1931,6 +2000,51 @@ FAssetDocumentCapabilityResult ExtractMetadataObject(
 
 	const FAssetDocumentFragmentResult FragmentResult = Compiler.Extract(ExtractContext, OutFragment);
 	return FragmentResult.bSuccess ? FAssetDocumentCapabilityResult::Success() : FragmentFailure(FragmentResult);
+}
+
+FAssetDocumentCapabilityResult ExtractMetadataFragmentArrayRegion(
+	const FAssetDocumentFragmentCompiler& Compiler,
+	const FAssetDocumentCapabilityContext& Context,
+	const UAnimMontage* Montage,
+	TSharedPtr<FJsonValue>& OutValue)
+{
+	FAssetDocumentFragmentArrayHooks Hooks;
+	Hooks.Extract = [&Compiler, Montage](
+		const FAssetDocumentRegionContext&,
+		TArray<TSharedRef<FJsonObject>>& OutEntries)
+	{
+		OutEntries.Reset();
+		const TArray<UAnimMetaData*>& AssetMetadata = Montage->GetMetaData();
+		OutEntries.Reserve(AssetMetadata.Num());
+		for (int32 MetadataIndex = 0; MetadataIndex < AssetMetadata.Num(); ++MetadataIndex)
+		{
+			UAnimMetaData* MetadataObject = AssetMetadata[MetadataIndex];
+			if (!MetadataObject)
+			{
+				continue;
+			}
+
+			TSharedRef<FJsonObject> MetadataFragment = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityResult Result = ExtractMetadataObject(
+				Compiler,
+				const_cast<UAnimMontage*>(Montage),
+				MetadataObject,
+				FString::Printf(TEXT("/Body/Metadata/%d"), MetadataIndex),
+				MetadataFragment);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			OutEntries.Add(MetadataFragment);
+		}
+
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimMontage Metadata fragments"));
+	};
+
+	const FAssetDocumentFragmentArrayRegionAdapter Adapter(
+		MakeAnimMontageMetadataFragmentArrayConfig(),
+		MoveTemp(Hooks));
+	return Adapter.ExtractRegion(MakeAnimMontageMetadataFragmentArrayRegionContext(Context), OutValue);
 }
 
 FFloatProperty* FindTimeStretchFloatProperty(const FName PropertyName)
@@ -2498,30 +2612,13 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 	RootMotion->SetStringField(TEXT("RootMotionRootLock"), RootMotionRootLockToString(Montage->RootMotionRootLock));
 	OutBodyJson->SetObjectField(TEXT("RootMotion"), RootMotion);
 
-	TArray<TSharedPtr<FJsonValue>> Metadata;
-	const TArray<UAnimMetaData*>& AssetMetadata = Montage->GetMetaData();
-	for (int32 MetadataIndex = 0; MetadataIndex < AssetMetadata.Num(); ++MetadataIndex)
+	TSharedPtr<FJsonValue> MetadataValue;
+	FAssetDocumentCapabilityResult MetadataResult = ExtractMetadataFragmentArrayRegion(Compiler, Context, Montage, MetadataValue);
+	if (!MetadataResult.bSuccess)
 	{
-		UAnimMetaData* MetadataObject = AssetMetadata[MetadataIndex];
-		if (!MetadataObject)
-		{
-			continue;
-		}
-
-		TSharedRef<FJsonObject> MetadataFragment = MakeShared<FJsonObject>();
-		FAssetDocumentCapabilityResult Result = ExtractMetadataObject(
-			Compiler,
-			const_cast<UAnimMontage*>(Montage),
-			MetadataObject,
-			FString::Printf(TEXT("/Body/Metadata/%d"), MetadataIndex),
-			MetadataFragment);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Metadata.Add(MakeShared<FJsonValueObject>(MetadataFragment));
+		return MetadataResult;
 	}
-	OutBodyJson->SetArrayField(TEXT("Metadata"), Metadata);
+	OutBodyJson->SetField(TEXT("Metadata"), MetadataValue);
 
 	TArray<TSharedPtr<FJsonValue>> SlotAnimTracks;
 	for (const FSlotAnimationTrack& SlotAnimTrack : Montage->SlotAnimTracks)
