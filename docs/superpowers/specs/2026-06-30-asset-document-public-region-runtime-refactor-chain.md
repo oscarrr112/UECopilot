@@ -270,13 +270,18 @@ flowchart TD
 - AnimMontage `SectionMetadata`
 - notify / notify-state object fragments 中符合 fragment array 的部分
 
-Deferral note:
+实现状态（2026-07-01）：
 
-- AnimMontage `AssetUserData` remains deferred because the current AnimMontage profile/capability does not expose `Body.AssetUserData`; this ring does not add new authoring surface. Checked files: `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentProfile.cpp`, `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentCapability.cpp`, and `Source/AssetDocument/Private/Tests/AssetDocumentAnimMontageTests.cpp`.
+- 已新增 `FAssetDocumentFragmentArrayRegionAdapter` / `FAssetDocumentFragmentArrayHooks`，公共实现位于 `Source/AssetDocument/Private/Regions/AssetDocumentFragmentArrayRegionAdapter.*`。
+- AnimSequence `Metadata` 已迁移到公共 fragment array adapter；fragment compiler、object materialization、managed-object rename/writeback、`RemoveMetaData` / `AddMetaData` 仍保留在 AnimSequence profile hook 中。
+- AnimSequence `AssetUserData` 已迁移到公共 fragment array adapter；`UAssetUserData` materialization、managed-object outer move、反射写回 `UAnimationAsset.AssetUserData` 仍保留在 AnimSequence profile hook 中。
+- AnimMontage `Metadata` 已迁移到公共 fragment array adapter；staging outer、`UAnimMetaData` compile/materialization、move-to-montage outer、writeback 到 Montage `MetaData` 数组仍保留在 AnimMontage profile hook 中。
+- AnimMontage `AssetUserData` deferred：当前 AnimMontage profile/capability/schema/test 没有 `Body.AssetUserData` authoring surface，本环不新增资产表面。已核对 `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentProfile.cpp`、`Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentCapability.cpp`、`Source/AssetDocument/Private/Tests/AssetDocumentAnimMontageTests.cpp`。
+- AnimMontage `SectionMetadata` 保持 Montage capability 内的 `map<SectionName,array<EmbeddedObject|DefinitionRef>>` 形态；只在安全层级复用 `FAssetDocumentFragmentArrayUtils` 做 per-section fragment array entry path、parse/extract value 构造，不引入 `MapOfFragmentArraysAdapter`，也不迁移到 `FAssetDocumentFragmentArrayRegionAdapter`。`InvalidBodySectionType` 诊断由显式测试覆盖并保持稳定。
 
-Ring 6 status:
+保留原因：
 
-- AnimMontage `SectionMetadata` implemented via `FAssetDocumentFragmentArrayUtils` per section. The Montage capability still owns the `map<SectionName,array<EmbeddedObject|DefinitionRef>>` shape, section target validation against `CompositeSections`, staging outer, `UAnimMetaData::StaticClass()` compile path, and section writeback semantics; only the repeated per-section fragment array entry parsing and extraction value construction now reuse the fragment-array utility. This intentionally does not introduce a `MapOfFragmentArraysAdapter` or migrate `SectionMetadata` to `FAssetDocumentFragmentArrayRegionAdapter`.
+- AnimMontage `SectionMetadata` 的 section target validation 依赖 `CompositeSections`，apply 时还要维护 staging outer、`UAnimMetaData::StaticClass()` compile path 和 section writeback 语义；这些仍是 Montage-specific hook，而不是公共 fragment array adapter 的职责。
 
 明确不做：
 
