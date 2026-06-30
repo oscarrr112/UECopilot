@@ -2330,7 +2330,7 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	NullMetadataItemBody->SetArrayField(TEXT("Metadata"), { MakeShared<FJsonValueNull>() });
 	const FAssetDocumentCapabilityResult NullMetadataItemResult = Capability.Validate(Context, MakeBodyValue(NullMetadataItemBody));
 	TestFalse(TEXT("Validate rejects null Metadata item"), NullMetadataItemResult.bSuccess);
-	TestTrue(TEXT("Null Metadata item diagnostic is precise"), HasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Null Metadata item diagnostic is precise"), HasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NonObjectUserDataItemBody = MakePlaybackRateBody(3.46);
 	NonObjectUserDataItemBody->SetArrayField(TEXT("AssetUserData"), { MakeShared<FJsonValueString>(TEXT("not an object")) });
