@@ -240,6 +240,14 @@ flowchart TD
 - Graph materialization 仍可单独测试和替换。
 - Graph diagnostic bridge 统一输出 region path。
 
+实现状态（2026-06-30）：
+
+- 已新增 `FAssetDocumentGraphRegionWrapperAdapter` 作为 synthetic graph body lifecycle wrapper。
+- WidgetBlueprint graph region adapter 已委托公共 wrapper，graph materializer 仍为 `FWidgetBlueprintGraphAdapter`。
+- UBlueprint graph validate / apply / extract / diff 已通过公共 wrapper 接线，staged parent / variable validation 保持 UBlueprint hook。
+- UBlueprint `FunctionGraphs` / `MacroGraphs` 仍未新增 authoring 支持。
+- UBlueprint graph extract 合并 `_Skipped` evidence 时保持 existing evidence，不覆盖其它 Body region 的 skipped 记录。
+
 ## 10. 第 6 环：Fragment Array Region Adapter
 
 优先级：P1
