@@ -313,6 +313,22 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
+TSharedPtr<FJsonObject> FindDiffEntryByExactPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Path;
+		if (Object.IsValid()
+			&& Object->TryGetStringField(TEXT("path"), Path)
+			&& Path.Equals(ExpectedPath, ESearchCase::CaseSensitive))
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
 void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
 {
 	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
@@ -1932,6 +1948,41 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
 		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("desired"), TEXT("Health"), TEXT("125.0"));
 	}
+
+	TSharedRef<FJsonObject> MatchedVariableBody = MakeShared<FJsonObject>();
+	MatchedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	MatchedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("100.0"))}));
+	TArray<TSharedPtr<FJsonValue>> MatchedVariableDiffEntries;
+	const FAssetDocumentCapabilityResult MatchedVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(MatchedVariableBody), MatchedVariableDiffEntries);
+	TestTrue(TEXT("Matched unchanged variable diff succeeds"), MatchedVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> MatchedHealthDiff = FindDiffEntryByPath(MatchedVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Matched unchanged variable uses semantic path"), MatchedHealthDiff.IsValid());
+	if (MatchedHealthDiff.IsValid())
+	{
+		TestTrue(TEXT("Matched unchanged variable has no change"), IsUnchangedDiffEntry(MatchedHealthDiff));
+		TestVariableDiffValue(this, MatchedHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, MatchedHealthDiff, TEXT("desired"), TEXT("Health"), TEXT("100.0"));
+	}
+
+	TSharedRef<FJsonObject> CaseVariantVariableBody = MakeShared<FJsonObject>();
+	CaseVariantVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	CaseVariantVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("health"), TEXT("100.0"))}));
+	TArray<TSharedPtr<FJsonValue>> CaseVariantVariableDiffEntries;
+	const FAssetDocumentCapabilityResult CaseVariantVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(CaseVariantVariableBody), CaseVariantVariableDiffEntries);
+	TestTrue(TEXT("Case-variant variable diff succeeds"), CaseVariantVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> CaseVariantHealthDiff = FindDiffEntryByPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Case-variant variable keeps current semantic path"), CaseVariantHealthDiff.IsValid());
+	if (CaseVariantHealthDiff.IsValid())
+	{
+		TestTrue(TEXT("Case-variant variable matches as unchanged"), IsUnchangedDiffEntry(CaseVariantHealthDiff));
+		TestVariableDiffValue(this, CaseVariantHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, CaseVariantHealthDiff, TEXT("desired"), TEXT("health"), TEXT("100.0"));
+	}
+	TestFalse(
+		TEXT("Case-variant variable does not emit desired-only lowercase path"),
+		FindDiffEntryByExactPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/health")).IsValid());
 
 	TSharedRef<FJsonObject> DesiredVariableBody = MakeShared<FJsonObject>();
 	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
