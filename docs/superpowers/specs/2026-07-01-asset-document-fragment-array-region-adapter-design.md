@@ -15,7 +15,6 @@ AssetDocument public region runtime 已经完成 object field schema dispatcher�
 - AnimSequence `Metadata`
 - AnimSequence `AssetUserData`
 - AnimMontage `Metadata`
-- AnimMontage `AssetUserData`
 - AnimMontage `SectionMetadata` 中每个 section 对应的 metadata array
 
 这些区域重复了相似的生命周期逻辑：
@@ -47,7 +46,7 @@ AssetDocument public region runtime 已经完成 object field schema dispatcher�
 3. 统一 fragment array 的 validate / preflight / apply / extract / diff 生命周期。
 4. 统一 JSON array/object shape validation、entry path、empty array、delete/replace 行为。
 5. 第一版迁移 AnimSequence `Metadata` 和 `AssetUserData`。
-6. 第一版迁移 AnimMontage `Metadata` 和 `AssetUserData`。
+6. 第一版迁移 AnimMontage `Metadata`；AnimMontage `AssetUserData` 仅在确认现有 profile 已暴露 `Body.AssetUserData` 时迁移。
 7. 第一版让 AnimMontage `SectionMetadata` 的 per-section array 复用 fragment array utility，但不把 section map 语义塞进基础 adapter。
 8. 保持 public AssetDocument body schema 和 fragment JSON schema 不变。
 

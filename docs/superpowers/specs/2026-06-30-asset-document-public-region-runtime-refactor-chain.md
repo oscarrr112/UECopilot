@@ -267,9 +267,12 @@ flowchart TD
 - AnimSequence `Metadata`
 - AnimSequence `AssetUserData`
 - AnimMontage `Metadata`
-- AnimMontage `AssetUserData`
 - AnimMontage `SectionMetadata`
 - notify / notify-state object fragments 中符合 fragment array 的部分
+
+Deferral note:
+
+- AnimMontage `AssetUserData` remains deferred because the current AnimMontage profile/capability does not expose `Body.AssetUserData`; this ring does not add new authoring surface. Checked files: `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentProfile.cpp`, `Source/AssetDocument/Private/Profiles/AnimMontageAssetDocumentCapability.cpp`, and `Source/AssetDocument/Private/Tests/AssetDocumentAnimMontageTests.cpp`.
 
 明确不做：
 
