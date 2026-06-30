@@ -6,6 +6,7 @@
 #include "AssetDocumentFragmentCompiler.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
+#include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
 
 #include "Animation/AnimCurveTypes.h"
 #include "Animation/AnimData/IAnimationDataController.h"
@@ -34,154 +35,6 @@ bool IsKnownBodyKey(const FString& BodyKey)
 		}
 	}
 	return false;
-}
-
-FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
-{
-	auto AppendQuotedJsonString = [](const FString& String, FString& Out)
-	{
-		Out += TEXT("\"");
-		for (int32 Index = 0; Index < String.Len(); ++Index)
-		{
-			const TCHAR Character = String[Index];
-			switch (Character)
-			{
-			case TEXT('"'):
-				Out += TEXT("\\\"");
-				break;
-			case TEXT('\\'):
-				Out += TEXT("\\\\");
-				break;
-			case TEXT('\b'):
-				Out += TEXT("\\b");
-				break;
-			case TEXT('\f'):
-				Out += TEXT("\\f");
-				break;
-			case TEXT('\n'):
-				Out += TEXT("\\n");
-				break;
-			case TEXT('\r'):
-				Out += TEXT("\\r");
-				break;
-			case TEXT('\t'):
-				Out += TEXT("\\t");
-				break;
-			default:
-				if (Character < 0x20)
-				{
-					Out += FString::Printf(TEXT("\\u%04x"), static_cast<int32>(Character));
-				}
-				else
-				{
-					Out.AppendChar(Character);
-				}
-				break;
-			}
-		}
-		Out += TEXT("\"");
-	};
-
-	TFunction<void(TSharedPtr<FJsonValue>, FString&)> AppendCanonicalJsonValue;
-	AppendCanonicalJsonValue = [&AppendCanonicalJsonValue, &AppendQuotedJsonString](TSharedPtr<FJsonValue> JsonValue, FString& Out)
-	{
-		if (!JsonValue.IsValid() || JsonValue->Type == EJson::Null || JsonValue->Type == EJson::None)
-		{
-			Out += TEXT("null");
-			return;
-		}
-
-		switch (JsonValue->Type)
-		{
-		case EJson::String:
-			AppendQuotedJsonString(JsonValue->AsString(), Out);
-			break;
-		case EJson::Number:
-			Out += FString::Printf(TEXT("%.17g"), JsonValue->AsNumber());
-			break;
-		case EJson::Boolean:
-			Out += JsonValue->AsBool() ? TEXT("true") : TEXT("false");
-			break;
-		case EJson::Array:
-			{
-				Out += TEXT("[");
-				const TArray<TSharedPtr<FJsonValue>>& Array = JsonValue->AsArray();
-				for (int32 Index = 0; Index < Array.Num(); ++Index)
-				{
-					if (Index > 0)
-					{
-						Out += TEXT(",");
-					}
-					AppendCanonicalJsonValue(Array[Index], Out);
-				}
-				Out += TEXT("]");
-				break;
-			}
-		case EJson::Object:
-			{
-				const TSharedPtr<FJsonObject> Object = JsonValue->AsObject();
-				if (!Object.IsValid())
-				{
-					Out += TEXT("null");
-					break;
-				}
-
-				TArray<FString> Keys;
-				Object->Values.GetKeys(Keys);
-				Keys.Sort();
-
-				Out += TEXT("{");
-				for (int32 Index = 0; Index < Keys.Num(); ++Index)
-				{
-					if (Index > 0)
-					{
-						Out += TEXT(",");
-					}
-					AppendQuotedJsonString(Keys[Index], Out);
-					Out += TEXT(":");
-					const TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(Keys[Index]);
-					AppendCanonicalJsonValue(FieldValue ? *FieldValue : MakeShared<FJsonValueNull>(), Out);
-				}
-				Out += TEXT("}");
-				break;
-			}
-		default:
-			Out += TEXT("null");
-			break;
-		}
-	};
-
-	FString JsonText;
-	AppendCanonicalJsonValue(Value.IsValid() ? Value : MakeShared<FJsonValueNull>(), JsonText);
-	return JsonText;
-}
-
-void AddBodyDiffEntry(
-	TArray<TSharedPtr<FJsonValue>>& Entries,
-	const FString& Path,
-	const FString& Status,
-	TSharedPtr<FJsonValue> Current,
-	TSharedPtr<FJsonValue> Desired)
-{
-	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
-	Entry->SetStringField(TEXT("path"), Path);
-	Entry->SetStringField(TEXT("status"), Status);
-	Entry->SetField(TEXT("current"), Current.IsValid() ? Current : MakeShared<FJsonValueNull>());
-	Entry->SetField(TEXT("desired"), Desired.IsValid() ? Desired : MakeShared<FJsonValueNull>());
-	Entries.Add(MakeShared<FJsonValueObject>(Entry));
-}
-
-TSharedRef<FJsonObject> MakeBodyObjectForDiff(const TSharedRef<FJsonObject>& BodyObject)
-{
-	if (!BodyObject->HasField(TEXT("_Skipped")))
-	{
-		return BodyObject;
-	}
-
-	TSharedRef<FJsonObject> DiffBody = MakeShared<FJsonObject>();
-	DiffBody->Values = BodyObject->Values;
-	DiffBody->RemoveField(TEXT("_Skipped"));
-	return DiffBody;
 }
 
 FString GetLegacyBodyKeyGuidance(const FString& BodyKey)
@@ -2841,85 +2694,59 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Extract(cons
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Diff(const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& DesiredJson, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	if (DesiredJson->Type != EJson::Object)
+	FAssetDocumentPreviewApplyDiffHooks Hooks;
+	Hooks.ValidateDesiredBody = [this](
+		const FAssetDocumentCapabilityContext& ValidateContext,
+		const TSharedRef<FJsonObject>& DesiredBody)
 	{
-		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	const TSharedPtr<FJsonObject> DesiredBody = DesiredJson->AsObject();
-	if (!DesiredBody.IsValid())
+		return ValidateBodyObject(ValidateContext, DesiredBody);
+	};
+	Hooks.DuplicatePreviewAsset = [](const FAssetDocumentCapabilityContext& DiffContext, UObject*& OutPreviewAsset)
 	{
-		return BodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	const bool bHasSkippedMetadata = DesiredBody->HasField(TEXT("_Skipped"));
-	const TSharedRef<FJsonObject> DesiredBodyForDiff = MakeBodyObjectForDiff(DesiredBody.ToSharedRef());
-	const TSharedRef<FJsonValue> DesiredJsonForDiff = bHasSkippedMetadata
-		? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(DesiredBodyForDiff))
-		: DesiredJson;
-
-	const FAssetDocumentCapabilityResult ValidateResult = ValidateBodyObject(Context, DesiredBodyForDiff);
-	if (!ValidateResult.bSuccess)
-	{
-		return ValidateResult;
-	}
-
-	UAnimMontage* CurrentMontage = Cast<UAnimMontage>(Context.Asset);
-	if (!CurrentMontage)
-	{
-		return BodyFailure(TEXT("AnimMontage body diff requires UAnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
-	}
-
-	UAnimMontage* PreviewMontage = DuplicateObject<UAnimMontage>(CurrentMontage, GetTransientPackage());
-	if (!PreviewMontage)
-	{
-		return BodyFailure(TEXT("Failed to duplicate AnimMontage for Body diff"), TEXT("/Body"), TEXT("DuplicateFailed"));
-	}
-
-	FAssetDocumentCapabilityContext PreviewContext = Context;
-	PreviewContext.Asset = PreviewMontage;
-	PreviewContext.AssetClass = UAnimMontage::StaticClass();
-	PreviewContext.bIsDryRun = true;
-
-	FAssetDocumentCapabilityResult ApplyResult = const_cast<FAnimMontageAssetDocumentCapability*>(this)->Apply(PreviewContext, DesiredJsonForDiff);
-	if (!ApplyResult.bSuccess)
-	{
-		return ApplyResult;
-	}
-
-	TSharedRef<FJsonObject> CurrentBody = MakeShared<FJsonObject>();
-	const FAssetDocumentCapabilityResult ExtractResult = Extract(Context, CurrentBody);
-	if (!ExtractResult.bSuccess)
-	{
-		return ExtractResult;
-	}
-	CurrentBody->RemoveField(TEXT("_Skipped"));
-
-	TSharedRef<FJsonObject> PreviewBody = MakeShared<FJsonObject>();
-	const FAssetDocumentCapabilityResult PreviewExtractResult = Extract(PreviewContext, PreviewBody);
-	if (!PreviewExtractResult.bSuccess)
-	{
-		return PreviewExtractResult;
-	}
-	PreviewBody->RemoveField(TEXT("_Skipped"));
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredBodyForDiff->Values)
-	{
-		if (Pair.Key == TEXT("_Skipped"))
+		UAnimMontage* CurrentMontage = Cast<UAnimMontage>(DiffContext.Asset);
+		if (!CurrentMontage)
 		{
-			continue;
+			return BodyFailure(TEXT("AnimMontage body diff requires UAnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 		}
 
-		const TSharedPtr<FJsonValue>* CurrentValue = CurrentBody->Values.Find(Pair.Key);
-		const TSharedPtr<FJsonValue> Current = CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>();
-		const TSharedPtr<FJsonValue>* DesiredValue = PreviewBody->Values.Find(Pair.Key);
-		const TSharedPtr<FJsonValue> Desired = DesiredValue ? *DesiredValue : MakeShared<FJsonValueNull>();
-		const FString Status = JsonValueToComparableString(Current) == JsonValueToComparableString(Desired)
-			? TEXT("unchanged")
-			: TEXT("changed");
-		AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Status, Current, Desired);
-	}
+		UAnimMontage* PreviewMontage = DuplicateObject<UAnimMontage>(CurrentMontage, GetTransientPackage());
+		if (!PreviewMontage)
+		{
+			return BodyFailure(TEXT("Failed to duplicate AnimMontage for Body diff"), TEXT("/Body"), TEXT("DuplicateFailed"));
+		}
 
+		OutPreviewAsset = PreviewMontage;
+		return FAssetDocumentCapabilityResult::Success(TEXT("Duplicated AnimMontage for Body diff"));
+	};
+	Hooks.MakePreviewContext = [](const FAssetDocumentCapabilityContext& DiffContext, UObject* PreviewAsset)
+	{
+		FAssetDocumentCapabilityContext PreviewContext = DiffContext;
+		PreviewContext.Asset = PreviewAsset;
+		PreviewContext.AssetClass = UAnimMontage::StaticClass();
+		PreviewContext.bIsDryRun = true;
+		return PreviewContext;
+	};
+	Hooks.ApplyDesiredBody = [this](
+		const FAssetDocumentCapabilityContext& PreviewContext,
+		const TSharedRef<FJsonValue>& DesiredBody)
+	{
+		FAssetDocumentCapabilityContext MutablePreviewContext = PreviewContext;
+		return const_cast<FAnimMontageAssetDocumentCapability*>(this)->Apply(MutablePreviewContext, DesiredBody);
+	};
+	Hooks.ExtractBody = [this](
+		const FAssetDocumentCapabilityContext& ExtractContext,
+		const TSharedRef<FJsonObject>& OutBody)
+	{
+		TSharedRef<FJsonObject> MutableOutBody = OutBody;
+		return Extract(ExtractContext, MutableOutBody);
+	};
+
+	FAssetDocumentPreviewApplyDiffAdapter Adapter(MoveTemp(Hooks));
+	const FAssetDocumentCapabilityResult DiffResult = Adapter.DiffBody(Context, DesiredJson, OutDiffEntries);
+	if (!DiffResult.bSuccess)
+	{
+		return DiffResult;
+	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("AnimMontage Body diffed"));
 }
 
