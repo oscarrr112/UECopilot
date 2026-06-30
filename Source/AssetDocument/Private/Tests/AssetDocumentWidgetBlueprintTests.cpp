@@ -289,6 +289,48 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
+void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is null"), FieldName),
+		Value.IsValid() && Value->IsNull());
+}
+
+void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject>* InterfaceObject = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is an interface object"), FieldName),
+		ValueObject.IsValid()
+			&& ValueObject->TryGetObjectField(TEXT("Interface"), InterfaceObject)
+			&& InterfaceObject
+			&& InterfaceObject->IsValid());
+	if (!InterfaceObject || !InterfaceObject->IsValid())
+	{
+		return;
+	}
+
+	FString Kind;
+	FString ClassPath;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Kind"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Kind"), Kind));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Kind is ClassRef"), FieldName),
+		Kind,
+		FString(TEXT("ClassRef")));
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Class"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Class"), ClassPath));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Class path"), FieldName),
+		ClassPath,
+		ExpectedClassPath);
+}
+
 bool DiffPayloadHasFailedCode(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedCode)
 {
 	if (!Payload.IsValid())
@@ -3583,6 +3625,33 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest::RunTest(const F
 	{
 		TestEqual(TEXT("current-only implemented interface is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 		TestFalse(TEXT("WidgetBlueprint implemented interface diff keeps no change field"), InterfaceDiff->HasField(TEXT("change")));
+		TestInterfaceDiffValue(this, InterfaceDiff, TEXT("current"), InterfacePath);
+		TestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("desired"));
+	}
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads for matched interface diff"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		const FWidgetBlueprintAssetDocumentCapability Capability;
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = WidgetBlueprint;
+		Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+		TArray<TSharedPtr<FJsonValue>> MatchedDiffEntries;
+		const FAssetDocumentCapabilityResult MatchedDiffResult =
+			Capability.Diff(Context, MakeBodyJsonValue(InterfaceBody), MatchedDiffEntries);
+		TestTrue(TEXT("Matched WidgetBlueprint interface diff succeeds"), MatchedDiffResult.bSuccess);
+		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
+			FindDiffEntryByPath(MatchedDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
+		TestTrue(TEXT("Matched WidgetBlueprint interface is reported as unchanged"), MatchedInterfaceDiff.IsValid());
+		if (MatchedInterfaceDiff.IsValid())
+		{
+			TestEqual(TEXT("matched implemented interface is unchanged"), MatchedInterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+			TestFalse(TEXT("matched WidgetBlueprint interface diff keeps no change field"), MatchedInterfaceDiff->HasField(TEXT("change")));
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
+		}
 	}
 	return true;
 }

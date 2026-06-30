@@ -313,6 +313,48 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
+void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is null"), FieldName),
+		Value.IsValid() && Value->IsNull());
+}
+
+void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject>* InterfaceObject = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is an interface object"), FieldName),
+		ValueObject.IsValid()
+			&& ValueObject->TryGetObjectField(TEXT("Interface"), InterfaceObject)
+			&& InterfaceObject
+			&& InterfaceObject->IsValid());
+	if (!InterfaceObject || !InterfaceObject->IsValid())
+	{
+		return;
+	}
+
+	FString Kind;
+	FString ClassPath;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Kind"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Kind"), Kind));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Kind is ClassRef"), FieldName),
+		Kind,
+		FString(TEXT("ClassRef")));
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Class"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Class"), ClassPath));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Class path"), FieldName),
+		ClassPath,
+		ExpectedClassPath);
+}
+
 bool IsUnchangedDiffEntry(const TSharedPtr<FJsonObject>& Entry)
 {
 	if (!Entry.IsValid())
@@ -1828,8 +1870,9 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 		TestEqual(TEXT("Extra variable diff is changed"), HealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 	}
 
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
 	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
-	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(TEXT("/Script/Engine.ActorSoundParameterInterface")));
+	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(InterfacePath));
 	TArray<TSharedPtr<FJsonValue>> DesiredInterfaces;
 	DesiredInterfaces.Add(MakeShared<FJsonValueObject>(InterfaceEntry));
 
@@ -1845,6 +1888,31 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("Missing interface diff is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 		TestEqual(TEXT("Missing interface diff keeps missing change"), InterfaceDiff->GetStringField(TEXT("change")), FString(TEXT("missing")));
+		TestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("current"));
+		TestInterfaceDiffValue(this, InterfaceDiff, TEXT("desired"), InterfacePath);
+	}
+
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
+	TestNotNull(TEXT("Interface class loads for matched diff"), InterfaceClass);
+	if (InterfaceClass)
+	{
+		FBPInterfaceDescription CurrentInterface;
+		CurrentInterface.Interface = InterfaceClass;
+		Blueprint->ImplementedInterfaces.Add(CurrentInterface);
+
+		TArray<TSharedPtr<FJsonValue>> MatchedInterfaceDiffEntries;
+		const FAssetDocumentCapabilityResult MatchedInterfaceDiffResult =
+			Capability.Diff(Context, MakeBodyValue(InterfaceBody), MatchedInterfaceDiffEntries);
+		TestTrue(TEXT("Matched interface diff succeeds"), MatchedInterfaceDiffResult.bSuccess);
+		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
+			FindDiffEntryByPath(MatchedInterfaceDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
+		TestTrue(TEXT("Matched interface is reported as unchanged"), MatchedInterfaceDiff.IsValid());
+		if (MatchedInterfaceDiff.IsValid())
+		{
+			TestTrue(TEXT("Matched interface diff is unchanged without change"), IsUnchangedDiffEntry(MatchedInterfaceDiff));
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
+		}
 	}
 	return true;
 }
