@@ -1790,11 +1790,25 @@ FAssetDocumentCapabilityResult ParseMetadataRegions(
 					TEXT("UnknownSectionMetadataTarget"));
 			}
 
-			TArray<FAssetDocumentFragmentArrayEntry> Entries;
-			Result = FAssetDocumentFragmentArrayUtils::ParseObjectEntries(Pair.Value, SectionPath, Entries);
+			const TArray<TSharedPtr<FJsonValue>>* SectionValues = nullptr;
+			Result = RequireArrayValue(Pair.Value, SectionPath, SectionValues);
 			if (!Result.bSuccess)
 			{
 				return Result;
+			}
+
+			TArray<FAssetDocumentFragmentArrayEntry> Entries;
+			Entries.Reserve(SectionValues->Num());
+			for (int32 EntryIndex = 0; EntryIndex < SectionValues->Num(); ++EntryIndex)
+			{
+				const FString EntryPath = FAssetDocumentFragmentArrayUtils::MakeEntryPath(SectionPath, EntryIndex);
+				TSharedPtr<FJsonObject> EntryObject;
+				Result = RequireObjectValue((*SectionValues)[EntryIndex], EntryPath, EntryObject);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+				Entries.Emplace(EntryIndex, EntryPath, EntryObject.ToSharedRef());
 			}
 
 			const TArray<TSharedPtr<FJsonValue>> Values = FragmentArrayEntriesToValues(Entries);
