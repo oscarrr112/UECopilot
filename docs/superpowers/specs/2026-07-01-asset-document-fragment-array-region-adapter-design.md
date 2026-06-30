@@ -2,9 +2,9 @@
 
 日期：2026-07-01
 
-状态：待审核
+状态：已实现
 
-适用分支：`feature/asset-document-object-field-schema-dispatcher-migration`
+适用分支：`feature/asset-document-fragment-array-region-adapter`
 
 ## 1. 背景
 
