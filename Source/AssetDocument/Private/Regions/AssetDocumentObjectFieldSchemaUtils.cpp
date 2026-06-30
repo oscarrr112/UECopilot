@@ -120,6 +120,10 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectFieldSchemaUtils::ValidateObj
 			}
 			continue;
 		}
+		if (Value->Type == EJson::Null && Field.bAllowNull)
+		{
+			continue;
+		}
 		if (Value->Type != Field.Type)
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(

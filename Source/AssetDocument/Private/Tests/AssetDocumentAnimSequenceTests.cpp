@@ -1205,6 +1205,16 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TestTrue(TEXT("Extract outputs Compression.bDoNotOverrideCompression"), ExtractedCompression->GetBoolField(TEXT("bDoNotOverrideCompression")));
 	}
 
+	TSharedRef<FJsonObject> ClearPreviewBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> ClearPreview = MakeShared<FJsonObject>();
+	ClearPreview->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
+	ClearPreviewBody->SetObjectField(TEXT("Preview"), ClearPreview);
+	const FAssetDocumentCapabilityResult ClearPreviewValidateResult = Capability.Validate(Context, MakeBodyValue(ClearPreviewBody));
+	TestTrue(TEXT("Validate accepts null Preview.PreviewMesh for clearing"), ClearPreviewValidateResult.bSuccess);
+	const FAssetDocumentCapabilityResult ClearPreviewApplyResult = Capability.Apply(Context, MakeBodyValue(ClearPreviewBody));
+	TestTrue(TEXT("Apply accepts null Preview.PreviewMesh for clearing"), ClearPreviewApplyResult.bSuccess);
+	TestNull(TEXT("Apply clears Preview.PreviewMesh when authored null"), Sequence->GetPreviewMesh());
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyValue(MakePlaybackRateBody(2.0)), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for authored scalar regions"), DiffResult.bSuccess);

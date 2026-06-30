@@ -15,6 +15,7 @@ struct FAssetDocumentObjectFieldSpec
 	FString MissingCode;
 	FString TypeMismatchCode;
 	FString TypeMismatchMessage;
+	bool bAllowNull = false;
 };
 
 struct FAssetDocumentObjectFieldSchema

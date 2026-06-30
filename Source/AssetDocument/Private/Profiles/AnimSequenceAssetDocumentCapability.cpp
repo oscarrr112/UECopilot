@@ -772,6 +772,8 @@ FAssetDocumentObjectFieldSchema MakeAnimSequencePreviewSchema()
 		false,
 		TEXT("MissingPreviewMesh"),
 		TEXT("InvalidObjectReference"),
+		FString(),
+		true,
 	});
 	Schema.bRejectUnknownFields = true;
 	Schema.UnknownFieldCode = TEXT("UnsupportedAuthoredField");

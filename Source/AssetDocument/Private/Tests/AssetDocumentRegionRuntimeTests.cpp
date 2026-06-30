@@ -1907,6 +1907,36 @@ bool FAssetDocumentRegionRuntimeObjectFieldSchemaAcceptsValidObjectTest::RunTest
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeObjectFieldSchemaAcceptsAllowedNullTest,
+	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.AcceptsAllowedNull",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeObjectFieldSchemaAcceptsAllowedNullTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Preview"), TEXT("/Body/Preview"));
+	Context.BodyPath = TEXT("Body.Preview");
+	FAssetDocumentObjectFieldSchema Schema;
+	Schema.UnknownFieldCode = TEXT("UnsupportedAuthoredField");
+	Schema.Fields.Add({
+		TEXT("PreviewMesh"),
+		EJson::Object,
+		false,
+		TEXT("MissingPreviewMesh"),
+		TEXT("InvalidObjectReference"),
+		FString(),
+		true,
+	});
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
+
+	const FAssetDocumentCapabilityResult Result =
+		FAssetDocumentObjectFieldSchemaUtils::ValidateObjectFields(Context, Object, Schema);
+
+	TestTrue(TEXT("Allowed null object field schema succeeds"), Result.bSuccess);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsUnknownFieldTest,
 	"AssetFactory.AssetDocument.RegionRuntime.ObjectFieldSchema.RejectsUnknownField",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
