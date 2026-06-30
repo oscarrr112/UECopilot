@@ -4,6 +4,7 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentFragmentArrayRegionAdapter.h"
 #include "Regions/AssetDocumentGraphRegionWrapperAdapter.h"
 #include "Regions/AssetDocumentIdentityArrayDiffHelper.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
@@ -49,6 +50,13 @@ TSharedPtr<FJsonValue> MakeIdentityValue(const FString& Name, const int32 Count)
 	Object->SetStringField(TEXT("Name"), Name);
 	Object->SetNumberField(TEXT("Count"), Count);
 	return MakeShared<FJsonValueObject>(Object);
+}
+
+TSharedRef<FJsonObject> MakeTestFragment(const TCHAR* Kind)
+{
+	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Kind"), Kind);
+	return Fragment;
 }
 
 FString GetDiffEntryPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const int32 Index)
@@ -3121,6 +3129,255 @@ bool FAssetDocumentRegionRuntimePreviewApplyDiffPropagatesHookFailuresTest::RunT
 					: FAssetDocumentCapabilityResult::Success(TEXT("current extracted"));
 			};
 		});
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeFragmentArraySupportsRegionTest,
+	"AssetFactory.AssetDocument.RegionRuntime.FragmentArray.SupportsRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeFragmentArraySupportsRegionTest::RunTest(const FString&)
+{
+	FAssetDocumentFragmentArrayRegionConfig Config;
+	Config.AdapterName = TEXT("TestFragmentArray");
+	Config.RegionId = TEXT("Body.TestFragments");
+	Config.BodyPath = TEXT("Body.TestFragments");
+	Config.JsonPointer = TEXT("/Body/TestFragments");
+	Config.SchemaLabel = TEXT("Test Fragments");
+
+	FAssetDocumentFragmentArrayRegionAdapter Adapter(MoveTemp(Config), {});
+
+	FAssetDocumentRegionContext RegionIdContext = MakeRuntimeContext(TEXT("Body.TestFragments"), TEXT("/Other"));
+	RegionIdContext.BodyPath = TEXT("Body.Other");
+	TestTrue(TEXT("Supports RegionId"), Adapter.SupportsRegion(RegionIdContext));
+
+	FAssetDocumentRegionContext BodyPathContext = MakeRuntimeContext(TEXT("Body.Other"), TEXT("/Other"));
+	BodyPathContext.BodyPath = TEXT("Body.TestFragments");
+	TestTrue(TEXT("Supports BodyPath"), Adapter.SupportsRegion(BodyPathContext));
+
+	FAssetDocumentRegionContext JsonPointerContext = MakeRuntimeContext(TEXT("Body.Other"), TEXT("/Body/TestFragments"));
+	JsonPointerContext.BodyPath = TEXT("Body.Other");
+	TestTrue(TEXT("Supports JsonPointer"), Adapter.SupportsRegion(JsonPointerContext));
+
+	FAssetDocumentRegionContext OtherContext = MakeRuntimeContext(TEXT("Body.Other"), TEXT("/Body/Other"));
+	OtherContext.BodyPath = TEXT("Body.Other");
+	TestFalse(TEXT("Rejects unrelated region"), Adapter.SupportsRegion(OtherContext));
+
+	const TSharedRef<FJsonObject> Schema = Adapter.GetSchemaHint(JsonPointerContext);
+	TestEqual(TEXT("Schema kind"), Schema->GetStringField(TEXT("Kind")), FString(TEXT("FragmentArray")));
+	TestEqual(TEXT("Schema label"), Schema->GetStringField(TEXT("Label")), FString(TEXT("Test Fragments")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeFragmentArrayRejectsInvalidShapeTest,
+	"AssetFactory.AssetDocument.RegionRuntime.FragmentArray.RejectsInvalidShape",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeFragmentArrayRejectsInvalidShapeTest::RunTest(const FString&)
+{
+	FAssetDocumentFragmentArrayRegionConfig Config;
+	Config.AdapterName = TEXT("TestFragmentArray");
+	Config.RegionId = TEXT("Body.TestFragments");
+	Config.BodyPath = TEXT("Body.TestFragments");
+	Config.JsonPointer = TEXT("/Body/TestFragments");
+
+	FAssetDocumentFragmentArrayHooks Hooks;
+	Hooks.Validate = [](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+	};
+
+	FAssetDocumentFragmentArrayRegionAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.TestFragments"), TEXT("/Body/TestFragments"));
+
+	const FAssetDocumentCapabilityResult NonArrayResult =
+		Adapter.ValidateRegion(Context, MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("Object"))));
+	TestFalse(TEXT("Non-array desired value fails"), NonArrayResult.bSuccess);
+	TestEqual(TEXT("Non-array failure code"), NonArrayResult.Diagnostics.Num() > 0 ? NonArrayResult.Diagnostics[0].Code : FString(), FString(TEXT("InvalidFragmentArrayRegionType")));
+	TestEqual(TEXT("Non-array failure path"), NonArrayResult.Diagnostics.Num() > 0 ? NonArrayResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments")));
+
+	TArray<TSharedPtr<FJsonValue>> InvalidEntries;
+	InvalidEntries.Add(MakeShared<FJsonValueString>(TEXT("not an object")));
+	const FAssetDocumentCapabilityResult NonObjectEntryResult =
+		Adapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(InvalidEntries)));
+	TestFalse(TEXT("Non-object entry fails"), NonObjectEntryResult.bSuccess);
+	TestEqual(TEXT("Non-object entry failure code"), NonObjectEntryResult.Diagnostics.Num() > 0 ? NonObjectEntryResult.Diagnostics[0].Code : FString(), FString(TEXT("InvalidFragmentArrayEntryType")));
+	TestEqual(TEXT("Non-object entry failure path"), NonObjectEntryResult.Diagnostics.Num() > 0 ? NonObjectEntryResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments/0")));
+
+	bool bChanged = true;
+	const FAssetDocumentCapabilityResult ApplyShapeResult =
+		Adapter.ApplyRegion(Context, MakeShared<FJsonValueString>(TEXT("bad")), bChanged);
+	TestFalse(TEXT("Apply shape failure fails"), ApplyShapeResult.bSuccess);
+	TestFalse(TEXT("Apply shape failure resets changed"), bChanged);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest,
+	"AssetFactory.AssetDocument.RegionRuntime.FragmentArray.DispatchesHooks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const FString&)
+{
+	FAssetDocumentFragmentArrayRegionConfig Config;
+	Config.AdapterName = TEXT("TestFragmentArray");
+	Config.RegionId = TEXT("Body.TestFragments");
+	Config.BodyPath = TEXT("Body.TestFragments");
+	Config.JsonPointer = TEXT("/Body/TestFragments");
+
+	bool bValidateSawEntry = false;
+	bool bApplySawEmptyArray = false;
+	FAssetDocumentFragmentArrayHooks Hooks;
+	Hooks.Validate = [&bValidateSawEntry](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>& Entries)
+	{
+		if (Entries.Num() == 1)
+		{
+			bValidateSawEntry = Entries[0].Index == 0
+				&& Entries[0].JsonPointer == TEXT("/Body/TestFragments/0")
+				&& Entries[0].FragmentObject->GetStringField(TEXT("Kind")) == TEXT("EmbeddedObject");
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+	};
+	Hooks.Apply = [&bApplySawEmptyArray](
+		FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentFragmentArrayEntry>& Entries,
+		bool& bOutChanged)
+	{
+		bApplySawEmptyArray = Entries.IsEmpty();
+		bOutChanged = true;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+	};
+
+	FAssetDocumentFragmentArrayRegionAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.TestFragments"), TEXT("/Body/TestFragments"));
+
+	TArray<TSharedPtr<FJsonValue>> ValidEntries;
+	ValidEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
+	const FAssetDocumentCapabilityResult ValidateResult =
+		Adapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(ValidEntries)));
+	TestTrue(TEXT("Validate succeeds"), ValidateResult.bSuccess);
+	TestTrue(TEXT("Validate receives entry index and pointer"), bValidateSawEntry);
+
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult ApplyResult =
+		Adapter.ApplyRegion(Context, MakeArrayValue({}), bChanged);
+	TestTrue(TEXT("Apply succeeds for empty array"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Empty array reaches apply hook"), bApplySawEmptyArray);
+	TestTrue(TEXT("Apply hook can set changed"), bChanged);
+
+	FAssetDocumentFragmentArrayHooks FailingHooks;
+	FailingHooks.Validate = [](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&)
+	{
+		return FAssetDocumentCapabilityResult::Failure(TEXT("validate failed"), TEXT("/Body/TestFragments/0/Kind"), TEXT("FragmentHookFailed"));
+	};
+	FAssetDocumentFragmentArrayRegionConfig FailingConfig;
+	FailingConfig.AdapterName = TEXT("FailingFragmentArray");
+	FailingConfig.RegionId = TEXT("Body.TestFragments");
+	FailingConfig.BodyPath = TEXT("Body.TestFragments");
+	FailingConfig.JsonPointer = TEXT("/Body/TestFragments");
+	FAssetDocumentFragmentArrayRegionAdapter FailingAdapter(MoveTemp(FailingConfig), MoveTemp(FailingHooks));
+
+	TArray<TSharedPtr<FJsonValue>> FailingEntries;
+	FailingEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
+	const FAssetDocumentCapabilityResult FailureResult =
+		FailingAdapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(FailingEntries)));
+	TestFalse(TEXT("Hook failure fails"), FailureResult.bSuccess);
+	TestEqual(TEXT("Hook failure code propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Code : FString(), FString(TEXT("FragmentHookFailed")));
+	TestEqual(TEXT("Hook failure path propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments/0/Kind")));
+	TestEqual(TEXT("Hook failure message propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Message : FString(), FString(TEXT("validate failed")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest,
+	"AssetFactory.AssetDocument.RegionRuntime.FragmentArray.ExtractAndDefaultDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(const FString&)
+{
+	FAssetDocumentFragmentArrayRegionConfig Config;
+	Config.AdapterName = TEXT("TestFragmentArray");
+	Config.RegionId = TEXT("Body.TestFragments");
+	Config.BodyPath = TEXT("Body.TestFragments");
+	Config.JsonPointer = TEXT("/Body/TestFragments");
+
+	FAssetDocumentFragmentArrayHooks Hooks;
+	Hooks.Validate = [](const FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated"));
+	};
+	Hooks.Apply = [](FAssetDocumentRegionContext&, const TArray<FAssetDocumentFragmentArrayEntry>&, bool& bOutChanged)
+	{
+		bOutChanged = false;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied"));
+	};
+	Hooks.Extract = [](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutEntries)
+	{
+		OutEntries.Add(MakeTestFragment(TEXT("Current")));
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted"));
+	};
+
+	FAssetDocumentFragmentArrayRegionAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.TestFragments"), TEXT("/Body/TestFragments"));
+
+	TSharedPtr<FJsonValue> ExtractedValue;
+	const FAssetDocumentCapabilityResult ExtractResult = Adapter.ExtractRegion(Context, ExtractedValue);
+	TestTrue(TEXT("Extract succeeds"), ExtractResult.bSuccess);
+	TestTrue(TEXT("Extract wraps entries in array"), ExtractedValue.IsValid() && ExtractedValue->Type == EJson::Array);
+	TestEqual(TEXT("Extract emits one entry"), ExtractedValue.IsValid() ? ExtractedValue->AsArray().Num() : 0, 1);
+	TestEqual(
+		TEXT("Extract preserves object entry"),
+		ExtractedValue.IsValid() && ExtractedValue->AsArray().Num() > 0
+			? ExtractedValue->AsArray()[0]->AsObject()->GetStringField(TEXT("Kind"))
+			: FString(),
+		FString(TEXT("Current")));
+
+	TArray<TSharedPtr<FJsonValue>> DesiredEntries;
+	DesiredEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("Desired"))));
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Adapter.DiffRegion(Context, MakeArrayValue(MoveTemp(DesiredEntries)), DiffEntries);
+	TestTrue(TEXT("Default diff succeeds"), DiffResult.bSuccess);
+	TestEqual(TEXT("Default diff emits one entry"), DiffEntries.Num(), 1);
+	TestEqual(TEXT("Default diff path"), GetDiffEntryPath(DiffEntries, 0), FString(TEXT("/Body/TestFragments")));
+
+	FAssetDocumentFragmentArrayRegionConfig MissingConfig;
+	MissingConfig.AdapterName = TEXT("MissingHookFragmentArray");
+	MissingConfig.RegionId = TEXT("Body.TestFragments");
+	MissingConfig.BodyPath = TEXT("Body.TestFragments");
+	MissingConfig.JsonPointer = TEXT("/Body/TestFragments");
+	FAssetDocumentFragmentArrayRegionAdapter MissingHookAdapter(MoveTemp(MissingConfig), {});
+
+	TArray<TSharedPtr<FJsonValue>> EmptyDesired;
+	const TSharedPtr<FJsonValue> EmptyArrayValue = MakeArrayValue(MoveTemp(EmptyDesired));
+	const FAssetDocumentCapabilityResult MissingValidateResult =
+		MissingHookAdapter.ValidateRegion(Context, EmptyArrayValue);
+	TestFalse(TEXT("Missing validate hook fails"), MissingValidateResult.bSuccess);
+	TestEqual(TEXT("Missing validate hook code"), MissingValidateResult.Diagnostics.Num() > 0 ? MissingValidateResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedFragmentArrayLifecycle")));
+
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult MissingApplyResult =
+		MissingHookAdapter.ApplyRegion(Context, EmptyArrayValue, bChanged);
+	TestFalse(TEXT("Missing apply hook fails"), MissingApplyResult.bSuccess);
+	TestEqual(TEXT("Missing apply hook code"), MissingApplyResult.Diagnostics.Num() > 0 ? MissingApplyResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedFragmentArrayLifecycle")));
+
+	TSharedPtr<FJsonValue> MissingExtractedValue;
+	const FAssetDocumentCapabilityResult MissingExtractResult =
+		MissingHookAdapter.ExtractRegion(Context, MissingExtractedValue);
+	TestFalse(TEXT("Missing extract hook fails"), MissingExtractResult.bSuccess);
+	TestEqual(TEXT("Missing extract hook code"), MissingExtractResult.Diagnostics.Num() > 0 ? MissingExtractResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedFragmentArrayLifecycle")));
+
+	TArray<TSharedPtr<FJsonValue>> MissingDiffEntries;
+	const FAssetDocumentCapabilityResult MissingDiffResult =
+		MissingHookAdapter.DiffRegion(Context, EmptyArrayValue, MissingDiffEntries);
+	TestFalse(TEXT("Missing diff lifecycle fails"), MissingDiffResult.bSuccess);
+	TestEqual(TEXT("Missing diff lifecycle code"), MissingDiffResult.Diagnostics.Num() > 0 ? MissingDiffResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedFragmentArrayLifecycle")));
 
 	return true;
 }
