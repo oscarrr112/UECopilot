@@ -58,8 +58,9 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 3. 定义 BehaviorTree 的 stable tree authoring surface，支持 root/composite/task/decorator/service 的 validate/apply/extract/diff。
 4. 抽出可复用的 blackboard key utility，供 BT key selector validation 使用，后续也可服务 StateTree 或其它 AI asset。
 5. 抽出 public tree region adapter / helper，避免每个 tree-like asset 都写自己的 extractor/applier/reducer/diff helper。
-6. 对暂不支持的 BT node class、decorator/service property、editor-only layout、debug/cache field 返回 exact diagnostic 或明确 excluded，不静默吞掉。
-7. 用 BB focused automation、BT focused automation、BT+BB integrated roundtrip、full AssetDocument automation、MCP tests 和 smoke runner 验证真实 asset contract。
+6. 定义 BT editor layout 的独立 region，使视觉排布作为同一 spec / plan 的后续 milestone 完成，而不是混入 semantic tree。
+7. 对暂不支持的 BT node class、decorator/service property、editor layout field、debug/cache field 返回 exact diagnostic 或明确 excluded，不静默吞掉。
+8. 用 BB focused automation、BT focused automation、BT+BB integrated roundtrip、full AssetDocument automation、MCP tests 和 smoke runner 验证真实 asset contract。
 
 ## 4. 非目标
 
@@ -69,7 +70,9 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 - 不从非 AssetDocument payload 反推 schema；本 spec 只定义新的 AssetDocument body contract。
 - 不支持 `Body.BlackboardInline`；BT 引用 BB 必须走 AssetRef。
 - 不在 BT capability 中维护一套私有 blackboard key parser。
-- 不把 BT editor graph layout、pin positions、GraphNode GUID、debug execution state、runtime instance memory 写入 sidecar。
+- 不把 BT editor graph layout 混入 `Body.Tree`。布局必须走独立 `Body.EditorLayout` region，并通过 tree node `Id` 关联语义节点。
+- 不把 GraphNode GUID 当作 AssetDocument identity；GraphNode GUID 只能作为 UE editor rebuild 的内部细节。
+- 不把 debug execution state、runtime instance memory 写入 sidecar。
 - 不让 `Properties` 管理 `BlackboardAsset`、`RootNode`、`Services`、`Decorators`、`Children` 等已由 `Body.*` 管理的字段。
 - 不通过硬编码节点类 switch 扩展行为；节点 class resolution 必须使用动态 class loading / reflection。
 - 不在 `FAssetDocumentCanonicalJson` 中加入 BT/BB domain-specific normalization。
@@ -103,12 +106,20 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 | `FBlackboardKeySelector` properties | `Body.Tree.*.Properties.<Field>` | key selector object, validated against `Body.Blackboard` |
 | subtree references such as `UBTTask_RunBehavior` | `Body.Tree.*.Properties.<Field>` | AssetRef<UBehaviorTree>, validate blackboard compatibility |
 
-### 5.3 Excluded / derived / editor data
+### 5.3 BehaviorTree editor layout authored data
+
+| UE surface | AssetDocument region | Handling |
+| --- | --- | --- |
+| `UBehaviorTreeGraphNode` position | `Body.EditorLayout.Nodes[].Position` | optional editor layout region，identity 为 semantic node `Id` |
+| graph comment boxes | `Body.EditorLayout.Comments[]` | optional authored presentation, identity 为 `Id` |
+| comment bounds/text/color | `Body.EditorLayout.Comments[]` fields | editor presentation only, never BT runtime semantics |
+| graph view metadata if stable and authored | `Body.EditorLayout.Graph` | optional object, supported fields must be explicitly listed |
+
+### 5.4 Excluded / derived / runtime data
 
 | UE surface | Reason |
 | --- | --- |
-| `UBehaviorTree::BTGraph` / `UBehaviorTreeGraph` nodes | editor visualization derived from runtime tree; rebuilt after apply |
-| editor graph node positions / comments | editor layout/user state; excluded from first profile |
+| `UBehaviorTree::BTGraph` / `UBehaviorTreeGraph` node topology | editor visualization derived from runtime tree; rebuilt after semantic tree apply |
 | `ExecutionIndex`, `TreeDepth`, runtime instance memory | derived/runtime data |
 | debugger breakpoints, active node state, search data | debug/transient evidence |
 | generated node display labels if derivable from class/properties | derived display data |
@@ -197,6 +208,25 @@ Rules:
           }
         ]
       }
+    },
+    "EditorLayout": {
+      "Nodes": [
+        {
+          "NodeId": "RootSelector",
+          "Position": {
+            "X": 0,
+            "Y": 0
+          }
+        },
+        {
+          "NodeId": "MoveToTarget",
+          "Position": {
+            "X": 0,
+            "Y": 220
+          }
+        }
+      ],
+      "Comments": []
     }
   }
 }
@@ -216,6 +246,10 @@ Rules:
 - `Properties` is a reflected property object. Unsupported property type must return exact diagnostic, not be silently ignored.
 - `Decorators` and `Services` are child arrays with their own stable `Id`.
 - child order under `Children` is semantic and preserved.
+- `Body.EditorLayout` is optional but in-scope for this spec. Missing `EditorLayout` means the implementation may use UE rebuild / auto layout; present `EditorLayout` is source-of-truth for supported editor presentation fields.
+- `Body.EditorLayout.Nodes[].NodeId` must reference an existing semantic node, decorator, or service `Id` from `Body.Tree`. Layout cannot create, delete, or reorder BT nodes.
+- `Body.EditorLayout` must never be used to validate runtime BT semantics. Semantic validation must come from `Body.Blackboard` and `Body.Tree`.
+- Unsupported editor layout fields must fail validation with exact path/code rather than being silently ignored.
 
 ## 7. Region Policy
 
@@ -232,8 +266,9 @@ Rules:
 | --- | --- | --- | --- |
 | `Body.Blackboard` | object/scalar ref | `UBehaviorTree::BlackboardAsset` | object/ref adapter + BT blackboard hook |
 | `Body.Tree` | tree | `RootNode`, `Children`, `Decorators`, `Services` | public tree adapter + BT node materializer |
+| `Body.EditorLayout` | object | `UBehaviorTreeGraph` presentation fields | editor layout adapter + BT graph hook |
 
-Policies must name managed UE surfaces so inspect/template output can explain ownership. `Properties` must reject writes for fields already owned by `Body.Blackboard` or `Body.Tree`.
+Policies must name managed UE surfaces so inspect/template output can explain ownership. `Properties` must reject writes for fields already owned by `Body.Blackboard`, `Body.Tree`, or `Body.EditorLayout`.
 
 ## 8. Public Runtime Composition
 
@@ -268,6 +303,12 @@ Implementation should introduce or reuse these public-ish components:
    - reflected property apply/extract
    - `FBlackboardKeySelector` conversion through key utility
    - subtree BT AssetRef validation
+
+5. `FAssetDocumentEditorLayoutRegionAdapter`
+   - optional editor presentation adapter keyed by semantic node ids
+   - validate layout references after `Body.Tree` ids are known
+   - apply/extract/diff supported position/comment fields
+   - keep layout diff independent from runtime tree semantic diff
 
 These components must be composition-based. Do not add an inheritance base capability for BT/BB profiles.
 
@@ -321,6 +362,8 @@ Create/update:
 - Resolve `Body.Blackboard` AssetRef.
 - Apply `Body.Tree` using the public tree adapter and BT materializer.
 - Rebuild editor graph / refresh tree after structural changes.
+- Apply `Body.EditorLayout` after editor graph rebuild when the region is present.
+- If `Body.EditorLayout` is absent, use UE rebuild / auto layout behavior for editor graph presentation.
 - Validate no half-applied tree remains after failed preflight. Use staged preview/apply or rollback strategy when needed.
 
 Extract:
@@ -328,12 +371,16 @@ Extract:
 - Extract `Blackboard` as AssetRef.
 - Extract runtime authored tree from `RootNode`, not from editor graph layout.
 - Extract stable node `Id`. If existing UE nodes lack authored identity, implementation must define deterministic identity generation and document collision behavior.
+- Extract supported editor layout fields into `Body.EditorLayout` after the semantic tree ids are known.
+- Layout extraction must map editor graph nodes back to semantic `Id`; it must not expose transient graph node object paths as identity.
 
 Diff:
 
 - Blackboard diff at `/Body/Blackboard`.
 - Tree node diff at `/Body/Tree/<NodeId>`.
 - Child additions/removals use semantic path, not transient UE graph index.
+- Layout diff at `/Body/EditorLayout/Nodes/<NodeId>` and `/Body/EditorLayout/Comments/<CommentId>`.
+- Layout-only changes must not appear as semantic `Body.Tree` changes.
 
 ## 10. BT + BB Cross-Region Validation
 
@@ -350,6 +397,7 @@ BehaviorTree validation must compose BlackboardData key utility:
 - errors must point to the authored property path, for example:
   - `/Body/Tree/MoveToTarget/Properties/BlackboardKey/Key`
   - `/Body/Tree/RunSubtree/Properties/BehaviorAsset`
+- `Body.EditorLayout` validation must run after tree identity validation so dangling layout entries can report the missing semantic id.
 
 Validation must not mutate the real asset.
 
@@ -367,6 +415,8 @@ Required identity rules:
   - decorator: `/Body/Tree/<OwnerId>/Decorators/<Id>`
   - service: `/Body/Tree/<OwnerId>/Services/<Id>`
   - property: `/Body/Tree/<Id>/Properties/<PropertyName>`
+  - editor layout node: `/Body/EditorLayout/Nodes/<NodeId>`
+  - editor layout comment: `/Body/EditorLayout/Comments/<CommentId>`
 
 Array index paths are allowed only for malformed JSON before identity can be read.
 
@@ -391,8 +441,8 @@ The following boundaries must be documented in `docs/superpowers/specs/asset-doc
 | --- | --- | --- |
 | unsupported BT node class | validation failure with `/Body/Tree/<Id>/Class` | dynamic class materializer proves safe apply/extract |
 | unsupported BT reflected property type | validation failure at property path | property adapter supports type roundtrip |
-| editor graph layout | excluded | separate explicit editor-layout spec |
-| node comments / graph comments | excluded or deferred | explicit authoring requirement and stable storage |
+| unsupported editor layout field | validation failure under `/Body/EditorLayout` | editor layout adapter supports apply/extract/diff |
+| unsupported graph comment field | validation failure under `/Body/EditorLayout/Comments/<Id>` | comment field has stable UE storage and tests |
 | advanced key selector filters | conservative validation | reliable UE metadata extraction and tests |
 | custom `UBlackboardKeyType` metadata | supported only via `KeyTypeClass` plus reflected metadata if implemented | key type metadata adapter |
 | subtree blackboard compatibility edge cases | conservative rejection | verified UE runtime behavior and tests |
@@ -416,10 +466,14 @@ Required diagnostic examples:
 | blackboard key missing | `/Body/Tree/<Id>/Properties/<Field>/Key` | `UnknownBlackboardKey` |
 | key type mismatch | `/Body/Tree/<Id>/Properties/<Field>/Key` | `IncompatibleBlackboardKeyType` |
 | subtree blackboard mismatch | `/Body/Tree/<Id>/Properties/<Field>` | `IncompatibleBehaviorTreeBlackboard` |
+| duplicate layout node | `/Body/EditorLayout/Nodes/<NodeId>` | `DuplicateEditorLayoutNode` |
+| dangling layout node | `/Body/EditorLayout/Nodes/<NodeId>` | `UnknownEditorLayoutNode` |
+| invalid layout position | `/Body/EditorLayout/Nodes/<NodeId>/Position` | `InvalidEditorLayoutPosition` |
+| duplicate layout comment | `/Body/EditorLayout/Comments/<Id>` | `DuplicateEditorLayoutComment` |
 
 ## 15. Milestones
 
-The implementation plan should execute this combined spec through one branch chain:
+The implementation plan must execute this combined spec through one branch chain. The plan may stage behavior by milestone, but it must cover the whole BT+BB target in this spec, including `Body.EditorLayout`.
 
 1. **Blackboard key utility and tests**
    - key type resolution/canonicalization
@@ -450,12 +504,20 @@ The implementation plan should execute this combined spec through one branch cha
    - reflected property subset
    - editor graph rebuild hook
 
-6. **BT-BB integrated validation**
+6. **BehaviorTree editor layout region**
+   - `Body.EditorLayout` schema/policy
+   - node position apply/extract/diff keyed by semantic node `Id`
+   - graph comment apply/extract/diff for supported fields
+   - auto layout fallback when `Body.EditorLayout` is absent
+   - dangling/duplicate layout diagnostics
+
+7. **BT-BB integrated validation**
    - key selector validation
    - subtree BT AssetRef compatibility
    - full BT+BB roundtrip
+   - semantic tree roundtrip and layout roundtrip remain separately diffable
 
-7. **Final verification and report**
+8. **Final verification and report**
    - UBT
    - BB focused automation
    - BT focused automation
@@ -475,6 +537,7 @@ Minimum focused automation:
 - `AssetFactory.AssetDocument.BehaviorTree.ProfileShape`
 - `AssetFactory.AssetDocument.BehaviorTree.BlackboardReference`
 - `AssetFactory.AssetDocument.BehaviorTree.Tree`
+- `AssetFactory.AssetDocument.BehaviorTree.EditorLayout`
 - `AssetFactory.AssetDocument.BehaviorTree.BlackboardKeySelectors`
 - `AssetFactory.AssetDocument.BehaviorTree.SubtreeBlackboardCompatibility`
 
