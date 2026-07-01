@@ -981,9 +981,20 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	Context.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
+	const FAssetDocumentCapabilityResult LegacyAnimGraphResult =
+		Capability.Validate(Context, MakeBodyWithLegacyAnimGraphArray());
+	TestFalse(TEXT("Body.AnimGraph rejects legacy array shape"), LegacyAnimGraphResult.bSuccess);
 	TestTrue(
-		TEXT("Body.AnimLayers accepts recursive empty graph region"),
-		Capability.Validate(Context, MakeBodyWithAnimLayerGraphs({})).bSuccess);
+		TEXT("Legacy AnimGraph array reports recursive schema diagnostic"),
+		HasDiagnostic(LegacyAnimGraphResult, TEXT("/Body/AnimGraph"), TEXT("InvalidAnimGraphRegionType")));
+
+	TestTrue(
+		TEXT("Body.StateMachines accepts non-empty recursive graph schema"),
+		Capability.Validate(Context, MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))})).bSuccess);
+
+	TestTrue(
+		TEXT("Body.AnimLayers accepts non-empty recursive graph region"),
+		Capability.Validate(Context, MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraph(TEXT("UpperBodyLayer"))})).bSuccess);
 
 	TestFalse(
 		TEXT("Body.AnimLayers rejects null because it is no longer deferred"),
@@ -994,6 +1005,13 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	TestFalse(
 		TEXT("Body.AnimLayers rejects scalar values"),
 		Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(TEXT("AnimLayers"))).bSuccess);
+
+	const FAssetDocumentCapabilityResult ObsoleteTransitionGraphsResult =
+		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
+	TestFalse(TEXT("Body.TransitionGraphs rejects obsolete authored side-list shape"), ObsoleteTransitionGraphsResult.bSuccess);
+	TestTrue(
+		TEXT("Obsolete TransitionGraphs side-list reports explicit boundary"),
+		HasDiagnostic(ObsoleteTransitionGraphsResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult UnknownKeyResult = Capability.Validate(Context, MakeBodyWithUnknownKey());
 	TestFalse(TEXT("Unknown Body key rejects"), UnknownKeyResult.bSuccess);
