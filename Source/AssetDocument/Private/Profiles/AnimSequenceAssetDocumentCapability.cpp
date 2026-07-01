@@ -1462,6 +1462,62 @@ FAssetDocumentCapabilityResult MapAnimSequenceSyncMarkerTimelineFailure(
 	return BodyFailure(Result.Message, Path, Code);
 }
 
+FAssetDocumentCapabilityResult MapAnimSequenceNotifyTimelineFailure(
+	const FAssetDocumentCapabilityResult& Result,
+	const TCHAR* SectionName,
+	const TCHAR* DuplicateCode)
+{
+	if (Result.bSuccess || Result.Diagnostics.IsEmpty())
+	{
+		return Result;
+	}
+
+	const FAssetDocumentDiagnostic& Diagnostic = Result.Diagnostics[0];
+	FString Path = Diagnostic.Path;
+	FString Code = Diagnostic.Code;
+	if (Code == TEXT("InvalidTimelinePlacementRegionType")
+		|| Code == TEXT("InvalidTimelinePlacementEntryType"))
+	{
+		Code = TEXT("InvalidBodySectionType");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementNumber")
+		|| Code == TEXT("MissingTimelinePlacementTime")
+		|| Code == TEXT("MissingTimelinePlacementDuration"))
+	{
+		Code = TEXT("InvalidNumericField");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementTime"))
+	{
+		Code = TEXT("InvalidNotifyTime");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementDuration"))
+	{
+		Code = Result.Message.Contains(TEXT("positive"))
+			? FString(TEXT("InvalidNotifyStateDuration"))
+			: FString(TEXT("InvalidNumericField"));
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementEndTime"))
+	{
+		Code = TEXT("InvalidNotifyStateDuration");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementName")
+		|| Code == TEXT("MissingTimelinePlacementName")
+		|| Code == TEXT("InvalidTimelinePlacementTrackName"))
+	{
+		Code = TEXT("InvalidStringField");
+	}
+	else if (Code == TEXT("DuplicateTimelinePlacementKey"))
+	{
+		Code = DuplicateCode;
+		if (!Path.EndsWith(TEXT("/Name")))
+		{
+			Path = FAssetDocumentTimelinePlacementUtils::MakeFieldPath(Path, TEXT("Name"));
+		}
+	}
+
+	return BodyFailure(Result.Message, Path, Code);
+}
+
 FAssetDocumentCapabilityResult ValidateAnimSequenceSyncMarkerTimeFloatSafety(
 	const TSharedPtr<FJsonValue>& SectionValue)
 {
@@ -1500,6 +1556,61 @@ FAssetDocumentCapabilityResult ValidateAnimSequenceSyncMarkerTimeFloatSafety(
 		if (!FMath::IsFinite(FloatTime))
 		{
 			return BodyFailure(TEXT("Time must fit in a finite float"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), TEXT("InvalidNumericField"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateAnimSequencePlacementFloatSafety(
+	const TSharedPtr<FJsonValue>& SectionValue,
+	const TCHAR* SectionName,
+	const TArray<const TCHAR*>& NumericFieldNames)
+{
+	if (!SectionValue.IsValid() || SectionValue->Type != EJson::Array)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>& Values = SectionValue->AsArray();
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		const TSharedPtr<FJsonValue>& EntryValue = Values[Index];
+		if (!EntryValue.IsValid() || EntryValue->Type != EJson::Object)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue->AsObject();
+		if (!EntryObject.IsValid())
+		{
+			continue;
+		}
+
+		for (const TCHAR* FieldName : NumericFieldNames)
+		{
+			const TSharedPtr<FJsonValue> NumberValue = EntryObject->TryGetField(FieldName);
+			if (!NumberValue.IsValid() || NumberValue->Type != EJson::Number)
+			{
+				continue;
+			}
+
+			const double Number = NumberValue->AsNumber();
+			if (!std::isfinite(Number) || Number < -static_cast<double>(MAX_flt) || Number > static_cast<double>(MAX_flt))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("%s must fit in a float"), FieldName),
+					BodyArrayFieldPath(SectionName, Index, FieldName),
+					TEXT("InvalidNumericField"));
+			}
+			const float FloatNumber = static_cast<float>(Number);
+			if (!FMath::IsFinite(FloatNumber))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("%s must fit in a finite float"), FieldName),
+					BodyArrayFieldPath(SectionName, Index, FieldName),
+					TEXT("InvalidNumericField"));
+			}
 		}
 	}
 
@@ -1680,6 +1791,38 @@ FAssetDocumentCapabilityResult ResolveClassRefField(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FString ReadClassRefIdentityForDuplicateKey(
+	const TSharedRef<FJsonObject>& Object,
+	const TCHAR* ClassFieldName,
+	const TCHAR* ObjectFieldName)
+{
+	const TSharedPtr<FJsonObject>* FragmentObject = nullptr;
+	if (Object->TryGetObjectField(ObjectFieldName, FragmentObject) && FragmentObject && FragmentObject->IsValid())
+	{
+		FString ClassPath;
+		if ((*FragmentObject)->TryGetStringField(TEXT("Class"), ClassPath) && !ClassPath.TrimStartAndEnd().IsEmpty())
+		{
+			return ClassPath;
+		}
+		if ((*FragmentObject)->TryGetStringField(TEXT("Path"), ClassPath) && !ClassPath.TrimStartAndEnd().IsEmpty())
+		{
+			return ClassPath;
+		}
+	}
+
+	const TSharedPtr<FJsonObject>* ClassObject = nullptr;
+	if (Object->TryGetObjectField(ClassFieldName, ClassObject) && ClassObject && ClassObject->IsValid())
+	{
+		FString ClassPath;
+		if ((*ClassObject)->TryGetStringField(TEXT("Path"), ClassPath) && !ClassPath.TrimStartAndEnd().IsEmpty())
+		{
+			return ClassPath;
+		}
+	}
+
+	return TEXT("Named");
+}
+
 FString ReadPlacementTrackName(const TSharedRef<FJsonObject>& Object)
 {
 	FString TrackName;
@@ -1804,100 +1947,129 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 	}
 
 	bOutHasNotifies = true;
-	const TArray<TSharedPtr<FJsonValue>>* Notifies = nullptr;
-	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/Notifies"), Notifies);
+	FAssetDocumentCapabilityResult Result =
+		ValidateAnimSequencePlacementFloatSafety(*SectionValue, TEXT("Notifies"), { TEXT("Time") });
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	TSet<FString> SeenKeys;
-	for (int32 Index = 0; Index < Notifies->Num(); ++Index)
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("AnimSequenceNotifiesTimelinePlacement");
+	Config.RegionId = TEXT("Body.Notifies");
+	Config.BodyPath = TEXT("Notifies");
+	Config.JsonPointer = TEXT("/Body/Notifies");
+	Config.TimeFieldName = TEXT("Time");
+	Config.TrackNameFieldName = TEXT("TrackName");
+	Config.bHasTrackIdentity = true;
+
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
 	{
-		TSharedPtr<FJsonObject> NotifyObject;
-		Result = RequireObjectValue((*Notifies)[Index], BodyArrayItemPath(TEXT("Notifies"), Index), NotifyObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectUnknownArrayObjectFields(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Notify"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectAmbiguousTrackAlias(NotifyObject.ToSharedRef(), TEXT("Notifies"), Index);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
+		const TSharedRef<FJsonObject> NotifyObject = Entry.EntryObject.ToSharedRef();
 		FString NameString;
-		Result = ReadRequiredStringField(NotifyObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Name")), NameString);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		double Time = 0.0;
-		Result = ReadRequiredNumberField(NotifyObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Time")), Time);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		bool bHasClass = false;
-		UClass* NotifyClass = nullptr;
-		Result = ResolveClassRefField(NotifyObject.ToSharedRef(), TEXT("Class"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Class")), TEXT("InvalidNotifyClass"), bHasClass, NotifyClass);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		bool bHasNotifyFragment = false;
-		TSharedPtr<FJsonObject> NotifyFragment;
-		UClass* NotifyFragmentClass = nullptr;
-		Result = ResolveNotifyObjectFragmentField(NotifyObject.ToSharedRef(), TEXT("Notify"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Notify")), TEXT("InvalidNotifyObject"), bHasNotifyFragment, NotifyFragment, NotifyFragmentClass);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		if (bHasClass && bHasNotifyFragment)
-		{
-			return BodyFailure(TEXT("Notify placement cannot declare both Class and Notify"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("AmbiguousNotifyObject"));
-		}
-
+		NotifyObject->TryGetStringField(TEXT("Name"), NameString);
 		FString NotifyNameString;
-		const bool bHasNotifyName = NotifyObject->TryGetStringField(TEXT("NotifyName"), NotifyNameString) && !NotifyNameString.TrimStartAndEnd().IsEmpty();
-		if (!bHasClass && !bHasNotifyFragment)
+		const bool bHasNotifyName =
+			NotifyObject->TryGetStringField(TEXT("NotifyName"), NotifyNameString)
+			&& !NotifyNameString.TrimStartAndEnd().IsEmpty();
+		const float Time = Entry.Time.IsSet() ? static_cast<float>(Entry.Time.GetValue()) : 0.0f;
+		return FString::Printf(TEXT("%s|%.6f|%s|%s|%s"),
+			*NameString,
+			Time,
+			bHasNotifyName ? *NotifyNameString : *NameString,
+			*ReadClassRefIdentityForDuplicateKey(NotifyObject, TEXT("Class"), TEXT("Notify")),
+			*ReadPlacementTrackName(NotifyObject));
+	};
+	Hooks.Validate = [Sequence, &OutNotifies](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	{
+		for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
 		{
-			return BodyFailure(TEXT("Notify placement requires Notify or Class"), BodyArrayItemPath(TEXT("Notifies"), Index), TEXT("MissingNotifyObject"));
-		}
+			const TSharedRef<FJsonObject> NotifyObject = Entry.EntryObject.ToSharedRef();
+			FAssetDocumentCapabilityResult Result = RejectUnknownArrayObjectFields(NotifyObject, TEXT("Notifies"), Entry.Index, { TEXT("Name"), TEXT("Time"), TEXT("NotifyName"), TEXT("Notify"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			Result = RejectAmbiguousTrackAlias(NotifyObject, TEXT("Notifies"), Entry.Index);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		FParsedAnimSequenceNotifyPlacement ParsedNotify;
-		ParsedNotify.Name = FName(*NameString);
-		ParsedNotify.NotifyName = bHasNotifyName ? FName(*NotifyNameString) : ParsedNotify.Name;
-		ParsedNotify.Time = static_cast<float>(Time);
-		ParsedNotify.TrackName = FName(*ReadPlacementTrackName(NotifyObject.ToSharedRef()));
-		ParsedNotify.NotifyClass = bHasNotifyFragment ? NotifyFragmentClass : NotifyClass;
-		ParsedNotify.NotifyFragment = NotifyFragment;
-		ParsedNotify.SourceIndex = Index;
+			FString NameString;
+			Result = ReadRequiredStringField(NotifyObject, TEXT("Name"), BodyArrayFieldPath(TEXT("Notifies"), Entry.Index, TEXT("Name")), NameString);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%s|%s|%s"),
-			*ParsedNotify.Name.ToString(),
-			ParsedNotify.Time,
-			*ParsedNotify.NotifyName.ToString(),
-			ParsedNotify.NotifyClass ? *ParsedNotify.NotifyClass->GetPathName() : TEXT("Named"),
-			*ParsedNotify.TrackName.ToString());
-		if (SeenKeys.Contains(SemanticKey))
-		{
-			return BodyFailure(TEXT("Duplicate notify semantic key"), BodyArrayFieldPath(TEXT("Notifies"), Index, TEXT("Name")), TEXT("DuplicateNotifyKey"));
+			const double Time = Entry.Time.GetValue();
+			Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("Notifies"), Entry.Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			bool bHasClass = false;
+			UClass* NotifyClass = nullptr;
+			Result = ResolveClassRefField(NotifyObject, TEXT("Class"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Entry.Index, TEXT("Class")), TEXT("InvalidNotifyClass"), bHasClass, NotifyClass);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			bool bHasNotifyFragment = false;
+			TSharedPtr<FJsonObject> NotifyFragment;
+			UClass* NotifyFragmentClass = nullptr;
+			Result = ResolveNotifyObjectFragmentField(NotifyObject, TEXT("Notify"), UAnimNotify::StaticClass(), BodyArrayFieldPath(TEXT("Notifies"), Entry.Index, TEXT("Notify")), TEXT("InvalidNotifyObject"), bHasNotifyFragment, NotifyFragment, NotifyFragmentClass);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (bHasClass && bHasNotifyFragment)
+			{
+				return BodyFailure(TEXT("Notify placement cannot declare both Class and Notify"), BodyArrayItemPath(TEXT("Notifies"), Entry.Index), TEXT("AmbiguousNotifyObject"));
+			}
+
+			FString NotifyNameString;
+			const bool bHasNotifyName = NotifyObject->TryGetStringField(TEXT("NotifyName"), NotifyNameString) && !NotifyNameString.TrimStartAndEnd().IsEmpty();
+			if (!bHasClass && !bHasNotifyFragment)
+			{
+				return BodyFailure(TEXT("Notify placement requires Notify or Class"), BodyArrayItemPath(TEXT("Notifies"), Entry.Index), TEXT("MissingNotifyObject"));
+			}
+
+			FParsedAnimSequenceNotifyPlacement ParsedNotify;
+			ParsedNotify.Name = FName(*NameString);
+			ParsedNotify.NotifyName = bHasNotifyName ? FName(*NotifyNameString) : ParsedNotify.Name;
+			ParsedNotify.Time = static_cast<float>(Time);
+			ParsedNotify.TrackName = FName(*ReadPlacementTrackName(NotifyObject));
+			ParsedNotify.NotifyClass = bHasNotifyFragment ? NotifyFragmentClass : NotifyClass;
+			ParsedNotify.NotifyFragment = NotifyFragment;
+			ParsedNotify.SourceIndex = Entry.Index;
+			OutNotifies.Add(ParsedNotify);
 		}
-		SeenKeys.Add(SemanticKey);
-		OutNotifies.Add(ParsedNotify);
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		*SectionValue,
+		Config,
+		TEXT("/Body/Notifies"),
+		nullptr,
+		Entries,
+		&Hooks);
+	if (!Result.bSuccess)
+	{
+		return MapAnimSequenceNotifyTimelineFailure(Result, TEXT("Notifies"), TEXT("DuplicateNotifyKey"));
+	}
+
+	FAssetDocumentRegionContext RegionContext;
+	Result = Hooks.Validate(RegionContext, Entries);
+	if (!Result.bSuccess)
+	{
+		return Result;
 	}
 
 	OutNotifies.Sort([](const FParsedAnimSequenceNotifyPlacement& Left, const FParsedAnimSequenceNotifyPlacement& Right)
@@ -1926,113 +2098,143 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 	}
 
 	bOutHasNotifyStates = true;
-	const TArray<TSharedPtr<FJsonValue>>* NotifyStates = nullptr;
-	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/NotifyStates"), NotifyStates);
+	FAssetDocumentCapabilityResult Result =
+		ValidateAnimSequencePlacementFloatSafety(*SectionValue, TEXT("NotifyStates"), { TEXT("Time"), TEXT("Duration") });
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	TSet<FString> SeenKeys;
-	for (int32 Index = 0; Index < NotifyStates->Num(); ++Index)
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("AnimSequenceNotifyStatesTimelinePlacement");
+	Config.RegionId = TEXT("Body.NotifyStates");
+	Config.BodyPath = TEXT("NotifyStates");
+	Config.JsonPointer = TEXT("/Body/NotifyStates");
+	Config.TimeFieldName = TEXT("Time");
+	Config.DurationFieldName = TEXT("Duration");
+	Config.bHasDuration = true;
+	Config.bRequireDuration = true;
+	Config.bRequirePositiveDuration = true;
+	Config.bValidateEndTime = true;
+	Config.TrackNameFieldName = TEXT("TrackName");
+	Config.bHasTrackIdentity = true;
+
+	FAssetDocumentTimelineRange Range;
+	const double MaxTime = GetAnimSequenceTimelineMaxTime(Sequence);
+	if (MaxTime > 0.0)
 	{
-		TSharedPtr<FJsonObject> StateObject;
-		Result = RequireObjectValue((*NotifyStates)[Index], BodyArrayItemPath(TEXT("NotifyStates"), Index), StateObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectUnknownArrayObjectFields(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("NotifyState"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectAmbiguousTrackAlias(StateObject.ToSharedRef(), TEXT("NotifyStates"), Index);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+		Range.MaxTime = MaxTime + UE_KINDA_SMALL_NUMBER;
+		Range.bHasMaxTime = true;
+	}
 
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
+	{
+		const TSharedRef<FJsonObject> StateObject = Entry.EntryObject.ToSharedRef();
 		FString NameString;
-		Result = ReadRequiredStringField(StateObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Name")), NameString);
-		if (!Result.bSuccess)
+		StateObject->TryGetStringField(TEXT("Name"), NameString);
+		const float Time = Entry.Time.IsSet() ? static_cast<float>(Entry.Time.GetValue()) : 0.0f;
+		const float Duration = Entry.Duration.IsSet() ? static_cast<float>(Entry.Duration.GetValue()) : 0.0f;
+		return FString::Printf(TEXT("%s|%.6f|%.6f|%s|%s"),
+			*NameString,
+			Time,
+			Duration,
+			*ReadClassRefIdentityForDuplicateKey(StateObject, TEXT("Class"), TEXT("NotifyState")),
+			*ReadPlacementTrackName(StateObject));
+	};
+	Hooks.Validate = [Sequence, &OutNotifyStates](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	{
+		for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
 		{
-			return Result;
-		}
-		double Time = 0.0;
-		Result = ReadRequiredNumberField(StateObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Time")), Time);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+			const TSharedRef<FJsonObject> StateObject = Entry.EntryObject.ToSharedRef();
+			FAssetDocumentCapabilityResult Result = RejectUnknownArrayObjectFields(StateObject, TEXT("NotifyStates"), Entry.Index, { TEXT("Name"), TEXT("Time"), TEXT("Duration"), TEXT("NotifyState"), TEXT("Class"), TEXT("Track"), TEXT("TrackName") });
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			Result = RejectAmbiguousTrackAlias(StateObject, TEXT("NotifyStates"), Entry.Index);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		double Duration = 0.0;
-		Result = ReadRequiredNumberField(StateObject.ToSharedRef(), TEXT("Duration"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), Duration);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		if (Duration <= 0.0)
-		{
-			return BodyFailure(TEXT("Notify state duration must be positive"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), TEXT("InvalidNotifyStateDuration"));
-		}
-		Result = ValidateTimelineTime(Sequence, Time + Duration, BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Duration")), TEXT("InvalidNotifyStateDuration"));
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+			FString NameString;
+			Result = ReadRequiredStringField(StateObject, TEXT("Name"), BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("Name")), NameString);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		bool bHasClass = false;
-		UClass* NotifyStateClass = nullptr;
-		Result = ResolveClassRefField(StateObject.ToSharedRef(), TEXT("Class"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Class")), TEXT("InvalidNotifyStateClass"), bHasClass, NotifyStateClass);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+			const double Time = Entry.Time.GetValue();
+			Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("Time")), TEXT("InvalidNotifyTime"));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		bool bHasNotifyStateFragment = false;
-		TSharedPtr<FJsonObject> NotifyStateFragment;
-		UClass* NotifyStateFragmentClass = nullptr;
-		Result = ResolveNotifyObjectFragmentField(StateObject.ToSharedRef(), TEXT("NotifyState"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("NotifyState")), TEXT("InvalidNotifyStateObject"), bHasNotifyStateFragment, NotifyStateFragment, NotifyStateFragmentClass);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		if (bHasClass && bHasNotifyStateFragment)
-		{
-			return BodyFailure(TEXT("Notify state placement cannot declare both Class and NotifyState"), BodyArrayItemPath(TEXT("NotifyStates"), Index), TEXT("AmbiguousNotifyStateObject"));
-		}
-		if (!bHasClass && !bHasNotifyStateFragment)
-		{
-			return BodyFailure(TEXT("Notify state placement requires NotifyState or Class"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("NotifyState")), TEXT("MissingNotifyStateClass"));
-		}
+			const double Duration = Entry.Duration.GetValue();
+			Result = ValidateTimelineTime(Sequence, Time + Duration, BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("Duration")), TEXT("InvalidNotifyStateDuration"));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		FParsedAnimSequenceNotifyStatePlacement ParsedState;
-		ParsedState.Name = FName(*NameString);
-		ParsedState.Time = static_cast<float>(Time);
-		ParsedState.Duration = static_cast<float>(Duration);
-		ParsedState.TrackName = FName(*ReadPlacementTrackName(StateObject.ToSharedRef()));
-		ParsedState.NotifyStateClass = bHasNotifyStateFragment ? NotifyStateFragmentClass : NotifyStateClass;
-		ParsedState.NotifyStateFragment = NotifyStateFragment;
-		ParsedState.SourceIndex = Index;
+			bool bHasClass = false;
+			UClass* NotifyStateClass = nullptr;
+			Result = ResolveClassRefField(StateObject, TEXT("Class"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("Class")), TEXT("InvalidNotifyStateClass"), bHasClass, NotifyStateClass);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 
-		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f|%.6f|%s|%s"),
-			*ParsedState.Name.ToString(),
-			ParsedState.Time,
-			ParsedState.Duration,
-			*ParsedState.NotifyStateClass->GetPathName(),
-			*ParsedState.TrackName.ToString());
-		if (SeenKeys.Contains(SemanticKey))
-		{
-			return BodyFailure(TEXT("Duplicate notify state semantic key"), BodyArrayFieldPath(TEXT("NotifyStates"), Index, TEXT("Name")), TEXT("DuplicateNotifyStateKey"));
+			bool bHasNotifyStateFragment = false;
+			TSharedPtr<FJsonObject> NotifyStateFragment;
+			UClass* NotifyStateFragmentClass = nullptr;
+			Result = ResolveNotifyObjectFragmentField(StateObject, TEXT("NotifyState"), UAnimNotifyState::StaticClass(), BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("NotifyState")), TEXT("InvalidNotifyStateObject"), bHasNotifyStateFragment, NotifyStateFragment, NotifyStateFragmentClass);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (bHasClass && bHasNotifyStateFragment)
+			{
+				return BodyFailure(TEXT("Notify state placement cannot declare both Class and NotifyState"), BodyArrayItemPath(TEXT("NotifyStates"), Entry.Index), TEXT("AmbiguousNotifyStateObject"));
+			}
+			if (!bHasClass && !bHasNotifyStateFragment)
+			{
+				return BodyFailure(TEXT("Notify state placement requires NotifyState or Class"), BodyArrayFieldPath(TEXT("NotifyStates"), Entry.Index, TEXT("NotifyState")), TEXT("MissingNotifyStateClass"));
+			}
+
+			FParsedAnimSequenceNotifyStatePlacement ParsedState;
+			ParsedState.Name = FName(*NameString);
+			ParsedState.Time = static_cast<float>(Time);
+			ParsedState.Duration = static_cast<float>(Duration);
+			ParsedState.TrackName = FName(*ReadPlacementTrackName(StateObject));
+			ParsedState.NotifyStateClass = bHasNotifyStateFragment ? NotifyStateFragmentClass : NotifyStateClass;
+			ParsedState.NotifyStateFragment = NotifyStateFragment;
+			ParsedState.SourceIndex = Entry.Index;
+			OutNotifyStates.Add(ParsedState);
 		}
-		SeenKeys.Add(SemanticKey);
-		OutNotifyStates.Add(ParsedState);
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		*SectionValue,
+		Config,
+		TEXT("/Body/NotifyStates"),
+		&Range,
+		Entries,
+		&Hooks);
+	if (!Result.bSuccess)
+	{
+		return MapAnimSequenceNotifyTimelineFailure(Result, TEXT("NotifyStates"), TEXT("DuplicateNotifyStateKey"));
+	}
+
+	FAssetDocumentRegionContext RegionContext;
+	Result = Hooks.Validate(RegionContext, Entries);
+	if (!Result.bSuccess)
+	{
+		return Result;
 	}
 
 	OutNotifyStates.Sort([](const FParsedAnimSequenceNotifyStatePlacement& Left, const FParsedAnimSequenceNotifyStatePlacement& Right)
@@ -4025,6 +4227,8 @@ TArray<FName> FAnimSequenceAssetDocumentCapability::GetInternalAdapterNames() co
 		FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName(),
 		FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName(),
 		FAnimSequenceAssetDocumentProfile::NotifyTracksNamedArrayRegionAdapterName(),
+		TEXT("AnimSequenceNotifiesTimelinePlacement"),
+		TEXT("AnimSequenceNotifyStatesTimelinePlacement"),
 	};
 }
 

@@ -1035,6 +1035,15 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(3),
 		FString(TEXT("/Body/NotifyTracks/3/TrackName")));
 
+	FAnimSequenceAssetDocumentCapability ShapeCapability;
+	const TArray<FName> InternalAdapterNames = ShapeCapability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("AnimSequence notifies route through timeline placement adapter"),
+		InternalAdapterNames.Contains(FName(TEXT("AnimSequenceNotifiesTimelinePlacement"))));
+	TestTrue(
+		TEXT("AnimSequence notify states route through timeline placement adapter"),
+		InternalAdapterNames.Contains(FName(TEXT("AnimSequenceNotifyStatesTimelinePlacement"))));
+
 	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
 	TestEqual(TEXT("AnimSequence pilot declares three profile-owned policies"), Policies.Num(), 3);
 	auto FindPolicy = [&Policies](FName RegionId) -> const FAssetDocumentRegionPolicy*
@@ -1856,6 +1865,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	Sequence->RateScale = 2.0f;
 	const int32 NotifyCountBeforeInvalid = Sequence->Notifies.Num();
 	const int32 MarkerCountBeforeInvalid = Sequence->AuthoredSyncMarkers.Num();
+	const int32 TrackCountBeforeInvalid = Sequence->AnimNotifyTracks.Num();
 	const int32 ManagedNotifyObjectCountBeforeInvalid = CountManagedNotifyObjectsWithOuter(Sequence);
 	TSharedRef<FJsonObject> InvalidClassBody = MakePlaybackRateBody(3.0);
 	TSharedRef<FJsonObject> InvalidNotifyClass = MakeNotifyPlacement(TEXT("BadClass"), 0.25, TEXT("BadClass"), TEXT("Default"));
@@ -2000,6 +2010,19 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects notify track names not declared in explicit NotifyTracks"), UnknownTrackResult.bSuccess);
 	TestTrue(TEXT("Unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
 	TestEqual(TEXT("Unknown track does not mutate RateScale"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> UnknownStateTrackBody = MakePlaybackRateBody(5.30);
+	UnknownStateTrackBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	UnknownStateTrackBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeEmbeddedNotifyStatePlacement(TEXT("StateTrackTypo"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Typo")),
+	}));
+	const FAssetDocumentCapabilityResult UnknownStateTrackResult = Capability.Apply(Context, MakeBodyValue(UnknownStateTrackBody));
+	TestFalse(TEXT("Apply rejects notify state track names not declared in explicit NotifyTracks"), UnknownStateTrackResult.bSuccess);
+	TestTrue(TEXT("Unknown notify state track diagnostic is precise"), HasDiagnostic(UnknownStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestEqual(TEXT("Unknown notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> NonFiniteTimeBody = MakePlaybackRateBody(5.35);
 	TSharedRef<FJsonObject> NonFiniteNotify = MakeEmbeddedNotifyPlacement(TEXT("NonFinite"), 0.25, TEXT("NonFinite"), TEXT("Default"));
@@ -2019,6 +2042,15 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestTrue(TEXT("Overflow duration diagnostic is precise"), HasDiagnostic(OverflowDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNumericField")));
 	TestEqual(TEXT("Overflow duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
+	TSharedRef<FJsonObject> AmbiguousNotifyStateTrackBody = MakePlaybackRateBody(5.48);
+	TSharedRef<FJsonObject> AmbiguousNotifyState = MakeEmbeddedNotifyStatePlacement(TEXT("AmbiguousStateTrack"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default"));
+	AmbiguousNotifyState->SetStringField(TEXT("Track"), TEXT("Upper"));
+	AmbiguousNotifyStateTrackBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ AmbiguousNotifyState }));
+	const FAssetDocumentCapabilityResult AmbiguousNotifyStateTrackResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyStateTrackBody));
+	TestFalse(TEXT("Apply rejects notify state with Track and TrackName"), AmbiguousNotifyStateTrackResult.bSuccess);
+	TestTrue(TEXT("Ambiguous notify state track diagnostic is precise"), HasDiagnostic(AmbiguousNotifyStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestEqual(TEXT("Ambiguous notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
+
 	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(5.5);
 	TSharedRef<FJsonObject> UnknownNotify = MakeNotifyPlacement(TEXT("Unknown"), 0.25, TEXT("Unknown"), TEXT("Default"));
 	UnknownNotify->SetStringField(TEXT("Unexpected"), TEXT("nope"));
@@ -2037,6 +2069,16 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects duplicate notify semantic keys"), DuplicateNotifyResult.bSuccess);
 	TestTrue(TEXT("Duplicate notify diagnostic is precise"), HasDiagnostic(DuplicateNotifyResult, TEXT("/Body/Notifies/1/Name"), TEXT("DuplicateNotifyKey")));
 	TestEqual(TEXT("Duplicate notify does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> DuplicateNotifyStateBody = MakePlaybackRateBody(6.2);
+	DuplicateNotifyStateBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeEmbeddedNotifyStatePlacement(TEXT("DuplicateState"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default")),
+		MakeEmbeddedNotifyStatePlacement(TEXT("DuplicateState"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default")),
+	}));
+	const FAssetDocumentCapabilityResult DuplicateNotifyStateResult = Capability.Apply(Context, MakeBodyValue(DuplicateNotifyStateBody));
+	TestFalse(TEXT("Apply rejects duplicate notify state semantic keys"), DuplicateNotifyStateResult.bSuccess);
+	TestTrue(TEXT("Duplicate notify state diagnostic is precise"), HasDiagnostic(DuplicateNotifyStateResult, TEXT("/Body/NotifyStates/1/Name"), TEXT("DuplicateNotifyStateKey")));
+	TestEqual(TEXT("Duplicate notify state does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> DuplicateMarkerBody = MakePlaybackRateBody(6.5);
 	DuplicateMarkerBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
