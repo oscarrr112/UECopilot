@@ -466,6 +466,31 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKe
 		if (OutClass && OutClass->IsChildOf(UBlackboardKeyType::StaticClass()))
 		{
 			OutCanonicalType = CanonicalTypeFromClass(OutClass);
+			if (!Spec.Type.IsEmpty())
+			{
+				UClass* AliasClass = nullptr;
+				FString AliasCanonicalType;
+				if (!ResolveAlias(Spec.Type, AliasClass, AliasCanonicalType))
+				{
+					return FAssetDocumentJsonRegionUtils::Failure(
+						MakeChildPath(Path, TEXT("Type")),
+						TEXT("InvalidBlackboardKeyType"),
+						FString::Printf(TEXT("Unsupported blackboard key Type '%s'"), *Spec.Type));
+				}
+
+				if (AliasClass != OutClass)
+				{
+					return FAssetDocumentJsonRegionUtils::Failure(
+						MakeChildPath(Path, TEXT("KeyTypeClass")),
+						TEXT("ConflictingBlackboardKeyType"),
+						FString::Printf(
+							TEXT("Type '%s' conflicts with KeyTypeClass '%s'"),
+							*Spec.Type,
+							*Spec.KeyTypeClass.ToSoftObjectPath().ToString()));
+				}
+
+				OutCanonicalType = AliasCanonicalType;
+			}
 			return FAssetDocumentCapabilityResult::Success(TEXT("Resolved blackboard key type class"));
 		}
 

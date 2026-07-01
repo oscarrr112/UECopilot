@@ -438,6 +438,38 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 	TestEqual(TEXT("Explicit class is Name key type"), ResolvedClass, UBlackboardKeyType_Name::StaticClass());
 	TestEqual(TEXT("Explicit canonical type uses loaded class"), CanonicalType, FString(TEXT("Name")));
 
+	FAssetDocumentBlackboardKeySpec MatchingSpec;
+	const FAssetDocumentCapabilityResult MatchingParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		MakeBlackboardKeyJson(
+			TEXT("MatchingExplicitBool"),
+			TEXT("Bool"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Bool")),
+		TEXT("/Body/Keys/MatchingExplicitBool"),
+		MatchingSpec);
+	TestTrue(TEXT("Matching Type and KeyTypeClass parses"), MatchingParseResult.bSuccess);
+	TestTrue(
+		TEXT("Matching Type and KeyTypeClass validates"),
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(MatchingSpec, TEXT("/Body/Keys/MatchingExplicitBool")).bSuccess);
+
+	FAssetDocumentBlackboardKeySpec ConflictingSpec;
+	const FAssetDocumentCapabilityResult ConflictingParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		MakeBlackboardKeyJson(
+			TEXT("ConflictingExplicitBool"),
+			TEXT("Bool"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Int")),
+		TEXT("/Body/Keys/ConflictingExplicitBool"),
+		ConflictingSpec);
+	TestTrue(TEXT("Conflicting Type and KeyTypeClass parses"), ConflictingParseResult.bSuccess);
+	ExpectSingleDiagnostic(
+		*this,
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(ConflictingSpec, TEXT("/Body/Keys/ConflictingExplicitBool")),
+		TEXT("ConflictingBlackboardKeyType"),
+		TEXT("/Body/Keys/ConflictingExplicitBool/KeyTypeClass"));
+
 	FAssetDocumentBlackboardKeySpec LoadableSpec;
 	const FAssetDocumentCapabilityResult LoadableParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 		MakeBlackboardKeyJson(
