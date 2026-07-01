@@ -37,7 +37,8 @@ TSharedRef<FJsonObject> MakeBlackboardKeyJson(
 	const FString& Type,
 	const FString& BaseClass = TEXT(""),
 	const FString& Enum = TEXT(""),
-	const FString& KeyTypeClass = TEXT(""))
+	const FString& KeyTypeClass = TEXT(""),
+	const FString& Description = TEXT(""))
 {
 	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
 	Json->SetStringField(TEXT("Name"), Name);
@@ -56,6 +57,10 @@ TSharedRef<FJsonObject> MakeBlackboardKeyJson(
 	if (!KeyTypeClass.IsEmpty())
 	{
 		Json->SetStringField(TEXT("KeyTypeClass"), KeyTypeClass);
+	}
+	if (!Description.IsEmpty())
+	{
+		Json->SetStringField(TEXT("Description"), Description);
 	}
 	return Json;
 }
@@ -237,6 +242,25 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(
+				TEXT("NativeMode"),
+				TEXT(""),
+				TEXT(""),
+				TEXT(""),
+				TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum")),
+			TEXT("/Body/Keys/NativeMode"),
+			Spec);
+		TestTrue(TEXT("NativeEnum key parses before validation"), ParseResult.bSuccess);
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(Spec, TEXT("/Body/Keys/NativeMode")),
+			TEXT("MissingBlackboardKeyEnum"),
+			TEXT("/Body/Keys/NativeMode/Enum"));
+	}
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 			MakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus")),
 			TEXT("/Body/Keys/Broken"),
 			Spec);
@@ -249,6 +273,21 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, ResolvedClass, CanonicalType),
 			TEXT("InvalidBlackboardKeyType"),
 			TEXT("/Body/Keys/Broken/Type"));
+	}
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(TEXT("BrokenCustomPath"), TEXT("Bogus")),
+			TEXT("/Custom/Keys/BrokenCustomPath"),
+			Spec);
+		TestTrue(TEXT("Unknown type parses before path-aware validation"), ParseResult.bSuccess);
+
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(Spec, TEXT("/Custom/Keys/BrokenCustomPath")),
+			TEXT("InvalidBlackboardKeyType"),
+			TEXT("/Custom/Keys/BrokenCustomPath/Type"));
 	}
 
 	return true;
@@ -320,6 +359,65 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(InvalidSpec, InvalidResolvedClass, InvalidCanonicalType),
 		TEXT("InvalidBlackboardKeyType"),
 		TEXT("/Body/Keys/InvalidExplicit/KeyTypeClass"));
+
+	ExpectSingleDiagnostic(
+		*this,
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(InvalidSpec, TEXT("/Custom/Keys/InvalidExplicit")),
+		TEXT("InvalidBlackboardKeyType"),
+		TEXT("/Custom/Keys/InvalidExplicit/KeyTypeClass"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardKeyMetadataTest,
+	"AssetFactory.AssetDocument.BlackboardData.Keys.Metadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
+{
+	FAssetDocumentBlackboardKeySpec Spec;
+	const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		MakeBlackboardKeyJson(
+			TEXT("Target"),
+			TEXT("Bool"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("Primary target actor")),
+		TEXT("/Body/Keys/Target"),
+		Spec);
+	TestTrue(TEXT("Key with Description parses"), ParseResult.bSuccess);
+	TestEqual(TEXT("Spec preserves Description"), Spec.Description, FString(TEXT("Primary target actor")));
+	TestTrue(TEXT("Canonical JSON is valid"), Spec.CanonicalJson.IsValid());
+	if (Spec.CanonicalJson.IsValid())
+	{
+		TestEqual(
+			TEXT("Canonical JSON preserves Description"),
+			Spec.CanonicalJson->GetStringField(TEXT("Description")),
+			FString(TEXT("Primary target actor")));
+	}
+
+	FBlackboardEntry Entry;
+	Entry.EntryName = TEXT("Target");
+	Entry.KeyType = NewObject<UBlackboardKeyType_Bool>(GetTransientPackage());
+	Entry.EntryDescription = TEXT("Primary target actor");
+	const TSharedRef<FJsonObject> Extracted = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(Entry);
+	TestEqual(
+		TEXT("Extracted key preserves Description"),
+		Extracted->GetStringField(TEXT("Description")),
+		FString(TEXT("Primary target actor")));
+
+	UBlackboardKeyType_NativeEnum* NativeEnumKey = NewObject<UBlackboardKeyType_NativeEnum>(GetTransientPackage());
+	NativeEnumKey->EnumType = StaticEnum<EBasicKeyOperation::Type>();
+	NativeEnumKey->EnumName = NativeEnumKey->EnumType ? NativeEnumKey->EnumType->GetPathName() : TEXT("");
+
+	FBlackboardEntry NativeEnumEntry;
+	NativeEnumEntry.EntryName = TEXT("NativeMode");
+	NativeEnumEntry.KeyType = NativeEnumKey;
+	const TSharedRef<FJsonObject> ExtractedNativeEnum = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(NativeEnumEntry);
+	TestEqual(TEXT("Extracted NativeEnum type"), ExtractedNativeEnum->GetStringField(TEXT("Type")), FString(TEXT("NativeEnum")));
+	TestEqual(TEXT("Extracted NativeEnum preserves Enum"), ExtractedNativeEnum->GetStringField(TEXT("Enum")), NativeEnumKey->EnumName);
+
 	return true;
 }
 
@@ -407,6 +505,18 @@ bool FAssetDocumentBlackboardKeyParentLookupTest::RunTest(const FString&)
 	TestEqual(TEXT("Extracted local key name"), ExtractedLocal->GetStringField(TEXT("Name")), FString(TEXT("LocalCount")));
 	TestEqual(TEXT("Extracted local key type"), ExtractedLocal->GetStringField(TEXT("Type")), FString(TEXT("Int")));
 	TestFalse(TEXT("Single key extraction does not include inherited name"), ExtractedLocal->GetStringField(TEXT("Name")) == TEXT("InheritedTarget"));
+
+	UBlackboardData* CycleA = NewObject<UBlackboardData>(GetTransientPackage(), TEXT("BB_CycleA"));
+	UBlackboardData* CycleB = NewObject<UBlackboardData>(GetTransientPackage(), TEXT("BB_CycleB"));
+	CycleA->Parent = CycleB;
+	CycleB->Parent = CycleA;
+
+	TMap<FName, FAssetDocumentBlackboardKeyLookupEntry> CycleLookup;
+	ExpectSingleDiagnostic(
+		*this,
+		FAssetDocumentBlackboardKeySchemaUtils::BuildLookup(CycleA, CycleLookup),
+		TEXT("BlackboardParentCycle"),
+		TEXT("/Body/Parent"));
 
 	return true;
 }

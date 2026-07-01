@@ -11,6 +11,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Rotator.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_String.h"
@@ -27,12 +28,12 @@ FString MakeChildPath(const FString& Path, const FString& FieldName)
 		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(FieldName));
 }
 
-FString MakeNamedKeyPath(const FAssetDocumentBlackboardKeySpec& Spec, const FString& FieldName)
+FString MakeDefaultKeyPath(const FAssetDocumentBlackboardKeySpec& Spec)
 {
 	const FString KeyToken = Spec.Name.IsNone()
 		? FString(TEXT("Key"))
 		: FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Spec.Name.ToString());
-	return FString::Printf(TEXT("/Body/Keys/%s/%s"), *KeyToken, *FieldName);
+	return FString::Printf(TEXT("/Body/Keys/%s"), *KeyToken);
 }
 
 FString TrimmedStringField(const TSharedRef<FJsonObject>& Json, const FString& FieldName)
@@ -206,6 +207,10 @@ FAssetDocumentBlackboardKeyLookupEntry MakeLookupEntry(const FBlackboardEntry& E
 		{
 			LookupEntry.EnumObject = EnumKey->EnumType;
 		}
+		else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(Entry.KeyType))
+		{
+			LookupEntry.EnumObject = NativeEnumKey->EnumType;
+		}
 	}
 
 	return LookupEntry;
@@ -257,6 +262,12 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 		OutSpec.Enum = TSoftObjectPtr<UObject>(FSoftObjectPath(EnumRef));
 	}
 
+	FString Description;
+	if (Json->TryGetStringField(TEXT("Description"), Description))
+	{
+		OutSpec.Description = Description;
+	}
+
 	bool bInstanceSynced = false;
 	if (Json->TryGetBoolField(TEXT("bInstanceSynced"), bInstanceSynced))
 	{
@@ -281,6 +292,10 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	{
 		OutSpec.CanonicalJson->SetStringField(TEXT("Enum"), EnumRef);
 	}
+	if (!OutSpec.Description.IsEmpty())
+	{
+		OutSpec.CanonicalJson->SetStringField(TEXT("Description"), OutSpec.Description);
+	}
 	if (OutSpec.bInstanceSynced)
 	{
 		OutSpec.CanonicalJson->SetBoolField(TEXT("bInstanceSynced"), true);
@@ -291,6 +306,15 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 
 FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(
 	const FAssetDocumentBlackboardKeySpec& Spec,
+	UClass*& OutClass,
+	FString& OutCanonicalType)
+{
+	return ResolveKeyTypeClass(Spec, MakeDefaultKeyPath(Spec), OutClass, OutCanonicalType);
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(
+	const FAssetDocumentBlackboardKeySpec& Spec,
+	const FString& Path,
 	UClass*& OutClass,
 	FString& OutCanonicalType)
 {
@@ -313,7 +337,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKe
 		}
 
 		return FAssetDocumentJsonRegionUtils::Failure(
-			MakeNamedKeyPath(Spec, TEXT("KeyTypeClass")),
+			MakeChildPath(Path, TEXT("KeyTypeClass")),
 			TEXT("InvalidBlackboardKeyType"),
 			TEXT("KeyTypeClass must resolve to a UBlackboardKeyType subclass"));
 	}
@@ -324,7 +348,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKe
 	}
 
 	return FAssetDocumentJsonRegionUtils::Failure(
-		MakeNamedKeyPath(Spec, TEXT("Type")),
+		MakeChildPath(Path, TEXT("Type")),
 		TEXT("InvalidBlackboardKeyType"),
 		FString::Printf(TEXT("Unsupported blackboard key Type '%s'"), *Spec.Type));
 }
@@ -335,7 +359,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ValidateK
 {
 	UClass* KeyTypeClass = nullptr;
 	FString CanonicalType;
-	const FAssetDocumentCapabilityResult ResolveResult = ResolveKeyTypeClass(Spec, KeyTypeClass, CanonicalType);
+	const FAssetDocumentCapabilityResult ResolveResult = ResolveKeyTypeClass(Spec, Path, KeyTypeClass, CanonicalType);
 	if (!ResolveResult.bSuccess)
 	{
 		return ResolveResult;
@@ -361,7 +385,8 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ValidateK
 		}
 	}
 
-	if (KeyTypeClass->IsChildOf(UBlackboardKeyType_Enum::StaticClass()))
+	if (KeyTypeClass->IsChildOf(UBlackboardKeyType_Enum::StaticClass()) ||
+		KeyTypeClass->IsChildOf(UBlackboardKeyType_NativeEnum::StaticClass()))
 	{
 		const FString EnumPath = Spec.Enum.ToSoftObjectPath().ToString();
 		if (EnumPath.IsEmpty())
@@ -420,8 +445,17 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::BuildLook
 	}
 
 	TArray<const UBlackboardData*> Chain;
+	TSet<const UBlackboardData*> VisitedBlackboards;
 	for (const UBlackboardData* Current = Blackboard; Current; Current = Current->Parent)
 	{
+		if (VisitedBlackboards.Contains(Current))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				TEXT("/Body/Parent"),
+				TEXT("BlackboardParentCycle"),
+				TEXT("Blackboard parent chain contains a cycle"));
+		}
+		VisitedBlackboards.Add(Current);
 		Chain.Add(Current);
 	}
 
@@ -486,6 +520,17 @@ TSharedRef<FJsonObject> FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(const
 			else if (!EnumKey->EnumName.IsEmpty())
 			{
 				Json->SetStringField(TEXT("Enum"), EnumKey->EnumName);
+			}
+		}
+		else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(Entry.KeyType))
+		{
+			if (NativeEnumKey->EnumType)
+			{
+				Json->SetStringField(TEXT("Enum"), NativeEnumKey->EnumType->GetPathName());
+			}
+			else if (!NativeEnumKey->EnumName.IsEmpty())
+			{
+				Json->SetStringField(TEXT("Enum"), NativeEnumKey->EnumName);
 			}
 		}
 	}

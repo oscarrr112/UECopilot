@@ -17,6 +17,7 @@ struct FAssetDocumentBlackboardKeySpec
 	TSoftClassPtr<UBlackboardKeyType> KeyTypeClass;
 	TSoftClassPtr<UObject> BaseClass;
 	TSoftObjectPtr<UObject> Enum;
+	FString Description;
 	bool bInstanceSynced = false;
 	TSharedPtr<FJsonObject> CanonicalJson;
 };
@@ -40,6 +41,12 @@ public:
 
 	static FAssetDocumentCapabilityResult ResolveKeyTypeClass(
 		const FAssetDocumentBlackboardKeySpec& Spec,
+		UClass*& OutClass,
+		FString& OutCanonicalType);
+
+	static FAssetDocumentCapabilityResult ResolveKeyTypeClass(
+		const FAssetDocumentBlackboardKeySpec& Spec,
+		const FString& Path,
 		UClass*& OutClass,
 		FString& OutCanonicalType);
 
