@@ -2029,12 +2029,13 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TSharedRef<FJsonObject> DuplicateMarkerBody = MakePlaybackRateBody(6.5);
 	DuplicateMarkerBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
 		MakeSyncMarker(TEXT("DuplicateMarker"), 0.25),
-		MakeSyncMarker(TEXT("DuplicateMarker"), 0.25),
+		MakeSyncMarker(TEXT("DuplicateMarker"), 0.2500004),
 	}));
 	const FAssetDocumentCapabilityResult DuplicateMarkerResult = Capability.Apply(Context, MakeBodyValue(DuplicateMarkerBody));
 	TestFalse(TEXT("Apply rejects duplicate sync marker identities"), DuplicateMarkerResult.bSuccess);
 	TestTrue(TEXT("Duplicate marker diagnostic is precise"), HasDiagnostic(DuplicateMarkerResult, TEXT("/Body/SyncMarkers/1/Name"), TEXT("DuplicateSyncMarkerKey")));
 	TestEqual(TEXT("Duplicate marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Duplicate marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
 	return true;
 }

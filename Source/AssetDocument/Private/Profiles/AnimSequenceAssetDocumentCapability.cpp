@@ -14,6 +14,7 @@
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 #include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
+#include "Regions/AssetDocumentTimelinePlacementRegionAdapter.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
@@ -1401,6 +1402,66 @@ FAssetDocumentCapabilityResult ValidateTimelineTime(const UAnimSequence* Sequenc
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+double GetAnimSequenceTimelineMaxTime(const UAnimSequence* Sequence)
+{
+	if (!Sequence)
+	{
+		return 0.0;
+	}
+
+	double PlayLength = Sequence->GetPlayLength();
+	if (PlayLength <= 0.0)
+	{
+		if (const IAnimationDataModel* DataModel = Sequence->GetDataModel())
+		{
+			PlayLength = DataModel->GetPlayLength();
+		}
+	}
+	return PlayLength;
+}
+
+FAssetDocumentCapabilityResult MapAnimSequenceSyncMarkerTimelineFailure(
+	const FAssetDocumentCapabilityResult& Result)
+{
+	if (Result.bSuccess || Result.Diagnostics.IsEmpty())
+	{
+		return Result;
+	}
+
+	const FAssetDocumentDiagnostic& Diagnostic = Result.Diagnostics[0];
+	FString Path = Diagnostic.Path;
+	FString Code = Diagnostic.Code;
+	if (Code == TEXT("InvalidTimelinePlacementRegionType")
+		|| Code == TEXT("InvalidTimelinePlacementEntryType"))
+	{
+		Code = TEXT("InvalidBodySectionType");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementNumber")
+		|| Code == TEXT("MissingTimelinePlacementTime"))
+	{
+		Code = TEXT("InvalidNumericField");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementTime"))
+	{
+		Code = TEXT("InvalidSyncMarkerTime");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementName")
+		|| Code == TEXT("MissingTimelinePlacementName"))
+	{
+		Code = TEXT("InvalidStringField");
+	}
+	else if (Code == TEXT("DuplicateTimelinePlacementKey"))
+	{
+		Code = TEXT("DuplicateSyncMarkerKey");
+		if (!Path.EndsWith(TEXT("/Name")))
+		{
+			Path = FAssetDocumentTimelinePlacementUtils::MakeFieldPath(Path, TEXT("Name"));
+		}
+	}
+
+	return BodyFailure(Result.Message, Path, Code);
+}
+
 FAssetDocumentCapabilityResult ResolveNotifyObjectFragmentClass(
 	const TSharedRef<FJsonObject>& FragmentObject,
 	UClass* ExpectedBaseClass,
@@ -1956,56 +2017,74 @@ FAssetDocumentCapabilityResult ParseAnimSequenceSyncMarkers(
 	}
 
 	bOutHasSyncMarkers = true;
-	const TArray<TSharedPtr<FJsonValue>>* Markers = nullptr;
-	FAssetDocumentCapabilityResult Result = RequireArrayValue(*SectionValue, TEXT("/Body/SyncMarkers"), Markers);
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("AnimSequenceSyncMarkersTimelinePlacement");
+	Config.RegionId = TEXT("Body.SyncMarkers");
+	Config.BodyPath = TEXT("SyncMarkers");
+	Config.JsonPointer = TEXT("/Body/SyncMarkers");
+	Config.TimeFieldName = TEXT("Time");
+	Config.NameFieldName = TEXT("Name");
+	Config.bHasName = true;
+	Config.bRequireName = true;
+
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
+	{
+		const FString NameString = Entry.Name.IsSet() ? Entry.Name.GetValue() : FString();
+		const float Time = Entry.Time.IsSet() ? static_cast<float>(Entry.Time.GetValue()) : 0.0f;
+		return FString::Printf(TEXT("%s|%.6f"), *NameString, Time);
+	};
+	Hooks.Validate = [](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	{
+		for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
+		{
+			if (!Entry.EntryObject.IsValid())
+			{
+				return BodyFailure(TEXT("Expected a JSON object"), Entry.JsonPointer, TEXT("InvalidBodySectionType"));
+			}
+			FAssetDocumentCapabilityResult Result =
+				RejectUnknownArrayObjectFields(Entry.EntryObject.ToSharedRef(), TEXT("SyncMarkers"), Entry.Index, { TEXT("Name"), TEXT("Time") });
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	};
+
+	FAssetDocumentTimelineRange Range;
+	const double MaxTime = GetAnimSequenceTimelineMaxTime(Sequence);
+	if (MaxTime > 0.0)
+	{
+		Range.MaxTime = MaxTime + UE_KINDA_SMALL_NUMBER;
+		Range.bHasMaxTime = true;
+	}
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	FAssetDocumentCapabilityResult Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		*SectionValue,
+		Config,
+		TEXT("/Body/SyncMarkers"),
+		&Range,
+		Entries,
+		&Hooks);
+	if (!Result.bSuccess)
+	{
+		return MapAnimSequenceSyncMarkerTimelineFailure(Result);
+	}
+
+	FAssetDocumentRegionContext RegionContext;
+	Result = Hooks.Validate(RegionContext, Entries);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	TSet<FString> SeenKeys;
-	for (int32 Index = 0; Index < Markers->Num(); ++Index)
+	for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
 	{
-		TSharedPtr<FJsonObject> MarkerObject;
-		Result = RequireObjectValue((*Markers)[Index], BodyArrayItemPath(TEXT("SyncMarkers"), Index), MarkerObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = RejectUnknownArrayObjectFields(MarkerObject.ToSharedRef(), TEXT("SyncMarkers"), Index, { TEXT("Name"), TEXT("Time") });
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		FString NameString;
-		Result = ReadRequiredStringField(MarkerObject.ToSharedRef(), TEXT("Name"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Name")), NameString);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		double Time = 0.0;
-		Result = ReadRequiredNumberField(MarkerObject.ToSharedRef(), TEXT("Time"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), Time);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-		Result = ValidateTimelineTime(Sequence, Time, BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), TEXT("InvalidSyncMarkerTime"));
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
 		FParsedAnimSequenceSyncMarker ParsedMarker;
-		ParsedMarker.Name = FName(*NameString);
-		ParsedMarker.Time = static_cast<float>(Time);
-
-		const FString SemanticKey = FString::Printf(TEXT("%s|%.6f"), *ParsedMarker.Name.ToString(), ParsedMarker.Time);
-		if (SeenKeys.Contains(SemanticKey))
-		{
-			return BodyFailure(TEXT("Duplicate sync marker semantic key"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Name")), TEXT("DuplicateSyncMarkerKey"));
-		}
-		SeenKeys.Add(SemanticKey);
+		ParsedMarker.Name = FName(*Entry.Name.GetValue());
+		ParsedMarker.Time = static_cast<float>(Entry.Time.GetValue());
 		OutSyncMarkers.Add(ParsedMarker);
 	}
 
