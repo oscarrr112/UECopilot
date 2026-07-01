@@ -268,6 +268,7 @@ Rules:
   - decorator: `UBTDecorator`
   - service: `UBTService`
 - All loadable non-abstract compatible subclasses are in scope, including project-defined BT node classes. The implementation must not whitelist only built-in AIModule nodes.
+- Task, composite, decorator, and service materialization must share one dynamic path: load class, verify base type/position compatibility, create node object, then apply/extract authored properties through reflection. Adding support for a new node class must not require editing BT-specific `switch` / `if` branches.
 - `Properties` is a reflected property object. Unsupported property type must return exact diagnostic, not be silently ignored.
 - `Children[]` maps to `FBTCompositeChild`; each child entry must contain exactly one `Child` object. The child class decides whether UE stores it in `ChildComposite` or `ChildTask`.
 - `Children[].Decorators[]` maps to `FBTCompositeChild::Decorators`.
@@ -471,6 +472,7 @@ BT node `Properties` should use existing dynamic style:
 - resolve node class dynamically with `ClassFinderUtils`, `StaticLoadClass`, or equivalent runtime class loading.
 - set and extract reflected properties through `PropertySetterUtils`, the existing AssetDocument reflected property runtime, or a focused public property helper if the current runtime lacks extract/diff support.
 - do not include every possible BT node header just to support common nodes.
+- do not branch on concrete task/service/decorator/composite class names for property support. Class-specific behavior is allowed only when UE exposes a truly non-reflected authored semantic that is proven necessary, and that exception must be documented in this spec or the implementation plan before code is added.
 - `FBlackboardKeySelector` needs a dedicated conversion utility because it is semantic, not plain scalar.
 - Asset references inside node properties should use AssetRef shape where possible.
 - BT capability must not maintain a node-class or property-name whitelist for common nodes. It must support the complete authored editable reflected property surface that the shared AssetDocument property runtime can represent.
@@ -626,6 +628,7 @@ The spec is complete only when:
 - BT tree validate/apply/extract/diff uses public tree adapter composition.
 - BT semantic roundtrip covers root decorators, root decorator logic, composite child edge binding, edge decorators, edge decorator logic, composite services, task/composite/decorator/service properties, subtree references, and key selectors.
 - BT reflected property handling is dynamic and complete for authored editable properties; built-in-node whitelists or partial common-property coverage are not accepted as complete.
+- Task/composite/decorator/service support is class-agnostic: any loadable compatible subclass must roundtrip through the same dynamic materializer and reflected property runtime.
 - invalid node/property/key/decorator-logic/layout cases produce exact path/code diagnostics.
 - extract/diff paths are semantic and stable.
 - final report records fresh UBT, automation, MCP, and smoke/blocker evidence.
