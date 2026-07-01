@@ -2,11 +2,16 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
+#include "AssetDocumentService.h"
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/Skeleton.h"
 #include "Dom/JsonObject.h"
+#include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/PackageName.h"
 
 namespace
 {
@@ -141,6 +146,63 @@ TSharedRef<FJsonValue> MakeBodyWithUnknownOptimizationField()
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetObjectField(TEXT("Optimization"), Optimization);
 	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
+	const FString& Target,
+	const FString& ParentClassPath = TEXT("/Script/Engine.AnimInstance"),
+	const FString& TargetSkeletonPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"),
+	const FString& PreviewMeshPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh"),
+	bool bIsTemplate = false)
+{
+	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimBlueprint"));
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(ParentClassPath));
+	if (bIsTemplate)
+	{
+		Body->SetField(TEXT("TargetSkeleton"), MakeShared<FJsonValueNull>());
+	}
+	else
+	{
+		Body->SetObjectField(TEXT("TargetSkeleton"), MakeAssetRef(TargetSkeletonPath));
+	}
+
+	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
+	Template->SetBoolField(TEXT("bIsTemplate"), bIsTemplate);
+	Body->SetObjectField(TEXT("Template"), Template);
+
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewSkeletalMesh"), MakeAssetRef(PreviewMeshPath));
+	Preview->SetField(TEXT("PreviewAnimationBlueprint"), MakeShared<FJsonValueNull>());
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), TEXT("LinkedLayers"));
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintTag"), TEXT(""));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+
+	TSharedRef<FJsonObject> Optimization = MakeShared<FJsonObject>();
+	Optimization->SetBoolField(TEXT("bUseMultiThreadedAnimationUpdate"), true);
+	Optimization->SetBoolField(TEXT("bWarnAboutBlueprintUsage"), false);
+	Optimization->SetBoolField(TEXT("bEnableLinkedAnimLayerInstanceSharing"), false);
+	Body->SetObjectField(TEXT("Optimization"), Optimization);
+
+	Body->SetArrayField(TEXT("SyncGroups"), {});
+	Body->SetArrayField(TEXT("ImplementedInterfaces"), {});
+	Body->SetArrayField(TEXT("Variables"), {});
+	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
+	Body->SetArrayField(TEXT("UbergraphPages"), {});
+	Body->SetArrayField(TEXT("AnimGraph"), {});
+	Body->SetArrayField(TEXT("StateMachines"), {});
+	Body->SetArrayField(TEXT("TransitionGraphs"), {});
+	Body->SetArrayField(TEXT("AnimLayers"), {});
+	Body->SetArrayField(TEXT("ParentAssetOverrides"), {});
+	Document->SetObjectField(TEXT("Body"), Body);
+	return Document;
 }
 
 bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
@@ -423,6 +485,73 @@ bool FAssetDocumentAnimBlueprintCoreObjectRegionsTest::RunTest(const FString&)
 		TEXT("Dispatcher preserves UnknownBodyKey code"),
 		HasDiagnostic(UnknownBodyKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.CreateUpdateLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_Lifecycle_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	const FString SkeletonPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton");
+	const FString PreviewMeshPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh");
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = MakeAnimBlueprintApplyDocument(Target, TEXT("/Script/Engine.AnimInstance"), SkeletonPath, PreviewMeshPath, false);
+	Request.bSaveAsset = false;
+
+	const FAssetDocumentResult Result = Service.Apply(Request);
+	if (!Result.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimBlueprint apply failed: %s"), *Result.Message));
+	}
+	TestTrue(TEXT("AnimBlueprint apply succeeds"), Result.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created asset is UAnimBlueprint"), AnimBlueprint);
+	USkeleton* ExpectedSkeleton = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	USkeletalMesh* ExpectedPreviewMesh = LoadObject<USkeletalMesh>(nullptr, *PreviewMeshPath);
+	TestNotNull(TEXT("Expected skeleton asset loads"), ExpectedSkeleton);
+	TestNotNull(TEXT("Expected preview mesh asset loads"), ExpectedPreviewMesh);
+	if (AnimBlueprint)
+	{
+		TestEqual(TEXT("Parent class is AnimInstance"), AnimBlueprint->ParentClass.Get(), UAnimInstance::StaticClass());
+		TestFalse(TEXT("Created AnimBlueprint is not a template"), AnimBlueprint->bIsTemplate);
+		TestEqual(TEXT("TargetSkeleton is authored skeleton"), AnimBlueprint->TargetSkeleton.Get(), ExpectedSkeleton);
+		TestEqual(TEXT("Preview mesh is authored mesh"), AnimBlueprint->GetPreviewMesh(), ExpectedPreviewMesh);
+	}
+
+	FAssetDocumentApplyRequest TemplateUpdateRequest;
+	TemplateUpdateRequest.Document = MakeAnimBlueprintApplyDocument(Target, TEXT("/Script/Engine.AnimInstance"), SkeletonPath, PreviewMeshPath, true);
+	TemplateUpdateRequest.bSaveAsset = false;
+	const FAssetDocumentResult TemplateUpdateResult = Service.Apply(TemplateUpdateRequest);
+	if (!TemplateUpdateResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimBlueprint template update failed: %s"), *TemplateUpdateResult.Message));
+	}
+	TestTrue(TEXT("AnimBlueprint update succeeds"), TemplateUpdateResult.IsSuccess());
+	if (AnimBlueprint)
+	{
+		TestTrue(TEXT("Updated AnimBlueprint is template"), AnimBlueprint->bIsTemplate);
+		TestNull(TEXT("Template update clears TargetSkeleton"), AnimBlueprint->TargetSkeleton.Get());
+	}
+
+	const FString BadTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_Invalid_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentApplyRequest BadRequest;
+	BadRequest.Document = MakeAnimBlueprintApplyDocument(BadTarget, TEXT("/Script/Engine.Actor"), SkeletonPath, PreviewMeshPath, false);
+	BadRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
+	TestFalse(TEXT("Invalid AnimBlueprint create preflight fails"), BadResult.IsSuccess());
+
+	UObject* BadAsset = FindObject<UObject>(
+		nullptr,
+		*FString::Printf(TEXT("%s.%s"), *BadTarget, *FPackageName::GetLongPackageAssetName(BadTarget)));
+	TestNull(TEXT("Invalid create does not leave a loadable asset"), BadAsset);
 	return true;
 }
 

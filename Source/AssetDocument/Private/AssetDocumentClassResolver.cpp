@@ -4,6 +4,7 @@
 
 #include "Utils/ClassFinderUtils.h"
 
+#include "Animation/AnimBlueprint.h"
 #include "Engine/Blueprint.h"
 #include "Engine/World.h"
 #include "Materials/Material.h"
@@ -74,7 +75,10 @@ bool FAssetDocumentClassResolver::ValidateResolvedClass(UClass* Class, FString& 
 		return false;
 	}
 
-	if (Class->IsChildOf(UBlueprint::StaticClass()) && Class != UBlueprint::StaticClass() && Class != UWidgetBlueprint::StaticClass())
+	if (Class->IsChildOf(UBlueprint::StaticClass())
+		&& Class != UBlueprint::StaticClass()
+		&& Class != UWidgetBlueprint::StaticClass()
+		&& Class != UAnimBlueprint::StaticClass())
 	{
 		OutError = FString::Printf(TEXT("Resolved class '%s' is a Blueprint-derived asset class that requires an exact AssetDocument profile"), *Class->GetName());
 		return false;

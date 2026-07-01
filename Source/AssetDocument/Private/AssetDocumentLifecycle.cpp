@@ -2,12 +2,18 @@
 
 #include "AssetDocumentLifecycle.h"
 
+#include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/SkeletalMesh.h"
+#include "Factories/AnimBlueprintFactory.h"
 #include "HAL/FileManager.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
@@ -63,6 +69,12 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		return Result;
 	}
 
+	if (ExistingAsset && Class == UAnimBlueprint::StaticClass() && ExistingAsset->GetClass() != UAnimBlueprint::StaticClass())
+	{
+		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UAnimBlueprint asset"), *Result.ObjectPath);
+		return Result;
+	}
+
 	if (ExistingAsset && Class != UBlueprint::StaticClass() && !ExistingAsset->IsA(Class))
 	{
 		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not a '%s'"), *Result.ObjectPath, *Class->GetName());
@@ -104,6 +116,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (Class == UBlueprint::StaticClass())
 	{
 		return CreateBlueprintAsset(Target, Package, AssetName, Document);
+	}
+
+	if (Class == UAnimBlueprint::StaticClass())
+	{
+		return CreateAnimBlueprintAsset(Target, Package, AssetName, Document);
 	}
 
 	if (Class == UWidgetBlueprint::StaticClass())
@@ -262,6 +279,144 @@ bool TryReadLifecycleParentClassRef(const TSharedPtr<FJsonObject>& Document, UCl
 	return true;
 }
 
+bool TryReadLifecycleBody(const TSharedPtr<FJsonObject>& Document, TSharedPtr<FJsonObject>& OutBody, FString& OutError, const TCHAR* AssetClassName)
+{
+	if (!Document.IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s creation requires Body"), AssetClassName);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* Body = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), Body) || !Body || !Body->IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s creation requires Body"), AssetClassName);
+		return false;
+	}
+
+	OutBody = *Body;
+	return true;
+}
+
+bool TryReadLifecycleBoolField(
+	const TSharedPtr<FJsonObject>& Body,
+	const TCHAR* ObjectFieldName,
+	const TCHAR* BoolFieldName,
+	bool bDefaultValue,
+	bool& bOutValue,
+	FString& OutError)
+{
+	bOutValue = bDefaultValue;
+	const TSharedPtr<FJsonObject>* ObjectField = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(ObjectFieldName, ObjectField) || !ObjectField || !ObjectField->IsValid())
+	{
+		return true;
+	}
+
+	if (!(*ObjectField)->HasField(BoolFieldName))
+	{
+		return true;
+	}
+
+	if (!(*ObjectField)->TryGetBoolField(BoolFieldName, bOutValue))
+	{
+		OutError = FString::Printf(TEXT("Body.%s.%s must be a boolean"), ObjectFieldName, BoolFieldName);
+		return false;
+	}
+
+	return true;
+}
+
+bool TryResolveLifecycleAssetRef(
+	const TSharedPtr<FJsonValue>& Value,
+	UClass* ExpectedClass,
+	const FString& FieldPath,
+	UObject*& OutObject,
+	FString& OutError)
+{
+	OutObject = nullptr;
+	if (!Value.IsValid() || Value->Type == EJson::Null)
+	{
+		return true;
+	}
+	if (Value->Type != EJson::Object)
+	{
+		OutError = FString::Printf(TEXT("%s must be an AssetRef object or null"), *FieldPath);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> AssetRef = Value->AsObject();
+	if (!AssetRef.IsValid())
+	{
+		OutError = FString::Printf(TEXT("%s must be an AssetRef object or null"), *FieldPath);
+		return false;
+	}
+
+	FString Kind;
+	if (!AssetRef->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("AssetRef"))
+	{
+		OutError = FString::Printf(TEXT("%s.Kind must be AssetRef"), *FieldPath);
+		return false;
+	}
+
+	FString Path;
+	if (!AssetRef->TryGetStringField(TEXT("Path"), Path) || Path.TrimStartAndEnd().IsEmpty())
+	{
+		if (!AssetRef->TryGetStringField(TEXT("Asset"), Path) || Path.TrimStartAndEnd().IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("%s.Path is required"), *FieldPath);
+			return false;
+		}
+	}
+
+	OutObject = StaticLoadObject(ExpectedClass, nullptr, *Path);
+	if (!OutObject || !OutObject->IsA(ExpectedClass))
+	{
+		OutError = FString::Printf(TEXT("%s '%s' did not resolve to %s"), *FieldPath, *Path, ExpectedClass ? *ExpectedClass->GetName() : TEXT("object"));
+		return false;
+	}
+
+	return true;
+}
+
+bool TryResolveLifecycleBodyAssetRef(
+	const TSharedPtr<FJsonObject>& Body,
+	const TCHAR* BodyFieldName,
+	UClass* ExpectedClass,
+	UObject*& OutObject,
+	FString& OutError)
+{
+	return TryResolveLifecycleAssetRef(
+		Body.IsValid() ? Body->TryGetField(BodyFieldName) : nullptr,
+		ExpectedClass,
+		FString::Printf(TEXT("Body.%s"), BodyFieldName),
+		OutObject,
+		OutError);
+}
+
+bool TryResolveLifecycleNestedAssetRef(
+	const TSharedPtr<FJsonObject>& Body,
+	const TCHAR* ObjectFieldName,
+	const TCHAR* AssetFieldName,
+	UClass* ExpectedClass,
+	UObject*& OutObject,
+	FString& OutError)
+{
+	OutObject = nullptr;
+	const TSharedPtr<FJsonObject>* ObjectField = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(ObjectFieldName, ObjectField) || !ObjectField || !ObjectField->IsValid())
+	{
+		return true;
+	}
+
+	return TryResolveLifecycleAssetRef(
+		(*ObjectField)->TryGetField(AssetFieldName),
+		ExpectedClass,
+		FString::Printf(TEXT("Body.%s.%s"), ObjectFieldName, AssetFieldName),
+		OutObject,
+		OutError);
+}
+
 bool FAssetDocumentLifecycle::TryResolveWidgetBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError)
 {
 	if (!TryReadLifecycleParentClassRef(Document, OutParentClass, OutError, TEXT("WidgetBlueprint")))
@@ -288,6 +443,116 @@ bool FAssetDocumentLifecycle::TryResolveWidgetBlueprintParentClass(const TShared
 	}
 
 	return true;
+}
+
+bool FAssetDocumentLifecycle::TryResolveAnimBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError)
+{
+	if (!TryReadLifecycleParentClassRef(Document, OutParentClass, OutError, TEXT("AnimBlueprint")))
+	{
+		return false;
+	}
+
+	if (!OutParentClass->IsChildOf(UAnimInstance::StaticClass()))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UAnimInstance subclass"), *OutParentClass->GetName());
+		return false;
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract) && OutParentClass != UAnimInstance::StaticClass())
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName());
+		return false;
+	}
+
+	if (OutParentClass->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists))
+	{
+		OutError = FString::Printf(TEXT("Body.ParentClass.Class '%s' is deprecated or newer-version-only"), *OutParentClass->GetName());
+		return false;
+	}
+
+	return true;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+
+	TSharedPtr<FJsonObject> Body;
+	if (!TryReadLifecycleBody(Document, Body, Result.Error, TEXT("AnimBlueprint")))
+	{
+		return Result;
+	}
+
+	UClass* ParentClass = nullptr;
+	if (!TryResolveAnimBlueprintParentClass(Document, ParentClass, Result.Error))
+	{
+		return Result;
+	}
+
+	bool bIsTemplate = false;
+	if (!TryReadLifecycleBoolField(Body, TEXT("Template"), TEXT("bIsTemplate"), false, bIsTemplate, Result.Error))
+	{
+		return Result;
+	}
+
+	UObject* ResolvedSkeletonObject = nullptr;
+	if (!TryResolveLifecycleBodyAssetRef(Body, TEXT("TargetSkeleton"), USkeleton::StaticClass(), ResolvedSkeletonObject, Result.Error))
+	{
+		return Result;
+	}
+	if (bIsTemplate && ResolvedSkeletonObject)
+	{
+		Result.Error = TEXT("Template AnimationBlueprints cannot author TargetSkeleton");
+		return Result;
+	}
+
+	UObject* ResolvedPreviewMeshObject = nullptr;
+	if (!TryResolveLifecycleNestedAssetRef(
+		Body,
+		TEXT("Preview"),
+		TEXT("PreviewSkeletalMesh"),
+		USkeletalMesh::StaticClass(),
+		ResolvedPreviewMeshObject,
+		Result.Error))
+	{
+		return Result;
+	}
+
+	UAnimBlueprintFactory* Factory = NewObject<UAnimBlueprintFactory>();
+	Factory->BlueprintType = BPTYPE_Normal;
+	Factory->ParentClass = ParentClass;
+	Factory->TargetSkeleton = bIsTemplate ? nullptr : Cast<USkeleton>(ResolvedSkeletonObject);
+	Factory->PreviewSkeletalMesh = Cast<USkeletalMesh>(ResolvedPreviewMeshObject);
+	Factory->bTemplate = bIsTemplate;
+
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Factory->FactoryCreateNew(
+		UAnimBlueprint::StaticClass(),
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone,
+		nullptr,
+		GWarn));
+	if (!AnimBlueprint)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create AnimBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+	if (AnimBlueprint->Status == BS_Error)
+	{
+		Result.Asset = AnimBlueprint;
+		Result.bCreated = true;
+		Result.Error = FString::Printf(TEXT("Failed to compile AnimBlueprint asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FAssetRegistryModule::AssetCreated(AnimBlueprint);
+
+	Result.Asset = AnimBlueprint;
+	Result.bCreated = true;
+	return Result;
 }
 
 FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)

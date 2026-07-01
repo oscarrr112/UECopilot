@@ -189,6 +189,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimBlueprintAssetDocumentProfile::GetRegion
 	}
 	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.TargetSkeleton"), EAssetDocumentRegionKind::Object, {TEXT("TargetSkeleton")}, Policy))
 	{
+		Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Template"), EAssetDocumentRegionKind::Object, {TEXT("bIsTemplate")}, Policy))

@@ -7,9 +7,12 @@
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
 #include "Dom/JsonValue.h"
+#include "Engine/SkeletalMesh.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
@@ -160,6 +163,126 @@ FAssetDocumentCapabilityResult ValidateParentClassObject(const FAssetDocumentReg
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint ParentClass"));
 }
 
+FAssetDocumentCapabilityResult ResolveParentClassObject(const TSharedRef<FJsonObject>& ParentClass, UClass*& OutParentClass)
+{
+	OutParentClass = nullptr;
+	const FAssetDocumentCapabilityResult ValidateResult = ValidateParentClassObject(FAssetDocumentRegionContext(), ParentClass);
+	if (!ValidateResult.bSuccess)
+	{
+		return ValidateResult;
+	}
+
+	FString ClassPath;
+	ParentClass->TryGetStringField(TEXT("Class"), ClassPath);
+	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Resolved AnimBlueprint ParentClass"));
+}
+
+FAssetDocumentCapabilityResult ResolveAssetRefValue(
+	const TSharedPtr<FJsonValue>& Value,
+	UClass* ExpectedClass,
+	const FString& Path,
+	UObject*& OutObject)
+{
+	OutObject = nullptr;
+	if (!Value.IsValid() || Value->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("AssetRef omitted"));
+	}
+	if (Value->Type != EJson::Object)
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be an AssetRef object or null"), *Path), Path, TEXT("InvalidAssetRef"));
+	}
+
+	const TSharedPtr<FJsonObject> AssetRef = Value->AsObject();
+	if (!AssetRef.IsValid())
+	{
+		return BodyFailure(FString::Printf(TEXT("%s must be an AssetRef object or null"), *Path), Path, TEXT("InvalidAssetRef"));
+	}
+
+	FString Kind;
+	if (!AssetRef->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("AssetRef"))
+	{
+		return BodyFailure(FString::Printf(TEXT("%s.Kind must be AssetRef"), *Path), Path / TEXT("Kind"), TEXT("InvalidAssetRefKind"));
+	}
+
+	FString AssetPath;
+	if (!AssetRef->TryGetStringField(TEXT("Path"), AssetPath) || AssetPath.TrimStartAndEnd().IsEmpty())
+	{
+		if (!AssetRef->TryGetStringField(TEXT("Asset"), AssetPath) || AssetPath.TrimStartAndEnd().IsEmpty())
+		{
+			return BodyFailure(FString::Printf(TEXT("%s.Path is required"), *Path), Path / TEXT("Path"), TEXT("MissingAssetRefPath"));
+		}
+	}
+
+	OutObject = StaticLoadObject(ExpectedClass, nullptr, *AssetPath);
+	if (!OutObject || !OutObject->IsA(ExpectedClass))
+	{
+		return BodyFailure(
+			FString::Printf(TEXT("%s '%s' did not resolve to %s"), *Path, *AssetPath, ExpectedClass ? *ExpectedClass->GetName() : TEXT("object")),
+			Path,
+			TEXT("UnresolvedAssetRef"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Resolved AssetRef"));
+}
+
+TSharedPtr<FJsonValue> MakeAssetRefValue(const UObject* Object)
+{
+	if (!Object)
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), Object->GetPathName());
+	return MakeShared<FJsonValueObject>(AssetRef);
+}
+
+TSharedRef<FJsonObject> MakeClassRefObject(const UClass* Class)
+{
+	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
+	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Class"), Class ? Class->GetPathName() : FString(TEXT("/Script/Engine.AnimInstance")));
+	return ClassRef;
+}
+
+bool TryReadOptionalBool(const TSharedRef<FJsonObject>& Object, const TCHAR* FieldName, bool& OutValue)
+{
+	return Object->TryGetBoolField(FieldName, OutValue);
+}
+
+EPreviewAnimationBlueprintApplicationMethod ParsePreviewApplicationMethod(const FString& Method)
+{
+	return Method == TEXT("LinkedAnimGraph")
+		? EPreviewAnimationBlueprintApplicationMethod::LinkedAnimGraph
+		: EPreviewAnimationBlueprintApplicationMethod::LinkedLayers;
+}
+
+FString PreviewApplicationMethodToString(EPreviewAnimationBlueprintApplicationMethod Method)
+{
+	return Method == EPreviewAnimationBlueprintApplicationMethod::LinkedAnimGraph
+		? FString(TEXT("LinkedAnimGraph"))
+		: FString(TEXT("LinkedLayers"));
+}
+
+void SyncGeneratedClassTargetSkeleton(UAnimBlueprint* AnimBlueprint)
+{
+	if (!AnimBlueprint)
+	{
+		return;
+	}
+	if (UAnimBlueprintGeneratedClass* GeneratedClass = Cast<UAnimBlueprintGeneratedClass>(AnimBlueprint->GeneratedClass))
+	{
+		GeneratedClass->TargetSkeleton = AnimBlueprint->TargetSkeleton;
+	}
+	if (UAnimBlueprintGeneratedClass* SkeletonClass = Cast<UAnimBlueprintGeneratedClass>(AnimBlueprint->SkeletonGeneratedClass))
+	{
+		SkeletonClass->TargetSkeleton = AnimBlueprint->TargetSkeleton;
+	}
+}
+
 FAssetDocumentObjectFieldSchema MakeTemplateSchema()
 {
 	FAssetDocumentObjectFieldSchema Schema;
@@ -295,6 +418,136 @@ FAssetDocumentCapabilityResult ValidateCoreObjectRegion(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint object region"));
 }
 
+FAssetDocumentCapabilityResult ApplyCoreObjectRegion(
+	FAssetDocumentRegionContext& Context,
+	const TSharedRef<FJsonObject>& Object,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	FAssetDocumentCapabilityResult Result = ValidateCoreObjectRegion(Context, Object);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	if (!AnimBlueprint)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint object region"));
+	}
+
+	if (Context.RegionId == TEXT("Body.ParentClass"))
+	{
+		UClass* ParentClass = nullptr;
+		Result = ResolveParentClassObject(Object, ParentClass);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (ParentClass && AnimBlueprint->ParentClass.Get() != ParentClass)
+		{
+			AnimBlueprint->ParentClass = ParentClass;
+			bOutChanged = true;
+		}
+	}
+	else if (Context.RegionId == TEXT("Body.Template"))
+	{
+		bool bIsTemplate = false;
+		if (TryReadOptionalBool(Object, TEXT("bIsTemplate"), bIsTemplate) && AnimBlueprint->bIsTemplate != bIsTemplate)
+		{
+			AnimBlueprint->bIsTemplate = bIsTemplate;
+			if (bIsTemplate && AnimBlueprint->TargetSkeleton)
+			{
+				AnimBlueprint->TargetSkeleton = nullptr;
+				SyncGeneratedClassTargetSkeleton(AnimBlueprint);
+			}
+			bOutChanged = true;
+		}
+	}
+	else if (Context.RegionId == TEXT("Body.Preview"))
+	{
+		UObject* PreviewMeshObject = nullptr;
+		Result = ResolveAssetRefValue(
+			Object->TryGetField(TEXT("PreviewSkeletalMesh")),
+			USkeletalMesh::StaticClass(),
+			TEXT("/Body/Preview/PreviewSkeletalMesh"),
+			PreviewMeshObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		USkeletalMesh* PreviewMesh = Cast<USkeletalMesh>(PreviewMeshObject);
+		if (Object->HasField(TEXT("PreviewSkeletalMesh")) && AnimBlueprint->GetPreviewMesh() != PreviewMesh)
+		{
+			AnimBlueprint->SetPreviewMesh(PreviewMesh, true);
+			bOutChanged = true;
+		}
+
+		UObject* PreviewAnimBlueprintObject = nullptr;
+		Result = ResolveAssetRefValue(
+			Object->TryGetField(TEXT("PreviewAnimationBlueprint")),
+			UAnimBlueprint::StaticClass(),
+			TEXT("/Body/Preview/PreviewAnimationBlueprint"),
+			PreviewAnimBlueprintObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		UAnimBlueprint* PreviewAnimBlueprint = Cast<UAnimBlueprint>(PreviewAnimBlueprintObject);
+		if (Object->HasField(TEXT("PreviewAnimationBlueprint")) && AnimBlueprint->GetPreviewAnimationBlueprint() != PreviewAnimBlueprint)
+		{
+			AnimBlueprint->SetPreviewAnimationBlueprint(PreviewAnimBlueprint);
+			bOutChanged = true;
+		}
+
+		FString Method;
+		if (Object->TryGetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), Method))
+		{
+			const EPreviewAnimationBlueprintApplicationMethod ParsedMethod = ParsePreviewApplicationMethod(Method);
+			if (AnimBlueprint->GetPreviewAnimationBlueprintApplicationMethod() != ParsedMethod)
+			{
+				AnimBlueprint->SetPreviewAnimationBlueprintApplicationMethod(ParsedMethod);
+				bOutChanged = true;
+			}
+		}
+
+		FString Tag;
+		if (Object->TryGetStringField(TEXT("PreviewAnimationBlueprintTag"), Tag))
+		{
+			const FName ParsedTag(*Tag);
+			if (AnimBlueprint->GetPreviewAnimationBlueprintTag() != ParsedTag)
+			{
+				AnimBlueprint->SetPreviewAnimationBlueprintTag(ParsedTag);
+				bOutChanged = true;
+			}
+		}
+	}
+	else if (Context.RegionId == TEXT("Body.Optimization"))
+	{
+		bool bBoolValue = false;
+		if (TryReadOptionalBool(Object, TEXT("bUseMultiThreadedAnimationUpdate"), bBoolValue)
+			&& AnimBlueprint->bUseMultiThreadedAnimationUpdate != bBoolValue)
+		{
+			AnimBlueprint->bUseMultiThreadedAnimationUpdate = bBoolValue;
+			bOutChanged = true;
+		}
+		if (TryReadOptionalBool(Object, TEXT("bWarnAboutBlueprintUsage"), bBoolValue)
+			&& AnimBlueprint->bWarnAboutBlueprintUsage != bBoolValue)
+		{
+			AnimBlueprint->bWarnAboutBlueprintUsage = bBoolValue;
+			bOutChanged = true;
+		}
+		if (TryReadOptionalBool(Object, TEXT("bEnableLinkedAnimLayerInstanceSharing"), bBoolValue)
+			&& AnimBlueprint->bEnableLinkedAnimLayerInstanceSharing != bBoolValue)
+		{
+			AnimBlueprint->bEnableLinkedAnimLayerInstanceSharing = bBoolValue;
+			bOutChanged = true;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimBlueprint object region"));
+}
+
 TSharedRef<FJsonObject> MakeDefaultParentClassObject()
 {
 	TSharedRef<FJsonObject> ParentClass = MakeShared<FJsonObject>();
@@ -307,27 +560,34 @@ FAssetDocumentCapabilityResult ExtractCoreObjectRegion(
 	const FAssetDocumentRegionContext& Context,
 	TSharedRef<FJsonObject>& OutObject)
 {
+	const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
 	if (Context.RegionId == TEXT("Body.ParentClass"))
 	{
-		OutObject = MakeDefaultParentClassObject();
+		OutObject = AnimBlueprint ? MakeClassRefObject(AnimBlueprint->ParentClass.Get()) : MakeDefaultParentClassObject();
 		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted default AnimBlueprint ParentClass"));
 	}
 	if (Context.RegionId == TEXT("Body.Template"))
 	{
-		OutObject->SetBoolField(TEXT("bIsTemplate"), false);
+		OutObject->SetBoolField(TEXT("bIsTemplate"), AnimBlueprint ? AnimBlueprint->bIsTemplate : false);
 	}
 	else if (Context.RegionId == TEXT("Body.Preview"))
 	{
-		OutObject->SetField(TEXT("PreviewSkeletalMesh"), MakeShared<FJsonValueNull>());
-		OutObject->SetField(TEXT("PreviewAnimationBlueprint"), MakeShared<FJsonValueNull>());
-		OutObject->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), TEXT("LinkedLayers"));
-		OutObject->SetStringField(TEXT("PreviewAnimationBlueprintTag"), TEXT(""));
+		OutObject->SetField(TEXT("PreviewSkeletalMesh"), MakeAssetRefValue(AnimBlueprint ? AnimBlueprint->GetPreviewMesh() : nullptr));
+		OutObject->SetField(TEXT("PreviewAnimationBlueprint"), MakeAssetRefValue(AnimBlueprint ? AnimBlueprint->GetPreviewAnimationBlueprint() : nullptr));
+		OutObject->SetStringField(
+			TEXT("PreviewAnimationBlueprintApplicationMethod"),
+			AnimBlueprint
+				? PreviewApplicationMethodToString(AnimBlueprint->GetPreviewAnimationBlueprintApplicationMethod())
+				: FString(TEXT("LinkedLayers")));
+		OutObject->SetStringField(
+			TEXT("PreviewAnimationBlueprintTag"),
+			AnimBlueprint ? AnimBlueprint->GetPreviewAnimationBlueprintTag().ToString() : FString());
 	}
 	else if (Context.RegionId == TEXT("Body.Optimization"))
 	{
-		OutObject->SetBoolField(TEXT("bUseMultiThreadedAnimationUpdate"), true);
-		OutObject->SetBoolField(TEXT("bWarnAboutBlueprintUsage"), false);
-		OutObject->SetBoolField(TEXT("bEnableLinkedAnimLayerInstanceSharing"), false);
+		OutObject->SetBoolField(TEXT("bUseMultiThreadedAnimationUpdate"), AnimBlueprint ? AnimBlueprint->bUseMultiThreadedAnimationUpdate : true);
+		OutObject->SetBoolField(TEXT("bWarnAboutBlueprintUsage"), AnimBlueprint ? AnimBlueprint->bWarnAboutBlueprintUsage : false);
+		OutObject->SetBoolField(TEXT("bEnableLinkedAnimLayerInstanceSharing"), AnimBlueprint ? AnimBlueprint->bEnableLinkedAnimLayerInstanceSharing : false);
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimBlueprint object region default"));
 }
@@ -341,8 +601,7 @@ FAssetDocumentObjectRegionAdapter MakeCoreObjectRegionAdapter()
 	};
 	Hooks.ApplyObject = [](FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& Object, bool& bOutChanged)
 	{
-		bOutChanged = false;
-		return ValidateCoreObjectRegion(Context, Object);
+		return ApplyCoreObjectRegion(Context, Object, bOutChanged);
 	};
 	Hooks.ExtractObject = [](const FAssetDocumentRegionContext& Context, TSharedRef<FJsonObject>& OutObject)
 	{
@@ -442,14 +701,41 @@ public:
 		bool& bOutChanged) override
 	{
 		bOutChanged = false;
-		return ValidateRegion(Context, DesiredValue);
+		FAssetDocumentCapabilityResult Result = ValidateRegion(Context, DesiredValue);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+		if (!AnimBlueprint)
+		{
+			return Result;
+		}
+
+		UObject* ResolvedObject = nullptr;
+		Result = ResolveAssetRefValue(DesiredValue, USkeleton::StaticClass(), Context.JsonPointer, ResolvedObject);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		USkeleton* DesiredSkeleton = Cast<USkeleton>(ResolvedObject);
+		if (AnimBlueprint->TargetSkeleton.Get() != DesiredSkeleton)
+		{
+			AnimBlueprint->TargetSkeleton = DesiredSkeleton;
+			SyncGeneratedClassTargetSkeleton(AnimBlueprint);
+			bOutChanged = true;
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimBlueprint TargetSkeleton"));
 	}
 
 	virtual FAssetDocumentCapabilityResult ExtractRegion(
-		const FAssetDocumentRegionContext&,
+		const FAssetDocumentRegionContext& Context,
 		TSharedPtr<FJsonValue>& OutCurrentValue) const override
 	{
-		OutCurrentValue = MakeShared<FJsonValueNull>();
+		const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+		OutCurrentValue = MakeAssetRefValue(AnimBlueprint ? AnimBlueprint->TargetSkeleton.Get() : nullptr);
 		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted default AnimBlueprint TargetSkeleton"));
 	}
 
@@ -496,6 +782,27 @@ FAssetDocumentCapabilityResult ValidateAnimBlueprintCrossRegion(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint cross-region constraints"));
 }
 
+FAssetDocumentCapabilityResult RepairAnimBlueprintAfterApply(
+	FAssetDocumentCapabilityContext& Context,
+	const TSet<FName>& AppliedRegions)
+{
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	if (!AnimBlueprint || AppliedRegions.Num() == 0)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No AnimBlueprint repair needed"));
+	}
+
+	SyncGeneratedClassTargetSkeleton(AnimBlueprint);
+	FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+	if (AnimBlueprint->Status == BS_Error)
+	{
+		return BodyFailure(TEXT("Failed to compile AnimBlueprint after applying Body regions"), TEXT("/Body"), TEXT("AnimBlueprintCompileFailed"));
+	}
+
+	AnimBlueprint->MarkPackageDirty();
+	return FAssetDocumentCapabilityResult::Success(TEXT("Repaired AnimBlueprint after applying Body regions"));
+}
+
 FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	TFunctionRef<FAssetDocumentCapabilityResult(const FAssetDocumentBodyRegionDispatcher&)> Dispatch)
 {
@@ -515,6 +822,10 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	Hooks.ValidateCrossRegion = [](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject)
 	{
 		return ValidateAnimBlueprintCrossRegion(Context, BodyObject);
+	};
+	Hooks.PostApplyRepair = [](FAssetDocumentCapabilityContext& Context, const TSet<FName>& AppliedRegions)
+	{
+		return RepairAnimBlueprintAfterApply(Context, AppliedRegions);
 	};
 
 	const FAssetDocumentBodyRegionDispatcher Dispatcher(
