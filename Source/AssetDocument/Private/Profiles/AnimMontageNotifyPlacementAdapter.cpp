@@ -3,6 +3,7 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "AssetDocumentFragmentCompiler.h"
+#include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPropertyAdapter.h"
 #include "Regions/AssetDocumentTimelinePlacementRegionAdapter.h"
 
@@ -126,7 +127,9 @@ FAssetDocumentCapabilityResult MapTimelinePlacementFailure(
 		|| Code == TEXT("MissingTimelinePlacementTime")
 		|| Code == TEXT("MissingTimelinePlacementDuration"))
 	{
-		Code = TEXT("InvalidNumericField");
+		Code = Path.EndsWith(TEXT("/TrackIndex"))
+			? FString(TEXT("InvalidTrackIndex"))
+			: FString(TEXT("InvalidNumericField"));
 	}
 	else if (Code == TEXT("InvalidTimelinePlacementTime"))
 	{
@@ -145,6 +148,12 @@ FAssetDocumentCapabilityResult MapTimelinePlacementFailure(
 	else if (Code == TEXT("InvalidTimelinePlacementTrackIndex"))
 	{
 		Code = TEXT("InvalidTrackIndex");
+	}
+	else if (Code == TEXT("DuplicateTimelinePlacementKey"))
+	{
+		Code = FCString::Strcmp(SectionName, TEXT("Notifies")) == 0
+			? FString(TEXT("DuplicateNotifyPlacementKey"))
+			: FString(TEXT("DuplicateNotifyStatePlacementKey"));
 	}
 
 	return BodyFailure(Result.Message, Path, Code);
@@ -228,12 +237,47 @@ FAssetDocumentTimelinePlacementRegionConfig MakePlacementConfig(const TCHAR* Sec
 	return Config;
 }
 
-FAssetDocumentTimelinePlacementHooks MakePlacementHooks()
+FString ReadPlacementObjectIdentity(const FAssetDocumentTimelinePlacementEntry& Entry)
+{
+	const TSharedPtr<FJsonValue> ObjectValue = Entry.EntryObject.IsValid()
+		? Entry.EntryObject->TryGetField(TEXT("Object"))
+		: nullptr;
+	if (!ObjectValue.IsValid())
+	{
+		return TEXT("Object=<missing>");
+	}
+
+	return FString::Printf(
+		TEXT("Object=%s"),
+		*FAssetDocumentJsonRegionUtils::JsonValueToComparableString(ObjectValue));
+}
+
+FAssetDocumentTimelinePlacementHooks MakePlacementHooks(const TCHAR* SectionName, bool bState)
 {
 	FAssetDocumentTimelinePlacementHooks Hooks;
-	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
+	const FString RegionName(SectionName);
+	Hooks.BuildDuplicateKey = [RegionName, bState](const FAssetDocumentTimelinePlacementEntry& Entry)
 	{
-		return FString::Printf(TEXT("Index=%d"), Entry.Index);
+		TArray<FString> Pieces;
+		Pieces.Add(FString::Printf(TEXT("Region=%s"), *RegionName));
+		Pieces.Add(FString::Printf(
+			TEXT("Time=%s"),
+			Entry.Time.IsSet()
+				? *FAssetDocumentTimelinePlacementUtils::CanonicalizeTimeForKey(Entry.Time.GetValue())
+				: TEXT("<missing>")));
+		if (bState)
+		{
+			Pieces.Add(FString::Printf(
+				TEXT("Duration=%s"),
+				Entry.Duration.IsSet()
+					? *FAssetDocumentTimelinePlacementUtils::CanonicalizeTimeForKey(Entry.Duration.GetValue())
+					: TEXT("<missing>")));
+		}
+		Pieces.Add(FString::Printf(
+			TEXT("TrackIndex=%d"),
+			Entry.TrackIndex.IsSet() ? Entry.TrackIndex.GetValue() : 0));
+		Pieces.Add(ReadPlacementObjectIdentity(Entry));
+		return FString::Join(Pieces, TEXT("|"));
 	};
 	return Hooks;
 }
@@ -262,7 +306,7 @@ FAssetDocumentCapabilityResult ParsePlacementEntries(
 	}
 
 	FAssetDocumentTimelinePlacementRegionConfig Config = MakePlacementConfig(SectionName, bState);
-	FAssetDocumentTimelinePlacementHooks Hooks = MakePlacementHooks();
+	FAssetDocumentTimelinePlacementHooks Hooks = MakePlacementHooks(SectionName, bState);
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
 		*SectionValue,
 		Config,
