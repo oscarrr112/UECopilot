@@ -3,6 +3,9 @@
 #include "Graphs/AssetDocumentAnimationGraphRuntime.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "AssetDocumentPropertyAdapter.h"
+
+#include "EdGraph/EdGraphNode.h"
 
 namespace
 {
@@ -61,32 +64,30 @@ bool SpawnerMatches(
 	return AssetDocumentGraphJson::AreJsonObjectsEqual(DesiredSpawner, CandidateSpawner);
 }
 
-FAssetDocumentCapabilityResult ApplyGraphAfterPreflight(
-	const FAssetDocumentGraphSpec& GraphSpec,
-	FAssetDocumentAnimationGraphContext& Context,
-	IAssetDocumentAnimationGraphStructuralHook& Hook)
+FAssetDocumentCapabilityResult PropertyApplyFailure(
+	const FString& Path,
+	const FAssetDocumentPropertyApplyResult& ApplyResult)
 {
-	const FAssetDocumentCapabilityResult LocateResult = Hook.LocateOrCreateGraph(GraphSpec, Context);
-	if (!LocateResult.bSuccess)
+	FAssetDocumentCapabilityResult Result;
+	Result.bSuccess = false;
+	Result.Message = ApplyResult.Message;
+	if (ApplyResult.Diagnostics.IsEmpty())
 	{
-		return LocateResult;
+		Result.Diagnostics.Add({Path, TEXT("GraphNodeFieldApplyFailed"), ApplyResult.Message});
+		return Result;
 	}
 
-	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
+	for (const FAssetDocumentDiagnostic& Diagnostic : ApplyResult.Diagnostics)
 	{
-		FAssetDocumentAnimationGraphContext SubgraphContext = Context;
-		SubgraphContext.GraphPath = JoinPath(JoinPath(GraphPath(GraphSpec, Context), TEXT("Subgraphs")), Subgraph.Id);
-		SubgraphContext.GraphKind = Subgraph.Kind;
-		const FAssetDocumentCapabilityResult SubgraphResult =
-			ApplyGraphAfterPreflight(Subgraph, SubgraphContext, Hook);
-		if (!SubgraphResult.bSuccess)
-		{
-			return SubgraphResult;
-		}
+		FAssetDocumentDiagnostic Mapped;
+		Mapped.Path = Diagnostic.Path.IsEmpty() ? Path : JoinPath(Path, Diagnostic.Path);
+		Mapped.Code = Diagnostic.Code.IsEmpty() ? TEXT("GraphNodeFieldApplyFailed") : Diagnostic.Code;
+		Mapped.Message = Diagnostic.Message;
+		Result.Diagnostics.Add(MoveTemp(Mapped));
 	}
-
-	return Hook.RepairAfterApply(GraphSpec, Context);
+	return Result;
 }
+
 }
 
 FAssetDocumentAnimationGraphRuntime::FAssetDocumentAnimationGraphRuntime(
@@ -183,6 +184,109 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ValidateGrap
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeGraphNodes(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentAnimationGraphContext& Context) const
+{
+	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+	{
+		FAssetDocumentAnimationGraphNodeSpawnCandidate Candidate;
+		FAssetDocumentCapabilityResult CandidateResult = ResolveCandidate(GraphSpec, NodeSpec, Context, Candidate);
+		if (!CandidateResult.bSuccess)
+		{
+			return CandidateResult;
+		}
+
+		UEdGraphNode* SpawnedNode = nullptr;
+		CandidateResult = CandidateProvider->SpawnNode(GraphSpec, NodeSpec, Context, Candidate, SpawnedNode);
+		if (!CandidateResult.bSuccess)
+		{
+			return CandidateResult;
+		}
+		if (!SpawnedNode)
+		{
+			return RuntimeFailure(
+				JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Class")),
+				TEXT("GraphNodeSpawnFailed"),
+				FString::Printf(TEXT("Graph node '%s' did not produce a UE graph node."), *NodeSpec.Id));
+		}
+		if (!NodeSpec.Class.IsEmpty() && SpawnedNode->GetClass()->GetPathName() != NodeSpec.Class)
+		{
+			return RuntimeFailure(
+				JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Class")),
+				TEXT("GraphNodeSpawnClassMismatch"),
+				FString::Printf(
+					TEXT("Graph node '%s' spawned '%s' instead of '%s'."),
+					*NodeSpec.Id,
+					*SpawnedNode->GetClass()->GetPathName(),
+					*NodeSpec.Class));
+		}
+
+		if (NodeSpec.Fields.IsValid() && !NodeSpec.Fields->Values.IsEmpty())
+		{
+			const FString FieldsPath = JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Fields"));
+			const FAssetDocumentPropertyApplyResult FieldResult =
+				FAssetDocumentPropertyAdapter::ApplyProperties(SpawnedNode, NodeSpec.Fields);
+			if (!FieldResult.bSuccess)
+			{
+				return PropertyApplyFailure(FieldsPath, FieldResult);
+			}
+		}
+
+		SpawnedNode->NodePosX = 0;
+		SpawnedNode->NodePosY = 0;
+		if (NodeSpec.Position.IsValid())
+		{
+			double X = 0.0;
+			double Y = 0.0;
+			if (NodeSpec.Position->TryGetNumberField(TEXT("X"), X))
+			{
+				SpawnedNode->NodePosX = static_cast<int32>(X);
+			}
+			if (NodeSpec.Position->TryGetNumberField(TEXT("Y"), Y))
+			{
+				SpawnedNode->NodePosY = static_cast<int32>(Y);
+			}
+		}
+		SpawnedNode->ReconstructNode();
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ApplyGraphAfterPreflight(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	FAssetDocumentAnimationGraphContext& Context,
+	IAssetDocumentAnimationGraphStructuralHook& Hook) const
+{
+	const FAssetDocumentCapabilityResult LocateResult = Hook.LocateOrCreateGraph(GraphSpec, Context);
+	if (!LocateResult.bSuccess)
+	{
+		return LocateResult;
+	}
+
+	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeGraphNodes(GraphSpec, Context);
+	if (!MaterializeResult.bSuccess)
+	{
+		return MaterializeResult;
+	}
+
+	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
+	{
+		FAssetDocumentAnimationGraphContext SubgraphContext = Context;
+		SubgraphContext.GraphPath = JoinPath(JoinPath(GraphPath(GraphSpec, Context), TEXT("Subgraphs")), Subgraph.Id);
+		SubgraphContext.GraphKind = Subgraph.Kind;
+		const FAssetDocumentCapabilityResult SubgraphResult =
+			ApplyGraphAfterPreflight(Subgraph, SubgraphContext, Hook);
+		if (!SubgraphResult.bSuccess)
+		{
+			return SubgraphResult;
+		}
+	}
+
+	return Hook.RepairAfterApply(GraphSpec, Context);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ApplyGraph(

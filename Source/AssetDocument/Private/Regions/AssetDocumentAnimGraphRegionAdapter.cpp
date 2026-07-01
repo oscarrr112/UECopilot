@@ -3,11 +3,18 @@
 #include "Regions/AssetDocumentAnimGraphRegionAdapter.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "Animation/AnimBlueprint.h"
+#include "AnimationGraph.h"
+#include "AnimationGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "Graphs/AssetDocumentAnimationGraphNodeActionProvider.h"
 #include "Graphs/AssetDocumentAnimationGraphRuntime.h"
 #include "Graphs/AssetDocumentGraphDiff.h"
 #include "Graphs/AssetDocumentGraphParser.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 
 namespace
 {
@@ -57,6 +64,80 @@ TSharedRef<FJsonObject> MakeCanonicalRegionObject()
 	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
 	Region->SetArrayField(TEXT("Graphs"), MoveTemp(Graphs));
 	return Region;
+}
+
+UAnimBlueprint* ResolveAnimBlueprint(const FAssetDocumentRegionContext& Context)
+{
+	return Cast<UAnimBlueprint>(Context.Asset);
+}
+
+UAnimationGraph* FindAnimGraph(UAnimBlueprint* AnimBlueprint)
+{
+	if (!AnimBlueprint)
+	{
+		return nullptr;
+	}
+
+	for (UEdGraph* Graph : AnimBlueprint->FunctionGraphs)
+	{
+		UAnimationGraph* AnimGraph = Cast<UAnimationGraph>(Graph);
+		if (AnimGraph && AnimGraph->GetFName() == UEdGraphSchema_K2::GN_AnimGraph)
+		{
+			return AnimGraph;
+		}
+	}
+
+	return Cast<UAnimationGraph>(
+		FindObject<UEdGraph>(AnimBlueprint, *UEdGraphSchema_K2::GN_AnimGraph.ToString()));
+}
+
+FAssetDocumentCapabilityResult InitializeRuntimeContextFromAsset(
+	const FAssetDocumentRegionContext& RegionContext,
+	FAssetDocumentAnimationGraphContext& InOutContext,
+	bool bCreateIfMissing,
+	bool& bOutChanged)
+{
+	UAnimBlueprint* AnimBlueprint = ResolveAnimBlueprint(RegionContext);
+	if (!AnimBlueprint)
+	{
+		return Failure(
+			AnimGraphPath,
+			TEXT("InvalidAnimBlueprintAsset"),
+			TEXT("Body.AnimGraph requires a UAnimBlueprint asset."));
+	}
+
+	InOutContext.Asset = AnimBlueprint;
+	InOutContext.Blueprint = AnimBlueprint;
+
+	UAnimationGraph* AnimGraph = FindAnimGraph(AnimBlueprint);
+	if (!AnimGraph && bCreateIfMissing)
+	{
+		if (AnimBlueprint->BlueprintType == BPTYPE_Interface || UAnimBlueprint::FindRootAnimBlueprint(AnimBlueprint) != nullptr)
+		{
+			return Failure(
+				AnimGraphPath,
+				TEXT("AnimGraphNotWritable"),
+				TEXT("This Animation Blueprint cannot own a writable root AnimGraph."));
+		}
+
+		UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+			AnimBlueprint,
+			UEdGraphSchema_K2::GN_AnimGraph,
+			UAnimationGraph::StaticClass(),
+			UAnimationGraphSchema::StaticClass());
+		FBlueprintEditorUtils::AddDomainSpecificGraph(AnimBlueprint, NewGraph);
+		AnimBlueprint->LastEditedDocuments.Add(NewGraph);
+		NewGraph->bAllowDeletion = false;
+		if (const UEdGraphSchema* Schema = NewGraph->GetSchema())
+		{
+			Schema->CreateDefaultNodesForGraph(*NewGraph);
+		}
+		AnimGraph = Cast<UAnimationGraph>(NewGraph);
+		bOutChanged = true;
+	}
+
+	InOutContext.Graph = AnimGraph;
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ParseAnimGraphRegion(
@@ -119,13 +200,25 @@ public:
 	{
 		return {};
 	}
+
+	virtual FAssetDocumentCapabilityResult SpawnNode(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context,
+		const FAssetDocumentAnimationGraphNodeSpawnCandidate& Candidate,
+		UEdGraphNode*& OutNode) const override
+	{
+		OutNode = nullptr;
+		return FAssetDocumentCapabilityResult::Success();
+	}
 };
 
 class FAnimGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
 {
 public:
-	explicit FAnimGraphStructuralHook(const FAssetDocumentRegionContext& InRegionContext)
+	FAnimGraphStructuralHook(const FAssetDocumentRegionContext& InRegionContext, bool& bInOutChanged)
 		: RegionContext(InRegionContext)
+		, bOutChanged(bInOutChanged)
 	{
 	}
 
@@ -133,10 +226,9 @@ public:
 		const FAssetDocumentGraphSpec& GraphSpec,
 		FAssetDocumentAnimationGraphContext& InOutContext) override
 	{
-		InOutContext.Asset = RegionContext.Asset;
 		InOutContext.GraphKind = GraphSpec.Kind;
 		InOutContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
-		return FAssetDocumentCapabilityResult::Success();
+		return InitializeRuntimeContextFromAsset(RegionContext, InOutContext, true, bOutChanged);
 	}
 
 	virtual FAssetDocumentCapabilityResult RepairAfterApply(
@@ -148,6 +240,7 @@ public:
 
 private:
 	const FAssetDocumentRegionContext& RegionContext;
+	bool& bOutChanged;
 };
 
 FAssetDocumentCapabilityResult ValidateAnimGraphValue(
@@ -162,10 +255,32 @@ FAssetDocumentCapabilityResult ValidateAnimGraphValue(
 	}
 
 	FAssetDocumentAnimationGraphContext RuntimeContext;
-	RuntimeContext.Asset = RegionContext ? RegionContext->Asset : nullptr;
+	bool bChanged = false;
+	if (RegionContext && RegionContext->Asset)
+	{
+		const FAssetDocumentCapabilityResult ContextResult =
+			InitializeRuntimeContextFromAsset(*RegionContext, RuntimeContext, false, bChanged);
+		if (!ContextResult.bSuccess)
+		{
+			return ContextResult;
+		}
+	}
+	else
+	{
+		RuntimeContext.Asset = RegionContext ? RegionContext->Asset : nullptr;
+	}
 	RuntimeContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	RuntimeContext.GraphKind = CanonicalGraphKind;
-	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FEmptyAnimGraphCandidateProvider>());
+	TSharedPtr<IAssetDocumentAnimationGraphCandidateProvider> Provider;
+	if (RegionContext && RegionContext->Asset)
+	{
+		Provider = MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>();
+	}
+	else
+	{
+		Provider = MakeShared<FEmptyAnimGraphCandidateProvider>();
+	}
+	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	return Runtime.ValidateGraph(Graphs[0], RuntimeContext);
 }
 
@@ -241,12 +356,12 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ApplyRegion
 		return ParseResult;
 	}
 
-	FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FEmptyAnimGraphCandidateProvider>());
+	FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
 	FAssetDocumentAnimationGraphContext RuntimeContext;
 	RuntimeContext.Asset = Context.Asset;
 	RuntimeContext.GraphKind = CanonicalGraphKind;
 	RuntimeContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
-	FAnimGraphStructuralHook Hook(Context);
+	FAnimGraphStructuralHook Hook(Context, bOutChanged);
 	return Runtime.ApplyGraph(Graphs[0], RuntimeContext, Hook);
 }
 

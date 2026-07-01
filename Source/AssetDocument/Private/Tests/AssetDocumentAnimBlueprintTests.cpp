@@ -102,7 +102,7 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetStringField(TEXT("Id"), TEXT("IdlePlayer"));
 	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
-	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_DoesNotExist"));
 
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
 	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));

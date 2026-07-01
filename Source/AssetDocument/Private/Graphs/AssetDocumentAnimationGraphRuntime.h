@@ -8,12 +8,17 @@
 #include "CoreMinimal.h"
 
 class UEdGraph;
+class UEdGraphNode;
+class UEdGraphPin;
 class UObject;
+class UBlueprint;
 
 struct FAssetDocumentAnimationGraphContext
 {
 	UObject* Asset = nullptr;
+	UBlueprint* Blueprint = nullptr;
 	UEdGraph* Graph = nullptr;
+	TArray<UEdGraphPin*> Pins;
 	FString GraphPath;
 	FString GraphKind;
 };
@@ -24,6 +29,8 @@ struct FAssetDocumentAnimationGraphNodeSpawnCandidate
 	TSharedPtr<FJsonObject> Spawner;
 	FString ActionKey;
 	FString MenuName;
+	FString Category;
+	FString SpawnerSignature;
 	bool bSpawnable = true;
 };
 
@@ -35,6 +42,13 @@ public:
 	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
 		const FAssetDocumentNodeSpec& NodeSpec,
 		const FAssetDocumentAnimationGraphContext& Context) const = 0;
+
+	virtual FAssetDocumentCapabilityResult SpawnNode(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context,
+		const FAssetDocumentAnimationGraphNodeSpawnCandidate& Candidate,
+		UEdGraphNode*& OutNode) const = 0;
 };
 
 class IAssetDocumentAnimationGraphStructuralHook
@@ -76,6 +90,15 @@ private:
 		const FAssetDocumentNodeSpec& NodeSpec,
 		const FAssetDocumentAnimationGraphContext& Context,
 		FAssetDocumentAnimationGraphNodeSpawnCandidate& OutCandidate) const;
+
+	FAssetDocumentCapabilityResult MaterializeGraphNodes(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentAnimationGraphContext& Context) const;
+
+	FAssetDocumentCapabilityResult ApplyGraphAfterPreflight(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		FAssetDocumentAnimationGraphContext& Context,
+		IAssetDocumentAnimationGraphStructuralHook& Hook) const;
 
 	TSharedPtr<IAssetDocumentAnimationGraphCandidateProvider> CandidateProvider;
 };

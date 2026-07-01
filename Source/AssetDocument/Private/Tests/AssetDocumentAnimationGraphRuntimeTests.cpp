@@ -8,6 +8,7 @@
 #include "Animation/AnimationAsset.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Misc/AutomationTest.h"
 
 namespace
@@ -69,6 +70,7 @@ class FFakeAnimationGraphCandidateProvider final : public IAssetDocumentAnimatio
 public:
 	TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
 	int32 QueryCount = 0;
+	int32 SpawnCount = 0;
 
 	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
 		const FAssetDocumentNodeSpec& NodeSpec,
@@ -76,6 +78,18 @@ public:
 	{
 		++const_cast<FFakeAnimationGraphCandidateProvider*>(this)->QueryCount;
 		return Candidates;
+	}
+
+	virtual FAssetDocumentCapabilityResult SpawnNode(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context,
+		const FAssetDocumentAnimationGraphNodeSpawnCandidate& Candidate,
+		UEdGraphNode*& OutNode) const override
+	{
+		++const_cast<FFakeAnimationGraphCandidateProvider*>(this)->SpawnCount;
+		OutNode = NewObject<UEdGraphNode>(GetTransientPackage());
+		return FAssetDocumentCapabilityResult::Success();
 	}
 };
 
@@ -119,6 +133,11 @@ FAssetDocumentAnimationGraphNodeSpawnCandidate MakeCandidate(
 		Candidate.Spawner = MakeSpawner(ActionKey);
 	}
 	return Candidate;
+}
+
+FString FakeGraphNodeClassPath()
+{
+	return UEdGraphNode::StaticClass()->GetPathName();
 }
 
 FString FirstDiagnosticCode(const FAssetDocumentCapabilityResult& Result)
@@ -335,13 +354,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeUniqueCandidateTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
 
 	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FAssetDocumentAnimationGraphContext Context;
 	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	const FAssetDocumentGraphSpec Graph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath()));
 
 	const FAssetDocumentCapabilityResult Result = Runtime.ValidateGraph(Graph, Context);
 	TestTrue(TEXT("Single candidate validates without explicit spawner"), Result.bSuccess);
@@ -357,21 +376,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeDuplicateCandidateRequiresSpawnerTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"), TEXT("BlendSpace")));
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"), TEXT("AimOffset")));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath(), TEXT("BlendSpace")));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath(), TEXT("AimOffset")));
 
 	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FAssetDocumentAnimationGraphContext Context;
 	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	const FAssetDocumentGraphSpec AmbiguousGraph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("MovePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("MovePlayer"), FakeGraphNodeClassPath()));
 
 	const FAssetDocumentCapabilityResult AmbiguousResult = Runtime.ValidateGraph(AmbiguousGraph, Context);
 	TestFalse(TEXT("Duplicate candidates require Node.Spawner"), AmbiguousResult.bSuccess);
 	TestEqual(TEXT("Duplicate candidate code"), FirstDiagnosticCode(AmbiguousResult), FString(TEXT("AmbiguousGraphNodeSpawner")));
 
 	FAssetDocumentNodeSpec DisambiguatedNode =
-		MakeRuntimeNode(TEXT("MovePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"));
+		MakeRuntimeNode(TEXT("MovePlayer"), FakeGraphNodeClassPath());
 	DisambiguatedNode.Spawner = MakeSpawner(TEXT("BlendSpace"));
 	const FAssetDocumentCapabilityResult DisambiguatedResult =
 		Runtime.ValidateGraph(MakeRuntimeGraphWithNode(DisambiguatedNode), Context);
@@ -387,13 +406,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeUnspawnableClassTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly"), FString(), false));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath(), FString(), false));
 
 	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FAssetDocumentAnimationGraphContext Context;
 	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	const FAssetDocumentGraphSpec Graph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), FakeGraphNodeClassPath()));
 
 	const FAssetDocumentCapabilityResult Result = Runtime.ValidateGraph(Graph, Context);
 	TestFalse(TEXT("Unspawnable candidate fails preflight"), Result.bSuccess);
@@ -409,19 +428,20 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeApplyPreflightBeforeHookTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly"), FString(), false));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath(), FString(), false));
 
 	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FFakeAnimationGraphStructuralHook Hook;
 	FAssetDocumentAnimationGraphContext Context;
 	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	const FAssetDocumentGraphSpec Graph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), FakeGraphNodeClassPath()));
 
 	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
 	TestFalse(TEXT("ApplyGraph rejects unspawnable node"), Result.bSuccess);
 	TestEqual(TEXT("Failed preflight does not locate graph"), Hook.LocateCount, 0);
 	TestEqual(TEXT("Failed preflight does not repair graph"), Hook.RepairCount, 0);
+	TestEqual(TEXT("Failed preflight does not spawn nodes"), Provider->SpawnCount, 0);
 	return true;
 }
 
@@ -433,20 +453,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
 
 	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FFakeAnimationGraphStructuralHook Hook;
 	FAssetDocumentAnimationGraphContext Context;
 	FAssetDocumentGraphSpec Graph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath()));
 	Graph.Id = TEXT("AnimGraph");
 
 	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
 	TestTrue(TEXT("ApplyGraph succeeds with fake structural hook"), Result.bSuccess);
 	TestEqual(TEXT("Structural hook locates graph once"), Hook.LocateCount, 1);
 	TestEqual(TEXT("Structural hook repairs graph once"), Hook.RepairCount, 1);
-	TestEqual(TEXT("Candidate provider handles node parsing/materialization boundary"), Provider->QueryCount, 1);
+	TestEqual(TEXT("Candidate provider preflights and materializes node"), Provider->QueryCount, 2);
+	TestEqual(TEXT("Candidate provider spawns node once"), Provider->SpawnCount, 1);
 	return true;
 }
 
@@ -458,7 +479,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest::RunTest(const FString&)
 {
 	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
-	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
 
 	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
 	FFakeAnimationGraphStructuralHook Hook;
@@ -466,10 +487,10 @@ bool FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest::RunTe
 	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 
 	FAssetDocumentGraphSpec Graph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath()));
 	Graph.Id = TEXT("AnimGraph");
 	FAssetDocumentGraphSpec Subgraph =
-		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("NestedPlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("NestedPlayer"), FakeGraphNodeClassPath()));
 	Subgraph.Id = TEXT("AnimGraph.Nested");
 	Subgraph.Kind = TEXT("PoseSubgraph");
 	Graph.Subgraphs.Add(Subgraph);
@@ -478,7 +499,8 @@ bool FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest::RunTe
 	TestTrue(TEXT("ApplyGraph succeeds with a subgraph"), Result.bSuccess);
 	TestEqual(TEXT("Structural hook locates root and subgraph"), Hook.LocateCount, 2);
 	TestEqual(TEXT("Structural hook repairs root and subgraph"), Hook.RepairCount, 2);
-	TestEqual(TEXT("Candidate provider validates root and subgraph nodes"), Provider->QueryCount, 2);
+	TestEqual(TEXT("Candidate provider validates and materializes root and subgraph nodes"), Provider->QueryCount, 4);
+	TestEqual(TEXT("Candidate provider spawns root and subgraph nodes"), Provider->SpawnCount, 2);
 	return true;
 }
 
