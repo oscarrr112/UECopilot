@@ -1897,6 +1897,18 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestTrue(TEXT("Out-of-range marker diagnostic is precise"), HasDiagnostic(OutOfRangeMarkerResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidSyncMarkerTime")));
 	TestEqual(TEXT("Out-of-range marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
+	TSharedRef<FJsonObject> OverflowMarkerBody = MakePlaybackRateBody(4.75);
+	OverflowMarkerBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
+		MakeSyncMarker(TEXT("OverflowMarker"), static_cast<double>(MAX_dbl)),
+	}));
+	const FAssetDocumentCapabilityResult OverflowMarkerValidateResult = Capability.Validate(Context, MakeBodyValue(OverflowMarkerBody));
+	TestFalse(TEXT("Validate rejects sync marker time that cannot fit in float"), OverflowMarkerValidateResult.bSuccess);
+	TestTrue(TEXT("Overflow marker validate diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerValidateResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	const FAssetDocumentCapabilityResult OverflowMarkerApplyResult = Capability.Apply(Context, MakeBodyValue(OverflowMarkerBody));
+	TestFalse(TEXT("Apply rejects sync marker time that cannot fit in float"), OverflowMarkerApplyResult.bSuccess);
+	TestTrue(TEXT("Overflow marker apply diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerApplyResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	TestEqual(TEXT("Overflow marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
+
 	TSharedRef<FJsonObject> NegativeDurationBody = MakePlaybackRateBody(5.0);
 	NegativeDurationBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
 		MakeNotifyStatePlacement(TEXT("BadDuration"), 0.25, -0.10, TEXT("/Script/Engine.AnimNotifyState"), TEXT("Default")),

@@ -1462,6 +1462,50 @@ FAssetDocumentCapabilityResult MapAnimSequenceSyncMarkerTimelineFailure(
 	return BodyFailure(Result.Message, Path, Code);
 }
 
+FAssetDocumentCapabilityResult ValidateAnimSequenceSyncMarkerTimeFloatSafety(
+	const TSharedPtr<FJsonValue>& SectionValue)
+{
+	if (!SectionValue.IsValid() || SectionValue->Type != EJson::Array)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>& Values = SectionValue->AsArray();
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		const TSharedPtr<FJsonValue>& EntryValue = Values[Index];
+		if (!EntryValue.IsValid() || EntryValue->Type != EJson::Object)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue->AsObject();
+		if (!EntryObject.IsValid())
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonValue> TimeValue = EntryObject->TryGetField(TEXT("Time"));
+		if (!TimeValue.IsValid() || TimeValue->Type != EJson::Number)
+		{
+			continue;
+		}
+
+		const double Time = TimeValue->AsNumber();
+		if (!std::isfinite(Time) || Time < -static_cast<double>(MAX_flt) || Time > static_cast<double>(MAX_flt))
+		{
+			return BodyFailure(TEXT("Time must fit in a float"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), TEXT("InvalidNumericField"));
+		}
+		const float FloatTime = static_cast<float>(Time);
+		if (!FMath::IsFinite(FloatTime))
+		{
+			return BodyFailure(TEXT("Time must fit in a finite float"), BodyArrayFieldPath(TEXT("SyncMarkers"), Index, TEXT("Time")), TEXT("InvalidNumericField"));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ResolveNotifyObjectFragmentClass(
 	const TSharedRef<FJsonObject>& FragmentObject,
 	UClass* ExpectedBaseClass,
@@ -2060,8 +2104,14 @@ FAssetDocumentCapabilityResult ParseAnimSequenceSyncMarkers(
 		Range.bHasMaxTime = true;
 	}
 
+	FAssetDocumentCapabilityResult Result = ValidateAnimSequenceSyncMarkerTimeFloatSafety(*SectionValue);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
 	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
-	FAssetDocumentCapabilityResult Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
 		*SectionValue,
 		Config,
 		TEXT("/Body/SyncMarkers"),
