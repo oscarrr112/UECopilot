@@ -202,6 +202,50 @@ bool FAssetDocumentGraphCoreParseValidEventGraphTest::RunTest(const FString& Par
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreGraphArrayPreservesSharedGraphFieldsTest,
+	"AssetFactory.AssetDocument.GraphCore.GraphArrayPreservesSharedGraphFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreGraphArrayPreservesSharedGraphFieldsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> Graph = MakeValidEventGraph();
+	Graph->SetStringField(TEXT("OwnerNodeId"), TEXT("OwnerNode"));
+	Graph->SetStringField(TEXT("OwnerPin"), TEXT("Output"));
+	Graph->SetArrayField(TEXT("EntryPins"), { MakeShared<FJsonValueString>(TEXT("Entry")) });
+	Graph->SetArrayField(TEXT("ResultPins"), { MakeShared<FJsonValueString>(TEXT("Result")) });
+	Graph->SetObjectField(TEXT("Metadata"), ParseJsonObject(TEXT(R"JSON({ "Category": "Shared" })JSON")));
+	Graph->SetArrayField(TEXT("Diagnostics"), {});
+	Graph->SetObjectField(TEXT("_Skipped"), ParseJsonObject(TEXT(R"JSON({ "Unsupported": [] })JSON")));
+
+	const FAssetDocumentGraphParseResult Result = ParseGraphs({
+		MakeShared<FJsonValueObject>(Graph.ToSharedRef())
+	});
+
+	TestTrue(TEXT("Graph array with shared graph fields parses"), Result.IsValid());
+	TestEqual(TEXT("One graph parsed"), Result.Graphs.Num(), 1);
+	if (Result.Graphs.Num() == 1)
+	{
+		const FAssetDocumentGraphSpec& ParsedGraph = Result.Graphs[0];
+		TestEqual(TEXT("OwnerNodeId is preserved"), ParsedGraph.OwnerNodeId, FString(TEXT("OwnerNode")));
+		TestEqual(TEXT("OwnerPin is preserved"), ParsedGraph.OwnerPin, FString(TEXT("Output")));
+		TestTrue(TEXT("EntryPins is preserved"), ParsedGraph.EntryPins.IsValid());
+		TestTrue(TEXT("ResultPins is preserved"), ParsedGraph.ResultPins.IsValid());
+		TestTrue(TEXT("Metadata is preserved"), ParsedGraph.Metadata.IsValid());
+		TestTrue(TEXT("Diagnostics is preserved"), ParsedGraph.Diagnostics.IsValid());
+		TestTrue(TEXT("_Skipped is preserved"), ParsedGraph.UnderscoreSkipped.IsValid());
+	}
+
+	const TSharedRef<FJsonValue> Canonical = FAssetDocumentGraphParser::WriteCanonicalGraphArray(Result.Graphs);
+	const TSharedPtr<FJsonObject> CanonicalGraph = Canonical->AsArray()[0]->AsObject();
+	TestEqual(TEXT("Canonical OwnerNodeId is written"), CanonicalGraph->GetStringField(TEXT("OwnerNodeId")), FString(TEXT("OwnerNode")));
+	TestTrue(TEXT("Canonical EntryPins is written"), CanonicalGraph->HasTypedField<EJson::Array>(TEXT("EntryPins")));
+	TestTrue(TEXT("Canonical Metadata is written"), CanonicalGraph->HasTypedField<EJson::Object>(TEXT("Metadata")));
+	TestTrue(TEXT("Canonical _Skipped is written"), CanonicalGraph->HasTypedField<EJson::Object>(TEXT("_Skipped")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentGraphCoreRejectDuplicateGraphNamesTest,
 	"AssetFactory.AssetDocument.GraphCore.RejectDuplicateGraphNames",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

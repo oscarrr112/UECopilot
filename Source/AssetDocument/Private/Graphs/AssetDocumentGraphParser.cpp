@@ -537,6 +537,53 @@ void ValidateGraphOwner(
 	}
 }
 
+bool ParseSharedGraphFields(
+	const TSharedRef<FJsonObject>& GraphObject,
+	const FString& GraphPath,
+	FAssetDocumentGraphSpec& OutGraph,
+	FAssetDocumentGraphParseResult& Result)
+{
+	bool bParsed = true;
+	if (!TryGetStringFieldIfPresent(
+			GraphObject,
+			TEXT("OwnerNodeId"),
+			GraphPath,
+			TEXT("InvalidGraphOwner"),
+			OutGraph.OwnerNodeId,
+			Result) ||
+		(!OutGraph.OwnerNodeId.IsEmpty() && !IsSidecarId(OutGraph.OwnerNodeId)))
+	{
+		Result.AddDiagnostic(
+			TEXT("InvalidGraphOwner"),
+			JoinPath(GraphPath, TEXT("OwnerNodeId")),
+			TEXT("OwnerNodeId must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
+		bParsed = false;
+	}
+	if (!TryGetStringFieldIfPresent(
+			GraphObject,
+			TEXT("OwnerPin"),
+			GraphPath,
+			TEXT("InvalidGraphOwner"),
+			OutGraph.OwnerPin,
+			Result) ||
+		(!OutGraph.OwnerPin.IsEmpty() && !IsSidecarId(OutGraph.OwnerPin)))
+	{
+		Result.AddDiagnostic(
+			TEXT("InvalidGraphOwner"),
+			JoinPath(GraphPath, TEXT("OwnerPin")),
+			TEXT("OwnerPin must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
+		bParsed = false;
+	}
+
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("EntryPins"), OutGraph.EntryPins);
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("ResultPins"), OutGraph.ResultPins);
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Metadata"), OutGraph.Metadata);
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Diagnostics"), OutGraph.Diagnostics);
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Skipped"), OutGraph.Skipped);
+	TryCloneAnyFieldIfPresent(GraphObject, TEXT("_Skipped"), OutGraph.UnderscoreSkipped);
+	return bParsed;
+}
+
 bool TryParseEndpointObject(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& Path,
@@ -1040,36 +1087,7 @@ bool ParseRecursiveGraph(
 			FString::Printf(TEXT("Unknown graph kind '%s'."), *OutGraph.Kind));
 		bParsed = false;
 	}
-	if (!TryGetStringFieldIfPresent(
-			GraphObject,
-			TEXT("OwnerNodeId"),
-			GraphPath,
-			TEXT("InvalidGraphOwner"),
-			OutGraph.OwnerNodeId,
-			Result) ||
-		(!OutGraph.OwnerNodeId.IsEmpty() && !IsSidecarId(OutGraph.OwnerNodeId)))
-	{
-		Result.AddDiagnostic(
-			TEXT("InvalidGraphOwner"),
-			JoinPath(GraphPath, TEXT("OwnerNodeId")),
-			TEXT("OwnerNodeId must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
-		bParsed = false;
-	}
-	if (!TryGetStringFieldIfPresent(
-			GraphObject,
-			TEXT("OwnerPin"),
-			GraphPath,
-			TEXT("InvalidGraphOwner"),
-			OutGraph.OwnerPin,
-			Result) ||
-		(!OutGraph.OwnerPin.IsEmpty() && !IsSidecarId(OutGraph.OwnerPin)))
-	{
-		Result.AddDiagnostic(
-			TEXT("InvalidGraphOwner"),
-			JoinPath(GraphPath, TEXT("OwnerPin")),
-			TEXT("OwnerPin must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
-		bParsed = false;
-	}
+	bParsed &= ParseSharedGraphFields(GraphObject, GraphPath, OutGraph, Result);
 	OutGraph.Name = OutGraph.Id;
 	GraphObject->TryGetStringField(TEXT("Name"), OutGraph.Name);
 	GraphObject->TryGetStringField(TEXT("Schema"), OutGraph.Schema);
@@ -1092,19 +1110,11 @@ bool ParseRecursiveGraph(
 		OutGraph.Signature = CloneJsonObject(Signature);
 	}
 
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("EntryPins"), OutGraph.EntryPins);
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("ResultPins"), OutGraph.ResultPins);
-
 	TSharedPtr<FJsonObject> Position;
 	if (TryGetObjectFieldIfPresent(GraphObject, TEXT("Position"), GraphPath, TEXT("InvalidGraphPosition"), Position, Result))
 	{
 		OutGraph.Position = CloneJsonObject(Position);
 	}
-
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Metadata"), OutGraph.Metadata);
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Diagnostics"), OutGraph.Diagnostics);
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("Skipped"), OutGraph.Skipped);
-	TryCloneAnyFieldIfPresent(GraphObject, TEXT("_Skipped"), OutGraph.UnderscoreSkipped);
 
 	TSharedPtr<FJsonObject> Evidence;
 	if (TryGetObjectFieldIfPresent(GraphObject, TEXT("Evidence"), GraphPath, TEXT("InvalidGraphEvidence"), Evidence, Result))
@@ -1214,6 +1224,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseSingleGraph(
 	GraphObject->TryGetStringField(TEXT("GraphGuid"), Graph.GraphGuid);
 	GraphObject->TryGetStringField(TEXT("Category"), Graph.Category);
 	GraphObject->TryGetStringField(TEXT("Description"), Graph.Description);
+	ParseSharedGraphFields(GraphObject, Options.Path, Graph, Result);
 
 	TSharedPtr<FJsonObject> Owner;
 	if (TryGetNullableObjectFieldIfPresent(GraphObject, TEXT("Owner"), Options.Path, TEXT("InvalidGraphOwner"), Owner, Result) && Owner.IsValid())
