@@ -171,8 +171,8 @@ AnimMontage 当前有四类 timeline-adjacent region：
 
 - `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementRegionAdapter.h`
 - `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementRegionAdapter.cpp`
-- `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementUtils.h`
-- `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementUtils.cpp`
+
+公共实现入口是 `AssetDocumentTimelinePlacementRegionAdapter.h/.cpp`；其中包含并封装 `FAssetDocumentTimelinePlacementUtils`，没有独立的 `AssetDocumentTimelinePlacementUtils.h/.cpp` 文件。
 
 第一版不要求暴露到 `Source/AssetDocument/Public`。它是 AssetDocument 内部 public-region runtime 的公共层，而不是插件外部 API。
 
