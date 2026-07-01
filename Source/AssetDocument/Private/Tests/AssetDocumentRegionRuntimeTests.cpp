@@ -1231,7 +1231,11 @@ bool FAssetDocumentRegionRuntimeDispatchValidateCallsAdapterTest::RunTest(const 
 {
 	FTestRegionAdapter Adapter(TEXT("Fake"));
 	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Preview"), TEXT("Body.Preview"));
-	const FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Preview"), TEXT("/Body/Preview"), &Policy);
+	const FAssetDocumentRegionContext Context = FAssetDocumentRegionRuntimeTestContextBuilder()
+		.WithRegionId(TEXT("Preview"))
+		.WithJsonPointer(TEXT("/Body/Preview"))
+		.WithPolicy(&Policy)
+		.Build();
 
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
 		Context,
@@ -1496,8 +1500,7 @@ bool FAssetDocumentRegionRuntimeObjectRegionRequiresObjectTest::RunTest(const FS
 		FAssetDocumentRegionRuntime::Validate(Context, MakeShared<FJsonValueString>(TEXT("not-object")), Adapter);
 
 	TestFalse(TEXT("Object adapter rejects non-object values"), Result.bSuccess);
-	TestEqual(TEXT("Non-object diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Preview")));
-	TestEqual(TEXT("Non-object diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidBodySectionType")));
+	TestDiagnostic(this, TEXT("Non-object"), Result, TEXT("/Body/Preview"), TEXT("InvalidBodySectionType"));
 	return true;
 }
 
@@ -1638,18 +1641,18 @@ bool FAssetDocumentRegionRuntimeObjectRegionMissingLifecycleHooksFailFastTest::R
 	FAssetDocumentCapabilityResult Result =
 		FAssetDocumentRegionRuntime::Apply(Context, MakeObjectValue(Desired), Adapter, bChanged);
 	TestFalse(TEXT("Object apply without hook fails"), Result.bSuccess);
-	TestEqual(TEXT("Object missing apply hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionApplyHook")));
+	TestDiagnostic(this, TEXT("Object missing apply hook"), Result, TEXT("/Body/Playback"), TEXT("MissingRegionApplyHook"));
 	TestFalse(TEXT("Object missing apply hook leaves changed false"), bChanged);
 
 	TSharedPtr<FJsonValue> ExtractedValue;
 	Result = FAssetDocumentRegionRuntime::Extract(Context, Adapter, ExtractedValue);
 	TestFalse(TEXT("Object extract without hook fails"), Result.bSuccess);
-	TestEqual(TEXT("Object missing extract hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionExtractHook")));
+	TestDiagnostic(this, TEXT("Object missing extract hook"), Result, TEXT("/Body/Playback"), TEXT("MissingRegionExtractHook"));
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	Result = FAssetDocumentRegionRuntime::Diff(Context, MakeObjectValue(Desired), Adapter, DiffEntries);
 	TestFalse(TEXT("Object diff without hook fails"), Result.bSuccess);
-	TestEqual(TEXT("Object missing diff hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRegionDiffHook")));
+	TestDiagnostic(this, TEXT("Object missing diff hook"), Result, TEXT("/Body/Playback"), TEXT("MissingRegionDiffHook"));
 	return true;
 }
 
@@ -1670,7 +1673,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRequiresArrayTest::RunTest(const FStri
 		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(MakeShared<FJsonObject>()), Adapter);
 
 	TestFalse(TEXT("Named array adapter rejects non-array values"), Result.bSuccess);
-	TestEqual(TEXT("Non-array diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidBodySectionType")));
+	TestDiagnostic(this, TEXT("Non-array"), Result, TEXT("/Body/NotifyTracks"), TEXT("InvalidBodySectionType"));
 	return true;
 }
 
@@ -1697,8 +1700,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRequiresUniqueIdentityTest::RunTest(co
 		Adapter);
 
 	TestFalse(TEXT("Duplicate named array identity fails"), Result.bSuccess);
-	TestEqual(TEXT("Duplicate identity diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateNamedArrayIdentity")));
-	TestEqual(TEXT("Duplicate identity diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/NotifyTracks/1/Name")));
+	TestDiagnostic(this, TEXT("Duplicate identity"), Result, TEXT("/Body/NotifyTracks/1/Name"), TEXT("DuplicateNamedArrayIdentity"));
 	return true;
 }
 
@@ -1731,8 +1733,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRejectsNormalizedDuplicateIdentityTest
 		Adapter);
 
 	TestFalse(TEXT("Normalized duplicate named array identity fails"), Result.bSuccess);
-	TestEqual(TEXT("Normalized duplicate identity diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateNamedArrayIdentity")));
-	TestEqual(TEXT("Normalized duplicate identity diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/NotifyTracks/1/Name")));
+	TestDiagnostic(this, TEXT("Normalized duplicate identity"), Result, TEXT("/Body/NotifyTracks/1/Name"), TEXT("DuplicateNamedArrayIdentity"));
 	return true;
 }
 
@@ -1755,8 +1756,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRejectsMissingIdentityTest::RunTest(co
 		FAssetDocumentRegionRuntime::Validate(Context, MakeArrayValue({MakeObjectValue(Track)}), Adapter);
 
 	TestFalse(TEXT("Missing identity field fails"), Result.bSuccess);
-	TestEqual(TEXT("Missing identity diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingNamedArrayIdentity")));
-	TestEqual(TEXT("Missing identity diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/NotifyTracks/0/Name")));
+	TestDiagnostic(this, TEXT("Missing identity"), Result, TEXT("/Body/NotifyTracks/0/Name"), TEXT("MissingNamedArrayIdentity"));
 	return true;
 }
 
@@ -2795,8 +2795,7 @@ bool FAssetDocumentRegionRuntimePreviewApplyDiffRejectsInvalidPreviewContextTest
 			Adapter.DiffBody(Context, MakeShared<FJsonValueObject>(DesiredBody), DiffEntries);
 
 		TestFalse(CaseName + TEXT(" fails"), Result.bSuccess);
-		TestEqual(CaseName + TEXT(" diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidPreviewApplyDiffAdapter")));
-		TestEqual(CaseName + TEXT(" diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body")));
+		TestDiagnostic(this, *CaseName, Result, TEXT("/Body"), TEXT("InvalidPreviewApplyDiffAdapter"));
 	};
 
 	RunInvalidPreviewContextCase(
@@ -2945,8 +2944,7 @@ bool FAssetDocumentRegionRuntimePreviewApplyDiffPropagatesHookFailuresTest::RunT
 			Adapter.DiffBody(Context, MakeShared<FJsonValueObject>(DesiredBody), DiffEntries);
 
 		TestFalse(CaseName + TEXT(" fails"), Result.bSuccess);
-		TestEqual(CaseName + TEXT(" diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), ExpectedCode);
-		TestEqual(CaseName + TEXT(" diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), ExpectedPath);
+		TestDiagnostic(this, *CaseName, Result, ExpectedPath, ExpectedCode);
 	};
 
 	RunFailureCase(
@@ -3401,8 +3399,7 @@ bool FAssetDocumentTimelinePlacementUtilsRejectsInvalidShapesTest::RunTest(const
 			Entries);
 
 	TestFalse(TEXT("Non-array timeline region fails"), Result.bSuccess);
-	TestEqual(TEXT("Non-array diagnostic path is region path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline")));
-	TestEqual(TEXT("Non-array diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementRegionType")));
+	TestDiagnostic(this, TEXT("Non-array"), Result, TEXT("/Body/TestTimeline"), TEXT("InvalidTimelinePlacementRegionType"));
 
 	TArray<TSharedPtr<FJsonValue>> Values;
 	Values.Add(MakeShared<FJsonValueString>(TEXT("bad-entry")));
@@ -3414,8 +3411,7 @@ bool FAssetDocumentTimelinePlacementUtilsRejectsInvalidShapesTest::RunTest(const
 		Entries);
 
 	TestFalse(TEXT("Non-object timeline entry fails"), Result.bSuccess);
-	TestEqual(TEXT("Non-object diagnostic path includes index"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0")));
-	TestEqual(TEXT("Non-object diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementEntryType")));
+	TestDiagnostic(this, TEXT("Non-object"), Result, TEXT("/Body/TestTimeline/0"), TEXT("InvalidTimelinePlacementEntryType"));
 	return true;
 }
 
