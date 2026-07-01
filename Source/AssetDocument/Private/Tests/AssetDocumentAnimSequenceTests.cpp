@@ -2012,6 +2012,22 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestEqual(TEXT("Unknown track does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
+	TSharedRef<FJsonObject> UnknownTrackPreemptsLaterInvalidBody = MakePlaybackRateBody(5.27);
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("Notifies"), ObjectArray({
+		MakeEmbeddedNotifyPlacement(TEXT("EarlyUnknownTrack"), 0.25, TEXT("EarlyUnknownTrack"), TEXT("Typo")),
+	}));
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeNotifyStatePlacement(TEXT("LaterBadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
+	}));
+	const FAssetDocumentCapabilityResult UnknownTrackPreemptsLaterInvalidResult = Capability.Apply(Context, MakeBodyValue(UnknownTrackPreemptsLaterInvalidBody));
+	TestFalse(TEXT("Apply rejects unknown notify track during timeline parse before later regions"), UnknownTrackPreemptsLaterInvalidResult.bSuccess);
+	TestTrue(TEXT("Timeline resolver unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackPreemptsLaterInvalidResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestEqual(TEXT("Timeline resolver unknown track does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
+	TestEqual(TEXT("Timeline resolver unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
+
 	TSharedRef<FJsonObject> UnknownStateTrackBody = MakePlaybackRateBody(5.30);
 	UnknownStateTrackBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
 		MakeNotifyTrack(TEXT("Default")),

@@ -1849,6 +1849,87 @@ FAssetDocumentCapabilityResult RejectAmbiguousTrackAlias(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentTimelineTrackResolver MakeAnimSequenceNotifyTrackResolver(
+	const TSharedPtr<FJsonValue>& SectionValue,
+	const TCHAR* SectionName,
+	const UAnimSequence* Sequence,
+	const bool bHasExplicitTracks,
+	const TArray<FParsedAnimSequenceNotifyTrack>& ExplicitTracks)
+{
+	FAssetDocumentTimelineTrackResolver Resolver;
+	Resolver.Resolve =
+		[SectionValue, SectionName, Sequence, bHasExplicitTracks, ExplicitTracks](const FAssetDocumentTimelineTrackResolveRequest& Request)
+	{
+		FAssetDocumentTimelineTrackResolveResult Result;
+		Result.Error = FAssetDocumentCapabilityResult::Success(TEXT("Resolved AnimSequence notify timeline track"));
+		if (!SectionValue.IsValid() || SectionValue->Type != EJson::Array)
+		{
+			return Result;
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>& Values = SectionValue->AsArray();
+		if (!Values.IsValidIndex(Request.EntryIndex))
+		{
+			return Result;
+		}
+
+		const TSharedPtr<FJsonObject> EntryObject = Values[Request.EntryIndex].IsValid()
+			? Values[Request.EntryIndex]->AsObject()
+			: nullptr;
+		if (!EntryObject.IsValid())
+		{
+			return Result;
+		}
+
+		Result.Error = RejectAmbiguousTrackAlias(EntryObject.ToSharedRef(), SectionName, Request.EntryIndex);
+		if (!Result.Error.bSuccess)
+		{
+			return Result;
+		}
+
+		const FName EffectiveTrackName(*ReadPlacementTrackName(EntryObject.ToSharedRef()));
+		if (bHasExplicitTracks)
+		{
+			for (int32 TrackIndex = 0; TrackIndex < ExplicitTracks.Num(); ++TrackIndex)
+			{
+				if (ExplicitTracks[TrackIndex].Name == EffectiveTrackName)
+				{
+					Result.bResolved = true;
+					Result.TrackIndex = TrackIndex;
+					Result.CanonicalTrackName = ExplicitTracks[TrackIndex].Name.ToString();
+					return Result;
+				}
+			}
+
+			Result.Error = BodyFailure(
+				FString::Printf(TEXT("%s references a track not declared in Body.NotifyTracks"), SectionName),
+				BodyArrayFieldPath(SectionName, Request.EntryIndex, TEXT("TrackName")),
+				TEXT("UnknownNotifyTrack"));
+			return Result;
+		}
+
+		if (Sequence)
+		{
+			for (int32 TrackIndex = 0; TrackIndex < Sequence->AnimNotifyTracks.Num(); ++TrackIndex)
+			{
+				if (Sequence->AnimNotifyTracks[TrackIndex].TrackName == EffectiveTrackName)
+				{
+					Result.bResolved = true;
+					Result.TrackIndex = TrackIndex;
+					Result.CanonicalTrackName = Sequence->AnimNotifyTracks[TrackIndex].TrackName.ToString();
+					return Result;
+				}
+			}
+		}
+
+		Result.bResolved = true;
+		Result.TrackIndex = INDEX_NONE;
+		Result.CanonicalTrackName = EffectiveTrackName.ToString();
+		return Result;
+	};
+	return Resolver;
+}
+
 FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 	const TSharedRef<FJsonObject>& BodyObject,
 	bool& bOutHasTracks,
@@ -1935,6 +2016,8 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyTracks(
 FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 	const TSharedRef<FJsonObject>& BodyObject,
 	const UAnimSequence* Sequence,
+	const bool bHasExplicitTracks,
+	const TArray<FParsedAnimSequenceNotifyTrack>& ExplicitTracks,
 	bool& bOutHasNotifies,
 	TArray<FParsedAnimSequenceNotifyPlacement>& OutNotifies)
 {
@@ -1962,6 +2045,12 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 	Config.TimeFieldName = TEXT("Time");
 	Config.TrackNameFieldName = TEXT("TrackName");
 	Config.bHasTrackIdentity = true;
+	Config.TrackResolver = MakeAnimSequenceNotifyTrackResolver(
+		*SectionValue,
+		TEXT("Notifies"),
+		Sequence,
+		bHasExplicitTracks,
+		ExplicitTracks);
 
 	FAssetDocumentTimelinePlacementHooks Hooks;
 	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
@@ -1979,7 +2068,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 			Time,
 			bHasNotifyName ? *NotifyNameString : *NameString,
 			*ReadClassRefIdentityForDuplicateKey(NotifyObject, TEXT("Class"), TEXT("Notify")),
-			*ReadPlacementTrackName(NotifyObject));
+			Entry.CanonicalTrackName.IsEmpty() ? *ReadPlacementTrackName(NotifyObject) : *Entry.CanonicalTrackName);
 	};
 	Hooks.Validate = [Sequence, &OutNotifies](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
 	{
@@ -2086,6 +2175,8 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifies(
 FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 	const TSharedRef<FJsonObject>& BodyObject,
 	const UAnimSequence* Sequence,
+	const bool bHasExplicitTracks,
+	const TArray<FParsedAnimSequenceNotifyTrack>& ExplicitTracks,
 	bool& bOutHasNotifyStates,
 	TArray<FParsedAnimSequenceNotifyStatePlacement>& OutNotifyStates)
 {
@@ -2118,6 +2209,12 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 	Config.bValidateEndTime = true;
 	Config.TrackNameFieldName = TEXT("TrackName");
 	Config.bHasTrackIdentity = true;
+	Config.TrackResolver = MakeAnimSequenceNotifyTrackResolver(
+		*SectionValue,
+		TEXT("NotifyStates"),
+		Sequence,
+		bHasExplicitTracks,
+		ExplicitTracks);
 
 	FAssetDocumentTimelineRange Range;
 	const double MaxTime = GetAnimSequenceTimelineMaxTime(Sequence);
@@ -2140,7 +2237,7 @@ FAssetDocumentCapabilityResult ParseAnimSequenceNotifyStates(
 			Time,
 			Duration,
 			*ReadClassRefIdentityForDuplicateKey(StateObject, TEXT("Class"), TEXT("NotifyState")),
-			*ReadPlacementTrackName(StateObject));
+			Entry.CanonicalTrackName.IsEmpty() ? *ReadPlacementTrackName(StateObject) : *Entry.CanonicalTrackName);
 	};
 	Hooks.Validate = [Sequence, &OutNotifyStates](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
 	{
@@ -2348,36 +2445,6 @@ FAssetDocumentCapabilityResult ParseAnimSequenceSyncMarkers(
 		}
 		return Left.Name.LexicalLess(Right.Name);
 	});
-	return FAssetDocumentCapabilityResult::Success();
-}
-
-FAssetDocumentCapabilityResult ValidateExplicitNotifyTrackReferences(
-	const TArray<FParsedAnimSequenceNotifyTrack>& Tracks,
-	const TArray<FParsedAnimSequenceNotifyPlacement>& Notifies,
-	const TArray<FParsedAnimSequenceNotifyStatePlacement>& NotifyStates)
-{
-	TSet<FName> DeclaredTracks;
-	for (const FParsedAnimSequenceNotifyTrack& Track : Tracks)
-	{
-		DeclaredTracks.Add(Track.Name);
-	}
-
-	for (const FParsedAnimSequenceNotifyPlacement& Notify : Notifies)
-	{
-		if (!DeclaredTracks.Contains(Notify.TrackName))
-		{
-			return BodyFailure(TEXT("Notify references a track not declared in Body.NotifyTracks"), BodyArrayFieldPath(TEXT("Notifies"), Notify.SourceIndex, TEXT("TrackName")), TEXT("UnknownNotifyTrack"));
-		}
-	}
-
-	for (const FParsedAnimSequenceNotifyStatePlacement& NotifyState : NotifyStates)
-	{
-		if (!DeclaredTracks.Contains(NotifyState.TrackName))
-		{
-			return BodyFailure(TEXT("NotifyState references a track not declared in Body.NotifyTracks"), BodyArrayFieldPath(TEXT("NotifyStates"), NotifyState.SourceIndex, TEXT("TrackName")), TEXT("UnknownNotifyTrack"));
-		}
-	}
-
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -4131,12 +4198,12 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		{
 			return Result;
 		}
-		Result = ParseAnimSequenceNotifies(BodyObject, Sequence, OutParsed.bHasNotifies, OutParsed.Notifies);
+		Result = ParseAnimSequenceNotifies(BodyObject, Sequence, OutParsed.bHasNotifyTracks, OutParsed.NotifyTracks, OutParsed.bHasNotifies, OutParsed.Notifies);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		Result = ParseAnimSequenceNotifyStates(BodyObject, Sequence, OutParsed.bHasNotifyStates, OutParsed.NotifyStates);
+		Result = ParseAnimSequenceNotifyStates(BodyObject, Sequence, OutParsed.bHasNotifyTracks, OutParsed.NotifyTracks, OutParsed.bHasNotifyStates, OutParsed.NotifyStates);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -4145,14 +4212,6 @@ FAssetDocumentCapabilityResult ParseAnimSequenceBody(
 		if (!Result.bSuccess)
 		{
 			return Result;
-		}
-		if (OutParsed.bHasNotifyTracks)
-		{
-			Result = ValidateExplicitNotifyTrackReferences(OutParsed.NotifyTracks, OutParsed.Notifies, OutParsed.NotifyStates);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
 		}
 	}
 
