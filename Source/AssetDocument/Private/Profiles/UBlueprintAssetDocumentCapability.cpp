@@ -3,7 +3,12 @@
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 
 #include "AssetDocumentPropertyAdapter.h"
+#include "AssetDocumentRegionRuntime.h"
 #include "Profiles/UBlueprintGraphRegionAdapter.h"
+#include "Profiles/UBlueprintAssetDocumentProfile.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentGraphRegionWrapperAdapter.h"
+#include "Regions/AssetDocumentIdentityArrayDiffHelper.h"
 
 #include "Utils/PropertySetterUtils.h"
 
@@ -69,30 +74,28 @@ FAssetDocumentCapabilityResult RequireObjectValue(const TSharedRef<FJsonValue>& 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult RequireArrayOrNullValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey)
+FAssetDocumentCapabilityResult ValidateDeferredUBlueprintRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const FString& BodyKey,
+	const TSharedPtr<FJsonValue>& Value)
 {
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		return FAssetDocumentCapabilityResult::Success();
-	}
-
-	if (Value->Type != EJson::Array)
+	const FUBlueprintAssetDocumentProfile Profile;
+	FAssetDocumentRegionPolicy Policy;
+	if (!FAssetDocumentDeferredRegionAdapter::FindDeclaredPolicyForBodyKey(Profile.GetRegionPolicies(), BodyKey, Policy))
 	{
 		return BodyFailure(
-			FString::Printf(TEXT("Body.%s must be an array when authored"), *BodyKey),
-			Path,
-			TEXT("InvalidBodySectionType"));
+			FString::Printf(TEXT("Missing deferred UBlueprint region policy for Body.%s"), *BodyKey),
+			FString::Printf(TEXT("/Body/%s"), *BodyKey),
+			TEXT("MissingDeferredRegionPolicy"));
 	}
 
-	if (Value->AsArray().Num() > 0)
-	{
-		return BodyFailure(
-			FString::Printf(TEXT("Body.%s is an unsupported UBlueprint graph/timeline region and cannot be non-empty yet"), *BodyKey),
-			Path,
-			TEXT("UnsupportedUBlueprintRegion"));
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
+	const FAssetDocumentDeferredRegionAdapter Adapter(
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+		TEXT("UnsupportedUBlueprintRegion"),
+		FString::Printf(TEXT("Body.%s is an unsupported UBlueprint graph/timeline region and cannot be non-empty yet"), *BodyKey));
+	const FAssetDocumentRegionContext RegionContext =
+		FAssetDocumentDeferredRegionAdapter::MakeContextFromDeclaredPolicy(Context, BodyKey, Policy);
+	return FAssetDocumentRegionRuntime::Validate(RegionContext, Value, Adapter);
 }
 
 FAssetDocumentCapabilityResult RequireArrayValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
@@ -217,6 +220,66 @@ TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
 FAssetDocumentCapabilityResult ReadBodyObject(const TSharedRef<FJsonValue>& BodyJson, TSharedPtr<FJsonObject>& OutBody)
 {
 	return RequireObjectValue(BodyJson, TEXT("/Body"), OutBody);
+}
+
+FAssetDocumentRegionContext MakeUBlueprintGraphRegionContext(const FAssetDocumentCapabilityContext& Context)
+{
+	FAssetDocumentRegionContext RegionContext;
+	RegionContext.Asset = Context.Asset;
+	RegionContext.AssetClass = Context.AssetClass;
+	RegionContext.TargetAssetPath = Context.TargetAssetPath;
+	RegionContext.SourceDocumentPath = Context.SourceDocumentPath;
+	RegionContext.Definitions = Context.Definitions;
+	RegionContext.bIsDryRun = Context.bIsDryRun;
+	RegionContext.Result = Context.Result;
+	RegionContext.RegionId = TEXT("Body.UBlueprintGraphRegions");
+	RegionContext.BodyPath = TEXT("Body.UBlueprintGraphRegions");
+	RegionContext.JsonPointer = TEXT("/Body");
+	return RegionContext;
+}
+
+FAssetDocumentGraphRegionWrapperConfig MakeUBlueprintGraphWrapperConfig()
+{
+	FAssetDocumentGraphRegionWrapperConfig Config;
+	Config.AdapterName = TEXT("UBlueprintGraphRegionAdapter");
+	Config.RegionId = TEXT("Body.UBlueprintGraphRegions");
+	Config.BodyPath = TEXT("Body.UBlueprintGraphRegions");
+	Config.JsonPointer = TEXT("/Body");
+	Config.SchemaLabel = TEXT("UBlueprintGraphRegions");
+	return Config;
+}
+
+FAssetDocumentGraphRegionWrapperHooks MakeUBlueprintGraphWrapperHooks()
+{
+	FAssetDocumentGraphRegionWrapperHooks Hooks;
+	Hooks.Validate = [](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject)
+	{
+		return FUBlueprintGraphRegionAdapter().ValidateRegions(Context, BodyObject);
+	};
+	Hooks.Preflight = [](FAssetDocumentCapabilityContext&, const TSharedRef<FJsonObject>&)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("UBlueprint graph preflight is handled by validate/apply hooks"));
+	};
+	Hooks.Apply = [](FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject, bool& bOutChanged)
+	{
+		return ApplyUBlueprintGraphRegions(Context, BodyObject, bOutChanged);
+	};
+	Hooks.Extract = [](const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyObject)
+	{
+		return FUBlueprintGraphRegionAdapter().ExtractRegions(Context, OutBodyObject);
+	};
+	Hooks.Diff = [](const FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonObject>& BodyObject, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		return FUBlueprintGraphRegionAdapter().DiffRegions(Context, BodyObject, OutDiffEntries);
+	};
+	return Hooks;
+}
+
+FAssetDocumentGraphRegionWrapperAdapter MakeUBlueprintGraphWrapperAdapter()
+{
+	return FAssetDocumentGraphRegionWrapperAdapter(
+		MakeUBlueprintGraphWrapperConfig(),
+		MakeUBlueprintGraphWrapperHooks());
 }
 
 FAssetDocumentCapabilityResult ReadClassRef(const TSharedPtr<FJsonObject>& Object, const FString& Path, UClass*& OutClass)
@@ -1135,12 +1198,14 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 	UClass* EffectiveParentClass,
 	const TArray<FUBlueprintVariableSpec>& VariableSpecs)
 {
-	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
 	const TSharedPtr<FJsonValue>* UbergraphPagesValue = BodyObject->Values.Find(TEXT("UbergraphPages"));
 	const UBlueprint* SourceBlueprint = Cast<UBlueprint>(Context.Asset);
 	if (!UbergraphPagesValue || !SourceBlueprint || !EffectiveParentClass)
 	{
-		return GraphRegionAdapter.ValidateRegions(Context, BodyObject);
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+		return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
+			GraphRegionContext,
+			MakeShared<FJsonValueObject>(BodyObject));
 	}
 
 	const FName ValidationBlueprintName = MakeUniqueObjectName(
@@ -1185,7 +1250,10 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 
 	FAssetDocumentCapabilityContext GraphContext = Context;
 	GraphContext.Asset = ValidationBlueprint;
-	return GraphRegionAdapter.ValidateRegions(GraphContext, BodyObject);
+	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(GraphContext);
+	return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
+		GraphRegionContext,
+		MakeShared<FJsonValueObject>(BodyObject));
 }
 
 FAssetDocumentCapabilityResult ApplyInterfaces(UBlueprint* Blueprint, const TArray<FUBlueprintInterfaceSpec>& Interfaces, bool& bOutChanged)
@@ -2058,6 +2126,11 @@ FString ResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariab
 	return Variable.DefaultValue;
 }
 
+FString MakeVariableIdentityKey(const FName Name)
+{
+	return Name.ToString().ToLower();
+}
+
 TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
@@ -2290,6 +2363,66 @@ void AddSkippedVariableEvidence(TSharedRef<FJsonObject>& OutBodyJson, const FStr
 	TSharedPtr<FJsonObject> VariableDiagnostic = MakeShared<FJsonObject>();
 	VariableDiagnostic->SetStringField(TEXT("Reason"), Reason);
 	VariablesDiagnostic->SetObjectField(VariableName, VariableDiagnostic);
+}
+
+FAssetDocumentCapabilityResult MergeSkippedEvidence(
+	TSharedRef<FJsonObject>& OutBodyJson,
+	const TSharedPtr<FJsonValue>& IncomingSkippedValue)
+{
+	if (!IncomingSkippedValue.IsValid() || IncomingSkippedValue->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if (IncomingSkippedValue->Type != EJson::Object)
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
+			TEXT("/Body/_Skipped"),
+			TEXT("InvalidGraphRegionHookResult"));
+	}
+
+	TSharedPtr<FJsonObject> Skipped;
+	const TSharedPtr<FJsonObject>* ExistingSkipped = nullptr;
+	if (OutBodyJson->TryGetObjectField(TEXT("_Skipped"), ExistingSkipped) && ExistingSkipped && ExistingSkipped->IsValid())
+	{
+		Skipped = *ExistingSkipped;
+	}
+	else
+	{
+		Skipped = MakeShared<FJsonObject>();
+		OutBodyJson->SetObjectField(TEXT("_Skipped"), Skipped);
+	}
+
+	const TSharedPtr<FJsonObject> IncomingSkipped = IncomingSkippedValue->AsObject();
+	if (!IncomingSkipped.IsValid())
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
+			TEXT("/Body/_Skipped"),
+			TEXT("InvalidGraphRegionHookResult"));
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : IncomingSkipped->Values)
+	{
+		const TSharedPtr<FJsonObject> IncomingRegion =
+			Pair.Value.IsValid() && Pair.Value->Type == EJson::Object ? Pair.Value->AsObject() : nullptr;
+		const TSharedPtr<FJsonValue>* ExistingValue = Skipped->Values.Find(Pair.Key);
+		const TSharedPtr<FJsonObject> ExistingRegion =
+			ExistingValue && ExistingValue->IsValid() && (*ExistingValue)->Type == EJson::Object ? (*ExistingValue)->AsObject() : nullptr;
+		if (IncomingRegion.IsValid() && ExistingRegion.IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& RegionPair : IncomingRegion->Values)
+			{
+				ExistingRegion->SetField(RegionPair.Key, RegionPair.Value);
+			}
+		}
+		else
+		{
+			Skipped->SetField(Pair.Key, Pair.Value);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 void RestoreBlueprintState(
@@ -2692,7 +2825,12 @@ FName FUBlueprintAssetDocumentCapability::GetName() const
 
 TArray<FName> FUBlueprintAssetDocumentCapability::GetInternalAdapterNames() const
 {
-	return {TEXT("UBlueprintBody"), TEXT("UBlueprintAuthoritativeRegions"), TEXT("UBlueprintGraphRegionAdapter")};
+	return {
+		TEXT("UBlueprintBody"),
+		TEXT("UBlueprintAuthoritativeRegions"),
+		TEXT("UBlueprintGraphRegionAdapter"),
+		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
+	};
 }
 
 int32 FUBlueprintAssetDocumentCapability::GetApplyOrder() const
@@ -2918,8 +3056,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	{
 		bool bGraphChanged = false;
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphApplyResult =
-			ApplyUBlueprintGraphRegions(Context, BodyObject.ToSharedRef(), bGraphChanged);
+			MakeUBlueprintGraphWrapperAdapter().ApplyRegion(
+				GraphRegionContext,
+				MakeShared<FJsonValueObject>(BodyObject.ToSharedRef()),
+				bGraphChanged);
 		if (!GraphApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, GraphApplyResult);
@@ -3107,11 +3249,35 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	}
-	const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
-	const FAssetDocumentCapabilityResult GraphExtractResult = GraphRegionAdapter.ExtractRegions(Context, OutBodyJson);
+	TSharedPtr<FJsonValue> ExtractedGraphBodyValue;
+	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+	const FAssetDocumentCapabilityResult GraphExtractResult =
+		MakeUBlueprintGraphWrapperAdapter().ExtractRegion(GraphRegionContext, ExtractedGraphBodyValue);
 	if (!GraphExtractResult.bSuccess)
 	{
 		return GraphExtractResult;
+	}
+	if (!ExtractedGraphBodyValue.IsValid() || ExtractedGraphBodyValue->Type != EJson::Object)
+	{
+		return BodyFailure(
+			TEXT("UBlueprint graph extract must return a Body object"),
+			TEXT("/Body"),
+			TEXT("InvalidGraphExtractBody"));
+	}
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ExtractedGraphBodyValue->AsObject()->Values)
+	{
+		if (Pair.Key == TEXT("_Skipped"))
+		{
+			const FAssetDocumentCapabilityResult MergeSkippedResult = MergeSkippedEvidence(OutBodyJson, Pair.Value);
+			if (!MergeSkippedResult.bSuccess)
+			{
+				return MergeSkippedResult;
+			}
+		}
+		else
+		{
+			OutBodyJson->SetField(Pair.Key, Pair.Value);
+		}
 	}
 	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
@@ -3149,9 +3315,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	}
 
 	{
-		const FUBlueprintGraphRegionAdapter GraphRegionAdapter;
+		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphDiffResult =
-			GraphRegionAdapter.DiffRegions(Context, DesiredBody.ToSharedRef(), OutDiffEntries);
+			MakeUBlueprintGraphWrapperAdapter().DiffRegion(
+				GraphRegionContext,
+				MakeShared<FJsonValueObject>(DesiredBody.ToSharedRef()),
+				OutDiffEntries);
 		if (!GraphDiffResult.bSuccess)
 		{
 			return GraphDiffResult;
@@ -3166,62 +3335,88 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			return VariableParseResult;
 		}
 
-		TMap<FName, FUBlueprintVariableSpec> DesiredByName;
-		for (const FUBlueprintVariableSpec& Variable : DesiredVariables)
-		{
-			DesiredByName.Add(Variable.Name, Variable);
-		}
-
-		TSet<FName> SeenCurrent;
+		TArray<FAssetDocumentIdentityArrayDiffElement> CurrentVariables;
+		TMap<FString, const FBPVariableDescription*> CurrentVariablesByIdentity;
+		TMap<FString, FString> VariablePathTokensByIdentity;
 		for (const FBPVariableDescription& CurrentVariable : Blueprint->NewVariables)
 		{
-			SeenCurrent.Add(CurrentVariable.VarName);
-			const FUBlueprintVariableSpec* DesiredVariable = DesiredByName.Find(CurrentVariable.VarName);
-			const FString Path = FString::Printf(TEXT("/Body/Variables/%s"), *CurrentVariable.VarName.ToString());
-			if (!DesiredVariable)
+			const FString VariableName = CurrentVariable.VarName.ToString();
+			const FString VariableIdentity = MakeVariableIdentityKey(CurrentVariable.VarName);
+			CurrentVariablesByIdentity.Add(VariableIdentity, &CurrentVariable);
+			VariablePathTokensByIdentity.Add(VariableIdentity, VariableName);
+			CurrentVariables.Add({
+				VariableIdentity,
+				VariableName,
+				MakeVariableDiffValue(Blueprint, CurrentVariable)
+			});
+		}
+
+		TMap<FString, FUBlueprintVariableSpec> DesiredVariableSpecsByIdentity;
+		TArray<FAssetDocumentIdentityArrayDiffElement> DesiredVariableElements;
+		for (const FUBlueprintVariableSpec& DesiredVariable : DesiredVariables)
+		{
+			const FString VariableName = DesiredVariable.Name.ToString();
+			const FString VariableIdentity = MakeVariableIdentityKey(DesiredVariable.Name);
+			DesiredVariableSpecsByIdentity.Add(VariableIdentity, DesiredVariable);
+			if (!VariablePathTokensByIdentity.Contains(VariableIdentity))
 			{
-				AddBodyDiffEntry(
-					OutDiffEntries,
-					Path,
-					TEXT("changed"),
-					MakeVariableDiffValue(Blueprint, CurrentVariable),
-					MakeShared<FJsonValueNull>(),
-					TEXT("extra"));
-				continue;
+				VariablePathTokensByIdentity.Add(VariableIdentity, VariableName);
+			}
+			DesiredVariableElements.Add({
+				VariableIdentity,
+				VariableName,
+				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(DesiredVariable))
+			});
+		}
+
+		FAssetDocumentIdentityArrayDiffOptions VariableDiffOptions;
+		VariableDiffOptions.RegionPath = TEXT("/Body/Variables");
+
+		FAssetDocumentIdentityArrayDiffHooks VariableDiffHooks;
+		VariableDiffHooks.MakePath =
+			[&VariablePathTokensByIdentity](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+		{
+			const FString PathToken = VariablePathTokensByIdentity.FindRef(Entry.Identity);
+			return FString::Printf(TEXT("/Body/Variables/%s"), PathToken.IsEmpty() ? *Entry.Identity : *PathToken);
+		};
+		VariableDiffHooks.AreElementsEqual =
+			[Blueprint, &CurrentVariablesByIdentity, &DesiredVariableSpecsByIdentity](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+		{
+			if (!Entry.bHasCurrent || !Entry.bHasDesired)
+			{
+				return false;
 			}
 
-			const bool bTypeChanged = AuthoredPinTypesDiffer(CurrentVariable.VarType, DesiredVariable->Type);
-			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, CurrentVariable);
-			const bool bDefaultChanged = AuthoredDefaultValuesDiffer(CurrentVariable.VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
+			const FBPVariableDescription* const* CurrentVariable = CurrentVariablesByIdentity.Find(Entry.Identity);
+			const FUBlueprintVariableSpec* DesiredVariable = DesiredVariableSpecsByIdentity.Find(Entry.Identity);
+			if (!CurrentVariable || !DesiredVariable)
+			{
+				return false;
+			}
+
+			const bool bTypeChanged = AuthoredPinTypesDiffer((*CurrentVariable)->VarType, DesiredVariable->Type);
+			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, **CurrentVariable);
+			const bool bDefaultChanged = AuthoredDefaultValuesDiffer((*CurrentVariable)->VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
 			const FString DesiredCategory = DesiredVariable->Category.IsSet() ? DesiredVariable->Category.GetValue() : FString();
-			const bool bCategoryChanged = CurrentVariable.Category.ToString() != DesiredCategory;
-			const FString CurrentTooltip = CurrentVariable.HasMetaData(FBlueprintMetadata::MD_Tooltip)
-				? CurrentVariable.GetMetaData(FBlueprintMetadata::MD_Tooltip)
+			const bool bCategoryChanged = (*CurrentVariable)->Category.ToString() != DesiredCategory;
+			const FString CurrentTooltip = (*CurrentVariable)->HasMetaData(FBlueprintMetadata::MD_Tooltip)
+				? (*CurrentVariable)->GetMetaData(FBlueprintMetadata::MD_Tooltip)
 				: FString();
 			const FString DesiredTooltip = DesiredVariable->Tooltip.IsSet() ? DesiredVariable->Tooltip.GetValue() : FString();
 			const bool bTooltipChanged = CurrentTooltip != DesiredTooltip;
+			return !(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged);
+		};
 
-			AddBodyDiffEntry(
-				OutDiffEntries,
-				Path,
-				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : TEXT("unchanged"),
-				MakeVariableDiffValue(Blueprint, CurrentVariable),
-				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(*DesiredVariable)),
-				(bTypeChanged || bDefaultChanged || bCategoryChanged || bTooltipChanged) ? TEXT("changed") : FString());
-		}
-
-		for (const FUBlueprintVariableSpec& DesiredVariable : DesiredVariables)
+		const FAssetDocumentCapabilityResult VariableDiffResult =
+			FAssetDocumentIdentityArrayDiffHelper::Diff(
+				VariableDiffOptions,
+				CurrentVariables,
+				DesiredVariableElements,
+				VariableDiffHooks,
+				OutDiffEntries);
+		if (!VariableDiffResult.bSuccess)
 		{
-			if (!SeenCurrent.Contains(DesiredVariable.Name))
-			{
-				AddBodyDiffEntry(
-					OutDiffEntries,
-					FString::Printf(TEXT("/Body/Variables/%s"), *DesiredVariable.Name.ToString()),
-					TEXT("changed"),
-					MakeShared<FJsonValueNull>(),
-					MakeShared<FJsonValueObject>(VariableSpecToJsonObject(DesiredVariable)),
-					TEXT("missing"));
-			}
+			return VariableDiffResult;
 		}
 	}
 
@@ -3233,13 +3428,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			return InterfaceParseResult;
 		}
 
-		TMap<FString, UClass*> DesiredByPath;
-		for (const FUBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
-		{
-			DesiredByPath.Add(GetClassPath(DesiredInterface.InterfaceClass), DesiredInterface.InterfaceClass);
-		}
-
-		TSet<FString> SeenCurrentInterfaces;
+		TArray<FAssetDocumentIdentityArrayDiffElement> CurrentInterfaceElements;
 		for (const FBPInterfaceDescription& CurrentInterface : Blueprint->ImplementedInterfaces)
 		{
 			if (!CurrentInterface.Interface)
@@ -3247,30 +3436,47 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 				continue;
 			}
 			const FString CurrentPath = GetClassPath(CurrentInterface.Interface);
-			SeenCurrentInterfaces.Add(CurrentPath);
-			UClass* const* DesiredInterface = DesiredByPath.Find(CurrentPath);
-			AddBodyDiffEntry(
-				OutDiffEntries,
-				FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *CurrentPath),
-				DesiredInterface ? TEXT("unchanged") : TEXT("changed"),
-				MakeInterfaceDiffValue(CurrentInterface.Interface),
-				DesiredInterface ? MakeInterfaceDiffValue(*DesiredInterface) : MakeInterfaceDiffValue(nullptr),
-				DesiredInterface ? FString() : TEXT("extra"));
+			CurrentInterfaceElements.Add({
+				CurrentPath,
+				CurrentPath,
+				MakeInterfaceDiffValue(CurrentInterface.Interface)
+			});
 		}
 
+		TArray<FAssetDocumentIdentityArrayDiffElement> DesiredInterfaceElements;
 		for (const FUBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
 		{
 			const FString DesiredPath = GetClassPath(DesiredInterface.InterfaceClass);
-			if (!SeenCurrentInterfaces.Contains(DesiredPath))
-			{
-				AddBodyDiffEntry(
-					OutDiffEntries,
-					FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *DesiredPath),
-					TEXT("changed"),
-					MakeShared<FJsonValueNull>(),
-					MakeShared<FJsonValueObject>(InterfaceToJsonObject(DesiredInterface.InterfaceClass)),
-					TEXT("missing"));
-			}
+			DesiredInterfaceElements.Add({
+				DesiredPath,
+				DesiredPath,
+				MakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
+			});
+		}
+
+		FAssetDocumentIdentityArrayDiffOptions InterfaceDiffOptions;
+		InterfaceDiffOptions.RegionPath = TEXT("/Body/ImplementedInterfaces");
+
+		FAssetDocumentIdentityArrayDiffHooks InterfaceDiffHooks;
+		InterfaceDiffHooks.AreElementsEqual = [](const FAssetDocumentIdentityArrayDiffEntryContext&)
+		{
+			return true;
+		};
+		InterfaceDiffHooks.MakePath = [](const FAssetDocumentIdentityArrayDiffEntryContext& Entry)
+		{
+			return FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *Entry.Identity);
+		};
+
+		const FAssetDocumentCapabilityResult InterfaceDiffResult =
+			FAssetDocumentIdentityArrayDiffHelper::Diff(
+				InterfaceDiffOptions,
+				CurrentInterfaceElements,
+				DesiredInterfaceElements,
+				InterfaceDiffHooks,
+				OutDiffEntries);
+		if (!InterfaceDiffResult.bSuccess)
+		{
+			return InterfaceDiffResult;
 		}
 	}
 
@@ -3500,7 +3706,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		if (IsProtectedRegion(Pair.Key))
 		{
 			const FAssetDocumentCapabilityResult ProtectedResult =
-				RequireArrayOrNullValue(Pair.Value, FString::Printf(TEXT("/Body/%s"), *Pair.Key), Pair.Key);
+				ValidateDeferredUBlueprintRegion(Context, Pair.Key, Pair.Value);
 			if (!ProtectedResult.bSuccess)
 			{
 				return ProtectedResult;

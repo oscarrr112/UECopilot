@@ -1,0 +1,61 @@
+// Copyright ProjectRPG. All Rights Reserved.
+
+#pragma once
+
+#include "AssetDocumentRegion.h"
+
+#include "CoreMinimal.h"
+
+struct FAssetDocumentBodyRegionDispatcherHooks
+{
+	TFunction<FAssetDocumentCapabilityResult(
+		const FAssetDocumentCapabilityContext&,
+		const TSharedRef<FJsonObject>&)> ValidateCrossRegion;
+
+	TFunction<FAssetDocumentCapabilityResult(
+		FAssetDocumentCapabilityContext&,
+		const TSet<FName>&)> PostApplyRepair;
+};
+
+class FAssetDocumentBodyRegionDispatcher
+{
+public:
+	// The dispatcher stores non-owning adapter pointers. Callers must keep adapters alive
+	// for the dispatcher's full lifetime.
+	FAssetDocumentBodyRegionDispatcher(
+		TArray<FAssetDocumentRegionBinding> InRegionBindings,
+		TArray<FAssetDocumentRegionPolicy> InRegionPolicies,
+		TMap<FName, IAssetDocumentRegionAdapter*> InAdapters,
+		FAssetDocumentBodyRegionDispatcherHooks InHooks = {});
+
+	FAssetDocumentCapabilityResult ValidateBody(
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonValue>& BodyJson) const;
+
+	FAssetDocumentCapabilityResult PreflightBody(
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonValue>& BodyJson) const;
+
+	FAssetDocumentCapabilityResult ApplyBody(
+		FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonValue>& BodyJson,
+		TSet<FName>& OutAppliedRegions) const;
+
+	FAssetDocumentCapabilityResult ExtractBody(
+		const FAssetDocumentCapabilityContext& Context,
+		TSharedRef<FJsonObject>& OutBodyObject) const;
+
+	FAssetDocumentCapabilityResult DiffBody(
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonValue>& DesiredBodyJson,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const;
+
+private:
+	TArray<FAssetDocumentRegionBinding> RegionBindings;
+	TMap<FString, FAssetDocumentRegionBinding> BindingsByBodyKey;
+	TMap<FName, FString> BodyKeysByRegionId;
+	TMap<FName, FAssetDocumentRegionPolicy> PoliciesByRegionId;
+	TMap<FName, IAssetDocumentRegionAdapter*> AdaptersByName;
+	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	FAssetDocumentCapabilityResult ConfigValidationResult;
+};

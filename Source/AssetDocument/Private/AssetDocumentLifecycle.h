@@ -31,7 +31,9 @@ public:
 private:
 	static FString MakeObjectPath(const FString& Target);
 	static bool TryResolveBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError);
+	static bool TryResolveAnimBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError);
 	static bool TryResolveWidgetBlueprintParentClass(const TSharedPtr<FJsonObject>& Document, UClass*& OutParentClass, FString& OutError);
+	static FAssetDocumentLifecycleResult CreateAnimBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document);
 	static FAssetDocumentLifecycleResult CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document);
 	static FAssetDocumentLifecycleResult CreateWidgetBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document);
 };

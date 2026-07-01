@@ -34,6 +34,14 @@
 - 清理成功标准；
 - 最低测试/验证要求。
 
+2026-07-01 更新：public region runtime test fixture 已作为测试层公共入口落地。后续涉及 canonicalization、diff、region runtime 或 profile behavior 的测试必须区分三类证据：
+
+- public runtime / adapter fixture tests：证明 shared runtime、adapter utility、diagnostic path/code 和 canonical JSON compare。
+- profile automation tests：证明具体 UE asset materialization、post-apply repair、compile/rebuild 和 save/load。
+- MCP / apply-file smoke：证明外部协议、sidecar path contract 和 editor integration。
+
+三类证据不得互相替代：MCP / apply-file smoke 不能替代 public runtime fixture coverage 或 profile automation；profile automation 不能替代 public runtime fixture coverage；fixture tests 也不能宣称 UE materialization、外部协议或 editor integration 已验证。
+
 ---
 
 ## 2. RegionCanonicalizer v1 Scope

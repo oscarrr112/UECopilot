@@ -211,7 +211,15 @@ test("AssetDocument validate and diff require exactly one document source", asyn
 		for (const toolName of ["validate_asset_document", "diff_asset_document"]) {
 			const tool = listed.tools.find((candidate) => candidate.name === toolName);
 			assert.ok(tool, `${toolName} should be visible`);
-			assert.match(JSON.stringify(tool.inputSchema), /oneOf/, `${toolName} should advertise oneOf source constraints`);
+			const schema = tool.inputSchema as Record<string, unknown>;
+			assert.equal(schema.type, "object", `${toolName} should expose an object input schema`);
+			for (const forbiddenTopLevelKeyword of ["oneOf", "anyOf", "allOf", "enum", "const", "not"]) {
+				assert.equal(
+					Object.hasOwn(schema, forbiddenTopLevelKeyword),
+					false,
+					`${toolName} should not expose top-level ${forbiddenTopLevelKeyword}`,
+				);
+			}
 
 			const bothSources = await client.callTool({
 				name: toolName,

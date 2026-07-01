@@ -27,7 +27,7 @@ branch: feature/asset-document-structured-capabilities-spec
 worktree: E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec
 ```
 
-新建 AssetDocument asset class、公共 adapter、region runtime、schema/canonicalizer/diff 相关工作时，默认从该 branch/worktree fork 新的 implementation branch 和 worktree。除非用户明确指定，不要从 `master`、旧 generator worktree 或临时 experiment branch 作为 AssetDocument 基线。
+新建 AssetDocument asset class、公共 adapter、region runtime、schema/canonicalizer/diff 相关工作时，默认从该 branch/worktree fork 新的 implementation branch 和 worktree。除非用户明确指定，不要从旧 generator worktree 或临时 experiment branch 作为 AssetDocument 基线。
 
 review diff range 必须使用真实 base：
 
@@ -149,7 +149,149 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 
 只有当 UE API 不是普通反射可写、或者 apply 后必须调用 engine-specific repair，才增加 custom hook。
 
-## 第四阶段：Deferred Fields 文档
+## 第四阶段：Public Region Runtime 接入
+
+新增或扩展 asset class 时，先判断每个 `Body.*` region 是否能通过 public region runtime 表达。默认方向是 profile 声明 `FAssetDocumentRegionPolicy`，capability 建立 `FAssetDocumentRegionBinding`，再把 validate、preflight、apply、extract、diff 委托给 `FAssetDocumentBodyRegionDispatcher` / `FAssetDocumentRegionRuntime` 和一个 public region adapter。
+
+优先复用 dispatcher/runtime 的情况：
+
+- `Body` key validation、unknown key rejection、required/optional region、apply order、JSON Pointer diagnostic、diff entry 构造等生命周期逻辑与现有 profile 重复。
+- region 已经能用 `FAssetDocumentRegionPolicy` 描述 `RegionKind`、`ReducerMode`、`ApplyMode`、target surface、comparison/default/identity 规则。
+- region 形态是 object、named array、deferred empty/delete、graph wrapper、tree wrapper、timeline wrapper 等公共模式之一。
+- asset-specific capability 只是在按 body key 调度一组 adapter，没有必须跨 region 串联的 UE materialization 逻辑。
+
+需要写新的 public region adapter 的情况：
+
+- 新 region shape 可以覆盖多个 asset class，或者第二个 asset/profile 已经开始复制同类 validate/preflight/apply/extract/diff 代码。
+- 现有 adapter 无法准确表达 identity、canonicalization、default diff、explicit empty/delete 或 preview-apply-diff 语义。
+- 新 adapter 的输入输出仍能保持在 `FAssetDocumentRegionContext`、`FAssetDocumentRegionPolicy`、JSON value 和 diff entries 上，不需要知道具体 asset class 的完整 body contract。
+
+允许保留 asset-specific hook 的情况：
+
+- UE materialization 必须依赖具体 editor subsystem、compile/rebuild/refresh cache 或 post-apply repair。
+- region 需要资产领域自己的 semantic identity，例如 graph node semantic id、Blueprint component alias、Widget variable GUID。
+- 当前只有一个 asset 使用该行为，抽公共 adapter 会比局部 hook 更复杂；但第二次出现时必须重新评估并写 spec/plan 抽公共层。
+- hook 只负责领域转换或修复，不重新实现 dispatcher/runtime 已有的 body key 校验、region dispatch、canonical JSON compare、diagnostic 和 diff helper。
+
+具体 adapter 使用组合，不使用继承层级扩张：
+
+- public adapter 直接实现 `IAssetDocumentRegionAdapter`，通过 config、hooks 或成员对象组合既有领域 adapter。
+- wrapper adapter 可以薄封装 legacy domain adapter，例如 WidgetBlueprint tree、binding、animation、graph wrapper；wrapper 的职责是把 runtime context/value 转成旧 adapter 需要的调用，不把旧 adapter 变成 capability base。
+- 不新增 `FAssetDocumentBodyCapabilityBase` 继承链作为 profile 的默认扩展方式。当前 runtime 入口是 interface + dispatcher + adapter composition。
+- 不新增 `UniversalRegionAdapter`。如果一个 adapter 需要通过 asset class、region kind、body key 或 property name 做大 switch，它已经太宽，应拆成更窄的 public adapter 或 asset-specific hook。
+
+### Object region schema 检查门槛
+
+新增或扩展 object region 时，先判断该 region 是否能声明 `FAssetDocumentObjectFieldSchema`。默认结论应该是可以声明；profile hook 负责资产语义，字段白名单、required field、type validation 和 diagnostic path 由 `FAssetDocumentObjectFieldSchemaUtils` 统一处理。
+
+命中 object region 后，spec 或 implementation plan 必须选择一种路径：
+
+1. 声明 `FAssetDocumentObjectFieldSchema`，并在 `ValidateObject`、外部输入路径的 `ApplyObject`、需要比较 desired object 的 `DiffObject` 中调用 schema utility。
+2. 暂不 schema 化，但必须说明原因、当前允许范围、后续清理入口和测试要求。
+
+禁止事项：
+
+- 不得在 profile capability 内复制字段白名单或类型校验。
+- 不得把 UE 对象读写、`PropertySetterUtils`、`ClassFinderUtils`、profile-specific default 逻辑放进 schema utility。
+- 不得新增第二套 JSON Pointer escaping；field path 必须复用 `FAssetDocumentJsonRegionUtils`。
+- schema 自身配置错误必须在测试或 adapter construction 阶段暴露，不能在 profile 运行时静默吞掉。
+
+### Identity 与 diff path 检查门槛
+
+新增或扩展 named array、identity array、graph node、component、variable 等按身份管理的 region 时，必须先定义 stable identity。
+
+默认规则：
+
+- 禁止用 unstable array index 当 identity。
+- 只有证明该数组不会被用户排序、插入或删除时，才允许 index identity。
+- diff path 不得从 semantic path 退化成 array index path。
+- `PathToken` 必须经过 `FAssetDocumentJsonRegionUtils` 的 JSON Pointer escaping。
+- 如果使用 `FAssetDocumentIdentityArrayDiffHelper`，资产语义通过 hook/config 注入；不得让 named-array adapter 硬编码具体资产语义。
+
+常见形态示例：
+
+| 形态 | 适用场景 | 推荐入口 |
+| --- | --- | --- |
+| object region | `Body.Preview`、`Body.Playback`、`Body.ParentClass`、`Body.ClassDefaults` 这类 object/default-diff surface | `FAssetDocumentObjectRegionAdapter` + object policy；需要领域读写时用 hooks |
+| named array region | `Body.NotifyTracks` 或按稳定 name/key 管理的 array | `FAssetDocumentNamedArrayRegionAdapter` + identity field config；禁止用 unstable array index 当 identity |
+| deferred region | 当前只允许空数组/空对象/显式 deferred evidence 的 region | `FAssetDocumentDeferredRegionAdapter` + declared policy；必须写 deferred fields 文档和清理条件 |
+| graph wrapper | `Body.UbergraphPages`、`Body.FunctionGraphs`、`Body.MacroGraphs` 这类 graph region | 薄 wrapper 组合现有 graph adapter；WidgetBlueprint 使用 synthetic `Body.WidgetBlueprintGraphRegions` + `/Body` 汇总多 graph body key |
+| tree wrapper | `Body.WidgetTree` 这类 tree/object materialization | 薄 wrapper 组合 tree adapter；runtime 负责 validate/apply/extract/diff 调度 |
+| timeline wrapper | animation、notify、track、timeline 类 region | 先判断是否能抽公共 timeline adapter；只有 UE compile/rebuild/repair 留在 asset-specific hook |
+
+### Public adapter test fixture 检查门槛
+
+新增或扩展 public region adapter tests 时，优先复用 `Source/AssetDocument/Private/Tests/AssetDocumentRegionRuntimeTestFixture.h`：
+
+- 用 fixture 创建 `FAssetDocumentRegionContext`、policy、binding、dispatcher 和基础 JSON value。
+- 用 fixture 的 diagnostic helper 断言 exact path/code，不允许只断言 `bSuccess == false`。
+- adapter utility 的核心语义仍应在测试体中显式表达，例如 identity key、canonical order、timeline duplicate 顺序和 track resolver 行为。
+- profile-level automation 仍负责 UE materialization、compile/rebuild/cache repair、asset save/load、MCP/apply-file smoke；fixture 不能替代这些验证。
+
+如果新增测试选择不使用 fixture，implementation plan 必须说明原因，例如该测试不在 public region runtime 层，或者需要 profile/UE editor lifecycle。
+
+### Timeline-like region 检查门槛
+
+新增或扩展 animation、notify、marker、section、track、timeline 类 `Body.*` region 时，先做 timeline-like checklist。满足以下任一条件，就不能直接在 profile capability 内新增一整套 parser：
+
+- 有 placement array。
+- 有 time/duration/end-time numeric validation。
+- 有 track identity 或 track existence validation。
+- 有 duplicate placement key。
+- 有 apply 后 repair hook。
+- 有 extract/diff path 稳定性要求。
+
+命中 checklist 后，spec 或 implementation plan 必须选择一种路径：
+
+1. 使用 `FAssetDocumentTimelinePlacementRegionAdapter` + `FAssetDocumentTimelinePlacementUtils` + profile-specific hooks。
+2. 先实现或扩展适合该 region 的 public adapter / utility，再继续完成该 managed region。
+3. 新写更贴合的 public adapter spec，例如 nested track/segment、graph/tree、source import 或非 timeline lifecycle。
+
+禁止把命中 checklist 的 region 直接写成新的 asset-specific parser，除非文档同时说明：
+
+- 为什么现有 timeline adapter/utility 不能表达。
+- 同一 master plan 中要先补哪一个 public adapter / hook / verification task。
+- 若暂时不实现，用户批准的 blocker 证据。
+- 升级入口文件/类。
+- 清理成功标准。
+- 需要保留或新增的测试/验证项。
+
+历史保守边界不能作为新 spec 的默认模板：
+
+- `CompositeSections`、`SlotAnimTracks`、`AnimSegments` 这类 region 如果属于当前 asset 的 managed authored surface，必须在同一个 master plan 中安排实现或公共 adapter 扩展。
+- 只有用户明确批准的 blocker 才能保留为 deferred，并且 final report 必须标记 partial/blocked，而不是 complete。
+
+### Canonicalizer 与 unsupported/deferred 暴露规则
+
+新增 sync/hash/canonicalization 行为时，必须先检查是否会引入 asset class / region specific divergence。
+
+禁止事项：
+
+- 不得在 `AssetDocumentService.cpp` 恢复可增长的 service-level asset class / region divergence if-list。
+- 不得把 graph-specific equivalence 写进通用 canonical JSON helper。
+- 不得静默吞掉 unsupported 或 deferred 的 graph/node/pin/function/region 内容。
+
+允许路径：
+
+- 新的等价归一进入 profile policy hook 或对应 canonicalizer strategy。
+- unsupported 内容通过 diagnostic、`_Skipped.*`、diff `skipped` entries 或 explicit deferred rejection 暴露。
+- deferred 或保守处理项同步写入 `docs/superpowers/specs/asset-document-deferred-fields/`，包含当前处理方式、deferred 原因、清理条件、升级入口和验证要求。若该项属于 managed authored surface，还必须在同一个 master plan 中安排清理 task，或记录用户明确批准的 blocker。
+
+Profile inspection surface 必须保持稳定：
+
+- `BodySections` 继续来自 profile 的 `GetBodyKeys()`，用于公开 agent-facing body keys。
+- `RegionPolicies` 继续来自 profile 的 `GetRegionPolicies()`，用于公开 managed region policy。
+- `InternalAdapters` 可以列出 capability 名、public adapter 名和 wrapper adapter 名；它是诊断/inspection 面，不应改变 `BodySections` 或 `RegionPolicies` 的语义。
+- 如果新 runtime/wrapper 引入了 adapter name，更新 `GetInternalAdapterNames()`，但不要为了 adapter 名称改变 schema body key。
+
+禁止的 public runtime 反模式：
+
+- 当 object、named array、deferred、graph/tree/timeline wrapper 已有公共形态时，继续为每个 asset class 写一整套 extractor/applier/reducer/diff helper。
+- 让 capability 继承某个 capability base 来共享 body dispatch；共享点应是 dispatcher/runtime/adapter，而不是 profile-specific inheritance。
+- 写一个按 asset class 或 region kind 全局分发的 `UniversalRegionAdapter`。
+- 在 runtime 或 shared adapter 中写 asset-class switch，例如按 `UWidgetBlueprint::StaticClass()`、`UAnimSequence::StaticClass()` 或硬编码 body key/property name 扩展行为。
+
+## 第五阶段：Deferred Fields 文档
 
 每个新 asset class 都应有自己的 deferred fields 文档：
 
@@ -169,7 +311,7 @@ docs/superpowers/specs/asset-document-deferred-fields/YYYY-MM-DD-<asset-class>.m
 
 Deferred fields 文档不得作为完成范围的缩小依据。Review 时必须先判断 deferred entry 是否属于 managed authored surface；如果属于且没有清理 task 或用户批准，当前 asset class 不能标记 complete。
 
-## 第五阶段：Implementation Plan 必备项
+## 第六阶段：Implementation Plan 必备项
 
 对任何非平凡 asset class implementation，必须先写 implementation plan 到：
 
@@ -191,7 +333,7 @@ docs/superpowers/plans/YYYY-MM-DD-<asset-class>-asset-document-implementation.md
 推荐 task 顺序：
 
 1. Region inventory contract：body keys、schema hint、template、region policies。
-2. 公共 adapter / hook blocker 清理：对复杂 graph/tree/timeline/fragment region，先补必要公共层，不把复杂 region 自动 deferred。
+2. 公共 adapter / hook blocker 清理：对复杂 graph/tree/timeline/fragment region，先补必要公共层，不把复杂 region自动 deferred。
 3. scalar/reference/object regions。
 4. struct、array、timeline、map regions。
 5. metadata/subobject/fragments。
@@ -200,7 +342,7 @@ docs/superpowers/plans/YYYY-MM-DD-<asset-class>-asset-document-implementation.md
 8. apply-file sync、extract/diff、external smoke。
 9. final branch-level review report。
 
-## 第六阶段：实现检查清单
+## 第七阶段：实现检查清单
 
 每个新增 `Body` region 至少检查这些位置：
 
@@ -221,7 +363,7 @@ docs/superpowers/plans/YYYY-MM-DD-<asset-class>-asset-document-implementation.md
 | External smoke | 最后要有可重复的一键 smoke |
 | Report | 记录完成范围、非目标、验证证据和剩余风险 |
 
-## 第七阶段：测试与验证标准
+## 第八阶段：测试与验证标准
 
 最低验证组合：
 
@@ -244,7 +386,7 @@ Push-Location MCP; npm test; Pop-Location
 
 如果有 HTTP smoke，使用外部 process 驱动已启动或 runner 启动的 Editor。不要用同一个 `-ExecutePythonScript` 进程调用本进程 HTTP endpoint 作为最终 smoke。
 
-## 第八阶段：Smoke Asset 规则
+## 第九阶段：Smoke Asset 规则
 
 每个 asset class benchmark 应留下真实可检查的 smoke asset：
 
@@ -269,7 +411,7 @@ smoke 至少验证：
 - `diff` 对已验证 region 没有 unexpected changed entries。
 - sidecar 和 asset 保留给用户检查。
 
-## 第九阶段：Final Report 必备内容
+## 第十阶段：Final Report 必备内容
 
 每个 asset class benchmark 完成后，写 report 到：
 
@@ -299,6 +441,10 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 - 不要新增 `create_<asset_class>`、`update_<region>` 这类专用 MCP tools。
 - 不要把 raw `.uasset` dump 当成 agent-facing authoring format。
 - 不要为每个结构体默认创建一个专用 reducer 或 adapter。
+- 不要在已有 public adapter 形态可覆盖时继续堆 per-asset extractor/applier/reducer stack。
+- 不要用 capability base inheritance 作为共享 body dispatch 的默认解法。
+- 不要新增 `UniversalRegionAdapter` 或在 runtime/shared adapter 中写 asset-class switch。
+- 不要在 runtime/shared adapter 中硬编码 `UWidgetBlueprint::StaticClass()`、`UAnimSequence::StaticClass()` 这类具体 asset class。
 - 不要用 array index 当稳定 identity，除非已经证明该数组不会被用户排序、插入或删除。
 - 不要把 referenced asset 的数据塞进当前 asset sidecar。
 - 不要 author derived/cache fields。
@@ -310,13 +456,13 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 ## 新 Session Prompt 模板
 
 ```text
-你正在 E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec 中扩展 AssetDocument 新资产类：<AssetClass>。
-AssetDocument 开发基线固定为 branch `feature/asset-document-structured-capabilities-spec`；新 implementation branch/worktree 默认从该基线 fork。
+你正在当前 spec/plan 指定的 UECopilot worktree 中扩展 AssetDocument 新资产类：<AssetClass>。
 
 请先读取：
 - docs/superpowers/guides/asset-document-new-asset-class-extension-guide.md
 - docs/reports/asset-document-animmontage-branch-final-review.md
 - docs/superpowers/specs/2026-06-13-asset-document-bidirectional-delta-sidecar-goal.md
+- docs/superpowers/specs/2026-06-24-asset-document-public-region-runtime-design.md
 - docs/superpowers/specs/2026-06-14-animmontage-region-benchmark.md
 
 任务目标：

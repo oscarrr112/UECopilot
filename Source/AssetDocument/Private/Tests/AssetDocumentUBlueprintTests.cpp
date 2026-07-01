@@ -4,8 +4,10 @@
 #include "AssetDocumentService.h"
 #include "Profiles/UBlueprintAssetDocumentCapability.h"
 #include "Profiles/UBlueprintAssetDocumentProfile.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraphSchema_K2.h"
 #include "Components/SphereComponent.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -17,6 +19,9 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Pawn.h"
+#include "K2Node_IfThenElse.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -221,6 +226,48 @@ bool HasBlueprintVariable(const UBlueprint* Blueprint, FName Name)
 	});
 }
 
+UBlueprint* CreateTransientActorBlueprint(const TCHAR* NamePrefix)
+{
+	const FName BlueprintName(*FString::Printf(TEXT("%s_%s"), NamePrefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		AActor::StaticClass(),
+		GetTransientPackage(),
+		BlueprintName,
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass());
+	if (Blueprint)
+	{
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	}
+	return Blueprint;
+}
+
+template <typename NodeType>
+NodeType* AddK2Node(UEdGraph* Graph, int32 X, int32 Y)
+{
+	NodeType* Node = Graph ? NewObject<NodeType>(Graph) : nullptr;
+	if (!Node)
+	{
+		return nullptr;
+	}
+
+	Graph->AddNode(Node, true, false);
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	return Node;
+}
+
+UK2Node_IfThenElse* AddUnsupportedBranchNode(UEdGraph* Graph, int32 X, int32 Y)
+{
+	UK2Node_IfThenElse* Node = AddK2Node<UK2Node_IfThenElse>(Graph, X, Y);
+	if (Node)
+	{
+		Node->AllocateDefaultPins();
+	}
+	return Node;
+}
+
 bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
@@ -312,6 +359,104 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
+TSharedPtr<FJsonObject> FindDiffEntryByExactPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& Value : Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
+		FString Path;
+		if (Object.IsValid()
+			&& Object->TryGetStringField(TEXT("path"), Path)
+			&& Path.Equals(ExpectedPath, ESearchCase::CaseSensitive))
+		{
+			return Object;
+		}
+	}
+	return nullptr;
+}
+
+void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is null"), FieldName),
+		Value.IsValid() && Value->IsNull());
+}
+
+void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject>* InterfaceObject = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is an interface object"), FieldName),
+		ValueObject.IsValid()
+			&& ValueObject->TryGetObjectField(TEXT("Interface"), InterfaceObject)
+			&& InterfaceObject
+			&& InterfaceObject->IsValid());
+	if (!InterfaceObject || !InterfaceObject->IsValid())
+	{
+		return;
+	}
+
+	FString Kind;
+	FString ClassPath;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Kind"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Kind"), Kind));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Kind is ClassRef"), FieldName),
+		Kind,
+		FString(TEXT("ClassRef")));
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Class"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Class"), ClassPath));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Class path"), FieldName),
+		ClassPath,
+		ExpectedClassPath);
+}
+
+void TestVariableDiffValue(
+	FAutomationTestBase* Test,
+	const TSharedPtr<FJsonObject>& Entry,
+	const TCHAR* FieldName,
+	const FString& ExpectedName,
+	const FString& ExpectedDefaultValue)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	Test->TestTrue(FString::Printf(TEXT("%s is a variable object"), FieldName), ValueObject.IsValid());
+	if (!ValueObject.IsValid())
+	{
+		return;
+	}
+
+	FString Name;
+	Test->TestTrue(FString::Printf(TEXT("%s variable has Name"), FieldName), ValueObject->TryGetStringField(TEXT("Name"), Name));
+	Test->TestEqual(FString::Printf(TEXT("%s variable Name"), FieldName), Name, ExpectedName);
+
+	FString DefaultValue;
+	Test->TestTrue(FString::Printf(TEXT("%s variable has DefaultValue"), FieldName), ValueObject->TryGetStringField(TEXT("DefaultValue"), DefaultValue));
+	Test->TestEqual(FString::Printf(TEXT("%s variable DefaultValue"), FieldName), DefaultValue, ExpectedDefaultValue);
+
+	const TSharedPtr<FJsonObject>* Type = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s variable has Type"), FieldName),
+		ValueObject->TryGetObjectField(TEXT("Type"), Type) && Type && Type->IsValid());
+	if (!Type || !Type->IsValid())
+	{
+		return;
+	}
+
+	FString PinCategory;
+	FString PinSubCategory;
+	Test->TestTrue(FString::Printf(TEXT("%s variable Type has PinCategory"), FieldName), (*Type)->TryGetStringField(TEXT("PinCategory"), PinCategory));
+	Test->TestTrue(FString::Printf(TEXT("%s variable Type has PinSubCategory"), FieldName), (*Type)->TryGetStringField(TEXT("PinSubCategory"), PinSubCategory));
+	Test->TestEqual(FString::Printf(TEXT("%s variable PinCategory"), FieldName), PinCategory, FString(TEXT("real")));
+	Test->TestEqual(FString::Printf(TEXT("%s variable PinSubCategory"), FieldName), PinSubCategory, FString(TEXT("float")));
+}
+
 bool IsUnchangedDiffEntry(const TSharedPtr<FJsonObject>& Entry)
 {
 	if (!Entry.IsValid())
@@ -384,6 +529,11 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 		TestNotNull(FString::Printf(TEXT("Body key %s resolves adapter"), *ExpectedKey.ToString()), Profile.ResolveBodyAdapter(ExpectedKey));
 	}
 	TestNotNull(TEXT("Body root resolves adapter"), Profile.ResolveBodyAdapter(TEXT("Body")));
+
+	const TArray<FName> InternalAdapterNames = Capability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("Internal adapters include deferred region adapter"),
+		InternalAdapterNames.Contains(FAssetDocumentDeferredRegionAdapter::DefaultAdapterName()));
 
 	FAssetDocumentTemplateContext Context;
 	Context.Target = TEXT("/Game/AssetDocumentTests/BP_Template");
@@ -472,6 +622,16 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	ValidEmptyBody->SetArrayField(TEXT("MacroGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("Timelines"), {});
 	TestTrue(TEXT("Empty protected regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
+
+	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs"), TEXT("Timelines")})
+	{
+		TSharedRef<FJsonObject> NullBody = MakeShared<FJsonObject>();
+		NullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
+		TestTrue(
+			FString::Printf(TEXT("Null %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(CapabilityContext, MakeBodyValue(NullBody)).bSuccess);
+	}
 
 	TSharedRef<FJsonObject> UnknownBody = MakeShared<FJsonObject>();
 	UnknownBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
@@ -1810,10 +1970,87 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	if (HealthDiff.IsValid())
 	{
 		TestEqual(TEXT("Extra variable diff is changed"), HealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Extra variable keeps extra change"), HealthDiff->GetStringField(TEXT("change")), FString(TEXT("extra")));
+		TestTrue(TEXT("Extra variable diff has current"), HealthDiff->HasField(TEXT("current")));
+		TestVariableDiffValue(this, HealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestDiffEntryFieldIsNull(this, HealthDiff, TEXT("desired"));
 	}
 
+	TSharedRef<FJsonObject> ChangedVariableBody = MakeShared<FJsonObject>();
+	ChangedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	ChangedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("125.0"))}));
+	TArray<TSharedPtr<FJsonValue>> ChangedVariableDiffEntries;
+	const FAssetDocumentCapabilityResult ChangedVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(ChangedVariableBody), ChangedVariableDiffEntries);
+	TestTrue(TEXT("Matched changed variable diff succeeds"), ChangedVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> ChangedHealthDiff = FindDiffEntryByPath(ChangedVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Changed variable uses semantic path"), ChangedHealthDiff.IsValid());
+	if (ChangedHealthDiff.IsValid())
+	{
+		TestEqual(TEXT("Changed variable diff is changed"), ChangedHealthDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Changed variable keeps changed change"), ChangedHealthDiff->GetStringField(TEXT("change")), FString(TEXT("changed")));
+		TestTrue(TEXT("Changed variable diff has current"), ChangedHealthDiff->HasField(TEXT("current")));
+		TestTrue(TEXT("Changed variable diff has desired"), ChangedHealthDiff->HasField(TEXT("desired")));
+		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, ChangedHealthDiff, TEXT("desired"), TEXT("Health"), TEXT("125.0"));
+	}
+
+	TSharedRef<FJsonObject> MatchedVariableBody = MakeShared<FJsonObject>();
+	MatchedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	MatchedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("100.0"))}));
+	TArray<TSharedPtr<FJsonValue>> MatchedVariableDiffEntries;
+	const FAssetDocumentCapabilityResult MatchedVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(MatchedVariableBody), MatchedVariableDiffEntries);
+	TestTrue(TEXT("Matched unchanged variable diff succeeds"), MatchedVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> MatchedHealthDiff = FindDiffEntryByPath(MatchedVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Matched unchanged variable uses semantic path"), MatchedHealthDiff.IsValid());
+	if (MatchedHealthDiff.IsValid())
+	{
+		TestTrue(TEXT("Matched unchanged variable has no change"), IsUnchangedDiffEntry(MatchedHealthDiff));
+		TestVariableDiffValue(this, MatchedHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, MatchedHealthDiff, TEXT("desired"), TEXT("Health"), TEXT("100.0"));
+	}
+
+	TSharedRef<FJsonObject> CaseVariantVariableBody = MakeShared<FJsonObject>();
+	CaseVariantVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	CaseVariantVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("health"), TEXT("100.0"))}));
+	TArray<TSharedPtr<FJsonValue>> CaseVariantVariableDiffEntries;
+	const FAssetDocumentCapabilityResult CaseVariantVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(CaseVariantVariableBody), CaseVariantVariableDiffEntries);
+	TestTrue(TEXT("Case-variant variable diff succeeds"), CaseVariantVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> CaseVariantHealthDiff = FindDiffEntryByPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/Health"));
+	TestTrue(TEXT("Case-variant variable keeps current semantic path"), CaseVariantHealthDiff.IsValid());
+	if (CaseVariantHealthDiff.IsValid())
+	{
+		TestTrue(TEXT("Case-variant variable matches as unchanged"), IsUnchangedDiffEntry(CaseVariantHealthDiff));
+		TestVariableDiffValue(this, CaseVariantHealthDiff, TEXT("current"), TEXT("Health"), TEXT("100.0"));
+		TestVariableDiffValue(this, CaseVariantHealthDiff, TEXT("desired"), TEXT("health"), TEXT("100.0"));
+	}
+	TestFalse(
+		TEXT("Case-variant variable does not emit desired-only lowercase path"),
+		FindDiffEntryByExactPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/health")).IsValid());
+
+	TSharedRef<FJsonObject> DesiredVariableBody = MakeShared<FJsonObject>();
+	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	DesiredVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("NewScore"), TEXT("7.0"))}));
+	TArray<TSharedPtr<FJsonValue>> DesiredVariableDiffEntries;
+	const FAssetDocumentCapabilityResult DesiredVariableDiffResult =
+		Capability.Diff(Context, MakeBodyValue(DesiredVariableBody), DesiredVariableDiffEntries);
+	TestTrue(TEXT("Desired-only variable diff succeeds"), DesiredVariableDiffResult.bSuccess);
+	TSharedPtr<FJsonObject> NewVariableDiff = FindDiffEntryByPath(DesiredVariableDiffEntries, TEXT("/Body/Variables/NewScore"));
+	TestTrue(TEXT("Desired-only variable uses semantic path"), NewVariableDiff.IsValid());
+	if (NewVariableDiff.IsValid())
+	{
+		TestEqual(TEXT("Desired-only variable is changed"), NewVariableDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Desired-only variable keeps missing change"), NewVariableDiff->GetStringField(TEXT("change")), FString(TEXT("missing")));
+		TestDiffEntryFieldIsNull(this, NewVariableDiff, TEXT("current"));
+		TestTrue(TEXT("Desired-only variable diff has desired"), NewVariableDiff->HasField(TEXT("desired")));
+		TestVariableDiffValue(this, NewVariableDiff, TEXT("desired"), TEXT("NewScore"), TEXT("7.0"));
+	}
+
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
 	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
-	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(TEXT("/Script/Engine.ActorSoundParameterInterface")));
+	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(InterfacePath));
 	TArray<TSharedPtr<FJsonValue>> DesiredInterfaces;
 	DesiredInterfaces.Add(MakeShared<FJsonValueObject>(InterfaceEntry));
 
@@ -1828,6 +2065,32 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	if (InterfaceDiff.IsValid())
 	{
 		TestEqual(TEXT("Missing interface diff is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestEqual(TEXT("Missing interface diff keeps missing change"), InterfaceDiff->GetStringField(TEXT("change")), FString(TEXT("missing")));
+		TestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("current"));
+		TestInterfaceDiffValue(this, InterfaceDiff, TEXT("desired"), InterfacePath);
+	}
+
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
+	TestNotNull(TEXT("Interface class loads for matched diff"), InterfaceClass);
+	if (InterfaceClass)
+	{
+		FBPInterfaceDescription CurrentInterface;
+		CurrentInterface.Interface = InterfaceClass;
+		Blueprint->ImplementedInterfaces.Add(CurrentInterface);
+
+		TArray<TSharedPtr<FJsonValue>> MatchedInterfaceDiffEntries;
+		const FAssetDocumentCapabilityResult MatchedInterfaceDiffResult =
+			Capability.Diff(Context, MakeBodyValue(InterfaceBody), MatchedInterfaceDiffEntries);
+		TestTrue(TEXT("Matched interface diff succeeds"), MatchedInterfaceDiffResult.bSuccess);
+		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
+			FindDiffEntryByPath(MatchedInterfaceDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
+		TestTrue(TEXT("Matched interface is reported as unchanged"), MatchedInterfaceDiff.IsValid());
+		if (MatchedInterfaceDiff.IsValid())
+		{
+			TestTrue(TEXT("Matched interface diff is unchanged without change"), IsUnchangedDiffEntry(MatchedInterfaceDiff));
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
+		}
 	}
 	return true;
 }
@@ -1839,8 +2102,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const FString&)
 {
-	UBlueprint* Blueprint = NewObject<UBlueprint>(GetTransientPackage(), UBlueprint::StaticClass());
-	Blueprint->ParentClass = AActor::StaticClass();
+	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_ExtractSkippedEvidence"));
+	TestNotNull(TEXT("Transient actor Blueprint is created"), Blueprint);
+	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
+	if (!Blueprint || !Graph)
+	{
+		return false;
+	}
 
 	FBPVariableDescription Scores;
 	Scores.VarName = TEXT("Scores");
@@ -1848,6 +2117,7 @@ bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const 
 	Scores.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
 	Scores.VarType.ContainerType = EPinContainerType::Array;
 	Blueprint->NewVariables.Add(Scores);
+	AddUnsupportedBranchNode(Graph, 320, 0);
 
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
@@ -1867,6 +2137,7 @@ bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const 
 	if (Skipped && Skipped->IsValid())
 	{
 		TestTrue(TEXT("Skipped diagnostics include Variables"), (*Skipped)->HasField(TEXT("Variables")));
+		TestTrue(TEXT("Skipped diagnostics include Graphs"), (*Skipped)->HasField(TEXT("Graphs")));
 	}
 	return true;
 }

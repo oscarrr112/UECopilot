@@ -5,6 +5,7 @@
 #include "AssetDocumentService.h"
 #include "Profiles/WidgetBlueprintAssetDocumentCapability.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
+#include "Regions/AssetDocumentDeferredRegionAdapter.h"
 
 #include "Animation/WidgetAnimation.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
@@ -228,6 +229,22 @@ bool ResultHasDiagnosticPath(const FAssetDocumentResult& Result, const FString& 
 	});
 }
 
+bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedPath, const FString& ExpectedCode)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedPath, &ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == ExpectedPath && Diagnostic.Code == ExpectedCode;
+	});
+}
+
+bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& ExpectedCode)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == ExpectedCode;
+	});
+}
+
 bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Payload)
 {
 	if (!Payload.IsValid())
@@ -256,6 +273,62 @@ bool DiffPayloadHasChangedEntries(const TSharedPtr<FJsonObject>& Payload)
 	return Payload->TryGetArrayField(TEXT("changed"), Changed)
 		&& Changed
 		&& Changed->Num() > 0;
+}
+
+TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+{
+	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
+		{
+			return Entry;
+		}
+	}
+	return nullptr;
+}
+
+void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is null"), FieldName),
+		Value.IsValid() && Value->IsNull());
+}
+
+void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
+{
+	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
+	const TSharedPtr<FJsonObject>* InterfaceObject = nullptr;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s is an interface object"), FieldName),
+		ValueObject.IsValid()
+			&& ValueObject->TryGetObjectField(TEXT("Interface"), InterfaceObject)
+			&& InterfaceObject
+			&& InterfaceObject->IsValid());
+	if (!InterfaceObject || !InterfaceObject->IsValid())
+	{
+		return;
+	}
+
+	FString Kind;
+	FString ClassPath;
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Kind"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Kind"), Kind));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Kind is ClassRef"), FieldName),
+		Kind,
+		FString(TEXT("ClassRef")));
+	Test->TestTrue(
+		FString::Printf(TEXT("%s Interface has Class"), FieldName),
+		(*InterfaceObject)->TryGetStringField(TEXT("Class"), ClassPath));
+	Test->TestEqual(
+		FString::Printf(TEXT("%s Interface Class path"), FieldName),
+		ClassPath,
+		ExpectedClassPath);
 }
 
 bool DiffPayloadHasFailedCode(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedCode)
@@ -820,6 +893,12 @@ bool FAssetDocumentWidgetBlueprintProfileTest::RunTest(const FString&)
 	TestTrue(TEXT("FunctionGraphs body key is registered"), BodyKeys.Contains(TEXT("FunctionGraphs")));
 	TestTrue(TEXT("WidgetVariableGuids body key is registered"), BodyKeys.Contains(TEXT("WidgetVariableGuids")));
 
+	const FWidgetBlueprintAssetDocumentCapability Capability;
+	const TArray<FName> InternalAdapterNames = Capability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("Internal adapters include deferred region adapter"),
+		InternalAdapterNames.Contains(FAssetDocumentDeferredRegionAdapter::DefaultAdapterName()));
+
 	FAssetDocumentTemplateContext Context;
 	Context.Target = TEXT("/Game/AssetDocumentTests/WBP_Template");
 	Context.ClassPath = TEXT("/Script/UMGEditor.WidgetBlueprint");
@@ -856,6 +935,48 @@ bool FAssetDocumentWidgetBlueprintProfileTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("WidgetVariableGuids uses canonicalizer"), WidgetVariableGuidsPolicy->CanonicalizerHookName, FName(TEXT("WidgetBlueprintWidgetVariableGuids")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintDeferredGraphRegionsTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.DeferredGraphRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintDeferredGraphRegionsTest::RunTest(const FString&)
+{
+	const FWidgetBlueprintAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs")})
+	{
+		TSharedRef<FJsonObject> EmptyBody = MakeDefaultWidgetBlueprintBody();
+		EmptyBody->SetArrayField(DeferredRegion, {});
+		TestTrue(
+			FString::Printf(TEXT("Empty %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(Context, MakeBodyJsonValue(EmptyBody)).bSuccess);
+
+		TSharedRef<FJsonObject> NullBody = MakeDefaultWidgetBlueprintBody();
+		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
+		TestTrue(
+			FString::Printf(TEXT("Null %s passes deferred region validation"), *DeferredRegion),
+			Capability.Validate(Context, MakeBodyJsonValue(NullBody)).bSuccess);
+
+		TSharedRef<FJsonObject> NonEmptyBody = MakeDefaultWidgetBlueprintBody();
+		NonEmptyBody->SetArrayField(DeferredRegion, {MakeShared<FJsonValueObject>(MakeShared<FJsonObject>())});
+		const FAssetDocumentCapabilityResult NonEmptyResult = Capability.Validate(Context, MakeBodyJsonValue(NonEmptyBody));
+		TestFalse(
+			FString::Printf(TEXT("Malformed non-empty %s fails through graph validation"), *DeferredRegion),
+			NonEmptyResult.bSuccess);
+		TestFalse(
+			FString::Printf(TEXT("Non-empty %s is not rejected by deferred adapter"), *DeferredRegion),
+			ResultHasDiagnosticCode(NonEmptyResult, TEXT("UnsupportedWidgetBlueprintRegion")));
+		TestTrue(
+			FString::Printf(TEXT("Non-empty %s reaches graph adapter diagnostics"), *DeferredRegion),
+			ResultHasDiagnosticCode(NonEmptyResult, TEXT("MissingGraphName")));
+	}
+
 	return true;
 }
 
@@ -1263,12 +1384,15 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 	FAssetDocumentService Service;
 
 	TSharedRef<FJsonObject> PaletteUnknownBody = MakeDefaultWidgetBlueprintBody();
-	PaletteUnknownBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Unexpected"), TEXT("value"));
+	PaletteUnknownBody->GetObjectField(TEXT("Palette"))->SetStringField(TEXT("Unexpected/Bad~Field"), TEXT("value"));
 	const FAssetDocumentResult PaletteUnknownResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteUnknown")),
 		PaletteUnknownBody)));
 	TestFalse(TEXT("Unknown Palette field rejects apply"), PaletteUnknownResult.IsSuccess());
 	TestTrue(TEXT("Unknown Palette diagnostic is reported"), ResultHasDiagnosticCode(PaletteUnknownResult, TEXT("UnknownPaletteField")));
+	TestTrue(
+		TEXT("Unknown Palette diagnostic path is reported"),
+		ResultHasDiagnostic(PaletteUnknownResult, TEXT("/Body/Palette/Unexpected~1Bad~0Field"), TEXT("UnknownPaletteField")));
 
 	TSharedRef<FJsonObject> PaletteTypeBody = MakeDefaultWidgetBlueprintBody();
 	PaletteTypeBody->GetObjectField(TEXT("Palette"))->SetBoolField(TEXT("Category"), true);
@@ -1277,6 +1401,20 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		PaletteTypeBody)));
 	TestFalse(TEXT("Non-string Palette.Category rejects apply"), PaletteTypeResult.IsSuccess());
 	TestTrue(TEXT("Invalid Palette.Category diagnostic is reported"), ResultHasDiagnosticCode(PaletteTypeResult, TEXT("InvalidPaletteCategory")));
+	TestTrue(
+		TEXT("Invalid Palette.Category diagnostic path is reported"),
+		ResultHasDiagnostic(PaletteTypeResult, TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory")));
+
+	TSharedRef<FJsonObject> EditorUnknownBody = MakeDefaultWidgetBlueprintBody();
+	EditorUnknownBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("Unexpected/Bad~Field"), TEXT("value"));
+	const FAssetDocumentResult EditorUnknownResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(
+		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorUnknown")),
+		EditorUnknownBody)));
+	TestFalse(TEXT("Unknown EditorOptions field rejects apply"), EditorUnknownResult.IsSuccess());
+	TestTrue(TEXT("Unknown EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorUnknownResult, TEXT("UnknownEditorOption")));
+	TestTrue(
+		TEXT("Unknown EditorOptions diagnostic path is reported"),
+		ResultHasDiagnostic(EditorUnknownResult, TEXT("/Body/EditorOptions/Unexpected~1Bad~0Field"), TEXT("UnknownEditorOption")));
 
 	TSharedRef<FJsonObject> EditorTypeBody = MakeDefaultWidgetBlueprintBody();
 	EditorTypeBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("bCanCallInitializedWithoutPlayerContext"), TEXT("true"));
@@ -1285,6 +1423,9 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		EditorTypeBody)));
 	TestFalse(TEXT("Non-bool EditorOptions flag rejects apply"), EditorTypeResult.IsSuccess());
 	TestTrue(TEXT("Invalid EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorTypeResult, TEXT("InvalidEditorOption")));
+	TestTrue(
+		TEXT("Invalid EditorOptions diagnostic path is reported"),
+		ResultHasDiagnostic(EditorTypeResult, TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"), TEXT("InvalidEditorOption")));
 	return true;
 }
 
@@ -3449,6 +3590,69 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfaceRoundTripTest::RunTest(con
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Implemented interface diff succeeds"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Implemented interface diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest,
+	"AssetFactory.AssetDocument.WidgetBlueprint.ImplementedInterfaces.Diff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest::RunTest(const FString&)
+{
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_InterfaceDiff"));
+	FAssetDocumentService Service;
+
+	TSharedRef<FJsonObject> InterfaceBody = MakeDefaultWidgetBlueprintBody();
+	SetImplementedInterfaces(InterfaceBody, {MakeImplementedInterface(InterfacePath)});
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InterfaceBody)));
+	TestTrue(TEXT("Initial implemented interface apply succeeds"), InitialResult.IsSuccess());
+
+	TSharedRef<FJsonObject> EmptyBody = MakeDefaultWidgetBlueprintBody();
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeWidgetBlueprintDocument(Target, EmptyBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("Implemented interface diff succeeds"), DiffResult.IsSuccess());
+
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	TestTrue(TEXT("diff payload includes changed"), DiffResult.Payload.IsValid() && DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
+	TSharedPtr<FJsonObject> InterfaceDiff = Changed
+		? FindDiffEntryByPath(*Changed, TEXT("/Body/ImplementedInterfaces//Script/Engine.ActorSoundParameterInterface"))
+		: nullptr;
+	TestTrue(TEXT("changed includes current-only interface semantic path"), InterfaceDiff.IsValid());
+	if (InterfaceDiff.IsValid())
+	{
+		TestEqual(TEXT("current-only implemented interface is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+		TestFalse(TEXT("WidgetBlueprint implemented interface diff keeps no change field"), InterfaceDiff->HasField(TEXT("change")));
+		TestInterfaceDiffValue(this, InterfaceDiff, TEXT("current"), InterfacePath);
+		TestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("desired"));
+	}
+
+	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
+	TestNotNull(TEXT("WidgetBlueprint loads for matched interface diff"), WidgetBlueprint);
+	if (WidgetBlueprint)
+	{
+		const FWidgetBlueprintAssetDocumentCapability Capability;
+		FAssetDocumentCapabilityContext Context;
+		Context.Asset = WidgetBlueprint;
+		Context.AssetClass = UWidgetBlueprint::StaticClass();
+
+		TArray<TSharedPtr<FJsonValue>> MatchedDiffEntries;
+		const FAssetDocumentCapabilityResult MatchedDiffResult =
+			Capability.Diff(Context, MakeBodyJsonValue(InterfaceBody), MatchedDiffEntries);
+		TestTrue(TEXT("Matched WidgetBlueprint interface diff succeeds"), MatchedDiffResult.bSuccess);
+		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
+			FindDiffEntryByPath(MatchedDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
+		TestTrue(TEXT("Matched WidgetBlueprint interface is reported as unchanged"), MatchedInterfaceDiff.IsValid());
+		if (MatchedInterfaceDiff.IsValid())
+		{
+			TestEqual(TEXT("matched implemented interface is unchanged"), MatchedInterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+			TestFalse(TEXT("matched WidgetBlueprint interface diff keeps no change field"), MatchedInterfaceDiff->HasField(TEXT("change")));
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
+			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
+		}
+	}
 	return true;
 }
 

@@ -44,6 +44,100 @@ UClass* FAnimSequenceAssetDocumentProfile::GetExactClass() const
 	return UAnimSequence::StaticClass();
 }
 
+FName FAnimSequenceAssetDocumentProfile::PilotObjectRegionAdapterName()
+{
+	return TEXT("AnimSequenceObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::PreviewObjectRegionAdapterName()
+{
+	return TEXT("AnimSequencePreviewObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::PlaybackObjectRegionAdapterName()
+{
+	return TEXT("AnimSequencePlaybackObjectRegionAdapter");
+}
+
+FName FAnimSequenceAssetDocumentProfile::NotifyTracksNamedArrayRegionAdapterName()
+{
+	return TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter");
+}
+
+FAssetDocumentNamedArrayRegionAdapterConfig FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig()
+{
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.Name = NotifyTracksNamedArrayRegionAdapterName();
+	Config.IdentityField = TEXT("TrackName");
+	Config.IdentityAliases = {TEXT("Name")};
+	Config.MissingIdentityCode = TEXT("InvalidStringField");
+	Config.DuplicateIdentityCode = TEXT("DuplicateNotifyTrackName");
+	Config.NormalizeIdentity = [](const FString& Identity)
+	{
+		return FName(*Identity).ToString().ToLower();
+	};
+	Config.bCanonicalizeByIdentity = false;
+	Config.bPreserveAuthoredApplyOrder = true;
+	return Config;
+}
+
+TArray<FString> FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames()
+{
+	const FAssetDocumentNamedArrayRegionAdapterConfig Config = MakeNotifyTracksNamedArrayConfig();
+	TArray<FString> FieldNames;
+	FieldNames.Reserve(1 + Config.IdentityAliases.Num());
+	FieldNames.Add(Config.IdentityField);
+	FieldNames.Append(Config.IdentityAliases);
+	return FieldNames;
+}
+
+FString FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(int32 Index)
+{
+	const FAssetDocumentNamedArrayRegionAdapterConfig Config = MakeNotifyTracksNamedArrayConfig();
+	return FString::Printf(TEXT("/Body/NotifyTracks/%d/%s"), Index, *Config.IdentityField);
+}
+
+TArray<FAssetDocumentRegionBinding> FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings()
+{
+	return {
+		{TEXT("Preview"), TEXT("Body.Preview"), PilotObjectRegionAdapterName(), 10, false},
+		{TEXT("Playback"), TEXT("Body.Playback"), PilotObjectRegionAdapterName(), 20, false},
+		{TEXT("NotifyTracks"), TEXT("Body.NotifyTracks"), NotifyTracksNamedArrayRegionAdapterName(), 30, false},
+	};
+}
+
+TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies()
+{
+	TArray<FAssetDocumentRegionPolicy> Policies;
+	Policies.Reserve(3);
+
+	FAssetDocumentRegionPolicy Policy;
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Preview"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("PreviewSkeletalMesh")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(
+		TEXT("DefaultDiff"),
+		TEXT("Body.Playback"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("RateScale")},
+		Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy, TEXT("AnimSequencePostApply")))
+	{
+		Policies.Add(Policy);
+	}
+
+	return Policies;
+}
+
 TSharedRef<FJsonObject> FAnimSequenceAssetDocumentProfile::GetDocumentShape() const
 {
 	TSharedRef<FJsonObject> Shape = MakeShared<FJsonObject>();
@@ -103,29 +197,12 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 	Policies.Reserve(13);
 
 	FAssetDocumentRegionPolicy Policy;
+	Policies.Append(MakePilotRegionPolicies());
 	if (MakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.References"),
 		EAssetDocumentRegionKind::Object,
 		{TEXT("Skeleton"), TEXT("RetargetSource"), TEXT("RetargetSourceAsset")},
-		Policy))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(
-		TEXT("DefaultDiff"),
-		TEXT("Body.Preview"),
-		EAssetDocumentRegionKind::Object,
-		{TEXT("PreviewSkeletalMesh")},
-		Policy))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(
-		TEXT("DefaultDiff"),
-		TEXT("Body.Playback"),
-		EAssetDocumentRegionKind::Object,
-		{TEXT("RateScale")},
 		Policy))
 	{
 		Policies.Add(Policy);
@@ -168,10 +245,6 @@ TArray<FAssetDocumentRegionPolicy> FAnimSequenceAssetDocumentProfile::GetRegionP
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy, TEXT("AnimSequencePostApply")))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyTracks"), EAssetDocumentRegionKind::Array, {TEXT("AnimNotifyTracks")}, Policy, TEXT("AnimSequencePostApply")))
 	{
 		Policies.Add(Policy);
 	}

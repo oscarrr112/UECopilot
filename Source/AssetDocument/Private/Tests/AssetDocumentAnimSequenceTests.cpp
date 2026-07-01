@@ -969,14 +969,174 @@ bool FAssetDocumentAnimSequenceProfileShapeTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimSequencePilotRegionCompositionTest,
+	"AssetFactory.AssetDocument.AnimSequence.PilotRegionComposition",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString&)
+{
+	const TArray<FAssetDocumentRegionBinding> Bindings = FAnimSequenceAssetDocumentProfile::MakePilotRegionBindings();
+	TestEqual(TEXT("AnimSequence pilot declares three region bindings"), Bindings.Num(), 3);
+
+	auto FindBinding = [&Bindings](FName BodyKey) -> const FAssetDocumentRegionBinding*
+	{
+		return Bindings.FindByPredicate([BodyKey](const FAssetDocumentRegionBinding& Binding)
+		{
+			return Binding.BodyKey == BodyKey;
+		});
+	};
+
+	const FAssetDocumentRegionBinding* PreviewBinding = FindBinding(TEXT("Preview"));
+	const FAssetDocumentRegionBinding* PlaybackBinding = FindBinding(TEXT("Playback"));
+	const FAssetDocumentRegionBinding* NotifyTracksBinding = FindBinding(TEXT("NotifyTracks"));
+	TestNotNull(TEXT("Preview pilot binding exists"), PreviewBinding);
+	TestNotNull(TEXT("Playback pilot binding exists"), PlaybackBinding);
+	TestNotNull(TEXT("NotifyTracks pilot binding exists"), NotifyTracksBinding);
+	if (PreviewBinding)
+	{
+		TestEqual(TEXT("Preview pilot uses object adapter"), PreviewBinding->AdapterName, FName(TEXT("AnimSequenceObjectRegionAdapter")));
+		TestEqual(TEXT("Preview pilot region id"), PreviewBinding->RegionId, FName(TEXT("Body.Preview")));
+	}
+	if (PlaybackBinding)
+	{
+		TestEqual(TEXT("Playback pilot uses object adapter"), PlaybackBinding->AdapterName, FName(TEXT("AnimSequenceObjectRegionAdapter")));
+		TestEqual(TEXT("Playback pilot region id"), PlaybackBinding->RegionId, FName(TEXT("Body.Playback")));
+	}
+	if (NotifyTracksBinding)
+	{
+		TestEqual(TEXT("NotifyTracks pilot uses named-array adapter"), NotifyTracksBinding->AdapterName, FName(TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter")));
+		TestEqual(TEXT("NotifyTracks pilot region id"), NotifyTracksBinding->RegionId, FName(TEXT("Body.NotifyTracks")));
+	}
+
+	const FAssetDocumentNamedArrayRegionAdapterConfig NotifyTracksConfig =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksNamedArrayConfig();
+	TestEqual(TEXT("NotifyTracks config owns named-array adapter name"), NotifyTracksConfig.Name, FName(TEXT("AnimSequenceNotifyTracksNamedArrayRegionAdapter")));
+	TestEqual(TEXT("NotifyTracks config identity field is profile-visible"), NotifyTracksConfig.IdentityField, FString(TEXT("TrackName")));
+	TestEqual(TEXT("NotifyTracks config exposes one identity alias"), NotifyTracksConfig.IdentityAliases.Num(), 1);
+	if (NotifyTracksConfig.IdentityAliases.Num() == 1)
+	{
+		TestEqual(TEXT("NotifyTracks config identity alias is profile-visible"), NotifyTracksConfig.IdentityAliases[0], FString(TEXT("Name")));
+	}
+	TestEqual(TEXT("NotifyTracks config missing identity code is profile-visible"), NotifyTracksConfig.MissingIdentityCode, FString(TEXT("InvalidStringField")));
+	TestEqual(TEXT("NotifyTracks config duplicate identity code is profile-visible"), NotifyTracksConfig.DuplicateIdentityCode, FString(TEXT("DuplicateNotifyTrackName")));
+	TestTrue(TEXT("NotifyTracks config preserves authored apply order"), NotifyTracksConfig.bPreserveAuthoredApplyOrder);
+	TestFalse(TEXT("NotifyTracks config preserves extracted asset order"), NotifyTracksConfig.bCanonicalizeByIdentity);
+
+	const TArray<FString> NotifyTracksIdentityFields =
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityFieldNames();
+	TestEqual(TEXT("NotifyTracks identity helper exposes primary plus alias"), NotifyTracksIdentityFields.Num(), 2);
+	if (NotifyTracksIdentityFields.Num() == 2)
+	{
+		TestEqual(TEXT("NotifyTracks identity helper uses config primary first"), NotifyTracksIdentityFields[0], NotifyTracksConfig.IdentityField);
+		TestEqual(TEXT("NotifyTracks identity helper uses config alias second"), NotifyTracksIdentityFields[1], NotifyTracksConfig.IdentityAliases[0]);
+	}
+	TestEqual(
+		TEXT("NotifyTracks identity path helper targets primary field"),
+		FAnimSequenceAssetDocumentProfile::MakeNotifyTracksIdentityJsonPointer(3),
+		FString(TEXT("/Body/NotifyTracks/3/TrackName")));
+
+	FAnimSequenceAssetDocumentCapability ShapeCapability;
+	const TArray<FName> InternalAdapterNames = ShapeCapability.GetInternalAdapterNames();
+	TestTrue(
+		TEXT("AnimSequence notifies route through timeline placement adapter"),
+		InternalAdapterNames.Contains(FName(TEXT("AnimSequenceNotifiesTimelinePlacement"))));
+	TestTrue(
+		TEXT("AnimSequence notify states route through timeline placement adapter"),
+		InternalAdapterNames.Contains(FName(TEXT("AnimSequenceNotifyStatesTimelinePlacement"))));
+
+	const TArray<FAssetDocumentRegionPolicy> Policies = FAnimSequenceAssetDocumentProfile::MakePilotRegionPolicies();
+	TestEqual(TEXT("AnimSequence pilot declares three profile-owned policies"), Policies.Num(), 3);
+	auto FindPolicy = [&Policies](FName RegionId) -> const FAssetDocumentRegionPolicy*
+	{
+		return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
+		{
+			return Policy.RegionId == RegionId;
+		});
+	};
+	const FAssetDocumentRegionPolicy* PreviewPolicy = FindPolicy(TEXT("Body.Preview"));
+	const FAssetDocumentRegionPolicy* PlaybackPolicy = FindPolicy(TEXT("Body.Playback"));
+	const FAssetDocumentRegionPolicy* NotifyTracksPolicy = FindPolicy(TEXT("Body.NotifyTracks"));
+	TestTrue(TEXT("Preview pilot policy comes from profile"), PreviewPolicy && PreviewPolicy->RegionKind == EAssetDocumentRegionKind::Object);
+	TestTrue(TEXT("Playback pilot policy comes from profile"), PlaybackPolicy && PlaybackPolicy->RegionKind == EAssetDocumentRegionKind::Object);
+	TestTrue(TEXT("NotifyTracks pilot policy comes from profile"), NotifyTracksPolicy && NotifyTracksPolicy->RegionKind == EAssetDocumentRegionKind::Array);
+
+	FAnimSequenceAssetDocumentCapability Capability;
+	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequencePilotApply"));
+	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, TestPreviewMeshPath);
+	TestNotNull(TEXT("Pilot apply fixture creates sequence"), Sequence);
+	TestNotNull(TEXT("Pilot apply fixture loads preview mesh"), PreviewMesh);
+	if (!Sequence || !PreviewMesh)
+	{
+		return true;
+	}
+
+	Sequence->SetPreviewMesh(nullptr, false);
+	Sequence->RateScale = 1.0f;
+	Sequence->AnimNotifyTracks = {FAnimNotifyTrack(FName(TEXT("Old")), FLinearColor::White)};
+
+	auto MakeTrackObject = [](const TCHAR* TrackName)
+	{
+		TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
+		Track->SetStringField(TEXT("TrackName"), TrackName);
+		return Track;
+	};
+	TSharedRef<FJsonObject> Body = MakePlaybackRateBody(2.5);
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	Body->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeTrackObject(TEXT("Upper")),
+		MakeTrackObject(TEXT("Default")),
+	}));
+
+	FAssetDocumentCapabilityContext Context = MakeSequenceContext(Sequence);
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(Body));
+	TestTrue(TEXT("Pilot regions apply through AnimSequence capability"), ApplyResult.bSuccess);
+	TestEqual(TEXT("Pilot apply writes Preview.PreviewMesh"), Sequence->GetPreviewMesh(), PreviewMesh);
+	TestEqual(TEXT("Pilot apply writes Playback.RateScale"), Sequence->RateScale, 2.5f);
+	TestEqual(TEXT("Pilot apply writes NotifyTracks count"), Sequence->AnimNotifyTracks.Num(), 2);
+	if (Sequence->AnimNotifyTracks.Num() == 2)
+	{
+		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order first"), Sequence->AnimNotifyTracks[0].TrackName, FName(TEXT("Upper")));
+		TestEqual(TEXT("Pilot apply preserves authored NotifyTracks order second"), Sequence->AnimNotifyTracks[1].TrackName, FName(TEXT("Default")));
+	}
+	TSharedRef<FJsonObject> ExtractedPilotBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractPilotResult = Capability.Extract(Context, ExtractedPilotBody);
+	TestTrue(TEXT("Pilot extract succeeds after reordered NotifyTracks apply"), ExtractPilotResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedPilotTracks = nullptr;
+	TestTrue(TEXT("Pilot extract outputs NotifyTracks"), ExtractedPilotBody->TryGetArrayField(TEXT("NotifyTracks"), ExtractedPilotTracks));
+	TestTrue(TEXT("Pilot extract preserves non-sorted NotifyTracks order"), ExtractedPilotTracks && ExtractedPilotTracks->Num() == 2);
+	if (ExtractedPilotTracks && ExtractedPilotTracks->Num() == 2)
+	{
+		TestEqual(TEXT("Pilot extract keeps first asset track"), (*ExtractedPilotTracks)[0]->AsObject()->GetStringField(TEXT("TrackName")), FString(TEXT("Upper")));
+		TestEqual(TEXT("Pilot extract keeps second asset track"), (*ExtractedPilotTracks)[1]->AsObject()->GetStringField(TEXT("TrackName")), FString(TEXT("Default")));
+	}
+
+	TSharedRef<FJsonObject> DuplicateTracksBody = MakeShared<FJsonObject>();
+	DuplicateTracksBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeTrackObject(TEXT("Default")),
+		MakeTrackObject(TEXT("default")),
+	}));
+	const FAssetDocumentCapabilityResult DuplicateTracksResult =
+		Capability.Validate(Context, MakeBodyValue(DuplicateTracksBody));
+	TestFalse(TEXT("NotifyTracks duplicate validation uses FName identity semantics"), DuplicateTracksResult.bSuccess);
+	TestEqual(
+		TEXT("NotifyTracks duplicate validation keeps diagnostic code"),
+		DuplicateTracksResult.Diagnostics.Num() > 0 ? DuplicateTracksResult.Diagnostics[0].Code : FString(),
+		FString(TEXT("DuplicateNotifyTrackName")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimSequenceScalarRegionsTest,
 	"AssetFactory.AssetDocument.AnimSequence.ScalarRegions",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 {
-	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 52);
-	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 2);
+	AddExpectedError(TEXT("No Movie Scene found for SequencerDataModel"), EAutomationExpectedErrorFlags::Contains, 77);
+	AddExpectedError(TEXT("Unable to find Control Rig Section"), EAutomationExpectedErrorFlags::Contains, 3);
 
 	FAnimSequenceAssetDocumentCapability Capability;
 	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequenceScalarRegions"));
@@ -1054,6 +1214,16 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TestTrue(TEXT("Extract outputs Compression.bDoNotOverrideCompression"), ExtractedCompression->GetBoolField(TEXT("bDoNotOverrideCompression")));
 	}
 
+	TSharedRef<FJsonObject> ClearPreviewBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> ClearPreview = MakeShared<FJsonObject>();
+	ClearPreview->SetField(TEXT("PreviewMesh"), MakeShared<FJsonValueNull>());
+	ClearPreviewBody->SetObjectField(TEXT("Preview"), ClearPreview);
+	const FAssetDocumentCapabilityResult ClearPreviewValidateResult = Capability.Validate(Context, MakeBodyValue(ClearPreviewBody));
+	TestTrue(TEXT("Validate accepts null Preview.PreviewMesh for clearing"), ClearPreviewValidateResult.bSuccess);
+	const FAssetDocumentCapabilityResult ClearPreviewApplyResult = Capability.Apply(Context, MakeBodyValue(ClearPreviewBody));
+	TestTrue(TEXT("Apply accepts null Preview.PreviewMesh for clearing"), ClearPreviewApplyResult.bSuccess);
+	TestNull(TEXT("Apply clears Preview.PreviewMesh when authored null"), Sequence->GetPreviewMesh());
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyValue(MakePlaybackRateBody(2.0)), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for authored scalar regions"), DiffResult.bSuccess);
@@ -1072,6 +1242,16 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 			TestEqual(TEXT("Diff desired Playback.RateScale is authored value"), DesiredPlayback->GetNumberField(TEXT("RateScale")), 2.0);
 		}
 	}
+
+	TSharedRef<FJsonObject> PreviewDiffBody = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> PreviewDiff = MakeShared<FJsonObject>();
+	PreviewDiff->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	PreviewDiffBody->SetObjectField(TEXT("Preview"), PreviewDiff);
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult PreviewDiffResult = Capability.Diff(Context, MakeBodyValue(PreviewDiffBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for Preview pilot region"), PreviewDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> PreviewDiffEntry = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Preview"));
+	TestTrue(TEXT("Diff reports Preview path through pilot region"), PreviewDiffEntry.IsValid());
 
 	const FAssetDocumentCapabilityResult ApplyPlaybackForDiffResult = Capability.Apply(Context, MakeBodyValue(MakePlaybackRateBody(2.0)));
 	TestTrue(TEXT("Apply playback-only body for unchanged diff check"), ApplyPlaybackForDiffResult.bSuccess);
@@ -1127,6 +1307,35 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		TestFalse(FString::Printf(TEXT("Apply rejects Body.%s.%s"), *RejectedField.Key, *RejectedField.Value), InvalidFieldApplyResult.bSuccess);
 		TestEqual(FString::Printf(TEXT("Rejected Body.%s.%s does not partially mutate RateScale"), *RejectedField.Key, *RejectedField.Value), Sequence->RateScale, RateScaleBeforeInvalidField);
 	}
+
+	TSharedRef<FJsonObject> UnknownPreviewFieldBody = MakePlaybackRateBody(4.6);
+	TSharedRef<FJsonObject> UnknownPreview = MakeShared<FJsonObject>();
+	UnknownPreview->SetStringField(TEXT("PreviewMesh/Bad~Field"), TEXT("unexpected"));
+	UnknownPreviewFieldBody->SetObjectField(TEXT("Preview"), UnknownPreview);
+	const FAssetDocumentCapabilityResult UnknownPreviewResult =
+		Capability.Validate(Context, MakeBodyValue(UnknownPreviewFieldBody));
+	TestFalse(TEXT("Validate rejects unknown Body.Preview field"), UnknownPreviewResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown Body.Preview field diagnostic uses escaped field path"),
+		HasDiagnostic(UnknownPreviewResult, TEXT("/Body/Preview/PreviewMesh~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+
+	TSharedRef<FJsonObject> UnknownPlaybackFieldBody = MakePlaybackRateBody(4.7);
+	UnknownPlaybackFieldBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale/Bad~Field"), TEXT("unexpected"));
+	const FAssetDocumentCapabilityResult UnknownPlaybackResult =
+		Capability.Validate(Context, MakeBodyValue(UnknownPlaybackFieldBody));
+	TestFalse(TEXT("Validate rejects unknown Body.Playback field"), UnknownPlaybackResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown Body.Playback field diagnostic uses escaped field path"),
+		HasDiagnostic(UnknownPlaybackResult, TEXT("/Body/Playback/RateScale~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+
+	TSharedRef<FJsonObject> InvalidPlaybackRateTypeBody = MakePlaybackRateBody(4.8);
+	InvalidPlaybackRateTypeBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
+	const FAssetDocumentCapabilityResult InvalidPlaybackRateTypeResult =
+		Capability.Validate(Context, MakeBodyValue(InvalidPlaybackRateTypeBody));
+	TestFalse(TEXT("Validate rejects non-number Body.Playback.RateScale"), InvalidPlaybackRateTypeResult.bSuccess);
+	TestTrue(
+		TEXT("Invalid Body.Playback.RateScale diagnostic is stable"),
+		HasDiagnostic(InvalidPlaybackRateTypeResult, TEXT("/Body/Playback/RateScale"), TEXT("InvalidNumericField")));
 
 	TSharedRef<FJsonObject> InvalidPlaybackBody = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> InvalidPlayback = MakeShared<FJsonObject>();
@@ -1584,12 +1793,18 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	const FAssetDocumentCapabilityResult UnchangedDiffResult = Capability.Diff(Context, MakeBodyValue(MakeTimelineBody()), DiffEntries);
 	TestTrue(TEXT("Diff succeeds for unchanged timeline body"), UnchangedDiffResult.bSuccess);
 	const TSharedPtr<FJsonObject> UnchangedNotifyDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Notifies"));
+	const TSharedPtr<FJsonObject> UnchangedTracksDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/NotifyTracks"));
 	const TSharedPtr<FJsonObject> UnchangedMarkerDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/SyncMarkers"));
 	TestTrue(TEXT("Diff reports Notifies path"), UnchangedNotifyDiff.IsValid());
+	TestTrue(TEXT("Diff reports NotifyTracks path"), UnchangedTracksDiff.IsValid());
 	TestTrue(TEXT("Diff reports SyncMarkers path"), UnchangedMarkerDiff.IsValid());
 	if (UnchangedNotifyDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks Notifies unchanged"), UnchangedNotifyDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
+	}
+	if (UnchangedTracksDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff marks NotifyTracks unchanged"), UnchangedTracksDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
 	}
 	if (UnchangedMarkerDiff.IsValid())
 	{
@@ -1609,6 +1824,21 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	if (ChangedMarkerDiff.IsValid())
 	{
 		TestEqual(TEXT("Diff marks SyncMarkers changed"), ChangedMarkerDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
+	}
+
+	TSharedRef<FJsonObject> ReorderedTracksDiffBody = MakeTimelineBody();
+	ReorderedTracksDiffBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Upper")),
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult ReorderedTracksDiffResult = Capability.Diff(Context, MakeBodyValue(ReorderedTracksDiffBody), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for reordered NotifyTracks body"), ReorderedTracksDiffResult.bSuccess);
+	const TSharedPtr<FJsonObject> ReorderedTracksDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/NotifyTracks"));
+	TestTrue(TEXT("Diff reports reordered NotifyTracks path"), ReorderedTracksDiff.IsValid());
+	if (ReorderedTracksDiff.IsValid())
+	{
+		TestEqual(TEXT("Diff treats NotifyTracks order changes as changed"), ReorderedTracksDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 	}
 
 	TSharedRef<FJsonObject> ReorderedTracksBody = MakeShared<FJsonObject>();
@@ -1635,6 +1865,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	Sequence->RateScale = 2.0f;
 	const int32 NotifyCountBeforeInvalid = Sequence->Notifies.Num();
 	const int32 MarkerCountBeforeInvalid = Sequence->AuthoredSyncMarkers.Num();
+	const int32 TrackCountBeforeInvalid = Sequence->AnimNotifyTracks.Num();
 	const int32 ManagedNotifyObjectCountBeforeInvalid = CountManagedNotifyObjectsWithOuter(Sequence);
 	TSharedRef<FJsonObject> InvalidClassBody = MakePlaybackRateBody(3.0);
 	TSharedRef<FJsonObject> InvalidNotifyClass = MakeNotifyPlacement(TEXT("BadClass"), 0.25, TEXT("BadClass"), TEXT("Default"));
@@ -1675,6 +1906,18 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects out-of-range marker time"), OutOfRangeMarkerResult.bSuccess);
 	TestTrue(TEXT("Out-of-range marker diagnostic is precise"), HasDiagnostic(OutOfRangeMarkerResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidSyncMarkerTime")));
 	TestEqual(TEXT("Out-of-range marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> OverflowMarkerBody = MakePlaybackRateBody(4.75);
+	OverflowMarkerBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
+		MakeSyncMarker(TEXT("OverflowMarker"), static_cast<double>(MAX_dbl)),
+	}));
+	const FAssetDocumentCapabilityResult OverflowMarkerValidateResult = Capability.Validate(Context, MakeBodyValue(OverflowMarkerBody));
+	TestFalse(TEXT("Validate rejects sync marker time that cannot fit in float"), OverflowMarkerValidateResult.bSuccess);
+	TestTrue(TEXT("Overflow marker validate diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerValidateResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	const FAssetDocumentCapabilityResult OverflowMarkerApplyResult = Capability.Apply(Context, MakeBodyValue(OverflowMarkerBody));
+	TestFalse(TEXT("Apply rejects sync marker time that cannot fit in float"), OverflowMarkerApplyResult.bSuccess);
+	TestTrue(TEXT("Overflow marker apply diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerApplyResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	TestEqual(TEXT("Overflow marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> NegativeDurationBody = MakePlaybackRateBody(5.0);
 	NegativeDurationBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
@@ -1767,6 +2010,35 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects notify track names not declared in explicit NotifyTracks"), UnknownTrackResult.bSuccess);
 	TestTrue(TEXT("Unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
 	TestEqual(TEXT("Unknown track does not mutate RateScale"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> UnknownTrackPreemptsLaterInvalidBody = MakePlaybackRateBody(5.27);
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("Notifies"), ObjectArray({
+		MakeEmbeddedNotifyPlacement(TEXT("EarlyUnknownTrack"), 0.25, TEXT("EarlyUnknownTrack"), TEXT("Typo")),
+	}));
+	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeNotifyStatePlacement(TEXT("LaterBadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
+	}));
+	const FAssetDocumentCapabilityResult UnknownTrackPreemptsLaterInvalidResult = Capability.Apply(Context, MakeBodyValue(UnknownTrackPreemptsLaterInvalidBody));
+	TestFalse(TEXT("Apply rejects unknown notify track during timeline parse before later regions"), UnknownTrackPreemptsLaterInvalidResult.bSuccess);
+	TestTrue(TEXT("Timeline resolver unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackPreemptsLaterInvalidResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestEqual(TEXT("Timeline resolver unknown track does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
+	TestEqual(TEXT("Timeline resolver unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
+
+	TSharedRef<FJsonObject> UnknownStateTrackBody = MakePlaybackRateBody(5.30);
+	UnknownStateTrackBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
+		MakeNotifyTrack(TEXT("Default")),
+	}));
+	UnknownStateTrackBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeEmbeddedNotifyStatePlacement(TEXT("StateTrackTypo"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Typo")),
+	}));
+	const FAssetDocumentCapabilityResult UnknownStateTrackResult = Capability.Apply(Context, MakeBodyValue(UnknownStateTrackBody));
+	TestFalse(TEXT("Apply rejects notify state track names not declared in explicit NotifyTracks"), UnknownStateTrackResult.bSuccess);
+	TestTrue(TEXT("Unknown notify state track diagnostic is precise"), HasDiagnostic(UnknownStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestEqual(TEXT("Unknown notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> NonFiniteTimeBody = MakePlaybackRateBody(5.35);
 	TSharedRef<FJsonObject> NonFiniteNotify = MakeEmbeddedNotifyPlacement(TEXT("NonFinite"), 0.25, TEXT("NonFinite"), TEXT("Default"));
@@ -1785,6 +2057,15 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects overflow notify state duration"), OverflowDurationResult.bSuccess);
 	TestTrue(TEXT("Overflow duration diagnostic is precise"), HasDiagnostic(OverflowDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNumericField")));
 	TestEqual(TEXT("Overflow duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
+
+	TSharedRef<FJsonObject> AmbiguousNotifyStateTrackBody = MakePlaybackRateBody(5.48);
+	TSharedRef<FJsonObject> AmbiguousNotifyState = MakeEmbeddedNotifyStatePlacement(TEXT("AmbiguousStateTrack"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default"));
+	AmbiguousNotifyState->SetStringField(TEXT("Track"), TEXT("Upper"));
+	AmbiguousNotifyStateTrackBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ AmbiguousNotifyState }));
+	const FAssetDocumentCapabilityResult AmbiguousNotifyStateTrackResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyStateTrackBody));
+	TestFalse(TEXT("Apply rejects notify state with Track and TrackName"), AmbiguousNotifyStateTrackResult.bSuccess);
+	TestTrue(TEXT("Ambiguous notify state track diagnostic is precise"), HasDiagnostic(AmbiguousNotifyStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestEqual(TEXT("Ambiguous notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(5.5);
 	TSharedRef<FJsonObject> UnknownNotify = MakeNotifyPlacement(TEXT("Unknown"), 0.25, TEXT("Unknown"), TEXT("Default"));
@@ -1805,15 +2086,26 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	TestTrue(TEXT("Duplicate notify diagnostic is precise"), HasDiagnostic(DuplicateNotifyResult, TEXT("/Body/Notifies/1/Name"), TEXT("DuplicateNotifyKey")));
 	TestEqual(TEXT("Duplicate notify does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
+	TSharedRef<FJsonObject> DuplicateNotifyStateBody = MakePlaybackRateBody(6.2);
+	DuplicateNotifyStateBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
+		MakeEmbeddedNotifyStatePlacement(TEXT("DuplicateState"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default")),
+		MakeEmbeddedNotifyStatePlacement(TEXT("DuplicateState"), 0.25, 0.10, TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), TEXT("Default")),
+	}));
+	const FAssetDocumentCapabilityResult DuplicateNotifyStateResult = Capability.Apply(Context, MakeBodyValue(DuplicateNotifyStateBody));
+	TestFalse(TEXT("Apply rejects duplicate notify state semantic keys"), DuplicateNotifyStateResult.bSuccess);
+	TestTrue(TEXT("Duplicate notify state diagnostic is precise"), HasDiagnostic(DuplicateNotifyStateResult, TEXT("/Body/NotifyStates/1/Name"), TEXT("DuplicateNotifyStateKey")));
+	TestEqual(TEXT("Duplicate notify state does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
+
 	TSharedRef<FJsonObject> DuplicateMarkerBody = MakePlaybackRateBody(6.5);
 	DuplicateMarkerBody->SetArrayField(TEXT("SyncMarkers"), ObjectArray({
 		MakeSyncMarker(TEXT("DuplicateMarker"), 0.25),
-		MakeSyncMarker(TEXT("DuplicateMarker"), 0.25),
+		MakeSyncMarker(TEXT("DuplicateMarker"), 0.2500004),
 	}));
 	const FAssetDocumentCapabilityResult DuplicateMarkerResult = Capability.Apply(Context, MakeBodyValue(DuplicateMarkerBody));
 	TestFalse(TEXT("Apply rejects duplicate sync marker identities"), DuplicateMarkerResult.bSuccess);
 	TestTrue(TEXT("Duplicate marker diagnostic is precise"), HasDiagnostic(DuplicateMarkerResult, TEXT("/Body/SyncMarkers/1/Name"), TEXT("DuplicateSyncMarkerKey")));
 	TestEqual(TEXT("Duplicate marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
+	TestEqual(TEXT("Duplicate marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
 	return true;
 }
@@ -2109,13 +2401,13 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	NullMetadataItemBody->SetArrayField(TEXT("Metadata"), { MakeShared<FJsonValueNull>() });
 	const FAssetDocumentCapabilityResult NullMetadataItemResult = Capability.Validate(Context, MakeBodyValue(NullMetadataItemBody));
 	TestFalse(TEXT("Validate rejects null Metadata item"), NullMetadataItemResult.bSuccess);
-	TestTrue(TEXT("Null Metadata item diagnostic is precise"), HasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Null Metadata item diagnostic is precise"), HasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NonObjectUserDataItemBody = MakePlaybackRateBody(3.46);
 	NonObjectUserDataItemBody->SetArrayField(TEXT("AssetUserData"), { MakeShared<FJsonValueString>(TEXT("not an object")) });
 	const FAssetDocumentCapabilityResult NonObjectUserDataItemResult = Capability.Validate(Context, MakeBodyValue(NonObjectUserDataItemBody));
 	TestFalse(TEXT("Validate rejects non-object AssetUserData item"), NonObjectUserDataItemResult.bSuccess);
-	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), HasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), HasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NullWrappedObjectBody = MakePlaybackRateBody(3.47);
 	TSharedRef<FJsonObject> NullWrappedObject = MakeShared<FJsonObject>();

@@ -3337,6 +3337,97 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
 	}, TEXT("/Body/NotifyStates[0]/Duration"), TEXT("InvalidNotifyStateDuration"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify string time keeps path style"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetStringField(TEXT("Time"), TEXT("bad"));
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/Time"), TEXT("InvalidNumericField"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify overflow time keeps numeric diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+			1.0e40,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/Time"), TEXT("InvalidNumericField"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("NotifyState overflow duration keeps numeric diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> NotifyStates;
+		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+			0.12,
+			1.0e40,
+			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+	}, TEXT("/Body/NotifyStates[0]/Duration"), TEXT("InvalidNumericField"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify TrackIndex string keeps legacy diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetStringField(TEXT("TrackIndex"), TEXT("bad"));
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify TrackIndex negative keeps legacy diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetNumberField(TEXT("TrackIndex"), -1.0);
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify TrackIndex fractional keeps legacy diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetNumberField(TEXT("TrackIndex"), 1.5);
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify TrackIndex near-integer fractional keeps legacy diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetNumberField(TEXT("TrackIndex"), 1.000000001);
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Duplicate notify placement reports duplicate diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath))));
+		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[1]"), TEXT("DuplicateNotifyPlacementKey"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Duplicate notify state placement reports duplicate diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> NotifyStates;
+		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+			0.12,
+			0.05,
+			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+			0.12,
+			0.05,
+			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+	}, TEXT("/Body/NotifyStates[1]"), TEXT("DuplicateNotifyStatePlacementKey"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify wrong base class"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
 	{
 		TArray<TSharedPtr<FJsonValue>> Notifies;
@@ -4189,6 +4280,34 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 		const FAssetDocumentResult Result = ValidateDocument(Document);
 		TestFalse(FString::Printf(TEXT("Validate rejects non-object %s"), *Section), Result.IsSuccess());
 		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
+	}
+
+	{
+		TSharedPtr<FJsonObject> Document = MakeMontageDocument(TEXT("/Game/AssetDocumentTests/AM_Invalid_SectionMetadataSectionArray"));
+		TSharedRef<FJsonObject> SectionMetadata = MakeShared<FJsonObject>();
+		SectionMetadata->SetStringField(TEXT("Start"), TEXT("not an array"));
+		Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
+
+		const FAssetDocumentResult Result = ValidateDocument(Document);
+		TestFalse(TEXT("Validate rejects non-array SectionMetadata.Start"), Result.IsSuccess());
+		TestTrue(
+			TEXT("Validate reports InvalidBodySectionType for non-array SectionMetadata.Start"),
+			HasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start"), TEXT("InvalidBodySectionType")));
+	}
+
+	{
+		TSharedPtr<FJsonObject> Document = MakeMontageDocument(TEXT("/Game/AssetDocumentTests/AM_Invalid_SectionMetadataEntryObject"));
+		TSharedRef<FJsonObject> SectionMetadata = MakeShared<FJsonObject>();
+		TArray<TSharedPtr<FJsonValue>> InvalidSectionValues;
+		InvalidSectionValues.Add(MakeShared<FJsonValueString>(TEXT("not an object")));
+		SectionMetadata->SetArrayField(TEXT("Start"), InvalidSectionValues);
+		Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("SectionMetadata"), SectionMetadata);
+
+		const FAssetDocumentResult Result = ValidateDocument(Document);
+		TestFalse(TEXT("Validate rejects non-object SectionMetadata.Start entry"), Result.IsSuccess());
+		TestTrue(
+			TEXT("Validate reports InvalidBodySectionType for non-object SectionMetadata.Start entry"),
+			HasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start/0"), TEXT("InvalidBodySectionType")));
 	}
 
 	for (const FString& Section : {FString(TEXT("Skeleton")), FString(TEXT("PreviewMesh"))})

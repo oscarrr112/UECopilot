@@ -3,13 +3,17 @@
 #include "Profiles/AnimMontageNotifyPlacementAdapter.h"
 
 #include "AssetDocumentFragmentCompiler.h"
+#include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPropertyAdapter.h"
+#include "Regions/AssetDocumentTimelinePlacementRegionAdapter.h"
 
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "Dom/JsonValue.h"
 #include "UObject/UObjectGlobals.h"
+
+#include <cmath>
 
 namespace
 {
@@ -78,70 +82,243 @@ FAssetDocumentCapabilityResult RequireObjectValue(const TSharedPtr<FJsonValue>& 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ReadRequiredNonNegativeNumber(
-	const TSharedRef<FJsonObject>& Object,
-	const TCHAR* FieldName,
-	const FString& Path,
-	double& OutValue)
+FString TimelinePathToMontagePlacementPath(const FString& Path, const TCHAR* SectionName)
 {
-	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(FieldName);
-	if (!Value || !Value->IsValid() || (*Value)->Type != EJson::Number)
+	const FString Prefix = FString::Printf(TEXT("/Body/%s/"), SectionName);
+	if (!Path.StartsWith(Prefix))
 	{
-		return BodyFailure(FString::Printf(TEXT("%s must be a number"), FieldName), Path, TEXT("InvalidNumericField"));
+		return Path;
 	}
 
-	OutValue = (*Value)->AsNumber();
-	if (OutValue < 0.0)
+	const FString Suffix = Path.RightChop(Prefix.Len());
+	int32 SlashIndex = INDEX_NONE;
+	const bool bHasSlash = Suffix.FindChar(TEXT('/'), SlashIndex);
+	const FString IndexString = bHasSlash ? Suffix.Left(SlashIndex) : Suffix;
+	if (IndexString.IsEmpty() || !IndexString.IsNumeric())
 	{
-		return BodyFailure(FString::Printf(TEXT("%s must be non-negative"), FieldName), Path, TEXT("InvalidTime"));
+		return Path;
 	}
 
-	return FAssetDocumentCapabilityResult::Success();
+	const FString Rest = bHasSlash ? Suffix.RightChop(SlashIndex) : FString();
+	return FString::Printf(TEXT("/Body/%s[%s]%s"), SectionName, *IndexString, *Rest);
 }
 
-FAssetDocumentCapabilityResult ReadPositiveNumber(
-	const TSharedRef<FJsonObject>& Object,
-	const TCHAR* FieldName,
-	const FString& Path,
-	double& OutValue)
+FAssetDocumentCapabilityResult MapTimelinePlacementFailure(
+	const FAssetDocumentCapabilityResult& Result,
+	const TCHAR* SectionName)
 {
-	const FAssetDocumentCapabilityResult Result = ReadRequiredNonNegativeNumber(Object, FieldName, Path, OutValue);
-	if (!Result.bSuccess)
+	if (Result.bSuccess || Result.Diagnostics.IsEmpty())
 	{
 		return Result;
 	}
 
-	if (OutValue <= 0.0)
+	const FAssetDocumentDiagnostic& Diagnostic = Result.Diagnostics[0];
+	FString Path = TimelinePathToMontagePlacementPath(Diagnostic.Path, SectionName);
+	FString Code = Diagnostic.Code;
+	if (Code == TEXT("InvalidTimelinePlacementRegionType"))
 	{
-		return BodyFailure(FString::Printf(TEXT("%s must be greater than zero"), FieldName), Path, TEXT("InvalidNotifyStateDuration"));
+		Code = TEXT("InvalidBodySectionType");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementEntryType"))
+	{
+		Code = TEXT("InvalidNotifyPlacement");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementNumber")
+		|| Code == TEXT("MissingTimelinePlacementTime")
+		|| Code == TEXT("MissingTimelinePlacementDuration"))
+	{
+		Code = Path.EndsWith(TEXT("/TrackIndex"))
+			? FString(TEXT("InvalidTrackIndex"))
+			: FString(TEXT("InvalidNumericField"));
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementTime"))
+	{
+		Code = TEXT("InvalidTime");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementDuration"))
+	{
+		Code = Result.Message.Contains(TEXT("positive"))
+			? FString(TEXT("InvalidNotifyStateDuration"))
+			: FString(TEXT("InvalidNumericField"));
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementEndTime"))
+	{
+		Code = TEXT("InvalidNotifyStateDuration");
+	}
+	else if (Code == TEXT("InvalidTimelinePlacementTrackIndex"))
+	{
+		Code = TEXT("InvalidTrackIndex");
+	}
+	else if (Code == TEXT("DuplicateTimelinePlacementKey"))
+	{
+		Code = FCString::Strcmp(SectionName, TEXT("Notifies")) == 0
+			? FString(TEXT("DuplicateNotifyPlacementKey"))
+			: FString(TEXT("DuplicateNotifyStatePlacementKey"));
+	}
+
+	return BodyFailure(Result.Message, Path, Code);
+}
+
+FAssetDocumentCapabilityResult ValidatePlacementFloatSafety(
+	const TSharedPtr<FJsonValue>& SectionValue,
+	const TCHAR* SectionName,
+	const TArray<const TCHAR*>& NumericFieldNames)
+{
+	if (!SectionValue.IsValid() || SectionValue->Type != EJson::Array)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>& Values = SectionValue->AsArray();
+	for (int32 Index = 0; Index < Values.Num(); ++Index)
+	{
+		const TSharedPtr<FJsonValue>& EntryValue = Values[Index];
+		if (!EntryValue.IsValid() || EntryValue->Type != EJson::Object)
+		{
+			continue;
+		}
+
+		const TSharedPtr<FJsonObject> EntryObject = EntryValue->AsObject();
+		if (!EntryObject.IsValid())
+		{
+			continue;
+		}
+
+		for (const TCHAR* FieldName : NumericFieldNames)
+		{
+			const TSharedPtr<FJsonValue> NumberValue = EntryObject->TryGetField(FieldName);
+			if (!NumberValue.IsValid() || NumberValue->Type != EJson::Number)
+			{
+				continue;
+			}
+
+			const double Number = NumberValue->AsNumber();
+			if (!std::isfinite(Number) || Number < -static_cast<double>(MAX_flt) || Number > static_cast<double>(MAX_flt))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("%s must fit in a float"), FieldName),
+					PlacementFieldPath(SectionName, Index, FieldName),
+					TEXT("InvalidNumericField"));
+			}
+			const float FloatNumber = static_cast<float>(Number);
+			if (!FMath::IsFinite(FloatNumber))
+			{
+				return BodyFailure(
+					FString::Printf(TEXT("%s must fit in a finite float"), FieldName),
+					PlacementFieldPath(SectionName, Index, FieldName),
+					TEXT("InvalidNumericField"));
+			}
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ReadOptionalTrackIndex(const TSharedRef<FJsonObject>& Object, const FString& Path, int32& OutTrackIndex)
+FAssetDocumentTimelinePlacementRegionConfig MakePlacementConfig(const TCHAR* SectionName, bool bState)
 {
-	OutTrackIndex = 0;
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = bState
+		? FName(TEXT("AnimMontageNotifyStatesTimelinePlacement"))
+		: FName(TEXT("AnimMontageNotifiesTimelinePlacement"));
+	Config.RegionId = bState ? FName(TEXT("Body.NotifyStates")) : FName(TEXT("Body.Notifies"));
+	Config.BodyPath = SectionName;
+	Config.JsonPointer = FString::Printf(TEXT("/Body/%s"), SectionName);
+	Config.TimeFieldName = TEXT("Time");
+	Config.TrackIndexFieldName = TEXT("TrackIndex");
+	Config.bHasTrackIdentity = true;
+	if (bState)
+	{
+		Config.DurationFieldName = TEXT("Duration");
+		Config.bHasDuration = true;
+		Config.bRequireDuration = true;
+		Config.bRequirePositiveDuration = true;
+		Config.bValidateEndTime = true;
+	}
+	return Config;
+}
 
-	const TSharedPtr<FJsonValue>* Value = Object->Values.Find(TEXT("TrackIndex"));
-	if (!Value)
+FString ReadPlacementObjectIdentity(const FAssetDocumentTimelinePlacementEntry& Entry)
+{
+	const TSharedPtr<FJsonValue> ObjectValue = Entry.EntryObject.IsValid()
+		? Entry.EntryObject->TryGetField(TEXT("Object"))
+		: nullptr;
+	if (!ObjectValue.IsValid())
+	{
+		return TEXT("Object=<missing>");
+	}
+
+	return FString::Printf(
+		TEXT("Object=%s"),
+		*FAssetDocumentJsonRegionUtils::JsonValueToComparableString(ObjectValue));
+}
+
+FAssetDocumentTimelinePlacementHooks MakePlacementHooks(const TCHAR* SectionName, bool bState)
+{
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	const FString RegionName(SectionName);
+	Hooks.BuildDuplicateKey = [RegionName, bState](const FAssetDocumentTimelinePlacementEntry& Entry)
+	{
+		TArray<FString> Pieces;
+		Pieces.Add(FString::Printf(TEXT("Region=%s"), *RegionName));
+		Pieces.Add(FString::Printf(
+			TEXT("Time=%s"),
+			Entry.Time.IsSet()
+				? *FAssetDocumentTimelinePlacementUtils::CanonicalizeTimeForKey(Entry.Time.GetValue())
+				: TEXT("<missing>")));
+		if (bState)
+		{
+			Pieces.Add(FString::Printf(
+				TEXT("Duration=%s"),
+				Entry.Duration.IsSet()
+					? *FAssetDocumentTimelinePlacementUtils::CanonicalizeTimeForKey(Entry.Duration.GetValue())
+					: TEXT("<missing>")));
+		}
+		Pieces.Add(FString::Printf(
+			TEXT("TrackIndex=%d"),
+			Entry.TrackIndex.IsSet() ? Entry.TrackIndex.GetValue() : 0));
+		Pieces.Add(ReadPlacementObjectIdentity(Entry));
+		return FString::Join(Pieces, TEXT("|"));
+	};
+	return Hooks;
+}
+
+FAssetDocumentCapabilityResult ParsePlacementEntries(
+	const TSharedRef<FJsonObject>& BodyObject,
+	const TCHAR* SectionName,
+	bool bState,
+	TArray<FAssetDocumentTimelinePlacementEntry>& OutEntries)
+{
+	OutEntries.Reset();
+
+	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(SectionName);
+	if (!SectionValue)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	if (!Value->IsValid() || (*Value)->Type != EJson::Number)
+	const FAssetDocumentCapabilityResult FloatSafetyResult = ValidatePlacementFloatSafety(
+		*SectionValue,
+		SectionName,
+		bState ? TArray<const TCHAR*>{ TEXT("Time"), TEXT("Duration") } : TArray<const TCHAR*>{ TEXT("Time") });
+	if (!FloatSafetyResult.bSuccess)
 	{
-		return BodyFailure(TEXT("TrackIndex must be a non-negative integer"), Path, TEXT("InvalidTrackIndex"));
+		return FloatSafetyResult;
 	}
 
-	const double NumberValue = (*Value)->AsNumber();
-	const double RoundedValue = FMath::RoundToDouble(NumberValue);
-	if (NumberValue < 0.0 || !FMath::IsNearlyEqual(NumberValue, RoundedValue))
+	FAssetDocumentTimelinePlacementRegionConfig Config = MakePlacementConfig(SectionName, bState);
+	FAssetDocumentTimelinePlacementHooks Hooks = MakePlacementHooks(SectionName, bState);
+	const FAssetDocumentCapabilityResult Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		*SectionValue,
+		Config,
+		Config.JsonPointer,
+		nullptr,
+		OutEntries,
+		&Hooks);
+	if (!Result.bSuccess)
 	{
-		return BodyFailure(TEXT("TrackIndex must be a non-negative integer"), Path, TEXT("InvalidTrackIndex"));
+		return MapTimelinePlacementFailure(Result, SectionName);
 	}
 
-	OutTrackIndex = static_cast<int32>(RoundedValue);
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -257,48 +434,17 @@ FAssetDocumentCapabilityResult ValidatePlacementArray(
 	bool bState,
 	UClass* ExpectedBaseClass)
 {
-	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(SectionName);
-	if (!SectionValue)
+	TArray<FAssetDocumentTimelinePlacementEntry> Placements;
+	FAssetDocumentCapabilityResult Result = ParsePlacementEntries(BodyObject, SectionName, bState, Placements);
+	if (!Result.bSuccess)
 	{
-		return FAssetDocumentCapabilityResult::Success();
+		return Result;
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>& Placements = (*SectionValue)->AsArray();
-	for (int32 Index = 0; Index < Placements.Num(); ++Index)
+	for (const FAssetDocumentTimelinePlacementEntry& Placement : Placements)
 	{
-		const FString BasePath = PlacementPath(SectionName, Index);
-		TSharedPtr<FJsonObject> PlacementObject;
-		FAssetDocumentCapabilityResult Result = RequireObjectValue(Placements[Index], BasePath, PlacementObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		double Time = 0.0;
-		Result = ReadRequiredNonNegativeNumber(PlacementObject.ToSharedRef(), TEXT("Time"), BasePath / TEXT("Time"), Time);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		int32 TrackIndex = 0;
-		Result = ReadOptionalTrackIndex(PlacementObject.ToSharedRef(), BasePath / TEXT("TrackIndex"), TrackIndex);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		if (bState)
-		{
-			double Duration = 0.0;
-			Result = ReadPositiveNumber(PlacementObject.ToSharedRef(), TEXT("Duration"), PlacementFieldPath(SectionName, Index, TEXT("Duration")), Duration);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
-		}
-
-		const TSharedPtr<FJsonValue>* ObjectValue = PlacementObject->Values.Find(TEXT("Object"));
+		const FString BasePath = PlacementPath(SectionName, Placement.Index);
+		const TSharedPtr<FJsonValue>* ObjectValue = Placement.EntryObject->Values.Find(TEXT("Object"));
 		if (!ObjectValue)
 		{
 			return BodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
@@ -332,48 +478,17 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 	UClass* ExpectedBaseClass,
 	TArray<FAnimNotifyEvent>& OutEvents)
 {
-	const TSharedPtr<FJsonValue>* SectionValue = BodyObject->Values.Find(SectionName);
-	if (!SectionValue)
+	TArray<FAssetDocumentTimelinePlacementEntry> Placements;
+	FAssetDocumentCapabilityResult Result = ParsePlacementEntries(BodyObject, SectionName, bState, Placements);
+	if (!Result.bSuccess)
 	{
-		return FAssetDocumentCapabilityResult::Success();
+		return Result;
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>& Placements = (*SectionValue)->AsArray();
-	for (int32 Index = 0; Index < Placements.Num(); ++Index)
+	for (const FAssetDocumentTimelinePlacementEntry& Placement : Placements)
 	{
-		const FString BasePath = PlacementPath(SectionName, Index);
-		TSharedPtr<FJsonObject> PlacementObject;
-		FAssetDocumentCapabilityResult Result = RequireObjectValue(Placements[Index], BasePath, PlacementObject);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		double Time = 0.0;
-		Result = ReadRequiredNonNegativeNumber(PlacementObject.ToSharedRef(), TEXT("Time"), BasePath / TEXT("Time"), Time);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		int32 TrackIndex = 0;
-		Result = ReadOptionalTrackIndex(PlacementObject.ToSharedRef(), BasePath / TEXT("TrackIndex"), TrackIndex);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
-
-		double Duration = 0.0;
-		if (bState)
-		{
-			Result = ReadPositiveNumber(PlacementObject.ToSharedRef(), TEXT("Duration"), PlacementFieldPath(SectionName, Index, TEXT("Duration")), Duration);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
-		}
-
-		const TSharedPtr<FJsonValue>* ObjectValue = PlacementObject->Values.Find(TEXT("Object"));
+		const FString BasePath = PlacementPath(SectionName, Placement.Index);
+		const TSharedPtr<FJsonValue>* ObjectValue = Placement.EntryObject->Values.Find(TEXT("Object"));
 		if (!ObjectValue)
 		{
 			return BodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
@@ -413,6 +528,9 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		}
 		MarkManagedNotifyObject(NotifyObject, Montage, bState);
 
+		const double Time = Placement.Time.GetValue();
+		const int32 TrackIndex = Placement.TrackIndex.IsSet() ? Placement.TrackIndex.GetValue() : 0;
+		const double Duration = Placement.Duration.IsSet() ? Placement.Duration.GetValue() : 0.0;
 		const float NotifyTime = static_cast<float>(Time);
 		FAnimNotifyEvent NotifyEvent;
 		NotifyEvent.TrackIndex = TrackIndex;
