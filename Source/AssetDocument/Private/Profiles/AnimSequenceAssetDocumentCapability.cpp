@@ -4288,6 +4288,7 @@ TArray<FName> FAnimSequenceAssetDocumentCapability::GetInternalAdapterNames() co
 		FAnimSequenceAssetDocumentProfile::NotifyTracksNamedArrayRegionAdapterName(),
 		TEXT("AnimSequenceNotifiesTimelinePlacement"),
 		TEXT("AnimSequenceNotifyStatesTimelinePlacement"),
+		TEXT("AnimSequenceSyncMarkersTimelinePlacement"),
 	};
 }
 

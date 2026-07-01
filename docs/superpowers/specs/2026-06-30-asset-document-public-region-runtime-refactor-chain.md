@@ -330,6 +330,14 @@ flowchart TD
 - Apply 后 repair hook 明确执行，测试覆盖 cache/section/track 相关结果。
 - Diff path 对 time/name/track 稳定。
 
+实现状态（2026-07-01）：
+
+- 已新增 `FAssetDocumentTimelinePlacementRegionAdapter` / `FAssetDocumentTimelinePlacementHooks` / `FAssetDocumentTimelineTrackResolver` 和 `FAssetDocumentTimelinePlacementUtils`，公共实现位于 `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementRegionAdapter.*` 与 `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementUtils.*`。
+- AnimSequence `SyncMarkers`、`Notifies`、`NotifyStates` 已迁移到 timeline placement utility / adapter 管线；sync marker cache refresh、notify materialization、track resolver、unmanaged notify preservation 仍保留在 AnimSequence profile hook 中。
+- AnimMontage `Notifies`、`NotifyStates` 已通过 `FAnimMontageNotifyPlacementAdapter` bridge 接入公共 timeline placement utility；managed notify / notify-state materialization、unmanaged preservation、Montage writeback 仍保留在 Montage-specific bridge 中。
+- `CompositeSections` 保持 Montage profile 内的 section lifecycle，只允许复用 timeline placement utility 的 name/time/duplicate helper；`SlotAnimTracks` / nested `AnimSegments` 保持 deferred，未迁移到 full timeline placement adapter。
+- Inspection names 已覆盖 AnimSequence timeline placement adapters 和 AnimMontage bridge；本环不改变 `BodySections` 或 `RegionPolicies` 语义。
+
 ## 12. 第 8 环：Region Runtime Test Fixture
 
 优先级：P2

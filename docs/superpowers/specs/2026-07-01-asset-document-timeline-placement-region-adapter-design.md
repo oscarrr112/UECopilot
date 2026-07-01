@@ -2,9 +2,17 @@
 
 日期：2026-07-01
 
-状态：待审核
+状态：已实现
 
-适用分支：`feature/asset-document-object-field-schema-dispatcher-migration`
+适用分支：`feature/asset-document-timeline-placement-region-adapter`
+
+实现状态摘要：
+
+- 已新增 public-region runtime 内部公共层 `FAssetDocumentTimelinePlacementRegionAdapter`、`FAssetDocumentTimelinePlacementHooks`、`FAssetDocumentTimelineTrackResolver` 和 `FAssetDocumentTimelinePlacementUtils`。
+- AnimSequence `SyncMarkers`、`Notifies`、`NotifyStates` 已迁移到 timeline placement utility / adapter 管线；profile-specific materialization、repair、track resolver 和 unmanaged notify preservation 仍保留在 AnimSequence hook 中。
+- AnimMontage `Notifies`、`NotifyStates` 已通过 `FAnimMontageNotifyPlacementAdapter` bridge 复用 timeline placement utility；Montage-specific managed notify materialization、preservation 和 writeback 没有进入公共 adapter。
+- `CompositeSections` 第一版仅保持 utility 复用边界；`SlotAnimTracks` / nested `AnimSegments` 仍按本 spec 延期，没有迁移到 full timeline adapter。
+- 本实现不改变 public Body schema、`BodySections` 或 `RegionPolicies` 语义。
 
 ## 1. 背景
 
