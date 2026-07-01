@@ -6,6 +6,7 @@
 #include "AssetDocumentHttpRoutes.h"
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
 #include "Profiles/UBlueprintAssetDocumentProfile.h"
@@ -19,6 +20,7 @@ FAssetDocumentModule::~FAssetDocumentModule() = default;
 void FAssetDocumentModule::StartupModule()
 {
 	UE_LOG(LogAssetDocument, Log, TEXT("AssetDocument module starting up"));
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimBlueprintAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimMontageAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimSequenceAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FUBlueprintAssetDocumentProfile>());
