@@ -7,6 +7,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "BehaviorTree/BlackboardData.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonObject.h"
@@ -75,6 +76,12 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		return Result;
 	}
 
+	if (ExistingAsset && Class == UBlackboardData::StaticClass() && ExistingAsset->GetClass() != UBlackboardData::StaticClass())
+	{
+		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UBlackboardData asset"), *Result.ObjectPath);
+		return Result;
+	}
+
 	if (ExistingAsset && Class != UBlueprint::StaticClass() && !ExistingAsset->IsA(Class))
 	{
 		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not a '%s'"), *Result.ObjectPath, *Class->GetName());
@@ -126,6 +133,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (Class == UWidgetBlueprint::StaticClass())
 	{
 		return CreateWidgetBlueprintAsset(Target, Package, AssetName, Document);
+	}
+
+	if (Class == UBlackboardData::StaticClass())
+	{
+		return CreateBlackboardDataAsset(Target, Package, AssetName, Document);
 	}
 
 	UObject* NewAsset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
@@ -596,6 +608,29 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(cons
 	FAssetRegistryModule::AssetCreated(Blueprint);
 
 	Result.Asset = Blueprint;
+	Result.bCreated = true;
+	return Result;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlackboardDataAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+
+	UBlackboardData* BlackboardData = NewObject<UBlackboardData>(
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone | RF_Transactional);
+	if (!BlackboardData)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create BlackboardData asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FAssetRegistryModule::AssetCreated(BlackboardData);
+	Package->MarkPackageDirty();
+
+	Result.Asset = BlackboardData;
 	Result.bCreated = true;
 	return Result;
 }
