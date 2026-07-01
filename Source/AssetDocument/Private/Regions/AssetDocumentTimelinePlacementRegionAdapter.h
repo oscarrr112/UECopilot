@@ -125,11 +125,6 @@ struct FAssetDocumentTimelinePlacementUtils
 		const FString& BasePath,
 		const FAssetDocumentTimelineRange* Range,
 		TArray<FAssetDocumentTimelinePlacementEntry>& OutEntries,
-		const FAssetDocumentTimelinePlacementHooks* Hooks = nullptr,
-		bool bValidateDuplicateKeys = true);
-	static FAssetDocumentCapabilityResult ValidateDuplicateKeys(
-		const FAssetDocumentTimelinePlacementRegionConfig& Config,
-		TArray<FAssetDocumentTimelinePlacementEntry>& Entries,
 		const FAssetDocumentTimelinePlacementHooks* Hooks = nullptr);
 	static TSharedRef<FJsonValue> MakeArrayValue(const TArray<TSharedRef<FJsonObject>>& Entries);
 };

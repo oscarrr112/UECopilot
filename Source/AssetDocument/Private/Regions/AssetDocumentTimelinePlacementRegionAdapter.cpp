@@ -277,31 +277,6 @@ FAssetDocumentCapabilityResult TimelinePlacementValidateEntriesForLifecycle(
 
 	return Hooks.Validate(Context, Entries);
 }
-
-FAssetDocumentCapabilityResult TimelinePlacementValidateEntriesAfterSemanticHook(
-	const FAssetDocumentTimelinePlacementRegionConfig& Config,
-	const FAssetDocumentTimelinePlacementHooks& Hooks,
-	const FAssetDocumentRegionContext& Context,
-	TArray<FAssetDocumentTimelinePlacementEntry>& Entries,
-	const FString& RegionPath,
-	const TCHAR* Lifecycle,
-	const bool bRequireValidate)
-{
-	FAssetDocumentCapabilityResult Result = TimelinePlacementValidateEntriesForLifecycle(
-		Config,
-		Hooks,
-		Context,
-		Entries,
-		RegionPath,
-		Lifecycle,
-		bRequireValidate);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-
-	return FAssetDocumentTimelinePlacementUtils::ValidateDuplicateKeys(Config, Entries, &Hooks);
-}
 }
 
 FString FAssetDocumentTimelinePlacementUtils::MakeEntryPath(const FString& BasePath, const int32 Index)
@@ -374,8 +349,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ParsePlacem
 	const FString& BasePath,
 	const FAssetDocumentTimelineRange* Range,
 	TArray<FAssetDocumentTimelinePlacementEntry>& OutEntries,
-	const FAssetDocumentTimelinePlacementHooks* Hooks,
-	const bool bValidateDuplicateKeys)
+	const FAssetDocumentTimelinePlacementHooks* Hooks)
 {
 	OutEntries.Reset();
 
@@ -389,6 +363,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ParsePlacem
 
 	const TArray<TSharedPtr<FJsonValue>> Values = Value->AsArray();
 	OutEntries.Reserve(Values.Num());
+	TSet<FString> SeenDuplicateKeys;
 	for (int32 Index = 0; Index < Values.Num(); ++Index)
 	{
 		const FString EntryPath = MakeEntryPath(BasePath, Index);
@@ -531,33 +506,6 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ParsePlacem
 		Entry.DuplicateKey = Hooks && Hooks->BuildDuplicateKey
 			? Hooks->BuildDuplicateKey(Entry)
 			: BuildDefaultDuplicateKey(Config, Entry);
-
-		OutEntries.Add(MoveTemp(Entry));
-	}
-
-	if (bValidateDuplicateKeys)
-	{
-		const FAssetDocumentCapabilityResult DuplicateResult = ValidateDuplicateKeys(Config, OutEntries, Hooks);
-		if (!DuplicateResult.bSuccess)
-		{
-			return DuplicateResult;
-		}
-	}
-
-	return FAssetDocumentCapabilityResult::Success(TEXT("Parsed timeline placement region"));
-}
-
-FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ValidateDuplicateKeys(
-	const FAssetDocumentTimelinePlacementRegionConfig& Config,
-	TArray<FAssetDocumentTimelinePlacementEntry>& Entries,
-	const FAssetDocumentTimelinePlacementHooks* Hooks)
-{
-	TSet<FString> SeenDuplicateKeys;
-	for (FAssetDocumentTimelinePlacementEntry& Entry : Entries)
-	{
-		Entry.DuplicateKey = Hooks && Hooks->BuildDuplicateKey
-			? Hooks->BuildDuplicateKey(Entry)
-			: BuildDefaultDuplicateKey(Config, Entry);
 		if (SeenDuplicateKeys.Contains(Entry.DuplicateKey))
 		{
 			return TimelinePlacementFailure(
@@ -566,9 +514,11 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ValidateDup
 				FString::Printf(TEXT("Duplicate timeline placement key %s"), *Entry.DuplicateKey));
 		}
 		SeenDuplicateKeys.Add(Entry.DuplicateKey);
+
+		OutEntries.Add(MoveTemp(Entry));
 	}
 
-	return FAssetDocumentCapabilityResult::Success(TEXT("Timeline placement duplicate keys are unique"));
+	return FAssetDocumentCapabilityResult::Success(TEXT("Parsed timeline placement region"));
 }
 
 TSharedRef<FJsonValue> FAssetDocumentTimelinePlacementUtils::MakeArrayValue(
@@ -631,14 +581,10 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::Val
 
 	if (Hooks.Validate)
 	{
-		Result = Hooks.Validate(Context, Entries);
-		if (!Result.bSuccess)
-		{
-			return Result;
-		}
+		return Hooks.Validate(Context, Entries);
 	}
 
-	return FAssetDocumentTimelinePlacementUtils::ValidateDuplicateKeys(Config, Entries, &Hooks);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated timeline placement region"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::PreflightRegion(
@@ -652,7 +598,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::Pre
 		return Result;
 	}
 
-	Result = TimelinePlacementValidateEntriesAfterSemanticHook(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), false);
+	Result = TimelinePlacementValidateEntriesForLifecycle(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), false);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -680,7 +626,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::App
 		return Result;
 	}
 
-	Result = TimelinePlacementValidateEntriesAfterSemanticHook(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), false);
+	Result = TimelinePlacementValidateEntriesForLifecycle(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), false);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -727,7 +673,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::Dif
 		return Result;
 	}
 
-	Result = TimelinePlacementValidateEntriesAfterSemanticHook(Config, Hooks, Context, DesiredEntries, RegionPath(Context), TEXT("validate"), false);
+	Result = TimelinePlacementValidateEntriesForLifecycle(Config, Hooks, Context, DesiredEntries, RegionPath(Context), TEXT("validate"), false);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -791,6 +737,5 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::Par
 		RegionPath(Context),
 		Range.IsSet() ? &Range.GetValue() : nullptr,
 		OutEntries,
-		&Hooks,
-		false);
+		&Hooks);
 }

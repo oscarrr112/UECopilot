@@ -3856,12 +3856,14 @@ bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest
 	Range.bHasMaxTime = true;
 
 	FAssetDocumentTimelinePlacementHooks Hooks;
+	int32 ValidateCalls = 0;
 	Hooks.GetTimelineRange = [Range](const FAssetDocumentRegionContext&)
 	{
 		return Range;
 	};
-	Hooks.Validate = [](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	Hooks.Validate = [&ValidateCalls](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
 	{
+		++ValidateCalls;
 		for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
 		{
 			if (!Entry.EntryObject.IsValid() || !Entry.EntryObject->HasField(TEXT("Semantic")))
@@ -3993,17 +3995,21 @@ bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest
 	FirstBad->RemoveField(TEXT("Semantic"));
 	TSharedRef<FJsonObject> SecondBad = MakeValidEntry();
 	SecondBad->RemoveField(TEXT("Semantic"));
+	const int32 ValidateCallsBeforeDuplicateBadEntries = ValidateCalls;
 	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstBad), MakeObjectValue(SecondBad)}));
-	TestFalse(TEXT("Semantic failure runs before duplicate key check"), Result.bSuccess);
-	TestEqual(TEXT("Semantic failure is not preempted by duplicate key"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("SemanticHookFailed")));
-	TestEqual(TEXT("Semantic failure path remains first bad entry"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Semantic")));
+	TestFalse(TEXT("Duplicate key runs before semantic hook"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate key is not preempted by semantic failure"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
+	TestEqual(TEXT("Duplicate key reports second repeated entry"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
+	TestEqual(TEXT("Duplicate key failure does not call semantic hook"), ValidateCalls, ValidateCallsBeforeDuplicateBadEntries);
 
 	TSharedRef<FJsonObject> FirstDuplicate = MakeValidEntry();
 	TSharedRef<FJsonObject> SecondDuplicate = MakeValidEntry();
+	const int32 ValidateCallsBeforeDuplicateValidEntries = ValidateCalls;
 	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstDuplicate), MakeObjectValue(SecondDuplicate)}));
-	TestFalse(TEXT("Duplicate key still fails after semantic validation"), Result.bSuccess);
-	TestEqual(TEXT("Duplicate diagnostic code after semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
-	TestEqual(TEXT("Duplicate diagnostic path after semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
+	TestFalse(TEXT("Duplicate key still fails before semantic validation"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate diagnostic code before semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
+	TestEqual(TEXT("Duplicate diagnostic path before semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
+	TestEqual(TEXT("Duplicate valid entries do not call semantic hook"), ValidateCalls, ValidateCallsBeforeDuplicateValidEntries);
 
 	bool bChanged = false;
 	Result = Adapter.ApplyRegion(Context, MakeArrayValue({}), bChanged);
