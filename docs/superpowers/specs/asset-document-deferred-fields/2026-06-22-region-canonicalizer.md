@@ -40,7 +40,7 @@
 - profile automation tests：证明具体 UE asset materialization、post-apply repair、compile/rebuild 和 save/load。
 - MCP / apply-file smoke：证明外部协议、sidecar path contract 和 editor integration。
 
-不得用 profile automation 的通过结果替代 public runtime fixture coverage，也不得用 fixture tests 宣称 UE materialization 已验证。
+三类证据不得互相替代：MCP / apply-file smoke 不能替代 public runtime fixture coverage 或 profile automation；profile automation 不能替代 public runtime fixture coverage；fixture tests 也不能宣称 UE materialization、外部协议或 editor integration 已验证。
 
 ---
 
