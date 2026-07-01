@@ -87,10 +87,44 @@ bool TryReadNonEmptyStringField(const TSharedPtr<FJsonObject>& Object, const TCH
 	return !OutValue.IsEmpty();
 }
 
+bool IsExplicitNull(const TSharedPtr<FJsonValue>& Value)
+{
+	return Value.IsValid() && Value->Type == EJson::Null;
+}
+
+FAssetDocumentGraphFieldRuleResult TryAcceptNullable(
+	const FAssetDocumentGraphFieldRuleContext& Context,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Code,
+	bool& bOutAccepted)
+{
+	bOutAccepted = false;
+	if (!IsExplicitNull(Value))
+	{
+		return FAssetDocumentGraphFieldRuleResult::Success();
+	}
+
+	if (Context.bAllowNull)
+	{
+		bOutAccepted = true;
+		return FAssetDocumentGraphFieldRuleResult::Success();
+	}
+
+	return FailureAtField(Context, Code, TEXT("Null is not allowed for this graph field"));
+}
+
 FAssetDocumentGraphFieldRuleResult ValidateAssetRef(
 	const FAssetDocumentGraphFieldRuleContext& Context,
 	const TSharedPtr<FJsonValue>& Value)
 {
+	bool bAcceptedNull = false;
+	const FAssetDocumentGraphFieldRuleResult NullResult =
+		TryAcceptNullable(Context, Value, TEXT("InvalidGraphFieldAssetRef"), bAcceptedNull);
+	if (!NullResult.bSuccess || bAcceptedNull)
+	{
+		return NullResult;
+	}
+
 	TSharedPtr<FJsonObject> Object;
 	const FAssetDocumentGraphFieldRuleResult ObjectResult =
 		RequireObject(Context, Value, TEXT("InvalidGraphFieldAssetRef"), Object);
@@ -122,6 +156,14 @@ FAssetDocumentGraphFieldRuleResult ValidateClassRef(
 	const FAssetDocumentGraphFieldRuleContext& Context,
 	const TSharedPtr<FJsonValue>& Value)
 {
+	bool bAcceptedNull = false;
+	const FAssetDocumentGraphFieldRuleResult NullResult =
+		TryAcceptNullable(Context, Value, TEXT("InvalidGraphFieldClassRef"), bAcceptedNull);
+	if (!NullResult.bSuccess || bAcceptedNull)
+	{
+		return NullResult;
+	}
+
 	TSharedPtr<FJsonObject> Object;
 	const FAssetDocumentGraphFieldRuleResult ObjectResult =
 		RequireObject(Context, Value, TEXT("InvalidGraphFieldClassRef"), Object);
@@ -137,24 +179,14 @@ FAssetDocumentGraphFieldRuleResult ValidateClassRef(
 		return KindResult;
 	}
 
-	FString ClassPath;
-	const bool bHasClassPath = TryReadNonEmptyStringField(Object, TEXT("Class"), ClassPath);
 	FString Path;
 	const bool bHasPath = TryReadNonEmptyStringField(Object, TEXT("Path"), Path);
-	if (!bHasClassPath && !bHasPath)
+	if (!bHasPath)
 	{
 		return FAssetDocumentGraphFieldRuleResult::Failure(
-			TEXT("MissingGraphFieldClassRefClass"),
-			MakeChildPath(Context.JsonPath, TEXT("Class")),
-			TEXT("ClassRef.Class or ClassRef.Path must be a non-empty string"));
-	}
-
-	if (bHasClassPath && bHasPath && ClassPath != Path)
-	{
-		return FAssetDocumentGraphFieldRuleResult::Failure(
-			TEXT("AmbiguousGraphFieldClassRefPath"),
-			MakeChildPath(Context.JsonPath, TEXT("Class")),
-			TEXT("ClassRef.Class and ClassRef.Path must not disagree"));
+			TEXT("MissingGraphFieldClassRefPath"),
+			MakeChildPath(Context.JsonPath, TEXT("Path")),
+			TEXT("ClassRef.Path must be a non-empty string"));
 	}
 
 	return FAssetDocumentGraphFieldRuleResult::Success();
@@ -324,6 +356,49 @@ FAssetDocumentGraphFieldRuleResult FAssetDocumentGraphFieldRules::ValidateTraitS
 	return FailureAtField(Context, TEXT("UnsupportedGraphFieldTrait"), TEXT("Unsupported graph field trait"));
 }
 
+FString FAssetDocumentGraphFieldRules::MakeFieldJsonPath(const FString& FieldsPath, const FString& FieldPath)
+{
+	return MakeChildPath(FieldsPath, FieldPath);
+}
+
+FAssetDocumentGraphFieldRuleResult FAssetDocumentGraphFieldRules::ResolveTrait(
+	const FAssetDocumentGraphFieldRuleContext& Context,
+	const TArray<EAssetDocumentGraphFieldTrait>& CandidateTraits,
+	const TSharedPtr<FJsonValue>& Value,
+	EAssetDocumentGraphFieldTrait& OutTrait)
+{
+	if (CandidateTraits.IsEmpty())
+	{
+		return FailureAtField(Context, TEXT("MissingGraphFieldTrait"), TEXT("No graph field trait candidates were provided"));
+	}
+
+	TArray<EAssetDocumentGraphFieldTrait> MatchingTraits;
+	for (const EAssetDocumentGraphFieldTrait CandidateTrait : CandidateTraits)
+	{
+		const FAssetDocumentGraphFieldRuleResult Result = ValidateTraitShape(Context, CandidateTrait, Value);
+		if (Result.bSuccess)
+		{
+			MatchingTraits.Add(CandidateTrait);
+		}
+	}
+
+	if (MatchingTraits.Num() == 1)
+	{
+		OutTrait = MatchingTraits[0];
+		return FAssetDocumentGraphFieldRuleResult::Success();
+	}
+
+	if (MatchingTraits.Num() > 1)
+	{
+		return FailureAtField(
+			Context,
+			TEXT("AmbiguousGraphFieldTrait"),
+			TEXT("Graph field value matches multiple trait candidates"));
+	}
+
+	return FailureAtField(Context, TEXT("UnresolvedGraphFieldTrait"), TEXT("Graph field value does not match any candidate trait"));
+}
+
 bool FAssetDocumentGraphFieldRules::ShouldOmitDefaultField(
 	const TSharedPtr<FJsonValue>& Value,
 	const TSharedPtr<FJsonValue>& DefaultValue,
@@ -343,7 +418,13 @@ TArray<EAssetDocumentGraphFieldApplyStage> FAssetDocumentGraphFieldRules::GetSta
 	return {
 		EAssetDocumentGraphFieldApplyStage::Validate,
 		EAssetDocumentGraphFieldApplyStage::IdentityAndPins,
-		EAssetDocumentGraphFieldApplyStage::Fields
+		EAssetDocumentGraphFieldApplyStage::ReconstructDynamicPins,
+		EAssetDocumentGraphFieldApplyStage::Fields,
+		EAssetDocumentGraphFieldApplyStage::PinDefaults,
+		EAssetDocumentGraphFieldApplyStage::Layout,
+		EAssetDocumentGraphFieldApplyStage::Links,
+		EAssetDocumentGraphFieldApplyStage::Repair,
+		EAssetDocumentGraphFieldApplyStage::PostApplyEvidence
 	};
 }
 

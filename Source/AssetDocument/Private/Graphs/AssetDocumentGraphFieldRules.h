@@ -28,7 +28,13 @@ enum class EAssetDocumentGraphFieldApplyStage : uint8
 {
 	Validate,
 	IdentityAndPins,
-	Fields
+	ReconstructDynamicPins,
+	Fields,
+	PinDefaults,
+	Layout,
+	Links,
+	Repair,
+	PostApplyEvidence
 };
 
 struct FAssetDocumentGraphFieldRuleContext
@@ -38,6 +44,7 @@ struct FAssetDocumentGraphFieldRuleContext
 	FString OwnerGraphKind;
 	TWeakObjectPtr<UClass> RequiredObjectClass;
 	TWeakObjectPtr<UClass> RequiredClassClass;
+	bool bAllowNull = false;
 };
 
 struct FAssetDocumentGraphFieldRuleResult
@@ -57,6 +64,14 @@ struct FAssetDocumentGraphFieldRuleResult
 class FAssetDocumentGraphFieldRules
 {
 public:
+	static FString MakeFieldJsonPath(const FString& FieldsPath, const FString& FieldPath);
+
+	static FAssetDocumentGraphFieldRuleResult ResolveTrait(
+		const FAssetDocumentGraphFieldRuleContext& Context,
+		const TArray<EAssetDocumentGraphFieldTrait>& CandidateTraits,
+		const TSharedPtr<FJsonValue>& Value,
+		EAssetDocumentGraphFieldTrait& OutTrait);
+
 	static FAssetDocumentGraphFieldRuleResult ValidateTraitShape(
 		const FAssetDocumentGraphFieldRuleContext& Context,
 		EAssetDocumentGraphFieldTrait Trait,
