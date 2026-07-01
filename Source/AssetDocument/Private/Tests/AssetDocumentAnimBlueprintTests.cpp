@@ -15,6 +15,21 @@ bool HasBodyKey(const TArray<FName>& BodyKeys, const TCHAR* Name)
 	return BodyKeys.Contains(FName(Name));
 }
 
+TSharedRef<FJsonValue> MakeEmptyBodyValue()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> RegionEntries;
+	RegionEntries.Add(MakeShared<FJsonValueString>(TEXT("unsupported")));
+	Body->SetArrayField(RegionName, MoveTemp(RegionEntries));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
 {
 	return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
@@ -43,14 +58,14 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestTrue(TEXT("Template includes Body object"), Body.IsValid());
 	if (Body.IsValid())
 	{
-		TestTrue(TEXT("Template includes ParentClass"), Body->HasTypedField<EJson::Object>(TEXT("ParentClass")));
-		TestTrue(TEXT("Template includes TargetSkeleton"), Body->HasField(TEXT("TargetSkeleton")));
-		TestTrue(TEXT("Template includes Template"), Body->HasTypedField<EJson::Object>(TEXT("Template")));
-		TestTrue(TEXT("Template includes Preview"), Body->HasTypedField<EJson::Object>(TEXT("Preview")));
-		TestTrue(TEXT("Template includes Optimization"), Body->HasTypedField<EJson::Object>(TEXT("Optimization")));
-		TestTrue(TEXT("Template includes SyncGroups"), Body->HasTypedField<EJson::Array>(TEXT("SyncGroups")));
-		TestTrue(TEXT("Template includes AnimGraph deferred gate"), Body->HasTypedField<EJson::Array>(TEXT("AnimGraph")));
-		TestTrue(TEXT("Template includes StateMachines deferred gate"), Body->HasTypedField<EJson::Array>(TEXT("StateMachines")));
+		const TArray<FName> ExpectedTemplateBodyKeys = FAnimBlueprintAssetDocumentCapability::GetCanonicalBodyKeys();
+		TestEqual(TEXT("Template Body only includes canonical keys"), Body->Values.Num(), ExpectedTemplateBodyKeys.Num());
+		for (const FName& ExpectedKey : ExpectedTemplateBodyKeys)
+		{
+			TestTrue(
+				FString::Printf(TEXT("Template includes Body.%s"), *ExpectedKey.ToString()),
+				Body->HasField(ExpectedKey.ToString()));
+		}
 	}
 
 	const TArray<FName> BodyKeys = Profile.GetBodyKeys();
@@ -100,6 +115,51 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	if (StateMachinesPolicy)
 	{
 		TestTrue(TEXT("StateMachines policy is deferred/null-gated"), StateMachinesPolicy->ExplicitDeleteValues.Num() > 0);
+	}
+	if (TransitionGraphsPolicy)
+	{
+		TestTrue(TEXT("TransitionGraphs policy is deferred/null-gated"), TransitionGraphsPolicy->ExplicitDeleteValues.Num() > 0);
+	}
+	if (AnimLayersPolicy)
+	{
+		TestTrue(TEXT("AnimLayers policy is deferred/null-gated"), AnimLayersPolicy->ExplicitDeleteValues.Num() > 0);
+	}
+	if (ParentAssetOverridesPolicy)
+	{
+		TestTrue(TEXT("ParentAssetOverrides policy is deferred/null-gated"), ParentAssetOverridesPolicy->ExplicitDeleteValues.Num() > 0);
+	}
+
+	const IAssetDocumentCapability* BodyAdapter = Profile.ResolveBodyAdapter(TEXT("Body"));
+	TestNotNull(TEXT("Body adapter resolves for validation"), BodyAdapter);
+	if (BodyAdapter)
+	{
+		FAssetDocumentCapabilityContext Context;
+		Context.AssetClass = UAnimBlueprint::StaticClass();
+		TestTrue(TEXT("Empty Body validates"), BodyAdapter->Validate(Context, MakeEmptyBodyValue()).bSuccess);
+
+		for (const TCHAR* DeferredKey : {
+			TEXT("AnimGraph"),
+			TEXT("StateMachines"),
+			TEXT("TransitionGraphs"),
+			TEXT("AnimLayers"),
+			TEXT("ParentAssetOverrides"),
+		})
+		{
+			const FAssetDocumentCapabilityResult Result = BodyAdapter->Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
+			TestFalse(FString::Printf(TEXT("Body.%s rejects non-empty deferred content"), DeferredKey), Result.bSuccess);
+			TestTrue(FString::Printf(TEXT("Body.%s reports a diagnostic"), DeferredKey), Result.Diagnostics.Num() > 0);
+			if (Result.Diagnostics.Num() > 0)
+			{
+				TestEqual(
+					FString::Printf(TEXT("Body.%s diagnostic path"), DeferredKey),
+					Result.Diagnostics[0].Path,
+					FString::Printf(TEXT("/Body/%s"), DeferredKey));
+				TestEqual(
+					FString::Printf(TEXT("Body.%s diagnostic code"), DeferredKey),
+					Result.Diagnostics[0].Code,
+					FString(TEXT("UnsupportedAnimBlueprintRegion")));
+			}
+		}
 	}
 
 	return true;

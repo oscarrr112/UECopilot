@@ -100,10 +100,6 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 {
 	return {
 		GetName(),
-		TEXT("AnimBlueprintObjectRegionAdapter"),
-		TEXT("AnimBlueprintSyncGroupsNamedArrayRegionAdapter"),
-		TEXT("AnimBlueprintBlueprintCommonAdapter"),
-		TEXT("AnimBlueprintDeferredRegionAdapter"),
 		FAssetDocumentDeferredRegionAdapter::DefaultAdapterName(),
 	};
 }
