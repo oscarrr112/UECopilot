@@ -8,6 +8,8 @@
 
 基线：`d766122c1302aea39b773351566fc397fd0de291`
 
+后续完整 graph 语义入口：`docs/superpowers/specs/2026-07-02-animationblueprint-complete-graph-semantics-design.md`。该文档扩展并覆盖本 spec 中 root-only / empty-only graph-family gate 作为目标能力的部分；本 spec 保留为当前实现阶段和历史边界记录。
+
 ## 1. 背景
 
 AssetDocument public region runtime 重构链已经进入“新资产 thin hook 验证”阶段。下一步选择 `UAnimBlueprint`，不是为了恢复旧 generator 路线，而是验证一个复杂 Blueprint-derived asset 能否按当前设计接入：

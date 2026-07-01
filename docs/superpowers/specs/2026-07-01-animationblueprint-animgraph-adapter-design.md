@@ -1,5 +1,7 @@
 # AnimationBlueprint Graph-Family Adapter Boundary
 
+> 完整 graph 语义已在 `docs/superpowers/specs/2026-07-02-animationblueprint-complete-graph-semantics-design.md` 中升级为 recursive subgraph model。本文保留 root-only / empty-only adapter boundary 的历史实现依据，但不再代表下一阶段完整 ABP graph target。
+
 ## 1. Goal
 
 `Body.AnimGraph` must be owned by a public graph-family region adapter, not by `FAnimBlueprintAssetDocumentCapability` private parsing code.

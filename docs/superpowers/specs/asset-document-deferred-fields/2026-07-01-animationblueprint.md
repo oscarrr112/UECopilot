@@ -2,6 +2,8 @@
 
 本文档记录 `UAnimBlueprint` AssetDocument 第一阶段允许的保守范围，以及后续解除 deferred gate 时必须满足的架构和验证条件。
 
+后续完整 graph 语义入口：`docs/superpowers/specs/2026-07-02-animationblueprint-complete-graph-semantics-design.md`。该文档要求 recursive subgraph model、NodeSpawner + reflection materialization、semantic field traits 和 structural hooks；本文保留当前 deferred 状态记录，不代表下一阶段目标可以继续 root-only / empty-only。
+
 ## 当前允许的保守范围
 
 第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines` 和 `Body.TransitionGraphs` 已注册到 state-machine public adapter，但在没有真实 UE graph materialization / extract roundtrip 前仍只允许空值占位；任何 non-empty authored value 都必须拒绝，避免 apply 成功后静默丢失。`Body.ParentAssetOverrides` 已解除 full-region deferred gate，改由 parent-node GUID identity adapter 管理。`Body.AnimLayers` 仍只允许使用空值占位：

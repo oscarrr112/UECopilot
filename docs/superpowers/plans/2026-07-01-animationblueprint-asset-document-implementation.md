@@ -4,7 +4,7 @@
 
 **Goal:** Implement a complete `UAnimBlueprint` AssetDocument chain under one master plan, starting with a core profile/lifecycle milestone and continuing through graph-family milestones without reopening the asset surface inventory.
 
-**Architecture:** Add an exact-class `UAnimBlueprint` profile that uses `FAssetDocumentBodyRegionDispatcher`, public region adapters, and thin ABP-specific hooks. Stage-gated graph-family regions are declared in the same master plan and remain deferred until their adapter gates land.
+**Architecture:** Add an exact-class `UAnimBlueprint` profile that uses `FAssetDocumentBodyRegionDispatcher`, public region adapters, and thin ABP-specific hooks. Graph-family regions must now converge on the complete recursive subgraph semantics spec; root-only / empty-only gates are current implementation evidence, not the next target capability.
 
 **Tech Stack:** Unreal Engine 5.7 C++, AssetDocument public region runtime, `UAnimBlueprintFactory`, `UAnimBlueprint`, `UAnimInstance`, automation tests, PowerShell UBT/Editor-Cmd verification, MCP npm tests.
 
@@ -16,6 +16,7 @@ This plan implements:
 
 ```text
 docs/superpowers/specs/2026-07-01-animationblueprint-asset-document-design.md
+docs/superpowers/specs/2026-07-02-animationblueprint-complete-graph-semantics-design.md
 ```
 
 `SPEC_BASE` for this plan is:
@@ -58,12 +59,12 @@ This is one master plan. The full ABP target stays in this file.
 1. **Core profile and lifecycle**: exact profile, template, policy surface, deferred graph gates, focused tests.
 2. **Core object regions**: `ParentClass`, `TargetSkeleton`, `Template`, `Preview`, `Optimization`, `SyncGroups`.
 3. **Blueprint-common region reuse**: interfaces, variables, class defaults, K2 `UbergraphPages`.
-4. **Animation graph adapter gate and pilot**: define public graph-family boundary before accepting non-empty `Body.AnimGraph`.
-5. **State machine and transition graph milestone**: nested graph/tree adapter work.
-6. **Anim layer and parent override milestone**: layer/interface boundary and `ParentAssetOverrides`.
+4. **Complete recursive graph runtime**: recursive `Graphs/Subgraphs` model, semantic graph/node/pin identity, links, position, canonical diff, and unsupported evidence.
+5. **NodeSpawner + reflection materialization**: dynamically spawn discoverable `UAnimGraphNode_*`, reflect node and internal `FAnimNode_*` fields, and apply shared field traits instead of per-class hard-coded adapters.
+6. **State machine, transition, layer, cached pose, and parent override semantics**: structural hooks only for UE graph ownership/lifecycle; graph content still uses the recursive runtime.
 7. **Final smoke and cleanup**: deferred entries closed or explicitly retained, full validation.
 
-The first implementation batch executes Milestone 1 tasks only. Later milestones remain in this same plan and must not reopen the ABP surface inventory unless a review gate explicitly changes the spec.
+The earlier root-only / empty-only graph gates remain useful current-state tests, but they must not be treated as the next capability target. The complete graph semantics spec is the target for the graph-family implementation phase.
 
 ## File Structure
 
