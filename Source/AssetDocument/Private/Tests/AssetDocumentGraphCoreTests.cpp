@@ -61,12 +61,30 @@ bool HasDiagnosticCode(const FAssetDocumentGraphParseResult& Result, const FStri
 		});
 }
 
+bool HasDiagnosticCodeAtPath(const FAssetDocumentGraphParseResult& Result, const FString& Code, const FString& Path)
+{
+	return Result.Diagnostics.ContainsByPredicate(
+		[&Code, &Path](const FAssetDocumentGraphDiagnostic& Diagnostic)
+		{
+			return Diagnostic.Code == Code && Diagnostic.Path == Path;
+		});
+}
+
 bool HasDiagnosticCode(const FAssetDocumentGraphDefinitionResolveResult& Result, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate(
 		[&Code](const FAssetDocumentGraphDiagnostic& Diagnostic)
 		{
 			return Diagnostic.Code == Code;
+		});
+}
+
+bool HasDiagnosticCodeAtPath(const FAssetDocumentGraphDefinitionResolveResult& Result, const FString& Code, const FString& Path)
+{
+	return Result.Diagnostics.ContainsByPredicate(
+		[&Code, &Path](const FAssetDocumentGraphDiagnostic& Diagnostic)
+		{
+			return Diagnostic.Code == Code && Diagnostic.Path == Path;
 		});
 }
 
@@ -114,7 +132,14 @@ TSharedPtr<FJsonObject> MakeRecursiveGraphRegion()
       "Id": "Locomotion",
       "Kind": "StateMachine",
       "Owner": { "StateMachine": "Locomotion" },
+      "OwnerNodeId": "StateMachineNode",
+      "OwnerPin": "OutputPose",
+      "EntryPins": ["Entry"],
+      "ResultPins": ["Result"],
       "Position": { "X": 10, "Y": 20 },
+      "Metadata": { "EditorCategory": "Movement" },
+      "Diagnostics": [],
+      "_Skipped": { "Unsupported": [] },
       "Evidence": { "GraphGuid": "root-guid" },
       "Nodes": [
         {
@@ -802,6 +827,21 @@ bool FAssetDocumentGraphCoreRejectUnresolvedDefinitionRefTest::RunTest(const FSt
 		TEXT("UnknownDefinitionKind diagnostic is emitted"),
 		HasDiagnosticCode(UnknownKindResult, TEXT("UnknownDefinitionKind")));
 
+	const TSharedPtr<FJsonObject> EscapedPathDefinitions = ParseJsonObject(TEXT(R"JSON(
+{
+  "Bad/Definition~Name": { "Kind": "MysteryRef", "Value": "nope" }
+}
+)JSON"));
+	const FAssetDocumentGraphDefinitionResolveResult EscapedPathResult =
+		ResolveGraphs(ParseResult.Graphs, EscapedPathDefinitions);
+	TestFalse(TEXT("Definition path escaping case fails"), EscapedPathResult.IsValid());
+	TestTrue(
+		TEXT("Definition diagnostic path uses JSON Pointer escaping"),
+		HasDiagnosticCodeAtPath(
+			EscapedPathResult,
+			TEXT("InvalidDefinitionId"),
+			TEXT("/Definitions/Bad~1Definition~0Name")));
+
 	return true;
 }
 
@@ -965,7 +1005,14 @@ bool FAssetDocumentGraphCoreRecursiveGraphParserTest::RunTest(const FString& Par
 		TestEqual(TEXT("Root graph id"), RootGraph.Id, FString(TEXT("Locomotion")));
 		TestEqual(TEXT("Root graph kind"), RootGraph.Kind, FString(TEXT("StateMachine")));
 		TestTrue(TEXT("Root owner is preserved"), RootGraph.Owner.IsValid());
+		TestEqual(TEXT("Owner node id is preserved"), RootGraph.OwnerNodeId, FString(TEXT("StateMachineNode")));
+		TestEqual(TEXT("Owner pin is preserved"), RootGraph.OwnerPin, FString(TEXT("OutputPose")));
+		TestTrue(TEXT("Entry pins are preserved"), RootGraph.EntryPins.IsValid());
+		TestTrue(TEXT("Result pins are preserved"), RootGraph.ResultPins.IsValid());
 		TestTrue(TEXT("Root position is preserved"), RootGraph.Position.IsValid());
+		TestTrue(TEXT("Metadata is preserved"), RootGraph.Metadata.IsValid());
+		TestTrue(TEXT("Diagnostics is preserved"), RootGraph.Diagnostics.IsValid());
+		TestTrue(TEXT("_Skipped is preserved"), RootGraph.UnderscoreSkipped.IsValid());
 		TestTrue(TEXT("Root evidence is preserved"), RootGraph.Evidence.IsValid());
 		TestEqual(TEXT("Root node count"), RootGraph.Nodes.Num(), 1);
 		TestEqual(TEXT("Nested graph count"), RootGraph.Subgraphs.Num(), 1);
@@ -1012,7 +1059,14 @@ bool FAssetDocumentGraphCoreWriteCanonicalRecursiveGraphRegionTest::RunTest(cons
 
 	const TSharedPtr<FJsonObject> RootGraph = Graphs[0]->AsObject();
 	TestEqual(TEXT("Canonical root graph id"), RootGraph->GetStringField(TEXT("Id")), FString(TEXT("Locomotion")));
+	TestEqual(TEXT("Canonical owner node id is written"), RootGraph->GetStringField(TEXT("OwnerNodeId")), FString(TEXT("StateMachineNode")));
+	TestEqual(TEXT("Canonical owner pin is written"), RootGraph->GetStringField(TEXT("OwnerPin")), FString(TEXT("OutputPose")));
+	TestTrue(TEXT("Canonical entry pins are written"), RootGraph->HasTypedField<EJson::Array>(TEXT("EntryPins")));
+	TestTrue(TEXT("Canonical result pins are written"), RootGraph->HasTypedField<EJson::Array>(TEXT("ResultPins")));
 	TestTrue(TEXT("Canonical root position is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("Position")));
+	TestTrue(TEXT("Canonical metadata is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("Metadata")));
+	TestTrue(TEXT("Canonical diagnostics is written"), RootGraph->HasTypedField<EJson::Array>(TEXT("Diagnostics")));
+	TestTrue(TEXT("Canonical _Skipped is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("_Skipped")));
 	TestTrue(TEXT("Canonical root evidence is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("Evidence")));
 	TestTrue(TEXT("Canonical subgraphs are written"), RootGraph->HasTypedField<EJson::Array>(TEXT("Subgraphs")));
 
@@ -1100,6 +1154,108 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestTrue(
 		TEXT("InvalidGraphOwner diagnostic is emitted"),
 		HasDiagnosticCode(InvalidOwnerResult, TEXT("InvalidGraphOwner")));
+
+	const TSharedPtr<FJsonObject> InvalidGraphId = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    { "Id": "1 Locomotion", "Kind": "StateMachine", "Nodes": [], "Links": [], "Subgraphs": [] }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidGraphIdResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(InvalidGraphId.ToSharedRef(), Options);
+	TestFalse(TEXT("Invalid graph ids fail"), InvalidGraphIdResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphId diagnostic is emitted"),
+		HasDiagnosticCode(InvalidGraphIdResult, TEXT("InvalidGraphId")));
+
+	const TSharedPtr<FJsonObject> UnknownGraphKind = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    { "Id": "Locomotion", "Kind": "FutureGraph", "Nodes": [], "Links": [], "Subgraphs": [] }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult UnknownGraphKindResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(UnknownGraphKind.ToSharedRef(), Options);
+	TestFalse(TEXT("Unknown graph kind fails"), UnknownGraphKindResult.IsValid());
+	TestTrue(
+		TEXT("UnknownGraphKind diagnostic is emitted"),
+		HasDiagnosticCode(UnknownGraphKindResult, TEXT("UnknownGraphKind")));
+
+	const TSharedPtr<FJsonObject> UnknownOwnerReference = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    {
+      "Id": "Locomotion",
+      "Kind": "StateMachine",
+      "Owner": { "StateMachine": "Missing" },
+      "Nodes": [],
+      "Links": [],
+      "Subgraphs": []
+    }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult UnknownOwnerReferenceResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(UnknownOwnerReference.ToSharedRef(), Options);
+	TestFalse(TEXT("Unknown owner reference fails"), UnknownOwnerReferenceResult.IsValid());
+	TestTrue(
+		TEXT("UnknownGraphOwnerReference diagnostic is emitted"),
+		HasDiagnosticCode(UnknownOwnerReferenceResult, TEXT("UnknownGraphOwnerReference")));
+
+	const TSharedPtr<FJsonObject> DuplicatePinOverrides = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    {
+      "Id": "Locomotion",
+      "Kind": "StateMachine",
+      "Nodes": [
+        {
+          "Id": "Blend",
+          "Class": "/Script/AnimGraph.AnimGraphNode_BlendListByBool",
+          "PinOverrides": [
+            { "Pin": "Pose" },
+            { "Pin": "Pose" }
+          ]
+        }
+      ],
+      "Links": [],
+      "Subgraphs": []
+    }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult DuplicatePinOverridesResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(DuplicatePinOverrides.ToSharedRef(), Options);
+	TestFalse(TEXT("Duplicate pin override ids fail"), DuplicatePinOverridesResult.IsValid());
+	TestTrue(
+		TEXT("DuplicateGraphPinId diagnostic is emitted"),
+		HasDiagnosticCode(DuplicatePinOverridesResult, TEXT("DuplicateGraphPinId")));
+
+	const TSharedPtr<FJsonObject> UnknownEscapedField = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    {
+      "Id": "Locomotion",
+      "Kind": "StateMachine",
+      "Nodes": [],
+      "Links": [],
+      "Subgraphs": [],
+      "Bad/Field~Name": true
+    }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult UnknownEscapedFieldResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(UnknownEscapedField.ToSharedRef(), Options);
+	TestFalse(TEXT("Unknown escaped field fails"), UnknownEscapedFieldResult.IsValid());
+	TestTrue(
+		TEXT("Unknown field diagnostic path uses JSON Pointer escaping"),
+		HasDiagnosticCodeAtPath(
+			UnknownEscapedFieldResult,
+			TEXT("UnknownGraphField"),
+			TEXT("/Body/StateMachines/Graphs/0/Bad~1Field~0Name")));
 
 	return true;
 }

@@ -156,6 +156,8 @@ TSharedRef<FJsonObject> FAssetDocumentGraphSpec::ToJsonObject() const
 	{
 		Object->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
 	}
+	SetOptionalString(Object, TEXT("OwnerNodeId"), OwnerNodeId);
+	SetOptionalString(Object, TEXT("OwnerPin"), OwnerPin);
 	SetOptionalString(Object, TEXT("Name"), Name);
 	SetOptionalString(Object, TEXT("Schema"), Schema);
 	SetOptionalString(Object, TEXT("GraphGuid"), GraphGuid);
@@ -165,9 +167,33 @@ TSharedRef<FJsonObject> FAssetDocumentGraphSpec::ToJsonObject() const
 	{
 		Object->SetObjectField(TEXT("Signature"), AssetDocumentGraphJson::CloneJsonObject(Signature));
 	}
+	if (EntryPins.IsValid())
+	{
+		Object->SetField(TEXT("EntryPins"), AssetDocumentGraphJson::CloneJsonValue(EntryPins));
+	}
+	if (ResultPins.IsValid())
+	{
+		Object->SetField(TEXT("ResultPins"), AssetDocumentGraphJson::CloneJsonValue(ResultPins));
+	}
 	if (Position.IsValid())
 	{
 		Object->SetObjectField(TEXT("Position"), AssetDocumentGraphJson::CloneJsonObject(Position));
+	}
+	if (Metadata.IsValid())
+	{
+		Object->SetField(TEXT("Metadata"), AssetDocumentGraphJson::CloneJsonValue(Metadata));
+	}
+	if (Diagnostics.IsValid())
+	{
+		Object->SetField(TEXT("Diagnostics"), AssetDocumentGraphJson::CloneJsonValue(Diagnostics));
+	}
+	if (Skipped.IsValid())
+	{
+		Object->SetField(TEXT("Skipped"), AssetDocumentGraphJson::CloneJsonValue(Skipped));
+	}
+	if (UnderscoreSkipped.IsValid())
+	{
+		Object->SetField(TEXT("_Skipped"), AssetDocumentGraphJson::CloneJsonValue(UnderscoreSkipped));
 	}
 	if (Evidence.IsValid())
 	{

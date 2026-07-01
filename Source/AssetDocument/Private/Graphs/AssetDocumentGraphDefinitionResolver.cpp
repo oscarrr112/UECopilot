@@ -2,6 +2,8 @@
 
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
 
+#include "AssetDocumentJsonRegionUtils.h"
+
 namespace
 {
 bool IsDefinitionId(const FString& Value)
@@ -44,11 +46,12 @@ bool IsKnownDefinitionKind(const FString& Kind)
 
 FString JoinPath(const FString& BasePath, const FString& Segment)
 {
+	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
 	{
-		return FString::Printf(TEXT("/%s"), *Segment);
+		return FString::Printf(TEXT("/%s"), *EscapedSegment);
 	}
-	return FString::Printf(TEXT("%s/%s"), *BasePath, *Segment);
+	return FString::Printf(TEXT("%s/%s"), *BasePath, *EscapedSegment);
 }
 
 FString IndexPath(const FString& BasePath, int32 Index)
@@ -258,6 +261,19 @@ FAssetDocumentGraphSpec ResolveGraph(
 	}
 
 	Resolved.Position = AssetDocumentGraphJson::CloneJsonObject(Graph.Position);
+	TArray<FString> GraphValueStack;
+	Resolved.EntryPins = Context.ResolveValue(Graph.EntryPins, JoinPath(GraphPath, TEXT("EntryPins")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.ResultPins = Context.ResolveValue(Graph.ResultPins, JoinPath(GraphPath, TEXT("ResultPins")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Metadata = Context.ResolveValue(Graph.Metadata, JoinPath(GraphPath, TEXT("Metadata")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Diagnostics = Context.ResolveValue(Graph.Diagnostics, JoinPath(GraphPath, TEXT("Diagnostics")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Skipped = Context.ResolveValue(Graph.Skipped, JoinPath(GraphPath, TEXT("Skipped")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.UnderscoreSkipped = Context.ResolveValue(Graph.UnderscoreSkipped, JoinPath(GraphPath, TEXT("_Skipped")), GraphValueStack);
+	GraphValueStack.Reset();
 	Resolved.Evidence = AssetDocumentGraphJson::CloneJsonObject(Graph.Evidence);
 
 	Resolved.Nodes.Reset();

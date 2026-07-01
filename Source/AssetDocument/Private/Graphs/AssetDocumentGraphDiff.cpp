@@ -2,20 +2,14 @@
 
 #include "Graphs/AssetDocumentGraphDiff.h"
 
+#include "AssetDocumentJsonRegionUtils.h"
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
 
 namespace
 {
-FString EscapeJsonPointerToken(FString Token)
-{
-	Token.ReplaceInline(TEXT("~"), TEXT("~0"));
-	Token.ReplaceInline(TEXT("/"), TEXT("~1"));
-	return Token;
-}
-
 FString JoinPath(const FString& BasePath, const FString& Segment)
 {
-	const FString EscapedSegment = EscapeJsonPointerToken(Segment);
+	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
 	{
 		return FString::Printf(TEXT("/%s"), *EscapedSegment);
@@ -216,6 +210,19 @@ void CompareObjectFields(
 	}
 }
 
+void CompareOptionalValue(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& Path,
+	const TSharedPtr<FJsonValue>& Desired,
+	const TSharedPtr<FJsonValue>& Current)
+{
+	if (!Desired.IsValid() && !Current.IsValid())
+	{
+		return;
+	}
+	AddComparisonEntry(Entries, Path, Desired, Current);
+}
+
 void ComparePins(
 	TArray<FAssetDocumentGraphDiffEntry>& Entries,
 	const FString& NodePath,
@@ -387,12 +394,34 @@ void CompareGraphDetails(
 		MakeShared<FJsonValueObject>(DesiredGraph.ToJsonObject()),
 		MakeShared<FJsonValueObject>(CurrentGraph.ToJsonObject()));
 	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Owner")), DesiredGraph.Owner, CurrentGraph.Owner);
+	if (DesiredGraph.OwnerNodeId != CurrentGraph.OwnerNodeId)
+	{
+		AddComparisonEntry(
+			Entries,
+			JoinPath(GraphPath, TEXT("OwnerNodeId")),
+			MakeShared<FJsonValueString>(DesiredGraph.OwnerNodeId),
+			MakeShared<FJsonValueString>(CurrentGraph.OwnerNodeId));
+	}
+	if (DesiredGraph.OwnerPin != CurrentGraph.OwnerPin)
+	{
+		AddComparisonEntry(
+			Entries,
+			JoinPath(GraphPath, TEXT("OwnerPin")),
+			MakeShared<FJsonValueString>(DesiredGraph.OwnerPin),
+			MakeShared<FJsonValueString>(CurrentGraph.OwnerPin));
+	}
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("EntryPins")), DesiredGraph.EntryPins, CurrentGraph.EntryPins);
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("ResultPins")), DesiredGraph.ResultPins, CurrentGraph.ResultPins);
 	CompareObjectAsWhole(
 		Entries,
 		JoinPath(GraphPath, TEXT("Position")),
 		DesiredGraph.Position,
 		CurrentGraph.Position,
 		TEXT("layout"));
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Metadata")), DesiredGraph.Metadata, CurrentGraph.Metadata);
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Diagnostics")), DesiredGraph.Diagnostics, CurrentGraph.Diagnostics);
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Skipped")), DesiredGraph.Skipped, CurrentGraph.Skipped);
+	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("_Skipped")), DesiredGraph.UnderscoreSkipped, CurrentGraph.UnderscoreSkipped);
 	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Evidence")), DesiredGraph.Evidence, CurrentGraph.Evidence);
 	CompareNodes(Entries, GraphPath, DesiredGraph, CurrentGraph);
 	CompareLinks(Entries, GraphPath, DesiredGraph, CurrentGraph);
