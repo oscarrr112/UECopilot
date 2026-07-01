@@ -17,6 +17,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentAnimGraphRegionAdapter.h"
+#include "Regions/AssetDocumentAnimParentAssetOverrideRegionAdapter.h"
 #include "Regions/AssetDocumentAnimStateMachineRegionAdapter.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
@@ -1061,6 +1062,8 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName());
 	FAssetDocumentAnimStateMachineRegionAdapter StateMachineAdapter(
 		FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName());
+	FAssetDocumentAnimParentAssetOverrideRegionAdapter ParentAssetOverrideAdapter(
+		FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName());
 	FAssetDocumentDeferredRegionAdapter DeferredAdapter(
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 		TEXT("UnsupportedAnimBlueprintRegion"),
@@ -1073,6 +1076,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	Adapters.Add(BlueprintCommonAdapter.GetName(), &BlueprintCommonAdapter);
 	Adapters.Add(AnimGraphAdapter.GetName(), &AnimGraphAdapter);
 	Adapters.Add(StateMachineAdapter.GetName(), &StateMachineAdapter);
+	Adapters.Add(ParentAssetOverrideAdapter.GetName(), &ParentAssetOverrideAdapter);
 	Adapters.Add(DeferredAdapter.GetName(), &DeferredAdapter);
 
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
@@ -1169,6 +1173,7 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName(),
+		FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 	};
 }
@@ -1205,7 +1210,7 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentCapability::GetSchemaHint() c
 	Schema->SetStringField(TEXT("StateMachines"), TEXT("state-machine identity adapter: array<{Name, EntryState, States, Transitions}>"));
 	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("transition graph identity adapter: array<{StateMachine, Transition, Nodes:[], Result}>"));
 	Schema->SetStringField(TEXT("AnimLayers"), TEXT("deferred empty graph/array region until anim layer adapter lands"));
-	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("deferred empty identity-array region until AnimGraph identity lands"));
+	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("identity array: array<{ParentNodeGuid, NewAsset}>"));
 	return Schema;
 }
 

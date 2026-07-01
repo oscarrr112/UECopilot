@@ -80,7 +80,7 @@ Still deferred after this pilot:
 - SequencePlayer, BlendSpacePlayer, cached poses, slot nodes.
 - StateMachine references.
 - AnimLayers.
-- ParentAssetOverrides.
+- ParentAssetOverrides authored AnimGraph node alias resolver.
 
 Adding any of those requires extending this public adapter or writing a sibling public adapter spec first.
 
@@ -141,3 +141,30 @@ Diff paths must be semantic:
 - transition graph: `/Body/TransitionGraphs/<StateMachine>/<Transition>`
 
 Adding bool literal, time remaining, sync marker, or custom blend graph nodes requires extending this public adapter or adding a sibling public graph adapter spec. The ABP capability may register and compose that adapter, but must not grow a transition graph parser.
+
+## 11. Parent Asset Override Boundary
+
+`Body.ParentAssetOverrides` is owned by `FAssetDocumentAnimParentAssetOverrideRegionAdapter`.
+
+The first milestone supports UE's stable parent node GUID identity directly:
+
+```json
+[
+  {
+    "ParentNodeGuid": "01234567-89ab-cdef-0123-456789abcdef",
+    "NewAsset": {"Kind": "AssetRef", "Path": "/Game/Animations/Idle.Idle"}
+  }
+]
+```
+
+The adapter must validate:
+
+- `ParentNodeGuid` parses as `FGuid`.
+- duplicate GUIDs are rejected case-insensitively by parsed GUID value.
+- `NewAsset` resolves to `UAnimationAsset`.
+
+Diff paths must be semantic:
+
+- override: `/Body/ParentAssetOverrides/<ParentNodeGuid>`
+
+This milestone intentionally does not invent a user-facing AnimGraph node alias. If a later spec wants `ParentNodeId` or graph-authored aliases, it must extend the AnimGraph node identity contract first and keep the mapping inside a public identity resolver, not inside the ABP capability.

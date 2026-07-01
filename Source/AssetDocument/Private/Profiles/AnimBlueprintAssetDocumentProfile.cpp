@@ -89,6 +89,11 @@ FName FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName()
 	return TEXT("AnimBlueprintStateMachineRegionAdapter");
 }
 
+FName FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName()
+{
+	return TEXT("AnimBlueprintParentAssetOverrideRegionAdapter");
+}
+
 FName FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName()
 {
 	return TEXT("AnimBlueprintDeferredRegionAdapter");
@@ -111,7 +116,7 @@ TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegi
 		{TEXT("StateMachines"), TEXT("Body.StateMachines"), StateMachineRegionAdapterName(), 210, false},
 		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), StateMachineRegionAdapterName(), 220, false},
 		{TEXT("AnimLayers"), TEXT("Body.AnimLayers"), DeferredRegionAdapterName(), 230, false},
-		{TEXT("ParentAssetOverrides"), TEXT("Body.ParentAssetOverrides"), DeferredRegionAdapterName(), 240, false},
+		{TEXT("ParentAssetOverrides"), TEXT("Body.ParentAssetOverrides"), ParentAssetOverrideRegionAdapterName(), 240, false},
 	};
 }
 
@@ -263,7 +268,6 @@ TArray<FAssetDocumentRegionPolicy> FAnimBlueprintAssetDocumentProfile::GetRegion
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ParentAssetOverrides"), EAssetDocumentRegionKind::Array, {TEXT("ParentAssetOverrides")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 

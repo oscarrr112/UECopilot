@@ -7,6 +7,7 @@
 
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/AnimationAsset.h"
 #include "Animation/Skeleton.h"
 #include "Dom/JsonObject.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -211,6 +212,34 @@ TSharedRef<FJsonValue> MakeBodyWithStateMachineAndTransitionGraph()
 	Body->SetArrayField(
 		TEXT("TransitionGraphs"),
 		MakeTransitionGraphArray({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedPtr<FJsonObject> MakeParentAssetOverride(const FString& ParentNodeGuid, const FString& AssetPath)
+{
+	TSharedPtr<FJsonObject> Override = MakeShared<FJsonObject>();
+	Override->SetStringField(TEXT("ParentNodeGuid"), ParentNodeGuid);
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), AssetPath);
+	Override->SetObjectField(TEXT("NewAsset"), AssetRef);
+	return Override;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeParentAssetOverrideArray(std::initializer_list<TSharedPtr<FJsonObject>> Overrides)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedPtr<FJsonObject>& Override : Overrides)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Override.ToSharedRef()));
+	}
+	return Values;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithParentAssetOverrides(std::initializer_list<TSharedPtr<FJsonObject>> Overrides)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("ParentAssetOverrides"), MakeParentAssetOverrideArray(Overrides));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -567,7 +596,7 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	}
 	if (ParentAssetOverridesPolicy)
 	{
-		TestTrue(TEXT("ParentAssetOverrides policy is deferred/null-gated"), ParentAssetOverridesPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("ParentAssetOverrides policy is no longer deferred/null-gated"), ParentAssetOverridesPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 
 	const IAssetDocumentCapability* BodyAdapter = Profile.ResolveBodyAdapter(TEXT("Body"));
@@ -580,7 +609,6 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 
 		for (const TCHAR* DeferredKey : {
 			TEXT("AnimLayers"),
-			TEXT("ParentAssetOverrides"),
 		})
 		{
 			const FAssetDocumentCapabilityResult Result = BodyAdapter->Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
@@ -616,7 +644,6 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 
 	for (const TCHAR* DeferredKey : {
 		TEXT("AnimLayers"),
-		TEXT("ParentAssetOverrides"),
 	})
 	{
 		TestTrue(
@@ -819,6 +846,117 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("TransitionGraphs diff uses machine/transition identity path"),
 		HasDiffPath(DiffEntries, TEXT("/Body/TransitionGraphs/Locomotion/IdleToRun")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.AnimLayersAndParentAssetOverrides",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(const FString&)
+{
+	const FString AnimationAssetPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
+	const FString ParentGuidA = TEXT("01234567-89ab-cdef-0123-456789abcdef");
+	const FString ParentGuidB = TEXT("11111111-2222-3333-4444-555555555555");
+
+	FAssetDocumentCapabilityContext ValidationContext;
+	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+
+	const FAssetDocumentCapabilityResult AnimLayersResult =
+		Capability.Validate(ValidationContext, MakeBodyWithNonEmptyDeferredRegion(TEXT("AnimLayers")));
+	TestFalse(TEXT("AnimLayers remains outside regular AnimBlueprint exact-profile authoring"), AnimLayersResult.bSuccess);
+	TestTrue(
+		TEXT("AnimLayers boundary reports deferred diagnostic"),
+		HasDiagnostic(AnimLayersResult, TEXT("/Body/AnimLayers"), TEXT("UnsupportedAnimBlueprintRegion")));
+
+	TestTrue(
+		TEXT("ParentAssetOverrides validates stable guid identity array"),
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverride(ParentGuidA, AnimationAssetPath)})).bSuccess);
+
+	const FAssetDocumentCapabilityResult DuplicateGuidResult =
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithParentAssetOverrides({
+				MakeParentAssetOverride(ParentGuidA, AnimationAssetPath),
+				MakeParentAssetOverride(ParentGuidA, AnimationAssetPath)}));
+	TestFalse(TEXT("ParentAssetOverrides rejects duplicate ParentNodeGuid"), DuplicateGuidResult.bSuccess);
+	TestTrue(
+		TEXT("Duplicate ParentNodeGuid diagnostic uses authored index"),
+		HasDiagnostic(DuplicateGuidResult, TEXT("/Body/ParentAssetOverrides/1/ParentNodeGuid"), TEXT("DuplicateParentAssetOverrideGuid")));
+
+	TSharedPtr<FJsonObject> MissingPathOverride = MakeParentAssetOverride(ParentGuidA, AnimationAssetPath);
+	const TSharedPtr<FJsonObject>* MissingPathAssetRef = nullptr;
+	if (MissingPathOverride->TryGetObjectField(TEXT("NewAsset"), MissingPathAssetRef) && MissingPathAssetRef && MissingPathAssetRef->IsValid())
+	{
+		(*MissingPathAssetRef)->RemoveField(TEXT("Path"));
+	}
+	const FAssetDocumentCapabilityResult MissingAssetPathResult =
+		Capability.Validate(ValidationContext, MakeBodyWithParentAssetOverrides({MissingPathOverride}));
+	TestFalse(TEXT("ParentAssetOverrides rejects missing animation asset path"), MissingAssetPathResult.bSuccess);
+	TestTrue(
+		TEXT("Missing asset path diagnostic uses guid identity path"),
+		HasDiagnostic(
+			MissingAssetPathResult,
+			TEXT("/Body/ParentAssetOverrides/01234567-89ab-cdef-0123-456789abcdef/NewAsset/Path"),
+			TEXT("MissingParentAssetOverrideAssetPath")));
+
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_Overrides_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	Document->GetObjectField(TEXT("Body"))->SetArrayField(
+		TEXT("ParentAssetOverrides"),
+		MakeParentAssetOverrideArray({MakeParentAssetOverride(ParentGuidA, AnimationAssetPath)}));
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ParentAssetOverrides apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("ParentAssetOverrides apply succeeds"), ApplyResult.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
+	UAnimationAsset* ExpectedAsset = LoadObject<UAnimationAsset>(nullptr, *AnimationAssetPath);
+	TestNotNull(TEXT("Expected animation asset loads"), ExpectedAsset);
+	if (AnimBlueprint && ExpectedAsset)
+	{
+		TestEqual(TEXT("One parent asset override applied"), AnimBlueprint->ParentAssetOverrides.Num(), 1);
+		if (AnimBlueprint->ParentAssetOverrides.Num() == 1)
+		{
+			TestEqual(TEXT("ParentNodeGuid is preserved"), AnimBlueprint->ParentAssetOverrides[0].ParentNodeGuid.ToString(EGuidFormats::DigitsWithHyphensLower), ParentGuidA);
+			TestEqual(TEXT("NewAsset is applied"), AnimBlueprint->ParentAssetOverrides[0].NewAsset.Get(), ExpectedAsset);
+		}
+	}
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+	TestTrue(TEXT("ParentAssetOverrides extract succeeds"), ExtractResult.bSuccess);
+	TestTrue(TEXT("Extract includes one parent asset override"), HasArrayFieldCount(ExtractedBody, TEXT("ParentAssetOverrides"), 1));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Capability.Diff(
+			Context,
+			MakeBodyWithParentAssetOverrides({
+				MakeParentAssetOverride(ParentGuidA, AnimationAssetPath),
+				MakeParentAssetOverride(ParentGuidB, AnimationAssetPath)}),
+			DiffEntries);
+	TestTrue(TEXT("ParentAssetOverrides diff succeeds"), DiffResult.bSuccess);
+	TestTrue(
+		TEXT("ParentAssetOverrides diff uses guid identity path"),
+		HasDiffPath(DiffEntries, TEXT("/Body/ParentAssetOverrides/11111111-2222-3333-4444-555555555555")));
 
 	return true;
 }

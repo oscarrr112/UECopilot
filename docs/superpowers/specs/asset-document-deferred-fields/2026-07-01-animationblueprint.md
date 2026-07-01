@@ -4,7 +4,7 @@
 
 ## 当前允许的保守范围
 
-第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines` 和 `Body.TransitionGraphs` 已解除 full-region deferred gate，改由 state-machine public adapter 管理稳定 identity/schema/diff path；真实 UE nested graph materialization 和 authored rule nodes 仍作为 adapter 子能力 deferred。`Body.AnimLayers` 和 `Body.ParentAssetOverrides` 仍只允许使用空值占位：
+第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines` 和 `Body.TransitionGraphs` 已解除 full-region deferred gate，改由 state-machine public adapter 管理稳定 identity/schema/diff path；真实 UE nested graph materialization 和 authored rule nodes 仍作为 adapter 子能力 deferred。`Body.ParentAssetOverrides` 已解除 full-region deferred gate，改由 parent-node GUID identity adapter 管理。`Body.AnimLayers` 仍只允许使用空值占位：
 
 - `null`
 - empty array
@@ -63,6 +63,19 @@
 
 `Body.SyncGroups` 已解除 region 级 deferred gate，但第一版只管理稳定 identity 字段 `Name`。`FAnimGroupInfo.Color` 暂不接受 authored value；如果作者提供 `Color`，必须在 `/Body/SyncGroups/<Index>/Color` 返回 `UnsupportedSyncGroupColor`。后续只有在颜色序列化格式和 diff canonicalization 稳定后，才能把 `Color` 加回同一个 named-array adapter。
 
+`Body.ParentAssetOverrides` 当前支持稳定 identity-array：
+
+```json
+[
+  {
+    "ParentNodeGuid": "01234567-89ab-cdef-0123-456789abcdef",
+    "NewAsset": {"Kind": "AssetRef", "Path": "/Game/Animations/Idle.Idle"}
+  }
+]
+```
+
+当前 adapter 会校验 duplicate `ParentNodeGuid`、`NewAsset` 是否解析为 `UAnimationAsset`，apply/extract `UAnimBlueprint::ParentAssetOverrides`，并在 diff 中使用 `/Body/ParentAssetOverrides/<ParentNodeGuid>` 语义 path。后续若需要把 GUID 自动绑定到 `Body.AnimGraph` authored node identity，必须在 AnimGraph node identity 稳定后扩展同一 adapter 或提供 identity resolver。
+
 ## 后续升级触发条件
 
 只有满足对应条件后，才允许解除某个 region 的 deferred gate：
@@ -71,7 +84,7 @@
 - state machine 支持已定义稳定 state identity、transition identity 和 nested graph ownership。
 - transition graph 支持已能绑定到稳定 transition identity。
 - anim layer 支持已明确 `UAnimBlueprint` exact-class profile 与 Anim Layer Interface profile 的边界。
-- `ParentAssetOverrides` 已能通过稳定 parent node GUID identity 匹配目标节点。
+- `ParentAssetOverrides` 若要从 GUID identity 升级为 authored AnimGraph node identity，必须先证明 parent node GUID resolver 与 `Body.AnimGraph` identity 稳定。
 - 后续实现可以复用 public adapter/runtime；不需要把具体 `UAnimGraphNode_*` 语义写进 ABP 私有巨型类。
 
 ## 升级入口
@@ -121,7 +134,7 @@
 | `Body.StateMachines` nested UE graph materialization | full-region gate 已解除；adapter 接受稳定 machine/state/transition identity schema，校验 duplicate 和 endpoint，diff 使用 `/Body/StateMachines/<Name>`。 | 真实 `UAnimationStateMachineGraph` / `UAnimStateNode` / `UAnimStateTransitionNode` materialization 需要更完整的 nested graph ownership、layout 和 compile repair contract。 | adapter 能创建/更新/extract 真实 state machine graph，且 extract/diff 不依赖 transient UE node index。 | `FAssetDocumentAnimStateMachineRegionAdapter`。 | `AssetFactory.AssetDocument.AnimBlueprint.StateMachines` 增加 real graph apply/extract roundtrip、GraphCore regression、UBT。 |
 | `Body.TransitionGraphs` authored rule nodes | full-region gate 已解除；adapter 接受 root-only transition graph identity shape，`Nodes` 必须为空，`Result.Node` 必须为 `null`。 | transition rule graph node materialization 必须绑定到 stable `(StateMachine, Transition)` identity，并复用 graph-family node/pin adapter。 | 至少一个 rule node subset 能 validate/apply/extract/diff，unsupported node 仍有 exact diagnostic。 | `FAssetDocumentAnimStateMachineRegionAdapter` 或 sibling transition graph adapter。 | transition graph focused automation、state-machine regression、UBT。 |
 | `Body.AnimLayers` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/AnimLayers` + `UnsupportedAnimBlueprintRegion`。 | Anim Layer Interface 与普通 `UAnimBlueprint` exact-class profile 边界尚未实现。 | 已决定 layer/interface profile 边界，并实现 layer graph validate/apply/extract/diff。 | anim layer adapter 或独立 exact-class profile。 | anim layer focused automation、profile boundary test、UBT。 |
-| `Body.ParentAssetOverrides` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/ParentAssetOverrides` + `UnsupportedAnimBlueprintRegion`。 | parent override identity 依赖 parent node GUID；在 `Body.AnimGraph` identity 稳定前不能可靠匹配。 | parent node GUID identity 已稳定，override region 使用 identity-array helper 或等价公共 adapter。 | `FAssetDocumentIdentityArrayDiffHelper` + AnimGraph identity resolver。 | parent override focused automation、AnimGraph identity regression、UBT。 |
+| `Body.ParentAssetOverrides` authored AnimGraph node alias identity | parent-node GUID identity-array 已支持；diff path 使用 `/Body/ParentAssetOverrides/<ParentNodeGuid>`。 | 更友好的 authored alias 依赖 parent AnimGraph node identity；当前只能稳定管理 UE 的 GUID identity。 | AnimGraph node identity resolver 能把 authored alias 映射到 stable parent node GUID。 | `FAssetDocumentAnimParentAssetOverrideRegionAdapter` + future AnimGraph identity resolver。 | parent override alias automation、AnimGraph identity regression、UBT。 |
 | `Body.SyncGroups[].Color` | `Body.SyncGroups` 当前通过 named-array adapter 管理 `Name`；如果 element 包含 `Color`，返回 `/Body/SyncGroups/<Index>/Color` + `UnsupportedSyncGroupColor`。 | `FLinearColor` 的 JSON 表达、默认值保留、canonical compare 和 diff 还没有跨 profile 稳定约定；先避免引入 ABP 私有颜色 parser。 | 公共 color/schema utility 或 property adapter convention 明确定义 linear color JSON canonical form，并能 roundtrip `FAnimGroupInfo.Color`。 | `FAssetDocumentNamedArrayRegionAdapter` hooks + shared color schema utility。 | `AssetFactory.AssetDocument.AnimBlueprint.SyncGroups` 增加 Color apply/extract/diff case、color schema regression、UBT。 |
 | `Body.FunctionGraphs` / `Body.MacroGraphs` | 当前 ABP profile 不声明这些 keys；如果作者提供为 `Body` key，按 unknown key 拒绝。 | 其语义应跟随 common Blueprint graph support，而不是 ABP 私有实现。 | common Blueprint graph plan 明确支持后，再决定 ABP 是否继承或声明对应 region。 | common Blueprint graph adapter/profile hook。 | UBlueprint graph regression、ABP unknown/deferred boundary test、UBT。 |
 | `UAnimBlueprintGeneratedClass` / debug / pose watch / property access cache | 不作为 `Body` authored state 暴露。 | 这些数据属于 derived compile output、runtime/debug evidence 或 editor transient/cache。 | 默认保持 excluded；只有新的 spec 明确证明其中某项是 authored semantic state 才能改变。 | ABP design spec + profile inspection/extract code。 | extract 不输出 derived/debug/cache 字段，diff 不报告这些字段，UBT。 |
