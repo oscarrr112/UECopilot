@@ -21,8 +21,10 @@ public class AssetDocument : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"UnrealEd",
+			"Kismet",
 			"AssetRegistry",
 			"AssetTools",
+			"AnimGraph",
 			"BlueprintGraph",
 			"DirectoryWatcher",
 			"Projects",
