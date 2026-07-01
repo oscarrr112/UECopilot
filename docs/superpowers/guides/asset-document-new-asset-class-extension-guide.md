@@ -158,6 +158,34 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 - 不新增 `FAssetDocumentBodyCapabilityBase` 继承链作为 profile 的默认扩展方式。当前 runtime 入口是 interface + dispatcher + adapter composition。
 - 不新增 `UniversalRegionAdapter`。如果一个 adapter 需要通过 asset class、region kind、body key 或 property name 做大 switch，它已经太宽，应拆成更窄的 public adapter 或 asset-specific hook。
 
+### Object region schema 检查门槛
+
+新增或扩展 object region 时，先判断该 region 是否能声明 `FAssetDocumentObjectFieldSchema`。默认结论应该是可以声明；profile hook 负责资产语义，字段白名单、required field、type validation 和 diagnostic path 由 `FAssetDocumentObjectFieldSchemaUtils` 统一处理。
+
+命中 object region 后，spec 或 implementation plan 必须选择一种路径：
+
+1. 声明 `FAssetDocumentObjectFieldSchema`，并在 `ValidateObject`、外部输入路径的 `ApplyObject`、需要比较 desired object 的 `DiffObject` 中调用 schema utility。
+2. 暂不 schema 化，但必须说明原因、当前允许范围、后续清理入口和测试要求。
+
+禁止事项：
+
+- 不得在 profile capability 内复制字段白名单或类型校验。
+- 不得把 UE 对象读写、`PropertySetterUtils`、`ClassFinderUtils`、profile-specific default 逻辑放进 schema utility。
+- 不得新增第二套 JSON Pointer escaping；field path 必须复用 `FAssetDocumentJsonRegionUtils`。
+- schema 自身配置错误必须在测试或 adapter construction 阶段暴露，不能在 profile 运行时静默吞掉。
+
+### Identity 与 diff path 检查门槛
+
+新增或扩展 named array、identity array、graph node、component、variable 等按身份管理的 region 时，必须先定义 stable identity。
+
+默认规则：
+
+- 禁止用 unstable array index 当 identity。
+- 只有证明该数组不会被用户排序、插入或删除时，才允许 index identity。
+- diff path 不得从 semantic path 退化成 array index path。
+- `PathToken` 必须经过 `FAssetDocumentJsonRegionUtils` 的 JSON Pointer escaping。
+- 如果使用 `FAssetDocumentIdentityArrayDiffHelper`，资产语义通过 hook/config 注入；不得让 named-array adapter 硬编码具体资产语义。
+
 常见形态示例：
 
 | 形态 | 适用场景 | 推荐入口 |
@@ -199,6 +227,22 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 
 - `CompositeSections`：第一版可只复用 timeline utility；section linking、section order、`NextSectionName` reference validation 保留在 AnimMontage profile。
 - `SlotAnimTracks` / `AnimSegments`：第一版不进入 timeline placement adapter；后续应单独评估 nested track/segment public adapter。
+
+### Canonicalizer 与 unsupported/deferred 暴露规则
+
+新增 sync/hash/canonicalization 行为时，必须先检查是否会引入 asset class / region specific divergence。
+
+禁止事项：
+
+- 不得在 `AssetDocumentService.cpp` 恢复可增长的 service-level asset class / region divergence if-list。
+- 不得把 graph-specific equivalence 写进通用 canonical JSON helper。
+- 不得静默吞掉 unsupported 或 deferred 的 graph/node/pin/function/region 内容。
+
+允许路径：
+
+- 新的等价归一进入 profile policy hook 或对应 canonicalizer strategy。
+- unsupported 内容通过 diagnostic、`_Skipped.*`、diff `skipped` entries 或 explicit deferred rejection 暴露。
+- deferred 或保守处理项同步写入 `docs/superpowers/specs/asset-document-deferred-fields/`，包含当前处理方式、deferred 原因、清理条件、升级入口和验证要求。
 
 Profile inspection surface 必须保持稳定：
 
