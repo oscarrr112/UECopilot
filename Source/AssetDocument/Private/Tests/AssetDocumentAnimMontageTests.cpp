@@ -3394,6 +3394,16 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
 	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify TrackIndex near-integer fractional keeps legacy diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetNumberField(TEXT("TrackIndex"), 1.000000001);
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/TrackIndex"), TEXT("InvalidTrackIndex"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Duplicate notify placement reports duplicate diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
 	{
 		TArray<TSharedPtr<FJsonValue>> Notifies;

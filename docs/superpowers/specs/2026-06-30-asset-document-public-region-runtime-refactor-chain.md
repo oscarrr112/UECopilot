@@ -332,7 +332,7 @@ flowchart TD
 
 实现状态（2026-07-01）：
 
-- 已新增 `FAssetDocumentTimelinePlacementRegionAdapter` / `FAssetDocumentTimelinePlacementHooks` / `FAssetDocumentTimelineTrackResolver` 和 `FAssetDocumentTimelinePlacementUtils`，公共实现位于 `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementRegionAdapter.*` 与 `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementUtils.*`。
+- 已新增 `FAssetDocumentTimelinePlacementRegionAdapter` / `FAssetDocumentTimelinePlacementHooks` / `FAssetDocumentTimelineTrackResolver` 和 `FAssetDocumentTimelinePlacementUtils`，公共实现位于 `Source/AssetDocument/Private/Regions/AssetDocumentTimelinePlacementRegionAdapter.*`；其中同一入口文件包含并封装 `FAssetDocumentTimelinePlacementUtils`，没有独立的 `AssetDocumentTimelinePlacementUtils.*` 文件。
 - AnimSequence `SyncMarkers`、`Notifies`、`NotifyStates` 已迁移到 timeline placement utility / adapter 管线；sync marker cache refresh、notify materialization、track resolver、unmanaged notify preservation 仍保留在 AnimSequence profile hook 中。
 - AnimMontage `Notifies`、`NotifyStates` 已通过 `FAnimMontageNotifyPlacementAdapter` bridge 接入公共 timeline placement utility；managed notify / notify-state materialization、unmanaged preservation、Montage writeback 仍保留在 Montage-specific bridge 中。
 - `CompositeSections` 保持 Montage profile 内的 section lifecycle，只允许复用 timeline placement utility 的 name/time/duplicate helper；`SlotAnimTracks` / nested `AnimSegments` 保持 deferred，未迁移到 full timeline placement adapter。

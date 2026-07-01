@@ -19,6 +19,8 @@
 #include "Misc/AutomationTest.h"
 #include "UObject/UObjectGlobals.h"
 
+#include <limits>
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace
@@ -3812,6 +3814,222 @@ bool FAssetDocumentTimelinePlacementRegionAdapterResolvesTracksTest::RunTest(con
 	TestFalse(TEXT("Track index above int32 range fails"), Result.bSuccess);
 	TestEqual(TEXT("Out-of-range track index diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTrackIndex")));
 	TestEqual(TEXT("Out-of-range track index does not call resolver"), ResolverCalls, ResolverCallsBeforeOutOfRangeIndex);
+
+	Entry->SetNumberField(TEXT("TrackIndex"), 1.000000001);
+	const int32 ResolverCallsBeforeNearIntegerIndex = ResolverCalls;
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		Desired,
+		Config,
+		TEXT("/Body/TestTimeline"),
+		nullptr,
+		Entries);
+
+	TestFalse(TEXT("Near-integer fractional track index fails"), Result.bSuccess);
+	TestEqual(TEXT("Near-integer track index diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTrackIndex")));
+	TestEqual(TEXT("Near-integer track index diagnostic path is field path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/TrackIndex")));
+	TestEqual(TEXT("Near-integer track index does not call resolver"), ResolverCalls, ResolverCallsBeforeNearIntegerIndex);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest,
+	"AssetFactory.AssetDocument.RegionRuntime.TimelinePlacement.ValidationCoverage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest(const FString&)
+{
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("TimelinePlacementTest");
+	Config.RegionId = TEXT("Body.TestTimeline");
+	Config.BodyPath = TEXT("Body.TestTimeline");
+	Config.JsonPointer = TEXT("/Body/TestTimeline");
+	Config.TimeFieldName = TEXT("Time");
+	Config.NameFieldName = TEXT("Name");
+	Config.bHasName = true;
+	Config.bRequireName = true;
+	Config.TrackNameFieldName = TEXT("TrackName");
+	Config.bHasTrackIdentity = true;
+
+	FAssetDocumentTimelineRange Range;
+	Range.MinTime = 0.0;
+	Range.MaxTime = 2.0;
+	Range.bHasMaxTime = true;
+
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	Hooks.GetTimelineRange = [Range](const FAssetDocumentRegionContext&)
+	{
+		return Range;
+	};
+	Hooks.Validate = [](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	{
+		for (const FAssetDocumentTimelinePlacementEntry& Entry : Entries)
+		{
+			if (!Entry.EntryObject.IsValid() || !Entry.EntryObject->HasField(TEXT("Semantic")))
+			{
+				return FAssetDocumentCapabilityResult::Failure(
+					TEXT("semantic hook failed"),
+					FAssetDocumentTimelinePlacementUtils::MakeFieldPath(Entry.JsonPointer, TEXT("Semantic")),
+					TEXT("SemanticHookFailed"));
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success(TEXT("validated semantic fields"));
+	};
+	Hooks.Apply = [](FAssetDocumentRegionContext&, const TArray<FAssetDocumentTimelinePlacementEntry>& Entries, bool& bOutChanged)
+	{
+		bOutChanged = Entries.IsEmpty();
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied timeline placement"));
+	};
+	Hooks.Extract = [](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutEntries)
+	{
+		TSharedRef<FJsonObject> Second = MakeShared<FJsonObject>();
+		Second->SetStringField(TEXT("Name"), TEXT("Second"));
+		Second->SetNumberField(TEXT("Time"), 1.0);
+		Second->SetStringField(TEXT("TrackName"), TEXT("Action"));
+		Second->SetStringField(TEXT("Semantic"), TEXT("valid"));
+		OutEntries.Add(Second);
+
+		TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+		First->SetStringField(TEXT("Name"), TEXT("First"));
+		First->SetNumberField(TEXT("Time"), 0.25);
+		First->SetStringField(TEXT("TrackName"), TEXT("Action"));
+		First->SetStringField(TEXT("Semantic"), TEXT("valid"));
+		OutEntries.Add(First);
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted timeline placement"));
+	};
+	Hooks.BuildDuplicateKey = [](const FAssetDocumentTimelinePlacementEntry& Entry)
+	{
+		return Entry.Name.IsSet() ? Entry.Name.GetValue() : FString(TEXT("<missing-name>"));
+	};
+
+	FAssetDocumentTimelineTrackResolver Resolver;
+	Resolver.Resolve = [](const FAssetDocumentTimelineTrackResolveRequest& Request)
+	{
+		FAssetDocumentTimelineTrackResolveResult Result;
+		if (Request.TrackName.IsSet() && Request.TrackName.GetValue() == TEXT("Action"))
+		{
+			Result.bResolved = true;
+			Result.TrackIndex = 0;
+			Result.CanonicalTrackName = TEXT("Action");
+			Result.Error = FAssetDocumentCapabilityResult::Success(TEXT("resolved track"));
+			return Result;
+		}
+		Result.Error = FAssetDocumentCapabilityResult::Failure(
+			TEXT("ambiguous track"),
+			FAssetDocumentTimelinePlacementUtils::MakeFieldPath(Request.JsonPointer, TEXT("TrackName")),
+			TEXT("AmbiguousTimelineTrack"));
+		return Result;
+	};
+	Config.TrackResolver = Resolver;
+
+	FAssetDocumentTimelinePlacementRegionAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.TestTimeline"), TEXT("Body.TestTimeline"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.TestTimeline"), TEXT("/Body/TestTimeline"), &Policy);
+
+	auto MakeValidEntry = []()
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("Name"), TEXT("Hit"));
+		Entry->SetNumberField(TEXT("Time"), 1.0);
+		Entry->SetStringField(TEXT("TrackName"), TEXT("Action"));
+		Entry->SetStringField(TEXT("Semantic"), TEXT("valid"));
+		return Entry;
+	};
+
+	auto ValidateSingle = [&Adapter, &Context](const TSharedRef<FJsonObject>& Entry)
+	{
+		return Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(Entry)}));
+	};
+
+	TSharedRef<FJsonObject> Entry = MakeValidEntry();
+	Entry->RemoveField(TEXT("Time"));
+	FAssetDocumentCapabilityResult Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Missing required Time fails"), Result.bSuccess);
+	TestEqual(TEXT("Missing Time diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingTimelinePlacementTime")));
+	TestEqual(TEXT("Missing Time diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Time")));
+
+	Entry = MakeValidEntry();
+	Entry->SetNumberField(TEXT("Time"), std::numeric_limits<double>::infinity());
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Non-finite Time fails"), Result.bSuccess);
+	TestEqual(TEXT("Non-finite Time diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementNumber")));
+	TestEqual(TEXT("Non-finite Time diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Time")));
+
+	Entry = MakeValidEntry();
+	Entry->SetNumberField(TEXT("Time"), -0.01);
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Negative Time fails"), Result.bSuccess);
+	TestEqual(TEXT("Negative Time diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTime")));
+	TestEqual(TEXT("Negative Time diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Time")));
+
+	Entry = MakeValidEntry();
+	Entry->SetNumberField(TEXT("Time"), 2.5);
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Out-of-range Time fails"), Result.bSuccess);
+	TestEqual(TEXT("Out-of-range Time diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTime")));
+	TestEqual(TEXT("Out-of-range Time diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Time")));
+
+	Entry = MakeValidEntry();
+	Entry->RemoveField(TEXT("Name"));
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Missing required Name fails"), Result.bSuccess);
+	TestEqual(TEXT("Missing Name diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingTimelinePlacementName")));
+	TestEqual(TEXT("Missing Name diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Name")));
+
+	Entry = MakeValidEntry();
+	Entry->SetStringField(TEXT("TrackName"), TEXT("Action?"));
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Ambiguous track resolver failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("Ambiguous track diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("AmbiguousTimelineTrack")));
+	TestEqual(TEXT("Ambiguous track diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/TrackName")));
+
+	Entry = MakeValidEntry();
+	Entry->RemoveField(TEXT("Semantic"));
+	Result = ValidateSingle(Entry);
+	TestFalse(TEXT("Semantic hook failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("Semantic hook diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("SemanticHookFailed")));
+	TestEqual(TEXT("Semantic hook diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Semantic")));
+
+	TSharedRef<FJsonObject> FirstBad = MakeValidEntry();
+	FirstBad->RemoveField(TEXT("Semantic"));
+	TSharedRef<FJsonObject> SecondBad = MakeValidEntry();
+	SecondBad->RemoveField(TEXT("Semantic"));
+	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstBad), MakeObjectValue(SecondBad)}));
+	TestFalse(TEXT("Semantic failure runs before duplicate key check"), Result.bSuccess);
+	TestEqual(TEXT("Semantic failure is not preempted by duplicate key"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("SemanticHookFailed")));
+	TestEqual(TEXT("Semantic failure path remains first bad entry"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Semantic")));
+
+	TSharedRef<FJsonObject> FirstDuplicate = MakeValidEntry();
+	TSharedRef<FJsonObject> SecondDuplicate = MakeValidEntry();
+	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstDuplicate), MakeObjectValue(SecondDuplicate)}));
+	TestFalse(TEXT("Duplicate key still fails after semantic validation"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate diagnostic code after semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
+	TestEqual(TEXT("Duplicate diagnostic path after semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
+
+	bool bChanged = false;
+	Result = Adapter.ApplyRegion(Context, MakeArrayValue({}), bChanged);
+	TestTrue(TEXT("Explicit empty array apply succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Explicit empty array can clear/default region"), bChanged);
+
+	TSharedPtr<FJsonValue> Extracted;
+	Result = Adapter.ExtractRegion(Context, Extracted);
+	TestTrue(TEXT("Extract succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Extract returns array"), Extracted.IsValid() && Extracted->Type == EJson::Array);
+	if (Extracted.IsValid() && Extracted->Type == EJson::Array)
+	{
+		const TArray<TSharedPtr<FJsonValue>>& ExtractedArray = Extracted->AsArray();
+		TestEqual(TEXT("Extracted array has stable size"), ExtractedArray.Num(), 2);
+		if (ExtractedArray.Num() == 2)
+		{
+			TestEqual(TEXT("Extract preserves first hook entry"), ExtractedArray[0]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("Second")));
+			TestEqual(TEXT("Extract preserves second hook entry"), ExtractedArray[1]->AsObject()->GetStringField(TEXT("Name")), FString(TEXT("First")));
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	Result = Adapter.DiffRegion(Context, Extracted, DiffEntries);
+	TestTrue(TEXT("Default diff succeeds for extracted array"), Result.bSuccess);
+	TestEqual(TEXT("Default diff treats extracted array as stable"), DiffEntries.Num(), 0);
+
 	return true;
 }
 
