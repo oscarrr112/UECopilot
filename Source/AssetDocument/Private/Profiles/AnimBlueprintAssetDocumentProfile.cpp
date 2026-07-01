@@ -111,6 +111,11 @@ FName FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName()
 	return TEXT("AnimBlueprintStateMachineRegionAdapter");
 }
 
+FName FAnimBlueprintAssetDocumentProfile::AnimLayerRegionAdapterName()
+{
+	return TEXT("AnimBlueprintAnimLayerRegionAdapter");
+}
+
 FName FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName()
 {
 	return TEXT("AnimBlueprintParentAssetOverrideRegionAdapter");
@@ -134,10 +139,12 @@ TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegi
 		{TEXT("Variables"), TEXT("Body.Variables"), BlueprintCommonRegionAdapterName(), 80, false},
 		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), BlueprintCommonRegionAdapterName(), 90, false},
 		{TEXT("UbergraphPages"), TEXT("Body.UbergraphPages"), BlueprintCommonRegionAdapterName(), 100, false},
+		{TEXT("FunctionGraphs"), TEXT("Body.FunctionGraphs"), BlueprintCommonRegionAdapterName(), 110, false},
+		{TEXT("MacroGraphs"), TEXT("Body.MacroGraphs"), BlueprintCommonRegionAdapterName(), 120, false},
 		{TEXT("AnimGraph"), TEXT("Body.AnimGraph"), AnimGraphRegionAdapterName(), 200, false},
 		{TEXT("StateMachines"), TEXT("Body.StateMachines"), StateMachineRegionAdapterName(), 210, false},
 		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), StateMachineRegionAdapterName(), 220, false},
-		{TEXT("AnimLayers"), TEXT("Body.AnimLayers"), DeferredRegionAdapterName(), 230, false},
+		{TEXT("AnimLayers"), TEXT("Body.AnimLayers"), AnimLayerRegionAdapterName(), 230, false},
 		{TEXT("ParentAssetOverrides"), TEXT("Body.ParentAssetOverrides"), ParentAssetOverrideRegionAdapterName(), 240, false},
 	};
 }
@@ -184,10 +191,12 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentProfile::CreateTemplate(const
 	Body->SetArrayField(TEXT("Variables"), MakeEmptyArray());
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("FunctionGraphs"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("MacroGraphs"), MakeEmptyArray());
 	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
 	Body->SetObjectField(TEXT("StateMachines"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("TransitionGraphs"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("AnimLayers"), MakeEmptyArray());
+	Body->SetObjectField(TEXT("AnimLayers"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), MakeEmptyArray());
 
 	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
@@ -271,6 +280,14 @@ TArray<FAssetDocumentRegionPolicy> FAnimBlueprintAssetDocumentProfile::GetRegion
 	{
 		Policies.Add(Policy);
 	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy, TEXT("UBlueprintGraph")))
+	{
+		Policies.Add(Policy);
+	}
+	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy, TEXT("UBlueprintGraph")))
+	{
+		Policies.Add(Policy);
+	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.AnimGraph"), EAssetDocumentRegionKind::Graph, {TEXT("AnimGraph")}, Policy))
 	{
 		Policies.Add(Policy);
@@ -285,7 +302,6 @@ TArray<FAssetDocumentRegionPolicy> FAnimBlueprintAssetDocumentProfile::GetRegion
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.AnimLayers"), EAssetDocumentRegionKind::Graph, {TEXT("AnimLayers")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ParentAssetOverrides"), EAssetDocumentRegionKind::Array, {TEXT("ParentAssetOverrides")}, Policy))

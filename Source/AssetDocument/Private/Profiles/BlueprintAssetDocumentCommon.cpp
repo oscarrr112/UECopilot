@@ -32,7 +32,16 @@ bool IsCommonRegion(FName RegionId)
 	return RegionId == TEXT("Body.ImplementedInterfaces")
 		|| RegionId == TEXT("Body.Variables")
 		|| RegionId == TEXT("Body.ClassDefaults")
-		|| RegionId == TEXT("Body.UbergraphPages");
+		|| RegionId == TEXT("Body.UbergraphPages")
+		|| RegionId == TEXT("Body.FunctionGraphs")
+		|| RegionId == TEXT("Body.MacroGraphs");
+}
+
+bool IsBlueprintGraphRegion(const FString& BodyKey)
+{
+	return BodyKey == TEXT("UbergraphPages")
+		|| BodyKey == TEXT("FunctionGraphs")
+		|| BodyKey == TEXT("MacroGraphs");
 }
 
 FString RegionBodyKey(const FAssetDocumentRegionContext& Context)
@@ -1090,7 +1099,7 @@ FAssetDocumentCapabilityResult FBlueprintAssetDocumentCommonRegionAdapter::Valid
 	{
 		return ValidateClassDefaults(Context, Body);
 	}
-	if (BodyKey == TEXT("UbergraphPages"))
+	if (IsBlueprintGraphRegion(BodyKey))
 	{
 		return ValidateGraph(Context, Body);
 	}
@@ -1182,7 +1191,7 @@ FAssetDocumentCapabilityResult FBlueprintAssetDocumentCommonRegionAdapter::Apply
 		}
 		return Result;
 	}
-	if (BodyKey == TEXT("UbergraphPages"))
+	if (IsBlueprintGraphRegion(BodyKey))
 	{
 		FAssetDocumentCapabilityContext CapabilityContext = MakeCapabilityContext(Context);
 		return ApplyUBlueprintGraphRegions(CapabilityContext, Body, bOutChanged);
@@ -1233,7 +1242,7 @@ FAssetDocumentCapabilityResult FBlueprintAssetDocumentCommonRegionAdapter::Extra
 		OutCurrentValue = MakeShared<FJsonValueObject>(CurrentClassDefaults(Blueprint).ToSharedRef());
 		return FAssetDocumentCapabilityResult::Success();
 	}
-	if (BodyKey == TEXT("UbergraphPages"))
+	if (IsBlueprintGraphRegion(BodyKey))
 	{
 		TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 		const FAssetDocumentCapabilityResult Result =
@@ -1242,7 +1251,7 @@ FAssetDocumentCapabilityResult FBlueprintAssetDocumentCommonRegionAdapter::Extra
 		{
 			return Result;
 		}
-		const TSharedPtr<FJsonValue>* Value = Body->Values.Find(TEXT("UbergraphPages"));
+		const TSharedPtr<FJsonValue>* Value = Body->Values.Find(BodyKey);
 		OutCurrentValue = Value && Value->IsValid() ? *Value : MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>());
 		return FAssetDocumentCapabilityResult::Success();
 	}
@@ -1262,7 +1271,7 @@ FAssetDocumentCapabilityResult FBlueprintAssetDocumentCommonRegionAdapter::DiffR
 
 	const FString BodyKey = RegionBodyKey(Context);
 	TSharedRef<FJsonObject> Body = MakeBodyObject(BodyKey, DesiredValue);
-	if (BodyKey == TEXT("UbergraphPages"))
+	if (IsBlueprintGraphRegion(BodyKey))
 	{
 		return FUBlueprintGraphRegionAdapter().DiffRegions(MakeCapabilityContext(Context), Body, OutDiffEntries);
 	}

@@ -82,6 +82,37 @@ TSharedRef<FJsonObject> MakeEmptyGraphRegionObject()
 	return Region;
 }
 
+TSharedRef<FJsonObject> MakeAnimLayerGraph(const TCHAR* LayerName)
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), LayerName);
+	Graph->SetStringField(TEXT("Name"), LayerName);
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimLayer"));
+	Graph->SetArrayField(TEXT("Nodes"), {});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeAnimLayerGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedRef<FJsonObject>& Graph : Graphs)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Graph));
+	}
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), Values);
+	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithAnimLayerGraphs(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimLayers"), MakeAnimLayerGraphRegion(Graphs));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TArray<TSharedPtr<FJsonValue>> MakeLegacyAnimGraphArray()
 {
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
@@ -594,10 +625,12 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Body->SetArrayField(TEXT("Variables"), {});
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), {});
+	Body->SetArrayField(TEXT("FunctionGraphs"), {});
+	Body->SetArrayField(TEXT("MacroGraphs"), {});
 	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
 	Body->SetObjectField(TEXT("StateMachines"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("TransitionGraphs"), {});
-	Body->SetArrayField(TEXT("AnimLayers"), {});
+	Body->SetObjectField(TEXT("AnimLayers"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), {});
 	Document->SetObjectField(TEXT("Body"), Body);
 	return Document;
@@ -809,6 +842,8 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestTrue(TEXT("Body keys include Variables"), HasBodyKey(BodyKeys, TEXT("Variables")));
 	TestTrue(TEXT("Body keys include ClassDefaults"), HasBodyKey(BodyKeys, TEXT("ClassDefaults")));
 	TestTrue(TEXT("Body keys include UbergraphPages"), HasBodyKey(BodyKeys, TEXT("UbergraphPages")));
+	TestTrue(TEXT("Body keys include FunctionGraphs"), HasBodyKey(BodyKeys, TEXT("FunctionGraphs")));
+	TestTrue(TEXT("Body keys include MacroGraphs"), HasBodyKey(BodyKeys, TEXT("MacroGraphs")));
 	TestTrue(TEXT("Body keys include AnimGraph"), HasBodyKey(BodyKeys, TEXT("AnimGraph")));
 	TestTrue(TEXT("Body keys include StateMachines"), HasBodyKey(BodyKeys, TEXT("StateMachines")));
 	TestTrue(TEXT("Body keys include TransitionGraphs"), HasBodyKey(BodyKeys, TEXT("TransitionGraphs")));
@@ -828,12 +863,16 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Policy includes Body.Variables"), FindPolicy(Policies, TEXT("Body.Variables")));
 	TestNotNull(TEXT("Policy includes Body.ClassDefaults"), FindPolicy(Policies, TEXT("Body.ClassDefaults")));
 	TestNotNull(TEXT("Policy includes Body.UbergraphPages"), FindPolicy(Policies, TEXT("Body.UbergraphPages")));
+	const FAssetDocumentRegionPolicy* FunctionGraphsPolicy = FindPolicy(Policies, TEXT("Body.FunctionGraphs"));
+	const FAssetDocumentRegionPolicy* MacroGraphsPolicy = FindPolicy(Policies, TEXT("Body.MacroGraphs"));
 	const FAssetDocumentRegionPolicy* AnimGraphPolicy = FindPolicy(Policies, TEXT("Body.AnimGraph"));
 	const FAssetDocumentRegionPolicy* StateMachinesPolicy = FindPolicy(Policies, TEXT("Body.StateMachines"));
 	const FAssetDocumentRegionPolicy* TransitionGraphsPolicy = FindPolicy(Policies, TEXT("Body.TransitionGraphs"));
 	const FAssetDocumentRegionPolicy* AnimLayersPolicy = FindPolicy(Policies, TEXT("Body.AnimLayers"));
 	const FAssetDocumentRegionPolicy* ParentAssetOverridesPolicy = FindPolicy(Policies, TEXT("Body.ParentAssetOverrides"));
 	TestNotNull(TEXT("Policy includes Body.AnimGraph"), AnimGraphPolicy);
+	TestNotNull(TEXT("Policy includes Body.FunctionGraphs"), FunctionGraphsPolicy);
+	TestNotNull(TEXT("Policy includes Body.MacroGraphs"), MacroGraphsPolicy);
 	TestNotNull(TEXT("Policy includes Body.StateMachines"), StateMachinesPolicy);
 	TestNotNull(TEXT("Policy includes Body.TransitionGraphs"), TransitionGraphsPolicy);
 	TestNotNull(TEXT("Policy includes Body.AnimLayers"), AnimLayersPolicy);
@@ -841,6 +880,14 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	if (AnimGraphPolicy)
 	{
 		TestEqual(TEXT("AnimGraph policy is no longer deferred/null-gated"), AnimGraphPolicy->ExplicitDeleteValues.Num(), 0);
+	}
+	if (FunctionGraphsPolicy)
+	{
+		TestEqual(TEXT("FunctionGraphs policy is no longer deferred/null-gated"), FunctionGraphsPolicy->ExplicitDeleteValues.Num(), 0);
+	}
+	if (MacroGraphsPolicy)
+	{
+		TestEqual(TEXT("MacroGraphs policy is no longer deferred/null-gated"), MacroGraphsPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (StateMachinesPolicy)
 	{
@@ -852,7 +899,7 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	}
 	if (AnimLayersPolicy)
 	{
-		TestTrue(TEXT("AnimLayers policy is deferred/null-gated"), AnimLayersPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("AnimLayers policy is no longer deferred/null-gated"), AnimLayersPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (ParentAssetOverridesPolicy)
 	{
@@ -867,25 +914,8 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 		Context.AssetClass = UAnimBlueprint::StaticClass();
 		TestTrue(TEXT("Empty Body validates"), BodyAdapter->Validate(Context, MakeEmptyBodyValue()).bSuccess);
 
-		for (const TCHAR* DeferredKey : {
-			TEXT("AnimLayers"),
-		})
-		{
-			const FAssetDocumentCapabilityResult Result = BodyAdapter->Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
-			TestFalse(FString::Printf(TEXT("Body.%s rejects non-empty deferred content"), DeferredKey), Result.bSuccess);
-			TestTrue(FString::Printf(TEXT("Body.%s reports a diagnostic"), DeferredKey), Result.Diagnostics.Num() > 0);
-			if (Result.Diagnostics.Num() > 0)
-			{
-				TestEqual(
-					FString::Printf(TEXT("Body.%s diagnostic path"), DeferredKey),
-					Result.Diagnostics[0].Path,
-					FString::Printf(TEXT("/Body/%s"), DeferredKey));
-				TestEqual(
-					FString::Printf(TEXT("Body.%s diagnostic code"), DeferredKey),
-					Result.Diagnostics[0].Code,
-					FString(TEXT("UnsupportedAnimBlueprintRegion")));
-			}
-		}
+		TestTrue(TEXT("Empty AnimLayers graph region validates"),
+			BodyAdapter->Validate(Context, MakeBodyWithAnimLayerGraphs({})).bSuccess);
 	}
 
 	return true;
@@ -902,68 +932,29 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	Context.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	for (const TCHAR* DeferredKey : {
-		TEXT("AnimLayers"),
-	})
-	{
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts null while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithNullRegion(DeferredKey)).bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts empty array while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(DeferredKey)).bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts empty object while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithEmptyObjectRegion(DeferredKey)).bSuccess);
+	TestTrue(
+		TEXT("Body.AnimLayers accepts recursive empty graph region"),
+		Capability.Validate(Context, MakeBodyWithAnimLayerGraphs({})).bSuccess);
 
-		const FAssetDocumentCapabilityResult NonEmptyResult =
-			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
-		const FString ExpectedPath = FString::Printf(TEXT("/Body/%s"), DeferredKey);
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects non-empty authored value while deferred"), DeferredKey),
-			NonEmptyResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion at exact path"), DeferredKey),
-			HasDiagnostic(NonEmptyResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
-
-		const FAssetDocumentCapabilityResult NonEmptyObjectResult =
-			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredObjectRegion(DeferredKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects non-empty object while deferred"), DeferredKey),
-			NonEmptyObjectResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for non-empty object"), DeferredKey),
-			HasDiagnostic(NonEmptyObjectResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
-
-		const FAssetDocumentCapabilityResult ScalarResult =
-			Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(DeferredKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects scalar value while deferred"), DeferredKey),
-			ScalarResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for scalar"), DeferredKey),
-			HasDiagnostic(ScalarResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
-	}
+	TestFalse(
+		TEXT("Body.AnimLayers rejects null because it is no longer deferred"),
+		Capability.Validate(Context, MakeBodyWithNullRegion(TEXT("AnimLayers"))).bSuccess);
+	TestFalse(
+		TEXT("Body.AnimLayers rejects legacy empty array because it is a graph object region"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("AnimLayers"))).bSuccess);
+	TestFalse(
+		TEXT("Body.AnimLayers rejects scalar values"),
+		Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(TEXT("AnimLayers"))).bSuccess);
 
 	const FAssetDocumentCapabilityResult UnknownKeyResult = Capability.Validate(Context, MakeBodyWithUnknownKey());
 	TestFalse(TEXT("Unknown Body key rejects"), UnknownKeyResult.bSuccess);
 	TestTrue(
 		TEXT("Unknown Body key reports UnknownBodyKey"),
 		HasDiagnostic(UnknownKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
-	for (const TCHAR* UnknownBlueprintGraphKey : {TEXT("FunctionGraphs"), TEXT("MacroGraphs")})
-	{
-		const FAssetDocumentCapabilityResult UnknownBlueprintGraphResult =
-			Capability.Validate(Context, MakeBodyWithUnknownKey(UnknownBlueprintGraphKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s remains outside the ABP profile"), UnknownBlueprintGraphKey),
-			UnknownBlueprintGraphResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnknownBodyKey"), UnknownBlueprintGraphKey),
-			HasDiagnostic(
-				UnknownBlueprintGraphResult,
-				FString::Printf(TEXT("/Body/%s"), UnknownBlueprintGraphKey),
-				TEXT("UnknownBodyKey")));
-	}
+	TestTrue(TEXT("FunctionGraphs empty region validates through Blueprint common graph adapter"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("FunctionGraphs"))).bSuccess);
+	TestTrue(TEXT("MacroGraphs empty region validates through Blueprint common graph adapter"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("MacroGraphs"))).bSuccess);
 
 	return true;
 }
@@ -1181,12 +1172,11 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	const FAssetDocumentCapabilityResult AnimLayersResult =
-		Capability.Validate(ValidationContext, MakeBodyWithNonEmptyDeferredRegion(TEXT("AnimLayers")));
-	TestFalse(TEXT("AnimLayers remains outside regular AnimBlueprint exact-profile authoring"), AnimLayersResult.bSuccess);
 	TestTrue(
-		TEXT("AnimLayers boundary reports deferred diagnostic"),
-		HasDiagnostic(AnimLayersResult, TEXT("/Body/AnimLayers"), TEXT("UnsupportedAnimBlueprintRegion")));
+		TEXT("AnimLayers validates a non-empty recursive graph region"),
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraph(TEXT("UpperBodyLayer"))})).bSuccess);
 
 	TestTrue(
 		TEXT("ParentAssetOverrides validates stable guid identity array"),

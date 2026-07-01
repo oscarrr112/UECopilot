@@ -142,12 +142,12 @@ TArray<FAssetDocumentRegionPolicy> FUBlueprintAssetDocumentProfile::GetRegionPol
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
+		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
+		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Timelines"), EAssetDocumentRegionKind::Timeline, {TEXT("Timelines")}, Policy))

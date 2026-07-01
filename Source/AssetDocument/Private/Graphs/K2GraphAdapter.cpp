@@ -97,6 +97,34 @@ const FBlueprintGraphArray& GetGraphArray(const UBlueprint* Blueprint, EAssetDoc
 	}
 }
 
+bool IsManagedK2Graph(const UEdGraph* Graph, EAssetDocumentK2GraphRegion Region)
+{
+	if (!Graph)
+	{
+		return false;
+	}
+
+	if (Region == EAssetDocumentK2GraphRegion::FunctionGraphs
+		|| Region == EAssetDocumentK2GraphRegion::MacroGraphs)
+	{
+		UClass* AnimationGraphSchemaClass =
+			FindObject<UClass>(nullptr, TEXT("/Script/AnimGraph.AnimationGraphSchema"));
+		const UClass* SchemaClass = Graph->Schema;
+		return !AnimationGraphSchemaClass
+			|| !SchemaClass
+			|| !SchemaClass->IsChildOf(AnimationGraphSchemaClass);
+	}
+
+	return true;
+}
+
+bool IsEmptyFunctionOrMacroNoop(EAssetDocumentK2GraphRegion Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs)
+{
+	return DesiredGraphs.IsEmpty()
+		&& (Region == EAssetDocumentK2GraphRegion::FunctionGraphs
+			|| Region == EAssetDocumentK2GraphRegion::MacroGraphs);
+}
+
 FString GetClassPath(const UClass* Class)
 {
 	return Class ? Class->GetPathName() : FString();
@@ -453,7 +481,7 @@ UEdGraph* FindGraphByName(UBlueprint* Blueprint, EAssetDocumentK2GraphRegion Reg
 
 	for (UEdGraph* Graph : GetMutableGraphArray(Blueprint, Region))
 	{
-		if (Graph && Graph->GetName() == GraphName)
+		if (IsManagedK2Graph(Graph, Region) && Graph->GetName() == GraphName)
 		{
 			return Graph;
 		}
@@ -705,7 +733,11 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
 
 	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(Blueprint, Region)))
 	{
-		if (!ExistingGraph || DesiredGraphNames.Contains(ExistingGraph->GetName()))
+		if (IsEmptyFunctionOrMacroNoop(Region, DesiredGraphs))
+		{
+			continue;
+		}
+		if (!IsManagedK2Graph(ExistingGraph, Region) || DesiredGraphNames.Contains(ExistingGraph->GetName()))
 		{
 			continue;
 		}
@@ -1091,7 +1123,11 @@ FAssetDocumentCapabilityResult FAssetDocumentK2GraphAdapter::PreflightGraphRegio
 
 	for (UEdGraph* ExistingGraph : FBlueprintGraphArray(GetMutableGraphArray(CurrentBlueprint, Region)))
 	{
-		if (!ExistingGraph || DesiredGraphNames.Contains(ExistingGraph->GetName()))
+		if (IsEmptyFunctionOrMacroNoop(Region, DesiredGraphs))
+		{
+			continue;
+		}
+		if (!IsManagedK2Graph(ExistingGraph, Region) || DesiredGraphNames.Contains(ExistingGraph->GetName()))
 		{
 			continue;
 		}
@@ -1158,7 +1194,7 @@ FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractGraphReg
 	const FScopedGraphRegionPath ScopedRegion(Region);
 	for (UEdGraph* Graph : GetGraphArray(Blueprint, Region))
 	{
-		if (!Graph)
+		if (!IsManagedK2Graph(Graph, Region))
 		{
 			continue;
 		}

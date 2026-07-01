@@ -17,6 +17,7 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentAnimGraphRegionAdapter.h"
+#include "Regions/AssetDocumentAnimLayerRegionAdapter.h"
 #include "Regions/AssetDocumentAnimParentAssetOverrideRegionAdapter.h"
 #include "Regions/AssetDocumentAnimStateMachineRegionAdapter.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
@@ -48,7 +49,7 @@ FAssetDocumentCapabilityResult RequireBodyObject(const TSharedRef<FJsonValue>& B
 
 bool IsDeferredGraphFamilyKey(const FString& BodyKey)
 {
-	return BodyKey == TEXT("AnimLayers");
+	return false;
 }
 
 bool IsScalarDeferredValue(const TSharedPtr<FJsonValue>& Value)
@@ -1215,6 +1216,8 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName());
 	FAssetDocumentAnimStateMachineRegionAdapter StateMachineAdapter(
 		FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName());
+	FAssetDocumentAnimLayerRegionAdapter AnimLayerAdapter(
+		FAnimBlueprintAssetDocumentProfile::AnimLayerRegionAdapterName());
 	FAssetDocumentAnimParentAssetOverrideRegionAdapter ParentAssetOverrideAdapter(
 		FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName());
 	FAssetDocumentDeferredRegionAdapter DeferredAdapter(
@@ -1229,6 +1232,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	Adapters.Add(BlueprintCommonAdapter.GetName(), &BlueprintCommonAdapter);
 	Adapters.Add(AnimGraphAdapter.GetName(), &AnimGraphAdapter);
 	Adapters.Add(StateMachineAdapter.GetName(), &StateMachineAdapter);
+	Adapters.Add(AnimLayerAdapter.GetName(), &AnimLayerAdapter);
 	Adapters.Add(ParentAssetOverrideAdapter.GetName(), &ParentAssetOverrideAdapter);
 	Adapters.Add(DeferredAdapter.GetName(), &DeferredAdapter);
 
@@ -1302,6 +1306,8 @@ const TArray<FName>& FAnimBlueprintAssetDocumentCapability::GetCanonicalBodyKeys
 		TEXT("Variables"),
 		TEXT("ClassDefaults"),
 		TEXT("UbergraphPages"),
+		TEXT("FunctionGraphs"),
+		TEXT("MacroGraphs"),
 		TEXT("AnimGraph"),
 		TEXT("StateMachines"),
 		TEXT("TransitionGraphs"),
@@ -1326,6 +1332,7 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName(),
+		FAnimBlueprintAssetDocumentProfile::AnimLayerRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::ParentAssetOverrideRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 	};
@@ -1359,10 +1366,12 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentCapability::GetSchemaHint() c
 	Schema->SetStringField(TEXT("Variables"), TEXT("Blueprint common identity-array region"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("Blueprint common generated CDO default-diff object"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("Blueprint common K2 graph wrapper region"));
+	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("Blueprint common K2 function graph wrapper region"));
+	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("Blueprint common K2 macro graph wrapper region"));
 	Schema->SetStringField(TEXT("AnimGraph"), TEXT("recursive graph region: {Graphs:[{Id:'AnimGraph', Kind:'AnimGraph', Nodes:[], Links:[], Subgraphs:[]}]}"));
 	Schema->SetStringField(TEXT("StateMachines"), TEXT("recursive graph region: {Graphs:[{Id, Kind:'StateMachine', Nodes, Links, Subgraphs}]}"));
 	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("deprecated empty-only compatibility region; author transition rules as StateMachines subgraphs"));
-	Schema->SetStringField(TEXT("AnimLayers"), TEXT("deferred empty graph/array region until anim layer adapter lands"));
+	Schema->SetStringField(TEXT("AnimLayers"), TEXT("recursive graph region: {Graphs:[{Id, Name, Kind:'AnimLayer', Nodes, Links, Subgraphs}]}"));
 	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("identity array: array<{ParentNodeGuid, NewAsset}>"));
 	return Schema;
 }

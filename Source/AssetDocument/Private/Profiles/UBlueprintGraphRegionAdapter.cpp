@@ -15,26 +15,41 @@
 
 namespace
 {
-constexpr const TCHAR* UbergraphPagesPath = TEXT("/Body/UbergraphPages");
+struct FUBlueprintGraphRegion
+{
+	FString Name;
+	FString Path;
+	EAssetDocumentK2GraphRegion K2Region = EAssetDocumentK2GraphRegion::UbergraphPages;
+};
+
+const TArray<FUBlueprintGraphRegion>& GraphRegions()
+{
+	static const TArray<FUBlueprintGraphRegion> Regions = {
+		{TEXT("UbergraphPages"), TEXT("/Body/UbergraphPages"), EAssetDocumentK2GraphRegion::UbergraphPages},
+		{TEXT("FunctionGraphs"), TEXT("/Body/FunctionGraphs"), EAssetDocumentK2GraphRegion::FunctionGraphs},
+		{TEXT("MacroGraphs"), TEXT("/Body/MacroGraphs"), EAssetDocumentK2GraphRegion::MacroGraphs},
+	};
+	return Regions;
+}
 
 FAssetDocumentCapabilityResult GraphFailure(const FString& Message, const FString& Path, const FString& Code)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-FAssetDocumentCapabilityResult InvalidRegionTypeFailure(const FString& RegionName)
+FAssetDocumentCapabilityResult InvalidRegionTypeFailure(const FUBlueprintGraphRegion& Region)
 {
 	return GraphFailure(
-		FString::Printf(TEXT("Body.%s must be an array when authored"), *RegionName),
-		FString::Printf(TEXT("/Body/%s"), *RegionName),
+		FString::Printf(TEXT("Body.%s must be an array when authored"), *Region.Name),
+		Region.Path,
 		TEXT("InvalidGraphRegionType"));
 }
 
-FAssetDocumentCapabilityResult GraphDiagnosticsFailure(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
+FAssetDocumentCapabilityResult GraphDiagnosticsFailure(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics, const FString& FallbackPath)
 {
 	if (Diagnostics.IsEmpty())
 	{
-		return GraphFailure(TEXT("Graph region validation failed"), UbergraphPagesPath, TEXT("InvalidGraphRegion"));
+		return GraphFailure(TEXT("Graph region validation failed"), FallbackPath, TEXT("InvalidGraphRegion"));
 	}
 
 	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(
@@ -58,9 +73,9 @@ TSharedPtr<FJsonObject> CloneJsonObject(const TSharedPtr<FJsonObject>& Object)
 	return AssetDocumentGraphJson::CloneJsonObject(Object);
 }
 
-FString NodePath(int32 GraphIndex, int32 NodeIndex)
+FString NodePath(const FUBlueprintGraphRegion& Region, int32 GraphIndex, int32 NodeIndex)
 {
-	return FString::Printf(TEXT("%s/%d/Nodes/%d"), UbergraphPagesPath, GraphIndex, NodeIndex);
+	return FString::Printf(TEXT("%s/%d/Nodes/%d"), *Region.Path, GraphIndex, NodeIndex);
 }
 
 UClass* ResolveClass(const FString& ClassPath)
@@ -86,11 +101,11 @@ FAssetDocumentUnsupportedNodeDiagnostic MakeUnsupportedNodeDiagnostic(
 	return Diagnostic;
 }
 
-FAssetDocumentCapabilityResult UnsupportedGraphFailure(const TArray<FAssetDocumentUnsupportedNodeDiagnostic>& UnsupportedDiagnostics)
+FAssetDocumentCapabilityResult UnsupportedGraphFailure(const FString& FallbackPath, const TArray<FAssetDocumentUnsupportedNodeDiagnostic>& UnsupportedDiagnostics)
 {
 	if (UnsupportedDiagnostics.IsEmpty())
 	{
-		return GraphFailure(TEXT("Graph region validation failed"), UbergraphPagesPath, TEXT("InvalidGraphRegion"));
+		return GraphFailure(TEXT("Graph region validation failed"), FallbackPath, TEXT("InvalidGraphRegion"));
 	}
 
 	const FAssetDocumentUnsupportedNodeDiagnostic& FirstUnsupported = UnsupportedDiagnostics[0];
@@ -186,14 +201,24 @@ TSharedRef<FJsonObject> MakeCapabilityDiffEntry(
 	return Entry;
 }
 
-TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
+FString RewriteGraphDiffPath(const FString& Path, const FUBlueprintGraphRegion& Region)
+{
+	const FString UBlueprintPrefix = TEXT("/Body/UbergraphPages");
+	if (Region.Path == UBlueprintPrefix || !Path.StartsWith(UBlueprintPrefix))
+	{
+		return Path;
+	}
+	return Region.Path + Path.RightChop(FCString::Strlen(*UBlueprintPrefix));
+}
+
+TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FUBlueprintGraphRegion& Region, const FAssetDocumentGraphDiffEntry& GraphEntry)
 {
 	const bool bUnsupported = GraphEntry.Status == TEXT("unsupported");
 	const bool bUnchanged = GraphEntry.Status == TEXT("unchanged");
 	const FString PublicStatus = bUnsupported ? FString(TEXT("skipped")) : (bUnchanged ? FString(TEXT("unchanged")) : FString(TEXT("changed")));
 	const FString Change = bUnchanged ? FString() : GraphEntry.Status;
 	return MakeCapabilityDiffEntry(
-		GraphEntry.Path,
+		RewriteGraphDiffPath(GraphEntry.Path, Region),
 		PublicStatus,
 		GraphEntry.Current,
 		GraphEntry.Desired,
@@ -202,7 +227,7 @@ TSharedRef<FJsonObject> MakeCapabilityDiffEntry(const FAssetDocumentGraphDiffEnt
 		bUnsupported ? FString(TEXT("UnsupportedGraphDiff")) : FString());
 }
 
-FString GraphPathFromSkippedNode(const TSharedPtr<FJsonObject>& SkippedNode)
+FString GraphPathFromSkippedNode(const FUBlueprintGraphRegion& Region, const TSharedPtr<FJsonObject>& SkippedNode)
 {
 	FString GraphName;
 	if (SkippedNode.IsValid() && SkippedNode->TryGetStringField(TEXT("Graph"), GraphName) && !GraphName.IsEmpty())
@@ -210,9 +235,9 @@ FString GraphPathFromSkippedNode(const TSharedPtr<FJsonObject>& SkippedNode)
 		FString EscapedName = GraphName;
 		EscapedName.ReplaceInline(TEXT("~"), TEXT("~0"));
 		EscapedName.ReplaceInline(TEXT("/"), TEXT("~1"));
-		return FString::Printf(TEXT("%s/%s"), UbergraphPagesPath, *EscapedName);
+		return FString::Printf(TEXT("%s/%s"), *Region.Path, *EscapedName);
 	}
-	return UbergraphPagesPath;
+	return Region.Path;
 }
 
 FString SkippedNodeMessage(const TSharedPtr<FJsonObject>& SkippedNode)
@@ -231,6 +256,7 @@ FString SkippedNodeMessage(const TSharedPtr<FJsonObject>& SkippedNode)
 }
 
 void AppendSkippedGraphDiffEntries(
+	const FUBlueprintGraphRegion& Region,
 	const TArray<TSharedPtr<FJsonValue>>& SkippedNodes,
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
 {
@@ -243,7 +269,7 @@ void AppendSkippedGraphDiffEntries(
 			SkippedNode->TryGetStringField(TEXT("Reason"), Code);
 		}
 		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(
-			GraphPathFromSkippedNode(SkippedNode),
+			GraphPathFromSkippedNode(Region, SkippedNode),
 			TEXT("skipped"),
 			SkippedValue,
 			nullptr,
@@ -253,63 +279,66 @@ void AppendSkippedGraphDiffEntries(
 	}
 }
 
-FAssetDocumentCapabilityResult ParseDesiredUbergraphPages(
+FAssetDocumentCapabilityResult ParseDesiredGraphRegion(
 	const TSharedRef<FJsonObject>& DesiredBody,
+	const FUBlueprintGraphRegion& Region,
 	TArray<FAssetDocumentGraphSpec>& OutGraphs)
 {
 	OutGraphs.Reset();
-	const TSharedPtr<FJsonValue>* UbergraphPagesValue = DesiredBody->Values.Find(TEXT("UbergraphPages"));
-	if (!UbergraphPagesValue || !UbergraphPagesValue->IsValid() || (*UbergraphPagesValue)->Type == EJson::Null)
+	const TSharedPtr<FJsonValue>* RegionValue = DesiredBody->Values.Find(Region.Name);
+	if (!RegionValue || !RegionValue->IsValid() || (*RegionValue)->Type == EJson::Null)
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	if ((*UbergraphPagesValue)->Type != EJson::Array)
+	if ((*RegionValue)->Type != EJson::Array)
 	{
-		return InvalidRegionTypeFailure(TEXT("UbergraphPages"));
+		return InvalidRegionTypeFailure(Region);
 	}
 
 	FAssetDocumentGraphParseOptions ParseOptions;
-	ParseOptions.Path = UbergraphPagesPath;
+	ParseOptions.Path = Region.Path;
 	FAssetDocumentGraphParseResult ParseResult =
-		FAssetDocumentGraphParser::ParseGraphArray((*UbergraphPagesValue)->AsArray(), ParseOptions);
+		FAssetDocumentGraphParser::ParseGraphArray((*RegionValue)->AsArray(), ParseOptions);
 	if (!ParseResult.IsValid())
 	{
-		return GraphDiagnosticsFailure(ParseResult.Diagnostics);
+		return GraphDiagnosticsFailure(ParseResult.Diagnostics, Region.Path);
 	}
 
 	OutGraphs = MoveTemp(ParseResult.Graphs);
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ParseAndResolveDesiredUbergraphPages(
+FAssetDocumentCapabilityResult ParseAndResolveDesiredGraphRegion(
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& DesiredBody,
+	const FUBlueprintGraphRegion& Region,
 	TArray<FAssetDocumentGraphSpec>& OutGraphs)
 {
 	TArray<FAssetDocumentGraphSpec> ParsedGraphs;
-	const FAssetDocumentCapabilityResult ParseResult = ParseDesiredUbergraphPages(DesiredBody, ParsedGraphs);
+	const FAssetDocumentCapabilityResult ParseResult = ParseDesiredGraphRegion(DesiredBody, Region, ParsedGraphs);
 	if (!ParseResult.bSuccess)
 	{
 		return ParseResult;
 	}
 
 	FAssetDocumentGraphDefinitionResolveOptions ResolveOptions;
-	ResolveOptions.GraphsPath = UbergraphPagesPath;
+	ResolveOptions.GraphsPath = Region.Path;
 	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
 	FAssetDocumentGraphDefinitionResolveResult ResolveResult =
 		FAssetDocumentGraphDefinitionResolver::ResolveGraphArray(ParsedGraphs, Definitions, ResolveOptions);
 	if (!ResolveResult.IsValid())
 	{
-		return GraphDiagnosticsFailure(ResolveResult.Diagnostics);
+		return GraphDiagnosticsFailure(ResolveResult.Diagnostics, Region.Path);
 	}
 
 	OutGraphs = MoveTemp(ResolveResult.Graphs);
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ValidateUbergraphPages(
+FAssetDocumentCapabilityResult ValidateGraphRegion(
 	const FAssetDocumentCapabilityContext& Context,
+	const FUBlueprintGraphRegion& Region,
 	const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid() || Value->Type == EJson::Null)
@@ -318,7 +347,7 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	}
 	if (Value->Type != EJson::Array)
 	{
-		return InvalidRegionTypeFailure(TEXT("UbergraphPages"));
+		return InvalidRegionTypeFailure(Region);
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>& GraphValues = Value->AsArray();
@@ -328,32 +357,32 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 	}
 
 	FAssetDocumentGraphParseOptions ParseOptions;
-	ParseOptions.Path = UbergraphPagesPath;
+	ParseOptions.Path = Region.Path;
 	FAssetDocumentGraphParseResult ParseResult = FAssetDocumentGraphParser::ParseGraphArray(GraphValues, ParseOptions);
 	if (!ParseResult.IsValid())
 	{
-		return GraphDiagnosticsFailure(ParseResult.Diagnostics);
+		return GraphDiagnosticsFailure(ParseResult.Diagnostics, Region.Path);
 	}
 
 	FAssetDocumentGraphDefinitionResolveOptions ResolveOptions;
-	ResolveOptions.GraphsPath = UbergraphPagesPath;
+	ResolveOptions.GraphsPath = Region.Path;
 	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
 	FAssetDocumentGraphDefinitionResolveResult ResolveResult =
 		FAssetDocumentGraphDefinitionResolver::ResolveGraphArray(ParseResult.Graphs, Definitions, ResolveOptions);
 	if (!ResolveResult.IsValid())
 	{
-		return GraphDiagnosticsFailure(ResolveResult.Diagnostics);
+		return GraphDiagnosticsFailure(ResolveResult.Diagnostics, Region.Path);
 	}
 
 	const FAssetDocumentNodeAdapterRegistry CurrentTierRegistry = FAssetDocumentK2GraphAdapter::CreateTier1NodeAdapterRegistry();
 	TArray<FAssetDocumentUnsupportedNodeDiagnostic> UnsupportedDiagnostics;
 	for (int32 GraphIndex = 0; GraphIndex < ResolveResult.Graphs.Num(); ++GraphIndex)
 	{
-		const FAssetDocumentGraphSpec& Graph = ResolveResult.Graphs[GraphIndex];
-		for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
-		{
-			const FAssetDocumentNodeSpec& Node = Graph.Nodes[NodeIndex];
-			const FString Path = NodePath(GraphIndex, NodeIndex);
+			const FAssetDocumentGraphSpec& Graph = ResolveResult.Graphs[GraphIndex];
+			for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
+			{
+				const FAssetDocumentNodeSpec& Node = Graph.Nodes[NodeIndex];
+				const FString Path = NodePath(Region, GraphIndex, NodeIndex);
 			UClass* NodeClass = ResolveClass(Node.Class);
 			if (!NodeClass)
 			{
@@ -382,12 +411,12 @@ FAssetDocumentCapabilityResult ValidateUbergraphPages(
 
 	if (!UnsupportedDiagnostics.IsEmpty())
 	{
-		return UnsupportedGraphFailure(UnsupportedDiagnostics);
+		return UnsupportedGraphFailure(Region.Path, UnsupportedDiagnostics);
 	}
 
 	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
 	const FAssetDocumentCapabilityResult PreflightResult =
-		K2GraphAdapter.PreflightUbergraphPages(Cast<UBlueprint>(Context.Asset), ResolveResult.Graphs);
+		K2GraphAdapter.PreflightGraphRegion(Cast<UBlueprint>(Context.Asset), Region.K2Region, ResolveResult.Graphs);
 	if (!PreflightResult.bSuccess)
 	{
 		return PreflightResult;
@@ -401,8 +430,17 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ValidateRegions(
 	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& BodyObject) const
 {
-	const TSharedPtr<FJsonValue>* UbergraphPagesValue = BodyObject->Values.Find(TEXT("UbergraphPages"));
-	return ValidateUbergraphPages(Context, UbergraphPagesValue ? *UbergraphPagesValue : TSharedPtr<FJsonValue>());
+	for (const FUBlueprintGraphRegion& Region : GraphRegions())
+	{
+		const TSharedPtr<FJsonValue>* RegionValue = BodyObject->Values.Find(Region.Name);
+		const FAssetDocumentCapabilityResult Result =
+			ValidateGraphRegion(Context, Region, RegionValue ? *RegionValue : TSharedPtr<FJsonValue>());
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ExtractRegions(
@@ -412,14 +450,21 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::ExtractRegions(
 	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
 	if (!Blueprint)
 	{
-		OutBodyJson->SetArrayField(TEXT("UbergraphPages"), {});
+		for (const FUBlueprintGraphRegion& Region : GraphRegions())
+		{
+			OutBodyJson->SetArrayField(Region.Name, {});
+		}
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
 	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
-	const FAssetDocumentK2GraphExtractResult ExtractResult = K2GraphAdapter.ExtractUbergraphPages(Blueprint);
-	OutBodyJson->SetField(TEXT("UbergraphPages"), FAssetDocumentGraphParser::WriteCanonicalGraphArray(ExtractResult.Graphs));
-	MergeSkippedGraphEvidence(OutBodyJson, ExtractResult.SkippedNodes);
+	for (const FUBlueprintGraphRegion& Region : GraphRegions())
+	{
+		const FAssetDocumentK2GraphExtractResult ExtractResult =
+			K2GraphAdapter.ExtractGraphRegion(Blueprint, Region.K2Region);
+		OutBodyJson->SetField(Region.Name, FAssetDocumentGraphParser::WriteCanonicalGraphArray(ExtractResult.Graphs));
+		MergeSkippedGraphEvidence(OutBodyJson, ExtractResult.SkippedNodes);
+	}
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -428,13 +473,6 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::DiffRegions(
 	const TSharedRef<FJsonObject>& DesiredBody,
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	TArray<FAssetDocumentGraphSpec> DesiredGraphs;
-	const FAssetDocumentCapabilityResult DesiredParseResult = ParseDesiredUbergraphPages(DesiredBody, DesiredGraphs);
-	if (!DesiredParseResult.bSuccess)
-	{
-		return DesiredParseResult;
-	}
-
 	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
 	if (!Blueprint)
 	{
@@ -442,16 +480,33 @@ FAssetDocumentCapabilityResult FUBlueprintGraphRegionAdapter::DiffRegions(
 	}
 
 	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
-	const FAssetDocumentK2GraphExtractResult CurrentExtract = K2GraphAdapter.ExtractUbergraphPages(Blueprint);
 	const TSharedPtr<FJsonObject> Definitions = Context.Definitions ? *Context.Definitions : nullptr;
-	const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
-		FAssetDocumentGraphDiff::CompareUbergraphPages(DesiredGraphs, CurrentExtract.Graphs, Definitions);
-	for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
+	for (const FUBlueprintGraphRegion& Region : GraphRegions())
 	{
-		OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(GraphEntry)));
-	}
+		TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+		const FAssetDocumentCapabilityResult DesiredParseResult = ParseDesiredGraphRegion(DesiredBody, Region, DesiredGraphs);
+		if (!DesiredParseResult.bSuccess)
+		{
+			return DesiredParseResult;
+		}
+		if (DesiredGraphs.IsEmpty()
+			&& (Region.K2Region == EAssetDocumentK2GraphRegion::FunctionGraphs
+				|| Region.K2Region == EAssetDocumentK2GraphRegion::MacroGraphs))
+		{
+			continue;
+		}
 
-	AppendSkippedGraphDiffEntries(CurrentExtract.SkippedNodes, OutDiffEntries);
+		const FAssetDocumentK2GraphExtractResult CurrentExtract =
+			K2GraphAdapter.ExtractGraphRegion(Blueprint, Region.K2Region);
+		const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
+			FAssetDocumentGraphDiff::CompareUbergraphPages(DesiredGraphs, CurrentExtract.Graphs, Definitions);
+		for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
+		{
+			OutDiffEntries.Add(MakeShared<FJsonValueObject>(MakeCapabilityDiffEntry(Region, GraphEntry)));
+		}
+
+		AppendSkippedGraphDiffEntries(Region, CurrentExtract.SkippedNodes, OutDiffEntries);
+	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed UBlueprint graph regions"));
 }
 
@@ -467,16 +522,24 @@ FAssetDocumentCapabilityResult ApplyUBlueprintGraphRegions(
 		return GraphFailure(TEXT("UBlueprint graph apply requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
-	TArray<FAssetDocumentGraphSpec> DesiredGraphs;
-	const FAssetDocumentCapabilityResult DesiredParseResult =
-		ParseAndResolveDesiredUbergraphPages(Context, DesiredBody, DesiredGraphs);
-	if (!DesiredParseResult.bSuccess)
-	{
-		return DesiredParseResult;
-	}
-
 	const FAssetDocumentK2GraphAdapter K2GraphAdapter;
-	const FAssetDocumentK2GraphApplyResult ApplyResult = K2GraphAdapter.ApplyUbergraphPages(Blueprint, DesiredGraphs);
-	bOutChanged = ApplyResult.bChanged;
-	return ApplyResult.Result;
+	for (const FUBlueprintGraphRegion& Region : GraphRegions())
+	{
+		TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+		const FAssetDocumentCapabilityResult DesiredParseResult =
+			ParseAndResolveDesiredGraphRegion(Context, DesiredBody, Region, DesiredGraphs);
+		if (!DesiredParseResult.bSuccess)
+		{
+			return DesiredParseResult;
+		}
+
+		const FAssetDocumentK2GraphApplyResult ApplyResult =
+			K2GraphAdapter.ApplyGraphRegion(Blueprint, Region.K2Region, DesiredGraphs);
+		if (!ApplyResult.Result.bSuccess)
+		{
+			return ApplyResult.Result;
+		}
+		bOutChanged |= ApplyResult.bChanged;
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied UBlueprint graph regions"));
 }
