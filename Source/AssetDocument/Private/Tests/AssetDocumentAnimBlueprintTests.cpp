@@ -120,6 +120,32 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonValue> MakeBodyWithAnimGraphSubgraph()
+{
+	TSharedRef<FJsonObject> Region = MakeCanonicalAnimGraphObject();
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	Region->TryGetArrayField(TEXT("Graphs"), Graphs);
+	TSharedPtr<FJsonObject> RootGraph = Graphs && Graphs->Num() == 1 && (*Graphs)[0].IsValid()
+		? (*Graphs)[0]->AsObject()
+		: nullptr;
+
+	TSharedRef<FJsonObject> Subgraph = MakeShared<FJsonObject>();
+	Subgraph->SetStringField(TEXT("Id"), TEXT("NestedPose"));
+	Subgraph->SetStringField(TEXT("Kind"), TEXT("StatePose"));
+	Subgraph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Subgraph->SetArrayField(TEXT("Nodes"), {});
+	Subgraph->SetArrayField(TEXT("Links"), {});
+	Subgraph->SetArrayField(TEXT("Subgraphs"), {});
+	if (RootGraph.IsValid())
+	{
+		RootGraph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(Subgraph)});
+	}
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimGraph"), Region);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedPtr<FJsonObject> MakeStateMachineState(const TCHAR* Id)
 {
 	TSharedPtr<FJsonObject> State = MakeShared<FJsonObject>();
@@ -566,6 +592,14 @@ bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& 
 	});
 }
 
+bool HasDiagnostic(const FAssetDocumentResult& Result, const FString& Path, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
 bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath)
 {
 	return DiffEntries.ContainsByPredicate([&ExpectedPath](const TSharedPtr<FJsonValue>& EntryValue)
@@ -573,6 +607,21 @@ bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FStrin
 		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
 		FString Path;
 		return Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath;
+	});
+}
+
+bool HasDiffNullField(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath, const FString& FieldName)
+{
+	return DiffEntries.ContainsByPredicate([&ExpectedPath, &FieldName](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		const TSharedPtr<FJsonValue> FieldValue = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+		return Entry.IsValid()
+			&& Entry->TryGetStringField(TEXT("path"), Path)
+			&& Path == ExpectedPath
+			&& FieldValue.IsValid()
+			&& FieldValue->Type == EJson::Null;
 	});
 }
 
@@ -860,10 +909,28 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	FAssetDocumentService Service;
+
+	const FString BadTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_Bad_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	TSharedRef<FJsonObject> BadDocument = MakeAnimBlueprintApplyDocument(BadTarget);
+	BadDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeBodyWithUnsupportedAnimGraphNode()->AsObject()->GetObjectField(TEXT("AnimGraph")));
+	FAssetDocumentApplyRequest BadRequest;
+	BadRequest.Document = BadDocument;
+	BadRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadApplyResult = Service.Apply(BadRequest);
+	TestFalse(TEXT("Unsupported AnimGraph node apply rejects before mutation"), BadApplyResult.IsSuccess());
+	TestTrue(
+		TEXT("Unsupported apply diagnostic keeps Body.AnimGraph semantic path"),
+		HasDiagnostic(
+			BadApplyResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Nodes/IdlePlayer/Class"),
+			TEXT("UnspawnableGraphNodeClass")));
+
 	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
 	Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
 
-	FAssetDocumentService Service;
 	FAssetDocumentApplyRequest Request;
 	Request.Document = Document;
 	Request.bSaveAsset = false;
@@ -890,6 +957,17 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 		Capability.Diff(Context, MakeBodyWithCanonicalAnimGraph(), DiffEntries);
 	TestTrue(TEXT("AnimGraph diff succeeds"), DiffResult.bSuccess);
 	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph")));
+
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult SubgraphDiffResult =
+		Capability.Diff(Context, MakeBodyWithAnimGraphSubgraph(), DiffEntries);
+	TestTrue(TEXT("AnimGraph subgraph diff succeeds"), SubgraphDiffResult.bSuccess);
+	TestTrue(
+		TEXT("AnimGraph subgraph diff uses semantic subgraph path"),
+		HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose")));
+	TestTrue(
+		TEXT("AnimGraph subgraph missing current is serialized as null"),
+		HasDiffNullField(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose"), TEXT("current")));
 
 	return true;
 }

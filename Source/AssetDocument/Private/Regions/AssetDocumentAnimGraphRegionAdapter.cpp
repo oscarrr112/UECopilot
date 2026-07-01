@@ -183,8 +183,16 @@ TSharedPtr<FJsonObject> GraphDiffEntryToBodyDiffEntry(const FAssetDocumentGraphD
 	{
 		Entry->SetStringField(TEXT("message"), GraphEntry.Message);
 	}
-	Entry->SetField(TEXT("current"), AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Current));
-	Entry->SetField(TEXT("desired"), AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Desired));
+	Entry->SetField(
+		TEXT("current"),
+		GraphEntry.Current.IsValid()
+			? AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Current)
+			: MakeShared<FJsonValueNull>());
+	Entry->SetField(
+		TEXT("desired"),
+		GraphEntry.Desired.IsValid()
+			? AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Desired)
+			: MakeShared<FJsonValueNull>());
 	return Entry;
 }
 }
@@ -235,6 +243,9 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ApplyRegion
 
 	FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FEmptyAnimGraphCandidateProvider>());
 	FAssetDocumentAnimationGraphContext RuntimeContext;
+	RuntimeContext.Asset = Context.Asset;
+	RuntimeContext.GraphKind = CanonicalGraphKind;
+	RuntimeContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 	FAnimGraphStructuralHook Hook(Context);
 	return Runtime.ApplyGraph(Graphs[0], RuntimeContext, Hook);
 }
