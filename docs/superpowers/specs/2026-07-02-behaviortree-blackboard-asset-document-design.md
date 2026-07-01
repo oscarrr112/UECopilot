@@ -55,7 +55,7 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 
 1. 让 `BlackboardData` 与 `BehaviorTree` 出现在 AssetDocument registered profiles、template、inspect、validate、apply、extract、diff 的常规通路中。
 2. 定义 BlackboardData 的稳定 key authoring surface，支持 parent inheritance、key type、base class / enum metadata、stable identity 和 semantic diff。
-3. 定义 BehaviorTree 的 stable tree authoring surface，支持 root/composite/task/decorator/service 的 validate/apply/extract/diff。
+3. 定义 BehaviorTree 的完整 stable tree authoring surface，支持 root/composite/task/decorator/service、root decorators、edge decorators、decorator logic、node properties 和 editor layout 的 validate/apply/extract/diff。
 4. 抽出可复用的 blackboard key utility，供 BT key selector validation 使用，后续也可服务 StateTree 或其它 AI asset。
 5. 抽出 public tree region adapter / helper，避免每个 tree-like asset 都写自己的 extractor/applier/reducer/diff helper。
 6. 定义 BT editor layout 的独立 region，使视觉排布作为同一 spec / plan 的后续 milestone 完成，而不是混入 semantic tree。
@@ -73,7 +73,7 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 - 不把 BT editor graph layout 混入 `Body.Tree`。布局必须走独立 `Body.EditorLayout` region，并通过 tree node `Id` 关联语义节点。
 - 不把 GraphNode GUID 当作 AssetDocument identity；GraphNode GUID 只能作为 UE editor rebuild 的内部细节。
 - 不把 debug execution state、runtime instance memory 写入 sidecar。
-- 不让 `Properties` 管理 `BlackboardAsset`、`RootNode`、`Services`、`Decorators`、`Children` 等已由 `Body.*` 管理的字段。
+- 不让 `Properties` 管理 `BlackboardAsset`、`RootNode`、`RootDecorators`、`RootDecoratorOps`、`Services`、`Decorators`、`DecoratorOps`、`Children`、`BTGraph` 等已由 `Body.*` 管理或明确排除的字段。
 - 不通过硬编码节点类 switch 扩展行为；节点 class resolution 必须使用动态 class loading / reflection。
 - 不在 `FAssetDocumentCanonicalJson` 中加入 BT/BB domain-specific normalization。
 
@@ -98,9 +98,13 @@ sidecar + profile + policy + public region runtime + tree/key adapters + thin as
 | --- | --- | --- |
 | `UBehaviorTree::BlackboardAsset` | `Body.Blackboard` | AssetRef<UBlackboardData>，required for non-trivial BT |
 | `UBehaviorTree::RootNode` | `Body.Tree.Root` | public tree adapter root |
-| `UBTCompositeNode::Children` | `Body.Tree.Root.Children[]` | tree child array，order is authored semantic order |
+| `UBehaviorTree::RootDecorators` | `Body.Tree.RootDecorators[]` | root-level subtree decorators |
+| `UBehaviorTree::RootDecoratorOps` | `Body.Tree.RootDecoratorLogic[]` | root-level decorator logic operations |
+| `UBTCompositeNode::Children` | `Body.Tree.*.Children[]` | `FBTCompositeChild` edge binding，order is authored semantic order |
 | `UBTCompositeNode::Services` | `Body.Tree.*.Services[]` | service child region under owning composite |
-| `UBTCompositeChild::Decorators` | `Body.Tree.*.Decorators[]` | decorator child region on edge / child binding |
+| `FBTCompositeChild::ChildComposite` / `ChildTask` | `Body.Tree.*.Children[].Child` | exactly one child node per edge |
+| `FBTCompositeChild::Decorators` | `Body.Tree.*.Children[].Decorators[]` | decorator child region on edge / child binding |
+| `FBTCompositeChild::DecoratorOps` | `Body.Tree.*.Children[].DecoratorLogic[]` | AND / OR / NOT / Test decorator expression |
 | `UBTTaskNode` | `Body.Tree.*` | leaf node kind |
 | `UBTNode` editable properties | `Body.Tree.*.Properties` | reflected property object，schema by node class reflection |
 | `FBlackboardKeySelector` properties | `Body.Tree.*.Properties.<Field>` | key selector object, validated against `Body.Blackboard` |
@@ -189,6 +193,8 @@ Rules:
       "Path": "/Game/AI/BB_Enemy.BB_Enemy"
     },
     "Tree": {
+      "RootDecorators": [],
+      "RootDecoratorLogic": [],
       "Root": {
         "Id": "RootSelector",
         "Class": "/Script/AIModule.BTComposite_Selector",
@@ -196,15 +202,32 @@ Rules:
         "Services": [],
         "Children": [
           {
-            "Id": "MoveToTarget",
-            "Class": "/Script/AIModule.BTTask_MoveTo",
-            "Properties": {
-              "BlackboardKey": {
-                "Key": "TargetActor"
+            "Child": {
+              "Id": "MoveToTarget",
+              "Class": "/Script/AIModule.BTTask_MoveTo",
+              "Properties": {
+                "BlackboardKey": {
+                  "Key": "TargetActor"
+                }
               }
             },
-            "Decorators": [],
-            "Services": []
+            "Decorators": [
+              {
+                "Id": "HasTargetDecorator",
+                "Class": "/Script/AIModule.BTDecorator_Blackboard",
+                "Properties": {
+                  "BlackboardKey": {
+                    "Key": "HasTarget"
+                  }
+                }
+              }
+            ],
+            "DecoratorLogic": [
+              {
+                "Operation": "Test",
+                "Number": 0
+              }
+            ]
           }
         ]
       }
@@ -237,14 +260,21 @@ Rules:
 - `Body.Blackboard` is required when `Body.Tree` contains any node with blackboard key selectors or subtree compatibility checks.
 - `Body.BlackboardInline` is not a valid key. It must return `UnknownBodyKey` or `UnsupportedBehaviorTreeRegion` if explicitly declared by policy during migration.
 - `Body.Tree.Root` is required for authored tree apply.
-- Every node must have stable `Id` unique within the tree.
+- `Body.Tree.RootDecorators[]` and `Body.Tree.RootDecoratorLogic[]` map to `UBehaviorTree::RootDecorators` and `RootDecoratorOps`; they are required fields and may be empty arrays.
+- Every node, root decorator, edge decorator, and service must have stable `Id` unique within the tree.
 - `Class` must resolve dynamically to a non-abstract `UBTNode` subclass compatible with the node position:
   - root / internal composite: `UBTCompositeNode`
   - leaf task: `UBTTaskNode`
   - decorator: `UBTDecorator`
   - service: `UBTService`
+- All loadable non-abstract compatible subclasses are in scope, including project-defined BT node classes. The implementation must not whitelist only built-in AIModule nodes.
 - `Properties` is a reflected property object. Unsupported property type must return exact diagnostic, not be silently ignored.
-- `Decorators` and `Services` are child arrays with their own stable `Id`.
+- `Children[]` maps to `FBTCompositeChild`; each child entry must contain exactly one `Child` object. The child class decides whether UE stores it in `ChildComposite` or `ChildTask`.
+- `Children[].Decorators[]` maps to `FBTCompositeChild::Decorators`.
+- `Children[].DecoratorLogic[]` maps to `FBTCompositeChild::DecoratorOps`.
+- `RootDecoratorLogic[]` and `DecoratorLogic[]` operations must use the UE `EBTDecoratorLogic` vocabulary: `Test`, `And`, `Or`, `Not`. `Invalid` is rejected in authored documents.
+- decorator logic `Number` must be validated against the decorator expression shape. Empty decorators require empty decorator logic.
+- `Services` are child arrays with their own stable `Id`.
 - child order under `Children` is semantic and preserved.
 - `Body.EditorLayout` is optional but in-scope for this spec. Missing `EditorLayout` means the implementation may use UE rebuild / auto layout; present `EditorLayout` is source-of-truth for supported editor presentation fields.
 - `Body.EditorLayout.Nodes[].NodeId` must reference an existing semantic node, decorator, or service `Id` from `Body.Tree`. Layout cannot create, delete, or reorder BT nodes.
@@ -265,7 +295,7 @@ Rules:
 | RegionId | Kind | Managed UE surface | Adapter / hook |
 | --- | --- | --- | --- |
 | `Body.Blackboard` | object/scalar ref | `UBehaviorTree::BlackboardAsset` | object/ref adapter + BT blackboard hook |
-| `Body.Tree` | tree | `RootNode`, `Children`, `Decorators`, `Services` | public tree adapter + BT node materializer |
+| `Body.Tree` | tree | `RootNode`, `RootDecorators`, `RootDecoratorOps`, `Children`, `Decorators`, `DecoratorOps`, `Services` | public tree adapter + BT node materializer |
 | `Body.EditorLayout` | object | `UBehaviorTreeGraph` presentation fields | editor layout adapter + BT graph hook |
 
 Policies must name managed UE surfaces so inspect/template output can explain ownership. `Properties` must reject writes for fields already owned by `Body.Blackboard`, `Body.Tree`, or `Body.EditorLayout`.
@@ -295,7 +325,9 @@ Implementation should introduce or reuse these public-ish components:
    - generic tree lifecycle adapter shape
    - stable node identity and semantic diff path
    - recursive validate/apply/extract/diff hooks
-   - child arrays for `Children`, `Decorators`, `Services`
+   - child edge bindings for `Children[].Child`
+   - child arrays for `RootDecorators`, `Children[].Decorators`, and `Services`
+   - decorator logic arrays for `RootDecoratorLogic` and `Children[].DecoratorLogic`
 
 4. `FAssetDocumentBehaviorTreeNodeMaterializer`
    - BT-specific hook used by tree adapter
@@ -361,6 +393,8 @@ Create/update:
 - Create or load target `UBehaviorTree`.
 - Resolve `Body.Blackboard` AssetRef.
 - Apply `Body.Tree` using the public tree adapter and BT materializer.
+- Apply `Body.Tree.RootDecorators` / `RootDecoratorLogic`.
+- Apply composite `Children[]` as `FBTCompositeChild` edge bindings, including `ChildComposite` / `ChildTask`, `Decorators`, and `DecoratorOps`.
 - Rebuild editor graph / refresh tree after structural changes.
 - Apply `Body.EditorLayout` after editor graph rebuild when the region is present.
 - If `Body.EditorLayout` is absent, use UE rebuild / auto layout behavior for editor graph presentation.
@@ -370,6 +404,8 @@ Extract:
 
 - Extract `Blackboard` as AssetRef.
 - Extract runtime authored tree from `RootNode`, not from editor graph layout.
+- Extract root decorators / root decorator logic from `RootDecorators` and `RootDecoratorOps`.
+- Extract each composite child as one edge binding with `Child`, `Decorators`, and `DecoratorLogic`.
 - Extract stable node `Id`. If existing UE nodes lack authored identity, implementation must define deterministic identity generation and document collision behavior.
 - Extract supported editor layout fields into `Body.EditorLayout` after the semantic tree ids are known.
 - Layout extraction must map editor graph nodes back to semantic `Id`; it must not expose transient graph node object paths as identity.
@@ -378,7 +414,11 @@ Diff:
 
 - Blackboard diff at `/Body/Blackboard`.
 - Tree node diff at `/Body/Tree/<NodeId>`.
-- Child additions/removals use semantic path, not transient UE graph index.
+- Root decorator diff at `/Body/Tree/RootDecorators/<Id>`.
+- Root decorator logic diff at `/Body/Tree/RootDecoratorLogic/<Index>` because UE logic op order is part of the decorator expression.
+- Child additions/removals use semantic child node id path, not transient UE graph index.
+- Child edge decorator diff at `/Body/Tree/<ParentId>/Children/<ChildId>/Decorators/<Id>`.
+- Child edge decorator logic diff at `/Body/Tree/<ParentId>/Children/<ChildId>/DecoratorLogic/<Index>`.
 - Layout diff at `/Body/EditorLayout/Nodes/<NodeId>` and `/Body/EditorLayout/Comments/<CommentId>`.
 - Layout-only changes must not appear as semantic `Body.Tree` changes.
 
@@ -408,11 +448,15 @@ Required identity rules:
 - Node `Id` is required for every authored tree node, decorator, and service.
 - `Id` must be unique within the owning BehaviorTree.
 - The same `Id` cannot appear as both task and decorator/service.
+- Child edge identity is the referenced child node `Id`; there is no separate edge id unless future UE evidence proves multiple edges can target the same node instance.
 - IDs are case-sensitive for display but duplicate detection should use `FName` normalization unless implementation proves UE treats them case-sensitive.
 - Semantic diff paths:
   - root node: `/Body/Tree/<Id>`
   - child node: `/Body/Tree/<Id>`
-  - decorator: `/Body/Tree/<OwnerId>/Decorators/<Id>`
+  - root decorator: `/Body/Tree/RootDecorators/<Id>`
+  - root decorator logic: `/Body/Tree/RootDecoratorLogic/<Index>`
+  - edge decorator: `/Body/Tree/<OwnerId>/Children/<ChildId>/Decorators/<Id>`
+  - edge decorator logic: `/Body/Tree/<OwnerId>/Children/<ChildId>/DecoratorLogic/<Index>`
   - service: `/Body/Tree/<OwnerId>/Services/<Id>`
   - property: `/Body/Tree/<Id>/Properties/<PropertyName>`
   - editor layout node: `/Body/EditorLayout/Nodes/<NodeId>`
@@ -425,13 +469,15 @@ Array index paths are allowed only for malformed JSON before identity can be rea
 BT node `Properties` should use existing dynamic style:
 
 - resolve node class dynamically with `ClassFinderUtils`, `StaticLoadClass`, or equivalent runtime class loading.
-- set reflected properties through `PropertySetterUtils` or a focused AssetDocument property helper.
+- set and extract reflected properties through `PropertySetterUtils`, the existing AssetDocument reflected property runtime, or a focused public property helper if the current runtime lacks extract/diff support.
 - do not include every possible BT node header just to support common nodes.
 - `FBlackboardKeySelector` needs a dedicated conversion utility because it is semantic, not plain scalar.
 - Asset references inside node properties should use AssetRef shape where possible.
-- unsupported reflected property types must fail validation with exact path/code.
+- BT capability must not maintain a node-class or property-name whitelist for common nodes. It must support the complete authored editable reflected property surface that the shared AssetDocument property runtime can represent.
+- If implementation discovers a reflected authored property kind that the shared runtime cannot yet represent, the plan must expand the shared runtime in the same BT+BB implementation chain or explicitly prove that the field is runtime/debug/cache/editor-derived and excluded from AssetDocument authorship.
+- property failures must be exact path/code diagnostics. They are not allowed to become silent partial apply/extract behavior.
 
-First implementation should support a verified subset of reflected property types and document deferred property kinds. It must not silently ignore unknown fields in `Properties`.
+First implementation must support complete BT semantic roundtrip for authored editable node properties, including task/composite/decorator/service properties reachable through reflection and `FBlackboardKeySelector`.
 
 ## 13. Deferred And Excluded Boundaries
 
@@ -439,8 +485,8 @@ The following boundaries must be documented in `docs/superpowers/specs/asset-doc
 
 | Entry | Stage behavior | Cleanup trigger |
 | --- | --- | --- |
-| unsupported BT node class | validation failure with `/Body/Tree/<Id>/Class` | dynamic class materializer proves safe apply/extract |
-| unsupported BT reflected property type | validation failure at property path | property adapter supports type roundtrip |
+| invalid BT node class | validation failure with `/Body/Tree/<Id>/Class` | class path is corrected to a loadable, non-abstract, position-compatible `UBTNode` subclass |
+| non-authored reflected property | excluded with documented reason | field is proven authored and represented by shared property runtime |
 | unsupported editor layout field | validation failure under `/Body/EditorLayout` | editor layout adapter supports apply/extract/diff |
 | unsupported graph comment field | validation failure under `/Body/EditorLayout/Comments/<Id>` | comment field has stable UE storage and tests |
 | advanced key selector filters | conservative validation | reliable UE metadata extraction and tests |
@@ -463,6 +509,11 @@ Required diagnostic examples:
 | `BlackboardInline` provided | `/Body/BlackboardInline` | `UnknownBodyKey` or `UnsupportedBehaviorTreeRegion` |
 | duplicate BT node id | `/Body/Tree/<Id>` | `DuplicateBehaviorTreeNodeId` |
 | invalid node class | `/Body/Tree/<Id>/Class` | `InvalidBehaviorTreeNodeClass` |
+| invalid child edge | `/Body/Tree/<ParentId>/Children/<ChildId>` | `InvalidBehaviorTreeChildEdge` |
+| duplicate edge decorator id | `/Body/Tree/<ParentId>/Children/<ChildId>/Decorators/<Id>` | `DuplicateBehaviorTreeDecoratorId` |
+| invalid decorator logic op | `/Body/Tree/<ParentId>/Children/<ChildId>/DecoratorLogic/<Index>/Operation` | `InvalidBehaviorTreeDecoratorLogic` |
+| dangling decorator logic | `/Body/Tree/<ParentId>/Children/<ChildId>/DecoratorLogic/<Index>` | `InvalidBehaviorTreeDecoratorLogicShape` |
+| invalid root decorator logic | `/Body/Tree/RootDecoratorLogic/<Index>` | `InvalidBehaviorTreeRootDecoratorLogic` |
 | blackboard key missing | `/Body/Tree/<Id>/Properties/<Field>/Key` | `UnknownBlackboardKey` |
 | key type mismatch | `/Body/Tree/<Id>/Properties/<Field>/Key` | `IncompatibleBlackboardKeyType` |
 | subtree blackboard mismatch | `/Body/Tree/<Id>/Properties/<Field>` | `IncompatibleBehaviorTreeBlackboard` |
@@ -496,12 +547,14 @@ The implementation plan must execute this combined spec through one branch chain
 4. **BehaviorTree profile and lifecycle**
    - exact profile/template/policies
    - `Body.Blackboard`
-   - create/update/extract/diff without full node apply if tree adapter is still empty-gated
+   - create/update/extract/diff are wired for the complete BT semantic tree contract
 
 5. **BT node materialization**
    - root/composite/task/decorator/service apply/extract
+   - root decorators and root decorator logic
+   - child edge bindings with edge decorators and decorator logic
    - dynamic class loading
-   - reflected property subset
+   - complete authored editable reflected property roundtrip
    - editor graph rebuild hook
 
 6. **BehaviorTree editor layout region**
@@ -537,6 +590,8 @@ Minimum focused automation:
 - `AssetFactory.AssetDocument.BehaviorTree.ProfileShape`
 - `AssetFactory.AssetDocument.BehaviorTree.BlackboardReference`
 - `AssetFactory.AssetDocument.BehaviorTree.Tree`
+- `AssetFactory.AssetDocument.BehaviorTree.RootDecorators`
+- `AssetFactory.AssetDocument.BehaviorTree.DecoratorLogic`
 - `AssetFactory.AssetDocument.BehaviorTree.EditorLayout`
 - `AssetFactory.AssetDocument.BehaviorTree.BlackboardKeySelectors`
 - `AssetFactory.AssetDocument.BehaviorTree.SubtreeBlackboardCompatibility`
@@ -569,7 +624,9 @@ The spec is complete only when:
 - BT references BB through AssetRef only.
 - BB key lookup and key type compatibility live in shared utility/adapter code, not BT capability private code.
 - BT tree validate/apply/extract/diff uses public tree adapter composition.
-- unsupported node/property/key cases produce exact path/code diagnostics.
+- BT semantic roundtrip covers root decorators, root decorator logic, composite child edge binding, edge decorators, edge decorator logic, composite services, task/composite/decorator/service properties, subtree references, and key selectors.
+- BT reflected property handling is dynamic and complete for authored editable properties; built-in-node whitelists or partial common-property coverage are not accepted as complete.
+- invalid node/property/key/decorator-logic/layout cases produce exact path/code diagnostics.
 - extract/diff paths are semantic and stable.
 - final report records fresh UBT, automation, MCP, and smoke/blocker evidence.
 
