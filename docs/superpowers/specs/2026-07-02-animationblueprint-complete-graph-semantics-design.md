@@ -225,7 +225,191 @@ Required behavior:
 
 If a node class is discoverable but not spawnable in the current graph context, validation must fail before mutation.
 
-## 7. Reflected Property Utilities
+## 7. Node Coverage Rules
+
+The graph runtime must cover `UAnimGraphNode_*` by dynamic discovery plus shared node contracts, not by one adapter per node class.
+
+### 7.1 Node Creation Contract
+
+Every authored node is materialized through this order:
+
+1. Resolve graph context from `Graph.Kind` and `Graph.Owner`.
+2. Resolve a UE graph schema and action/spawner list for that context.
+3. Resolve `Node.Class` and optional `Node.Spawner` to one exact spawn action.
+4. Spawn through UE graph action APIs.
+5. Apply `Node.Fields`, then reconstruct node and refresh pins.
+6. Apply pin defaults/exposure metadata.
+7. Apply `Position`.
+8. Validate post-spawn class, pins, links, and compile-owned repair evidence.
+
+`Node.Class` alone is acceptable only when the schema exposes exactly one spawn action for that class in the current context. If multiple actions exist, `Node.Spawner` is required. If no action exists, preflight fails before mutation.
+
+### 7.2 Required Node Descriptor Fields
+
+`Node.Spawner` is a small descriptor, not a class switch:
+
+| Field | Requirement |
+| --- | --- |
+| `ActionKey` | stable action/menu key when UE exposes one |
+| `MenuName` | human-readable fallback evidence, not identity by itself |
+| `Category` | optional action category for ambiguity diagnostics |
+| `TemplateClass` | optional class path when spawner creates a specialized node |
+| `Factory` | optional factory/tool name if UE exposes multiple factories for one node class |
+
+The runtime may extract additional spawner evidence, but apply identity must be stable enough to reject ambiguity.
+
+### 7.3 Node Identity
+
+`Node.Id` is authored identity. UE `NodeGuid` is not the primary authoring identity.
+
+Identity rules:
+
+- authoring path and diff path use `Node.Id`.
+- extract may include `Evidence.NodeGuid`.
+- apply may reuse an existing UE node by `Node.Id` mapping, `Evidence.NodeGuid`, or semantic resolver, in that order.
+- duplicate `Node.Id` in one graph is a validation error.
+- if a UE node cannot be represented as authored JSON, extract must emit `_Skipped` / `Evidence` rather than silently dropping it.
+
+### 7.4 Pin Rules
+
+Pins are shared graph semantics:
+
+- pin endpoint identity uses semantic pin name or stable pin id, never array index.
+- dynamically generated pins must have a reproducible `Pins` declaration or a field trait that regenerates them.
+- pin defaults belong in `Pins`; UObject/UStruct fields belong in `Fields`.
+- links are validated after node reconstruction, because fields can create/remove pins.
+- ambiguous pin names fail with exact JSON Pointer diagnostics.
+
+### 7.5 Structural Hook Boundary
+
+Structural hooks are allowed only for UE graph ownership and lifecycle that reflection cannot express:
+
+- creating or locating the correct `UEdGraph`.
+- owning outer/package relationships.
+- creating state/state-transition/layer wrapper nodes that own subgraphs.
+- repairing entry/result framework nodes.
+- compiling, refreshing, or rebuilding graph-owned caches.
+- mapping UE compile diagnostics back to graph/node/field paths.
+
+Structural hooks must not parse arbitrary node fields, maintain per-node property lists, or implement node-class-specific semantic switches.
+
+### 7.6 Initial Node Families To Prove Coverage
+
+The implementation plan must choose coverage tests from multiple node families, because one node family is not proof that reflection/spawner coverage works:
+
+| Family | Purpose |
+| --- | --- |
+| sequence/blend player nodes | asset refs, time/playback fields, output pose pins |
+| blend nodes | multiple pose input pins and generated pin behavior |
+| cached pose save/use nodes | cross-graph identity resolver |
+| slot/sync group nodes | name traits and montage/sync semantics |
+| state machine reference nodes | nested graph ownership |
+| linked graph/layer nodes | class refs, layer names, signature validation |
+| K2 transition rule nodes | common Blueprint graph reuse inside transition graphs |
+
+This is not a static supported-node whitelist. It is the minimum evidence set proving the generic runtime shape.
+
+## 8. Common Field Rules
+
+Reflection gives field shape. Shared field rules give stable AssetDocument meaning. These rules apply to `UAnimGraphNode_*`, inner `FAnimNode_*`, K2 transition nodes, layer nodes, and any graph-family node fields.
+
+### 8.1 Field Path Model
+
+`Node.Fields` is keyed by reflected property path relative to the authored node semantic surface:
+
+```json
+{
+  "Fields": {
+    "Node.Sequence": {"Kind": "AssetRef", "Path": "/Game/Anim/Idle"},
+    "Node.PlayRate": 1.0,
+    "Node.GroupName": "Locomotion"
+  }
+}
+```
+
+Rules:
+
+- UObject wrapper fields and inner UStruct fields both use path segments.
+- path escaping uses the shared JSON Pointer helper.
+- unknown writable reflected field is a validation error only when it is authored; extract may omit default fields.
+- non-writable, transient, deprecated, editor-only cache, generated, or compile output fields are excluded and may appear only as `Evidence`.
+- field application is staged: validate all fields first, then mutate.
+
+### 8.2 Default And Canonical Omission
+
+Field extraction must compare against the correct default source:
+
+| Default Source | Use |
+| --- | --- |
+| node CDO | UObject wrapper fields |
+| inner struct default | `FAnimNode_*` fields |
+| graph/schema default | default pins and framework nodes |
+| profile default | ABP-specific baseline such as target skeleton or preview policy |
+| current baseline | only when policy explicitly marks preserve-existing behavior |
+
+Default-valued fields should be omitted from canonical `Fields` unless omission would lose authored identity or necessary generated-pin intent.
+
+### 8.3 Trait Resolution Order
+
+Traits must be selected without a growing class switch. Resolution order:
+
+1. explicit schema metadata on the field, if UE exposes it.
+2. `FProperty` type and object/class constraint.
+3. owner graph kind and property path.
+4. owning UE struct/class relationship.
+5. profile-level trait hook for domain-specific names.
+
+If two traits match and produce different JSON forms, validation fails and the plan must add a narrower rule. Silent fallback to raw string is forbidden for semantic fields.
+
+### 8.4 Required Shared Traits
+
+| Trait | JSON Shape | Validation |
+| --- | --- | --- |
+| `AssetRef<T>` | `{"Kind":"AssetRef","Path":"/Game/..."}` or `null` when nullable | asset exists and is assignable to `T`; skeleton compatibility checked where relevant |
+| `ClassRef<T>` | `{"Kind":"ClassRef","Path":"/Script/..."}` | class exists and is child of `T` |
+| `Name` | string | non-empty when UE requires it; canonical `FName` string |
+| `SlotName` | string | valid montage slot name or exact diagnostic if project slot table is unavailable |
+| `SyncGroupName` | string | matches authored sync group identity or creates/declares it by policy |
+| `CachedPoseName` | string | unique save identity; use nodes reference existing save identity |
+| `LayerName` | string | layer exists on linked interface/profile and signature matches |
+| `BoneName` / `BoneReference` | string or object when extra space data is required | skeleton has bone; target skeleton must be known before apply |
+| `CurveName` | string | curve name normalized and validated when skeleton/curve metadata is available |
+| `GameplayTag` / `TagName` | string | only if field type or metadata proves tag semantics |
+| `Enum` | string | enum display names must canonicalize to stable C++ enum values |
+| `Color` / `Vector` / numeric structs | object with named components | no positional arrays unless the UE struct has stable named field order and spec says so |
+
+Raw reflected JSON is allowed only for fields with no semantic trait and stable primitive/struct conversion.
+
+### 8.5 Cross-Field Validation
+
+Some fields are valid only together. The shared field layer must support cross-field validation hooks without moving node parsing into ABP capability:
+
+- asset reference vs target skeleton compatibility.
+- node field changes that create/remove pins.
+- cached pose save/use graph-wide uniqueness.
+- linked layer class/name/signature.
+- blend node pose input count vs authored pins.
+- enum mode fields that change which other fields are active.
+
+Cross-field hooks return JSON Pointer diagnostics at the closest field or node path.
+
+### 8.6 Apply And Repair Order
+
+Field application order must be deterministic:
+
+1. spawn node shell.
+2. apply fields that affect node mode or dynamic pin shape.
+3. reconstruct node.
+4. apply remaining reflected fields.
+5. apply pin defaults/exposure.
+6. apply layout.
+7. create links.
+8. run graph compile/repair hook.
+9. extract and compare post-apply evidence for the managed graph.
+
+If post-apply extraction cannot prove the authored semantic state, apply fails instead of returning success with hidden loss.
+
+## 9. Reflected Property Utilities
 
 ABP graph implementation must reuse or introduce shared reflected property utilities for:
 
@@ -238,7 +422,7 @@ ABP graph implementation must reuse or introduce shared reflected property utili
 
 This utility must not be ABP-specific. Existing `FAssetDocumentPropertyAdapter` / `PropertySetterUtils` behavior should be reused where it fits, and extended publicly where graph node fields need UStruct inner-node support.
 
-## 8. Semantic Field Traits
+## 10. Semantic Field Traits
 
 Reflection provides field shape; field traits provide authored meaning.
 
@@ -259,7 +443,7 @@ Required initial trait categories:
 
 Traits can be selected by property type, metadata, property path, owner graph kind, or UE type relation. They must not rely on a growing class-name switch.
 
-## 9. Cached Poses
+## 11. Cached Poses
 
 Cached pose support is a cross-graph resolver requirement, not a node-specific hard-code.
 
@@ -271,7 +455,7 @@ Required semantics:
 - rename/update repairs all authored references or fails with exact diagnostics.
 - extract/diff paths use cached pose identity, not transient node index.
 
-## 10. Identity And Diff
+## 12. Identity And Diff
 
 Stable semantic identity is mandatory:
 
@@ -291,7 +475,7 @@ Semantic diff paths must not degrade to numeric array index paths. Examples:
 /Body/ParentAssetOverrides/IdlePlayer/NewAsset
 ```
 
-## 11. Layout Semantics
+## 13. Layout Semantics
 
 `Position` is authored layout metadata for graph nodes:
 
@@ -307,7 +491,7 @@ Requirements:
 - diff can compare semantic graph separately from layout-only changes.
 - state machine entry/state/transition positions are included where UE exposes editor layout.
 
-## 12. Error Handling
+## 14. Error Handling
 
 No graph content may be silently ignored.
 
@@ -328,7 +512,7 @@ Required diagnostics:
 
 Unsupported or extract-only content must surface via validation diagnostic, `_Skipped`, or diff `skipped` entries.
 
-## 13. Implementation Impact
+## 15. Implementation Impact
 
 The implementation plan must include these migration tasks:
 
@@ -340,13 +524,17 @@ The implementation plan must include these migration tasks:
 6. Add ABP `Body.FunctionGraphs` and `Body.MacroGraphs` region bindings through common Blueprint graph support.
 7. Upgrade `Body.ParentAssetOverrides` identity from GUID-only to authored graph node identity with GUID evidence fallback.
 8. Keep public runtime boundaries: `FAssetDocumentBodyRegionDispatcher` and `IAssetDocumentRegionAdapter` remain the region lifecycle entrypoint; ABP-specific hooks are only for UE graph ownership, compile/rebuild, and identity repair.
+9. Add generic node coverage tests across the initial node families listed in this spec; do not mark coverage complete from a single sequence player test.
+10. Add shared field-rule utilities and tests before implementing ABP node-specific graph authoring.
 
-## 14. Verification Requirements
+## 16. Verification Requirements
 
 Completion requires all of:
 
 - focused recursive graph parser/runtime unit tests.
 - reflected property utility tests including UStruct inner `FAnimNode_*` fields.
+- shared node coverage rule tests for spawner ambiguity, dynamic pins, skipped extract-only nodes, and structural hook boundaries.
+- shared field rule tests for trait resolution, default omission, cross-field validation, and staged apply ordering.
 - node spawner discovery and materialization tests.
 - `Body.AnimGraph` apply/extract/diff roundtrip with multiple reflected `UAnimGraphNode_*`.
 - `Body.StateMachines` roundtrip with state pose graphs and transitions.
@@ -361,7 +549,7 @@ Completion requires all of:
 - full AssetDocument automation.
 - HTTP/MCP extract/apply/diff smoke against a real editor.
 
-## 15. Spec Relationship
+## 17. Spec Relationship
 
 This spec supersedes the current root-only / empty-only graph-family boundaries in:
 
