@@ -29,6 +29,13 @@ TSharedRef<FJsonObject> MakeCanonicalAnimGraphObject()
 	return Region;
 }
 
+TSharedRef<FJsonObject> MakeEmptyGraphRegionObject()
+{
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), MakeEmptyArray());
+	return Region;
+}
+
 bool MakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
@@ -178,7 +185,7 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentProfile::CreateTemplate(const
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), MakeEmptyArray());
 	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
-	Body->SetArrayField(TEXT("StateMachines"), MakeEmptyArray());
+	Body->SetObjectField(TEXT("StateMachines"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("TransitionGraphs"), MakeEmptyArray());
 	Body->SetArrayField(TEXT("AnimLayers"), MakeEmptyArray());
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), MakeEmptyArray());

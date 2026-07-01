@@ -75,6 +75,13 @@ TSharedRef<FJsonObject> MakeCanonicalAnimGraphObject()
 	return Region;
 }
 
+TSharedRef<FJsonObject> MakeEmptyGraphRegionObject()
+{
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {});
+	return Region;
+}
+
 TArray<TSharedPtr<FJsonValue>> MakeLegacyAnimGraphArray()
 {
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
@@ -235,6 +242,90 @@ TSharedRef<FJsonValue> MakeBodyWithStateMachines(std::initializer_list<TSharedPt
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetArrayField(TEXT("StateMachines"), MakeStateMachineArray(Machines));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonObject> MakeStateMachineGraph(
+	const TCHAR* Id,
+	bool bDuplicateState = false,
+	bool bUnknownEndpoint = false)
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), Id);
+	Graph->SetStringField(TEXT("Kind"), TEXT("StateMachine"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+
+	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+	Metadata->SetStringField(TEXT("EntryState"), TEXT("Idle"));
+	Graph->SetObjectField(TEXT("Metadata"), Metadata);
+
+	auto MakeNode = [](const TCHAR* NodeId, const TCHAR* Kind, const TCHAR* ClassPath, double X, double Y)
+	{
+		TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+		Node->SetStringField(TEXT("Id"), NodeId);
+		Node->SetStringField(TEXT("Kind"), Kind);
+		Node->SetStringField(TEXT("Class"), ClassPath);
+		TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+		Position->SetNumberField(TEXT("X"), X);
+		Position->SetNumberField(TEXT("Y"), Y);
+		Node->SetObjectField(TEXT("Position"), Position);
+		return Node;
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(TEXT("Idle"), TEXT("State"), TEXT("/Script/AnimGraph.AnimStateNode"), 0, 0)));
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(bDuplicateState ? TEXT("Idle") : TEXT("Run"), TEXT("State"), TEXT("/Script/AnimGraph.AnimStateNode"), 240, 0)));
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(TEXT("IdleToRun"), TEXT("Transition"), TEXT("/Script/AnimGraph.AnimStateTransitionNode"), 120, 0)));
+	Graph->SetArrayField(TEXT("Nodes"), Nodes);
+
+	auto MakeLink = [](const TCHAR* FromNode, const TCHAR* FromPin, const TCHAR* ToNode, const TCHAR* ToPin)
+	{
+		TSharedRef<FJsonObject> From = MakeShared<FJsonObject>();
+		From->SetStringField(TEXT("Node"), FromNode);
+		From->SetStringField(TEXT("Pin"), FromPin);
+		TSharedRef<FJsonObject> To = MakeShared<FJsonObject>();
+		To->SetStringField(TEXT("Node"), ToNode);
+		To->SetStringField(TEXT("Pin"), ToPin);
+		TSharedRef<FJsonObject> Link = MakeShared<FJsonObject>();
+		Link->SetObjectField(TEXT("From"), From);
+		Link->SetObjectField(TEXT("To"), To);
+		return Link;
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Links;
+	Links.Add(MakeShared<FJsonValueObject>(MakeLink(TEXT("Idle"), TEXT("Out"), TEXT("IdleToRun"), TEXT("In"))));
+	Links.Add(MakeShared<FJsonValueObject>(MakeLink(TEXT("IdleToRun"), TEXT("Out"), bUnknownEndpoint ? TEXT("Missing") : TEXT("Run"), TEXT("In"))));
+	Graph->SetArrayField(TEXT("Links"), Links);
+
+	TSharedRef<FJsonObject> RuleGraph = MakeShared<FJsonObject>();
+	RuleGraph->SetStringField(TEXT("Id"), TEXT("IdleToRunRule"));
+	RuleGraph->SetStringField(TEXT("Kind"), TEXT("TransitionRule"));
+	TSharedRef<FJsonObject> Owner = MakeShared<FJsonObject>();
+	Owner->SetStringField(TEXT("Transition"), TEXT("IdleToRun"));
+	RuleGraph->SetObjectField(TEXT("Owner"), Owner);
+	RuleGraph->SetArrayField(TEXT("Nodes"), {});
+	RuleGraph->SetArrayField(TEXT("Links"), {});
+	RuleGraph->SetArrayField(TEXT("Subgraphs"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(RuleGraph)});
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeStateMachinesGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedRef<FJsonObject>& Graph : Graphs)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Graph));
+	}
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), Values);
+	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithStateMachineGraphs(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("StateMachines"), MakeStateMachinesGraphRegion(Graphs));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -504,7 +595,7 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), {});
 	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
-	Body->SetArrayField(TEXT("StateMachines"), {});
+	Body->SetObjectField(TEXT("StateMachines"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("TransitionGraphs"), {});
 	Body->SetArrayField(TEXT("AnimLayers"), {});
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), {});
@@ -984,47 +1075,54 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
 	TestTrue(
-		TEXT("StateMachines accepts empty compatibility value"),
-		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines"))).bSuccess);
+		TEXT("StateMachines accepts empty recursive graph region"),
+		Capability.Validate(Context, MakeBodyWithStateMachineGraphs({})).bSuccess);
 
 	const FAssetDocumentCapabilityResult AuthoredStateMachineResult =
 		Capability.Validate(
 			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("Run"))},
-					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
-	TestFalse(TEXT("StateMachines rejects non-empty authored identity data until materialization exists"), AuthoredStateMachineResult.bSuccess);
-	TestTrue(
-		TEXT("StateMachines non-empty diagnostic uses region path"),
-		HasDiagnostic(AuthoredStateMachineResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+			MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))}));
+	TestTrue(TEXT("StateMachines validates authored recursive graph data"), AuthoredStateMachineResult.bSuccess);
 
 	const FAssetDocumentCapabilityResult DuplicateStateResult =
 		Capability.Validate(
 			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("idle"))},
-					{})}));
-	TestFalse(TEXT("StateMachines still rejects duplicate authored input through deferred boundary"), DuplicateStateResult.bSuccess);
-	TestTrue(
-		TEXT("Duplicate state is not silently accepted"),
-		HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+			MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"), true)}));
+	TestFalse(TEXT("StateMachines rejects duplicate graph node identities"), DuplicateStateResult.bSuccess);
+	TestTrue(TEXT("Duplicate state is not silently accepted"), HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines/Graphs/0/Nodes/1/Id"), TEXT("DuplicateGraphNodeId")));
 
-	const FAssetDocumentCapabilityResult UnknownEndpointResult =
-		Capability.Validate(
-			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle"))},
-					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
-	TestFalse(TEXT("StateMachines rejects transitions while materialization is deferred"), UnknownEndpointResult.bSuccess);
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	Document->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraph(TEXT("Locomotion"))}));
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("StateMachines recursive apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("StateMachines recursive apply succeeds"), ApplyResult.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint with state machine loads"), AnimBlueprint);
+	FAssetDocumentCapabilityContext AssetContext;
+	AssetContext.Asset = AnimBlueprint;
+	AssetContext.AssetClass = UAnimBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(AssetContext, ExtractedBody);
+	TestTrue(TEXT("StateMachines extract succeeds"), ExtractResult.bSuccess);
+	const TSharedPtr<FJsonObject>* ExtractedStateMachines = nullptr;
 	TestTrue(
-		TEXT("Unknown endpoint is not silently accepted"),
-		HasDiagnostic(UnknownEndpointResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+		TEXT("Extract includes recursive StateMachines object"),
+		ExtractedBody->TryGetObjectField(TEXT("StateMachines"), ExtractedStateMachines)
+			&& ExtractedStateMachines
+			&& (*ExtractedStateMachines)->HasTypedField<EJson::Array>(TEXT("Graphs")));
 
 	TestTrue(
 		TEXT("TransitionGraphs accepts empty compatibility value"),
@@ -1062,9 +1160,8 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
-		Capability.Diff(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines")), DiffEntries);
+		Capability.Diff(AssetContext, MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))}), DiffEntries);
 	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
-	TestEqual(TEXT("Empty StateMachines diff has no authored entries"), DiffEntries.Num(), 0);
 
 	return true;
 }

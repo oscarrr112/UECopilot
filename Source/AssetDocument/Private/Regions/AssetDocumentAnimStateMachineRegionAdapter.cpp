@@ -3,8 +3,29 @@
 #include "Regions/AssetDocumentAnimStateMachineRegionAdapter.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "AssetDocumentPropertyAdapter.h"
+#include "Animation/AnimBlueprint.h"
+#include "AnimationGraph.h"
+#include "AnimationStateGraph.h"
+#include "AnimationStateMachineGraph.h"
+#include "AnimationStateMachineSchema.h"
+#include "AnimationTransitionGraph.h"
+#include "AnimGraphNode_StateMachine.h"
+#include "AnimGraphNode_StateMachineBase.h"
+#include "AnimStateEntryNode.h"
+#include "AnimStateNode.h"
+#include "AnimStateNodeBase.h"
+#include "AnimStateTransitionNode.h"
+#include "EdGraphSchema_K2.h"
+#include "Graphs/AssetDocumentAnimationGraphNodeActionProvider.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
+#include "Graphs/AssetDocumentGraphDiff.h"
+#include "Graphs/AssetDocumentGraphParser.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphPin.h"
 
 namespace
 {
@@ -48,6 +69,124 @@ bool IsEmptyCompatibilityValue(const TSharedPtr<FJsonValue>& Value)
 TSharedPtr<FJsonValue> MakeEmptyArrayValue()
 {
 	return MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>());
+}
+
+TSharedPtr<FJsonValue> MakeEmptyStateMachinesValue()
+{
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {});
+	return MakeShared<FJsonValueObject>(Region);
+}
+
+FAssetDocumentCapabilityResult FromGraphDiagnostics(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
+{
+	if (Diagnostics.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FAssetDocumentCapabilityResult Result;
+	Result.bSuccess = false;
+	Result.Message = Diagnostics[0].Message;
+	for (const FAssetDocumentGraphDiagnostic& GraphDiagnostic : Diagnostics)
+	{
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = GraphDiagnostic.Path;
+		Diagnostic.Code = GraphDiagnostic.Code;
+		Diagnostic.Message = GraphDiagnostic.Message;
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return Result;
+}
+
+FAssetDocumentCapabilityResult ParseStateMachinesRegion(
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	TArray<FAssetDocumentGraphSpec>& OutGraphs)
+{
+	if (!DesiredValue.IsValid() || DesiredValue->Type != EJson::Object)
+	{
+		return Failure(
+			TEXT("/Body/StateMachines"),
+			TEXT("InvalidStateMachinesRegionType"),
+			TEXT("Body.StateMachines must be an object with a Graphs array."));
+	}
+
+	const TSharedPtr<FJsonObject> RegionObject = DesiredValue->AsObject();
+	if (!RegionObject.IsValid())
+	{
+		return Failure(
+			TEXT("/Body/StateMachines"),
+			TEXT("InvalidStateMachinesRegionType"),
+			TEXT("Body.StateMachines must be an object with a Graphs array."));
+	}
+
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = TEXT("/Body/StateMachines");
+	const FAssetDocumentGraphParseResult ParseResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(RegionObject.ToSharedRef(), Options);
+	if (!ParseResult.IsValid())
+	{
+		return FromGraphDiagnostics(ParseResult.Diagnostics);
+	}
+
+	TSet<FString> MachineIds;
+	for (const FAssetDocumentGraphSpec& Graph : ParseResult.Graphs)
+	{
+		if (Graph.Kind != TEXT("StateMachine"))
+		{
+			return Failure(
+				FString::Printf(TEXT("/Body/StateMachines/Graphs/%s/Kind"), *Escape(Graph.Id)),
+				TEXT("InvalidStateMachineGraphKind"),
+				TEXT("Body.StateMachines root graphs must use Kind='StateMachine'."));
+		}
+		const FString NormalizedId = NormalizeIdentity(Graph.Id);
+		if (MachineIds.Contains(NormalizedId))
+		{
+			return Failure(
+				FString::Printf(TEXT("/Body/StateMachines/Graphs/%s/Id"), *Escape(Graph.Id)),
+				TEXT("DuplicateStateMachineName"),
+				FString::Printf(TEXT("Duplicate StateMachine graph identity '%s'."), *Graph.Id));
+		}
+		MachineIds.Add(NormalizedId);
+	}
+
+	OutGraphs = ParseResult.Graphs;
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+UAnimBlueprint* ResolveAnimBlueprint(const FAssetDocumentRegionContext& Context)
+{
+	return Cast<UAnimBlueprint>(Context.Asset);
+}
+
+UAnimationGraph* FindRootAnimGraph(UAnimBlueprint* AnimBlueprint)
+{
+	if (!AnimBlueprint)
+	{
+		return nullptr;
+	}
+	for (UEdGraph* Graph : AnimBlueprint->FunctionGraphs)
+	{
+		UAnimationGraph* AnimGraph = Cast<UAnimationGraph>(Graph);
+		if (AnimGraph && AnimGraph->GetFName() == UEdGraphSchema_K2::GN_AnimGraph)
+		{
+			return AnimGraph;
+		}
+	}
+	return Cast<UAnimationGraph>(
+		FindObject<UEdGraph>(AnimBlueprint, *UEdGraphSchema_K2::GN_AnimGraph.ToString()));
+}
+
+FVector2f ReadGraphPosition(const TSharedPtr<FJsonObject>& Position, float DefaultX, float DefaultY)
+{
+	double X = DefaultX;
+	double Y = DefaultY;
+	if (Position.IsValid())
+	{
+		Position->TryGetNumberField(TEXT("X"), X);
+		Position->TryGetNumberField(TEXT("Y"), Y);
+	}
+	return FVector2f(static_cast<float>(X), static_cast<float>(Y));
 }
 
 bool TryReadRequiredString(
@@ -496,6 +635,413 @@ void AddArrayDiffEntries(
 			MakeEmptyArrayValue());
 	}
 }
+
+FString GraphPath(const FAssetDocumentGraphSpec& GraphSpec)
+{
+	return FString::Printf(TEXT("/Body/StateMachines/Graphs/%s"), *Escape(GraphSpec.Id));
+}
+
+FString NodePath(const FAssetDocumentGraphSpec& GraphSpec, const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return FString::Printf(TEXT("%s/Nodes/%s"), *GraphPath(GraphSpec), *Escape(NodeSpec.Id));
+}
+
+FAssetDocumentCapabilityResult ApplyFields(
+	UEdGraphNode* Node,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec)
+{
+	if (!NodeSpec.Fields.IsValid() || NodeSpec.Fields->Values.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const FAssetDocumentPropertyApplyResult Result =
+		FAssetDocumentPropertyAdapter::ApplyProperties(Node, NodeSpec.Fields);
+	if (Result.bSuccess)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FAssetDocumentCapabilityResult FailureResult;
+	FailureResult.bSuccess = false;
+	FailureResult.Message = Result.Message;
+	const FString FieldsPath = NodePath(GraphSpec, NodeSpec) / TEXT("Fields");
+	if (Result.Diagnostics.IsEmpty())
+	{
+		FailureResult.Diagnostics.Add({FieldsPath, TEXT("GraphNodeFieldApplyFailed"), Result.Message});
+		return FailureResult;
+	}
+	for (const FAssetDocumentDiagnostic& Diagnostic : Result.Diagnostics)
+	{
+		FAssetDocumentDiagnostic Mapped = Diagnostic;
+		Mapped.Path = Diagnostic.Path.IsEmpty() ? FieldsPath : FieldsPath / Diagnostic.Path;
+		FailureResult.Diagnostics.Add(MoveTemp(Mapped));
+	}
+	return FailureResult;
+}
+
+UAnimGraphNode_StateMachineBase* FindStateMachineNode(UAnimationGraph* RootAnimGraph, const FAssetDocumentGraphSpec& GraphSpec)
+{
+	if (!RootAnimGraph)
+	{
+		return nullptr;
+	}
+
+	TArray<UAnimGraphNode_StateMachineBase*> Nodes;
+	RootAnimGraph->GetNodesOfClass<UAnimGraphNode_StateMachineBase>(Nodes);
+	for (UAnimGraphNode_StateMachineBase* Node : Nodes)
+	{
+		if (!Node || !Node->EditorStateMachineGraph)
+		{
+			continue;
+		}
+		if (Node->EditorStateMachineGraph->GetName() == GraphSpec.Name || Node->EditorStateMachineGraph->GetName() == GraphSpec.Id)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
+}
+
+UAnimGraphNode_StateMachineBase* FindOrCreateStateMachineNode(
+	UAnimationGraph* RootAnimGraph,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	bool& bOutChanged)
+{
+	if (UAnimGraphNode_StateMachineBase* Existing = FindStateMachineNode(RootAnimGraph, GraphSpec))
+	{
+		return Existing;
+	}
+
+	if (!RootAnimGraph)
+	{
+		return nullptr;
+	}
+
+	FGraphNodeCreator<UAnimGraphNode_StateMachine> NodeCreator(*RootAnimGraph);
+	UAnimGraphNode_StateMachine* StateMachineNode = NodeCreator.CreateNode();
+	const FVector2f Location = ReadGraphPosition(GraphSpec.Position, 0.0f, 0.0f);
+	StateMachineNode->NodePosX = static_cast<int32>(Location.X);
+	StateMachineNode->NodePosY = static_cast<int32>(Location.Y);
+	NodeCreator.Finalize();
+	StateMachineNode->OnRenameNode(GraphSpec.Name.IsEmpty() ? GraphSpec.Id : GraphSpec.Name);
+	if (StateMachineNode->EditorStateMachineGraph)
+	{
+		FBlueprintEditorUtils::RenameGraph(
+			StateMachineNode->EditorStateMachineGraph,
+			GraphSpec.Name.IsEmpty() ? GraphSpec.Id : GraphSpec.Name);
+	}
+	bOutChanged = true;
+	return StateMachineNode;
+}
+
+bool IsTransitionNodeSpec(const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return NodeSpec.Kind == TEXT("Transition") || NodeSpec.Class.EndsWith(TEXT(".AnimStateTransitionNode"));
+}
+
+bool IsStateNodeSpec(const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return NodeSpec.Kind.IsEmpty()
+		|| NodeSpec.Kind == TEXT("State")
+		|| NodeSpec.Class.IsEmpty()
+		|| NodeSpec.Class.EndsWith(TEXT(".AnimStateNode"));
+}
+
+UAnimStateNodeBase* FindExistingStateMachineNode(UAnimationStateMachineGraph* Graph, const FAssetDocumentNodeSpec& NodeSpec)
+{
+	if (!Graph)
+	{
+		return nullptr;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UAnimStateNodeBase* StateNode = Cast<UAnimStateNodeBase>(Node);
+		if (!StateNode)
+		{
+			continue;
+		}
+		if (Node->GetName() == NodeSpec.Id || StateNode->GetStateName() == NodeSpec.Id)
+		{
+			return StateNode;
+		}
+	}
+	return nullptr;
+}
+
+FAssetDocumentCapabilityResult MaterializeStateMachineNodes(
+	UAnimationStateMachineGraph* StateMachineGraph,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	TMap<FString, UAnimStateNodeBase*>& OutNodes,
+	bool& bOutChanged)
+{
+	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+	{
+		UAnimStateNodeBase* Node = FindExistingStateMachineNode(StateMachineGraph, NodeSpec);
+		if (!Node)
+		{
+			const FVector2f Location = ReadGraphPosition(NodeSpec.Position, 0.0f, 0.0f);
+			if (IsTransitionNodeSpec(NodeSpec))
+			{
+				Node = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateTransitionNode>(
+					StateMachineGraph,
+					NewObject<UAnimStateTransitionNode>(),
+					Location,
+					false);
+			}
+			else if (IsStateNodeSpec(NodeSpec))
+			{
+				Node = FEdGraphSchemaAction_NewStateNode::SpawnNodeFromTemplate<UAnimStateNode>(
+					StateMachineGraph,
+					NewObject<UAnimStateNode>(),
+					Location,
+					false);
+			}
+			else
+			{
+				return Failure(
+					NodePath(GraphSpec, NodeSpec) / TEXT("Class"),
+					TEXT("UnsupportedStateMachineNodeClass"),
+					FString::Printf(TEXT("Unsupported state-machine node class '%s'."), *NodeSpec.Class));
+			}
+			bOutChanged = true;
+		}
+
+		if (!Node)
+		{
+			return Failure(
+				NodePath(GraphSpec, NodeSpec) / TEXT("Class"),
+				TEXT("StateMachineNodeCreateFailed"),
+				FString::Printf(TEXT("State-machine node '%s' could not be created."), *NodeSpec.Id));
+		}
+
+		Node->NodePosX = static_cast<int32>(ReadGraphPosition(NodeSpec.Position, Node->NodePosX, Node->NodePosY).X);
+		Node->NodePosY = static_cast<int32>(ReadGraphPosition(NodeSpec.Position, Node->NodePosX, Node->NodePosY).Y);
+		Node->OnRenameNode(NodeSpec.Id);
+
+		const FAssetDocumentCapabilityResult FieldResult = ApplyFields(Node, GraphSpec, NodeSpec);
+		if (!FieldResult.bSuccess)
+		{
+			return FieldResult;
+		}
+
+		OutNodes.Add(NodeSpec.Id, Node);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult MaterializeStateMachineLinks(
+	UAnimationStateMachineGraph* StateMachineGraph,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const TMap<FString, UAnimStateNodeBase*>& Nodes)
+{
+	TMap<UAnimStateTransitionNode*, UAnimStateNodeBase*> PreviousByTransition;
+	TMap<UAnimStateTransitionNode*, UAnimStateNodeBase*> NextByTransition;
+
+	for (const FAssetDocumentLinkSpec& Link : GraphSpec.Links)
+	{
+		UAnimStateNodeBase* FromNode = Nodes.FindRef(Link.From.Node);
+		UAnimStateNodeBase* ToNode = Nodes.FindRef(Link.To.Node);
+		if (!FromNode || !ToNode)
+		{
+			return Failure(
+				GraphPath(GraphSpec) / TEXT("Links"),
+				TEXT("UnknownStateMachineLinkEndpoint"),
+				FString::Printf(TEXT("State-machine link '%s' references an unknown node."), *Link.ToKey()));
+		}
+
+		UAnimStateTransitionNode* FromTransition = Cast<UAnimStateTransitionNode>(FromNode);
+		UAnimStateTransitionNode* ToTransition = Cast<UAnimStateTransitionNode>(ToNode);
+		if (!FromTransition && ToTransition)
+		{
+			PreviousByTransition.Add(ToTransition, FromNode);
+		}
+		else if (FromTransition && !ToTransition)
+		{
+			NextByTransition.Add(FromTransition, ToNode);
+		}
+		else
+		{
+			return Failure(
+				GraphPath(GraphSpec) / TEXT("Links"),
+				TEXT("InvalidStateMachineTransitionLink"),
+				TEXT("State-machine links must connect State->Transition and Transition->State."));
+		}
+	}
+
+	for (const TPair<UAnimStateTransitionNode*, UAnimStateNodeBase*>& Pair : PreviousByTransition)
+	{
+		UAnimStateTransitionNode* Transition = Pair.Key;
+		UAnimStateNodeBase* Previous = Pair.Value;
+		UAnimStateNodeBase* Next = NextByTransition.FindRef(Transition);
+		if (!Next)
+		{
+			return Failure(
+				GraphPath(GraphSpec) / TEXT("Links"),
+				TEXT("IncompleteStateMachineTransition"),
+				FString::Printf(TEXT("Transition '%s' is missing a target state link."), *Transition->GetName()));
+		}
+		Transition->CreateConnections(Previous, Next);
+	}
+
+	if (const TSharedPtr<FJsonObject> Metadata = GraphSpec.Metadata.IsValid() && GraphSpec.Metadata->Type == EJson::Object
+		? GraphSpec.Metadata->AsObject()
+		: nullptr)
+	{
+		FString EntryState;
+		if (Metadata->TryGetStringField(TEXT("EntryState"), EntryState))
+		{
+			UAnimStateNodeBase* EntryNode = Nodes.FindRef(EntryState);
+			if (!EntryNode)
+			{
+				return Failure(
+					GraphPath(GraphSpec) / TEXT("Metadata/EntryState"),
+					TEXT("UnknownEntryState"),
+					FString::Printf(TEXT("EntryState '%s' does not match a state node."), *EntryState));
+			}
+			if (StateMachineGraph && StateMachineGraph->EntryNode && StateMachineGraph->EntryNode->GetOutputPin() && EntryNode->GetInputPin())
+			{
+				StateMachineGraph->EntryNode->GetOutputPin()->LinkedTo.Empty();
+				StateMachineGraph->EntryNode->GetOutputPin()->MakeLinkTo(EntryNode->GetInputPin());
+			}
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase* StateMachineNode)
+{
+	FAssetDocumentGraphSpec Graph;
+	UAnimationStateMachineGraph* StateMachineGraph = StateMachineNode ? StateMachineNode->EditorStateMachineGraph : nullptr;
+	Graph.Id = StateMachineGraph ? StateMachineGraph->GetName() : FString();
+	Graph.Name = Graph.Id;
+	Graph.Kind = TEXT("StateMachine");
+	if (!StateMachineGraph)
+	{
+		return Graph;
+	}
+
+	TMap<const UEdGraphNode*, FString> NodeIds;
+	for (UEdGraphNode* Node : StateMachineGraph->Nodes)
+	{
+		if (Cast<UAnimStateEntryNode>(Node))
+		{
+			continue;
+		}
+		if (UAnimStateNodeBase* StateNode = Cast<UAnimStateNodeBase>(Node))
+		{
+			FAssetDocumentNodeSpec NodeSpec;
+			NodeSpec.Id = StateNode->GetStateName();
+			if (NodeSpec.Id.IsEmpty() || NodeSpec.Id == TEXT("BaseState"))
+			{
+				NodeSpec.Id = StateNode->GetName();
+			}
+			NodeSpec.Class = StateNode->GetClass()->GetPathName();
+			NodeSpec.Kind = Cast<UAnimStateTransitionNode>(StateNode) ? TEXT("Transition") : TEXT("State");
+			NodeSpec.Position = MakeShared<FJsonObject>();
+			NodeSpec.Position->SetNumberField(TEXT("X"), StateNode->NodePosX);
+			NodeSpec.Position->SetNumberField(TEXT("Y"), StateNode->NodePosY);
+			NodeIds.Add(StateNode, NodeSpec.Id);
+			Graph.Nodes.Add(MoveTemp(NodeSpec));
+		}
+	}
+
+	for (UEdGraphNode* Node : StateMachineGraph->Nodes)
+	{
+		UAnimStateTransitionNode* Transition = Cast<UAnimStateTransitionNode>(Node);
+		if (!Transition)
+		{
+			continue;
+		}
+		UAnimStateNodeBase* Previous = Transition->GetPreviousState();
+		UAnimStateNodeBase* Next = Transition->GetNextState();
+		if (Previous && Next)
+		{
+			FAssetDocumentLinkSpec Incoming;
+			Incoming.From.Node = NodeIds.FindRef(Previous);
+			Incoming.From.Pin = TEXT("Out");
+			Incoming.To.Node = NodeIds.FindRef(Transition);
+			Incoming.To.Pin = TEXT("In");
+			Graph.Links.Add(Incoming);
+
+			FAssetDocumentLinkSpec Outgoing;
+			Outgoing.From.Node = NodeIds.FindRef(Transition);
+			Outgoing.From.Pin = TEXT("Out");
+			Outgoing.To.Node = NodeIds.FindRef(Next);
+			Outgoing.To.Pin = TEXT("In");
+			Graph.Links.Add(Outgoing);
+		}
+	}
+
+	return Graph;
+}
+
+FAssetDocumentCapabilityResult ApplyStateMachines(
+	FAssetDocumentRegionContext& Context,
+	const TArray<FAssetDocumentGraphSpec>& Graphs,
+	bool& bOutChanged)
+{
+	UAnimBlueprint* AnimBlueprint = ResolveAnimBlueprint(Context);
+	UAnimationGraph* RootAnimGraph = FindRootAnimGraph(AnimBlueprint);
+	if (!AnimBlueprint || !RootAnimGraph)
+	{
+		return Failure(
+			TEXT("/Body/StateMachines"),
+			TEXT("MissingAnimGraph"),
+			TEXT("Body.StateMachines requires an Animation Blueprint with an AnimGraph."));
+	}
+
+	for (const FAssetDocumentGraphSpec& GraphSpec : Graphs)
+	{
+		UAnimGraphNode_StateMachineBase* StateMachineNode =
+			FindOrCreateStateMachineNode(RootAnimGraph, GraphSpec, bOutChanged);
+		UAnimationStateMachineGraph* StateMachineGraph =
+			StateMachineNode ? StateMachineNode->EditorStateMachineGraph : nullptr;
+		if (!StateMachineGraph)
+		{
+			return Failure(
+				GraphPath(GraphSpec),
+				TEXT("StateMachineGraphCreateFailed"),
+				FString::Printf(TEXT("State machine graph '%s' could not be created."), *GraphSpec.Id));
+		}
+
+		TMap<FString, UAnimStateNodeBase*> Nodes;
+		const FAssetDocumentCapabilityResult NodeResult =
+			MaterializeStateMachineNodes(StateMachineGraph, GraphSpec, Nodes, bOutChanged);
+		if (!NodeResult.bSuccess)
+		{
+			return NodeResult;
+		}
+
+		const FAssetDocumentCapabilityResult LinkResult =
+			MaterializeStateMachineLinks(StateMachineGraph, GraphSpec, Nodes);
+		if (!LinkResult.bSuccess)
+		{
+			return LinkResult;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimBlueprint state machines"));
+}
+
+TSharedPtr<FJsonValue> ExtractStateMachinesValue(const FAssetDocumentRegionContext& Context)
+{
+	TArray<FAssetDocumentGraphSpec> Graphs;
+	if (UAnimationGraph* RootAnimGraph = FindRootAnimGraph(ResolveAnimBlueprint(Context)))
+	{
+		TArray<UAnimGraphNode_StateMachineBase*> Nodes;
+		RootAnimGraph->GetNodesOfClass<UAnimGraphNode_StateMachineBase>(Nodes);
+		for (UAnimGraphNode_StateMachineBase* Node : Nodes)
+		{
+			Graphs.Add(ExtractStateMachineGraph(Node));
+		}
+	}
+
+	return MakeShared<FJsonValueObject>(FAssetDocumentGraphParser::WriteCanonicalGraphRegion(Graphs));
+}
 }
 
 FAssetDocumentAnimStateMachineRegionAdapter::FAssetDocumentAnimStateMachineRegionAdapter(FName InAdapterName)
@@ -516,9 +1062,9 @@ bool FAssetDocumentAnimStateMachineRegionAdapter::SupportsRegion(const FAssetDoc
 TSharedRef<FJsonObject> FAssetDocumentAnimStateMachineRegionAdapter::GetSchemaHint(const FAssetDocumentRegionContext&) const
 {
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
-	Schema->SetStringField(TEXT("Kind"), TEXT("AnimStateMachineIdentityRegion"));
-	Schema->SetStringField(TEXT("StateMachines"), TEXT("empty only until state-machine graph materialization supports roundtrip"));
-	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("empty only until transition rule graph materialization supports roundtrip"));
+	Schema->SetStringField(TEXT("Kind"), TEXT("AnimStateMachineRecursiveGraphRegion"));
+	Schema->SetStringField(TEXT("StateMachines"), TEXT("{Graphs:[{Id,Kind:'StateMachine',Nodes,Links,Subgraphs}]}"));
+	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("deprecated empty-only compatibility region; author transition rules as StateMachines subgraphs"));
 	return Schema;
 }
 
@@ -528,7 +1074,8 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimStateMachineRegionAdapter::Vali
 {
 	if (Context.RegionId == StateMachinesRegionId)
 	{
-		return ValidateStateMachinesValue(DesiredValue);
+		TArray<FAssetDocumentGraphSpec> Graphs;
+		return ParseStateMachinesRegion(DesiredValue, Graphs);
 	}
 	if (Context.RegionId == TransitionGraphsRegionId)
 	{
@@ -543,14 +1090,26 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimStateMachineRegionAdapter::Appl
 	bool& bOutChanged)
 {
 	bOutChanged = false;
+	if (Context.RegionId == StateMachinesRegionId)
+	{
+		TArray<FAssetDocumentGraphSpec> Graphs;
+		const FAssetDocumentCapabilityResult ParseResult = ParseStateMachinesRegion(DesiredValue, Graphs);
+		if (!ParseResult.bSuccess)
+		{
+			return ParseResult;
+		}
+		return ApplyStateMachines(Context, Graphs, bOutChanged);
+	}
 	return ValidateRegion(Context, DesiredValue);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimStateMachineRegionAdapter::ExtractRegion(
-	const FAssetDocumentRegionContext&,
+	const FAssetDocumentRegionContext& Context,
 	TSharedPtr<FJsonValue>& OutCurrentValue) const
 {
-	OutCurrentValue = MakeEmptyArrayValue();
+	OutCurrentValue = Context.RegionId == StateMachinesRegionId
+		? ExtractStateMachinesValue(Context)
+		: MakeEmptyArrayValue();
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimBlueprint state-machine identity region"));
 }
 
@@ -567,7 +1126,41 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimStateMachineRegionAdapter::Diff
 
 	if (Context.RegionId == StateMachinesRegionId)
 	{
-		AddArrayDiffEntries(DesiredValue, TEXT("StateMachines"), StateMachinePath, OutDiffEntries);
+		TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+		const FAssetDocumentCapabilityResult ParseResult = ParseStateMachinesRegion(DesiredValue, DesiredGraphs);
+		if (!ParseResult.bSuccess)
+		{
+			return ParseResult;
+		}
+
+		TSharedPtr<FJsonValue> CurrentValue = ExtractStateMachinesValue(Context);
+		const TSharedPtr<FJsonObject> CurrentObject = CurrentValue.IsValid() && CurrentValue->Type == EJson::Object
+			? CurrentValue->AsObject()
+			: nullptr;
+		TArray<FAssetDocumentGraphSpec> CurrentGraphs;
+		if (CurrentObject.IsValid())
+		{
+			FAssetDocumentGraphParseOptions Options;
+			Options.Path = TEXT("/Body/StateMachines");
+			const FAssetDocumentGraphParseResult CurrentParse =
+				FAssetDocumentGraphParser::ParseGraphRegion(CurrentObject.ToSharedRef(), Options);
+			CurrentGraphs = CurrentParse.Graphs;
+		}
+
+		for (const FAssetDocumentGraphDiffEntry& Entry :
+			FAssetDocumentGraphDiff::CompareGraphRegion(DesiredGraphs, CurrentGraphs, TEXT("/Body/StateMachines")))
+		{
+			TSharedPtr<FJsonObject> DiffObject = MakeShared<FJsonObject>();
+			DiffObject->SetStringField(TEXT("path"), Entry.Path);
+			DiffObject->SetStringField(TEXT("status"), Entry.Status);
+			DiffObject->SetField(TEXT("current"), Entry.Current.IsValid() ? Entry.Current : MakeShared<FJsonValueNull>());
+			DiffObject->SetField(TEXT("desired"), Entry.Desired.IsValid() ? Entry.Desired : MakeShared<FJsonValueNull>());
+			if (!Entry.Message.IsEmpty())
+			{
+				DiffObject->SetStringField(TEXT("message"), Entry.Message);
+			}
+			OutDiffEntries.Add(MakeShared<FJsonValueObject>(DiffObject));
+		}
 	}
 	else if (Context.RegionId == TransitionGraphsRegionId)
 	{

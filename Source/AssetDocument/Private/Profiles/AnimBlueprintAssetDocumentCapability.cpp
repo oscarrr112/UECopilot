@@ -48,10 +48,7 @@ FAssetDocumentCapabilityResult RequireBodyObject(const TSharedRef<FJsonValue>& B
 
 bool IsDeferredGraphFamilyKey(const FString& BodyKey)
 {
-	return BodyKey == TEXT("StateMachines")
-		|| BodyKey == TEXT("TransitionGraphs")
-		|| BodyKey == TEXT("AnimLayers")
-		|| BodyKey == TEXT("ParentAssetOverrides");
+	return BodyKey == TEXT("AnimLayers");
 }
 
 bool IsScalarDeferredValue(const TSharedPtr<FJsonValue>& Value)
@@ -1363,8 +1360,8 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentCapability::GetSchemaHint() c
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("Blueprint common generated CDO default-diff object"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("Blueprint common K2 graph wrapper region"));
 	Schema->SetStringField(TEXT("AnimGraph"), TEXT("recursive graph region: {Graphs:[{Id:'AnimGraph', Kind:'AnimGraph', Nodes:[], Links:[], Subgraphs:[]}]}"));
-	Schema->SetStringField(TEXT("StateMachines"), TEXT("state-machine identity adapter: array<{Name, EntryState, States, Transitions}>"));
-	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("transition graph identity adapter: array<{StateMachine, Transition, Nodes:[], Result}>"));
+	Schema->SetStringField(TEXT("StateMachines"), TEXT("recursive graph region: {Graphs:[{Id, Kind:'StateMachine', Nodes, Links, Subgraphs}]}"));
+	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("deprecated empty-only compatibility region; author transition rules as StateMachines subgraphs"));
 	Schema->SetStringField(TEXT("AnimLayers"), TEXT("deferred empty graph/array region until anim layer adapter lands"));
 	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("identity array: array<{ParentNodeGuid, NewAsset}>"));
 	return Schema;
