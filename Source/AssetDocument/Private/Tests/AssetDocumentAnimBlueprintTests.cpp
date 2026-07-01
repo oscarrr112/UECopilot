@@ -21,13 +21,67 @@ TSharedRef<FJsonValue> MakeEmptyBodyValue()
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonValue> MakeBodyWithNullRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetField(RegionName, MakeShared<FJsonValueNull>());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithEmptyArrayRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(RegionName, TArray<TSharedPtr<FJsonValue>>());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithEmptyObjectRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(RegionName, MakeShared<FJsonObject>());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredRegion(const TCHAR* RegionName)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> AuthoredNode = MakeShared<FJsonObject>();
+	AuthoredNode->SetStringField(TEXT("Node"), TEXT("Bad"));
 	TArray<TSharedPtr<FJsonValue>> RegionEntries;
-	RegionEntries.Add(MakeShared<FJsonValueString>(TEXT("unsupported")));
+	RegionEntries.Add(MakeShared<FJsonValueObject>(AuthoredNode));
 	Body->SetArrayField(RegionName, MoveTemp(RegionEntries));
 	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredObjectRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	TSharedRef<FJsonObject> RegionObject = MakeShared<FJsonObject>();
+	RegionObject->SetStringField(TEXT("Node"), TEXT("Bad"));
+	Body->SetObjectField(RegionName, RegionObject);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithScalarDeferredRegion(const TCHAR* RegionName)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(RegionName, TEXT("unsupported"));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithUnknownKey(const TCHAR* UnknownKey = TEXT("UnexpectedGraph"))
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetStringField(UnknownKey, TEXT("unsupported"));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
 }
 
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
@@ -160,6 +214,87 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 					FString(TEXT("UnsupportedAnimBlueprintRegion")));
 			}
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintDeferredGraphGatesTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.DeferredGraphGates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
+{
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+
+	for (const TCHAR* DeferredKey : {
+		TEXT("AnimGraph"),
+		TEXT("StateMachines"),
+		TEXT("TransitionGraphs"),
+		TEXT("AnimLayers"),
+		TEXT("ParentAssetOverrides"),
+	})
+	{
+		TestTrue(
+			FString::Printf(TEXT("Body.%s accepts null while deferred"), DeferredKey),
+			Capability.Validate(Context, MakeBodyWithNullRegion(DeferredKey)).bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s accepts empty array while deferred"), DeferredKey),
+			Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(DeferredKey)).bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s accepts empty object while deferred"), DeferredKey),
+			Capability.Validate(Context, MakeBodyWithEmptyObjectRegion(DeferredKey)).bSuccess);
+
+		const FAssetDocumentCapabilityResult NonEmptyResult =
+			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
+		const FString ExpectedPath = FString::Printf(TEXT("/Body/%s"), DeferredKey);
+		TestFalse(
+			FString::Printf(TEXT("Body.%s rejects non-empty authored value while deferred"), DeferredKey),
+			NonEmptyResult.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion at exact path"), DeferredKey),
+			HasDiagnostic(NonEmptyResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
+
+		const FAssetDocumentCapabilityResult NonEmptyObjectResult =
+			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredObjectRegion(DeferredKey));
+		TestFalse(
+			FString::Printf(TEXT("Body.%s rejects non-empty object while deferred"), DeferredKey),
+			NonEmptyObjectResult.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for non-empty object"), DeferredKey),
+			HasDiagnostic(NonEmptyObjectResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
+
+		const FAssetDocumentCapabilityResult ScalarResult =
+			Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(DeferredKey));
+		TestFalse(
+			FString::Printf(TEXT("Body.%s rejects scalar value while deferred"), DeferredKey),
+			ScalarResult.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for scalar"), DeferredKey),
+			HasDiagnostic(ScalarResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
+	}
+
+	const FAssetDocumentCapabilityResult UnknownKeyResult = Capability.Validate(Context, MakeBodyWithUnknownKey());
+	TestFalse(TEXT("Unknown Body key rejects"), UnknownKeyResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown Body key reports UnknownBodyKey"),
+		HasDiagnostic(UnknownKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
+	for (const TCHAR* UnknownBlueprintGraphKey : {TEXT("FunctionGraphs"), TEXT("MacroGraphs")})
+	{
+		const FAssetDocumentCapabilityResult UnknownBlueprintGraphResult =
+			Capability.Validate(Context, MakeBodyWithUnknownKey(UnknownBlueprintGraphKey));
+		TestFalse(
+			FString::Printf(TEXT("Body.%s remains outside the ABP profile"), UnknownBlueprintGraphKey),
+			UnknownBlueprintGraphResult.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("Body.%s reports UnknownBodyKey"), UnknownBlueprintGraphKey),
+			HasDiagnostic(
+				UnknownBlueprintGraphResult,
+				FString::Printf(TEXT("/Body/%s"), UnknownBlueprintGraphKey),
+				TEXT("UnknownBodyKey")));
 	}
 
 	return true;
