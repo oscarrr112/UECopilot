@@ -882,4 +882,3 @@ Spec coverage:
 - Long-term docs and AGENTS constraints are already updated before this plan; Task 5 updates implementation status only.
 
 No placeholder terms are intentionally left in task steps. Any implementation naming conflict must be resolved by preserving the behavior and updating the exact name consistently in code and tests within the same task commit.
-
