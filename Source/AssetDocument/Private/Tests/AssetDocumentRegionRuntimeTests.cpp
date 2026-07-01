@@ -3598,6 +3598,36 @@ bool FAssetDocumentTimelinePlacementUtilsValidatesNumbersAndDuplicatesTest::RunT
 
 	TestFalse(TEXT("Duration end outside range fails"), Result.bSuccess);
 	TestEqual(TEXT("End range diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementEndTime")));
+
+	Duplicate->SetNumberField(TEXT("Time"), 3.0);
+	Duplicate->SetStringField(TEXT("Name"), TEXT("Miss"));
+	Duplicate->SetNumberField(TEXT("Duration"), 1.0);
+	First->SetNumberField(TEXT("Name"), 42.0);
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		MakeShared<FJsonValueArray>(Values),
+		Config,
+		TEXT("/Body/TestTimeline"),
+		&Range,
+		Entries);
+
+	TestFalse(TEXT("Required name with invalid type fails"), Result.bSuccess);
+	TestEqual(TEXT("Invalid name type diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementName")));
+	TestEqual(TEXT("Invalid name type diagnostic path is field path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/Name")));
+
+	First->SetStringField(TEXT("Name"), TEXT("Hit"));
+	Config.TrackNameFieldName = TEXT("TrackName");
+	Config.bHasTrackIdentity = true;
+	First->SetNumberField(TEXT("TrackName"), 7.0);
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		MakeShared<FJsonValueArray>(Values),
+		Config,
+		TEXT("/Body/TestTimeline"),
+		&Range,
+		Entries);
+
+	TestFalse(TEXT("Optional track name with invalid type fails"), Result.bSuccess);
+	TestEqual(TEXT("Invalid track name type diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTrackName")));
+	TestEqual(TEXT("Invalid track name type diagnostic path is field path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0/TrackName")));
 	return true;
 }
 
@@ -3669,6 +3699,32 @@ bool FAssetDocumentTimelinePlacementRegionAdapterDelegatesLifecycleTest::RunTest
 	TSharedPtr<FJsonValue> Extracted;
 	TestTrue(TEXT("Extract succeeds"), Adapter.ExtractRegion(Context, Extracted).bSuccess);
 	TestTrue(TEXT("Extract returns array"), Extracted.IsValid() && Extracted->Type == EJson::Array);
+
+	FAssetDocumentTimelinePlacementHooks ApplyOnlyHooks;
+	int32 ApplyOnlyCalls = 0;
+	ApplyOnlyHooks.Apply = [&ApplyOnlyCalls](
+		FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentTimelinePlacementEntry>& Entries,
+		bool& bOutChanged)
+	{
+		++ApplyOnlyCalls;
+		bOutChanged = Entries.Num() == 1;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied without validate hook"));
+	};
+
+	FAssetDocumentTimelinePlacementRegionConfig ApplyOnlyConfig;
+	ApplyOnlyConfig.AdapterName = TEXT("ApplyOnlyTimelinePlacementTest");
+	ApplyOnlyConfig.RegionId = TEXT("Body.TestTimeline");
+	ApplyOnlyConfig.BodyPath = TEXT("Body.TestTimeline");
+	ApplyOnlyConfig.JsonPointer = TEXT("/Body/TestTimeline");
+	ApplyOnlyConfig.TimeFieldName = TEXT("Time");
+	FAssetDocumentTimelinePlacementRegionAdapter ApplyOnlyAdapter(MoveTemp(ApplyOnlyConfig), MoveTemp(ApplyOnlyHooks));
+
+	bool bApplyOnlyChanged = false;
+	TestTrue(TEXT("Validate succeeds without optional validate hook"), ApplyOnlyAdapter.ValidateRegion(Context, Desired).bSuccess);
+	TestTrue(TEXT("Apply succeeds without optional validate hook"), ApplyOnlyAdapter.ApplyRegion(Context, Desired, bApplyOnlyChanged).bSuccess);
+	TestTrue(TEXT("Apply-only hook can mark changed"), bApplyOnlyChanged);
+	TestEqual(TEXT("Apply-only hook called once"), ApplyOnlyCalls, 1);
 	return true;
 }
 

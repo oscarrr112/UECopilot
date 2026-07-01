@@ -70,16 +70,27 @@ bool TimelinePlacementTryReadNumberField(
 	return true;
 }
 
-bool TimelinePlacementTryReadStringField(
+enum class ETimelinePlacementStringReadResult
+{
+	Missing,
+	InvalidType,
+	Valid
+};
+
+ETimelinePlacementStringReadResult TimelinePlacementTryReadStringField(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& FieldName,
 	TOptional<FString>& OutString,
 	const bool bTrim = true)
 {
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
-	if (!FieldValue.IsValid() || FieldValue->Type != EJson::String)
+	if (!FieldValue.IsValid())
 	{
-		return false;
+		return ETimelinePlacementStringReadResult::Missing;
+	}
+	if (FieldValue->Type != EJson::String)
+	{
+		return ETimelinePlacementStringReadResult::InvalidType;
 	}
 
 	FString StringValue = FieldValue->AsString();
@@ -88,7 +99,7 @@ bool TimelinePlacementTryReadStringField(
 		StringValue = StringValue.TrimStartAndEnd();
 	}
 	OutString = MoveTemp(StringValue);
-	return true;
+	return ETimelinePlacementStringReadResult::Valid;
 }
 
 FAssetDocumentCapabilityResult TimelinePlacementValidateTime(
@@ -414,14 +425,30 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ParsePlacem
 
 		if (Config.bHasName && !Config.NameFieldName.IsEmpty())
 		{
-			TimelinePlacementTryReadStringField(EntryObject.ToSharedRef(), Config.NameFieldName, Entry.Name);
+			const ETimelinePlacementStringReadResult NameReadResult =
+				TimelinePlacementTryReadStringField(EntryObject.ToSharedRef(), Config.NameFieldName, Entry.Name);
+			if (NameReadResult == ETimelinePlacementStringReadResult::InvalidType)
+			{
+				return TimelinePlacementFailure(
+					MakeFieldPath(EntryPath, Config.NameFieldName),
+					TEXT("InvalidTimelinePlacementName"),
+					FString::Printf(TEXT("%s must be a string"), *Config.NameFieldName));
+			}
 		}
 
 		if (Config.bHasTrackIdentity)
 		{
 			if (!Config.TrackNameFieldName.IsEmpty())
 			{
-				TimelinePlacementTryReadStringField(EntryObject.ToSharedRef(), Config.TrackNameFieldName, Entry.TrackName);
+				const ETimelinePlacementStringReadResult TrackNameReadResult =
+					TimelinePlacementTryReadStringField(EntryObject.ToSharedRef(), Config.TrackNameFieldName, Entry.TrackName);
+				if (TrackNameReadResult == ETimelinePlacementStringReadResult::InvalidType)
+				{
+					return TimelinePlacementFailure(
+						MakeFieldPath(EntryPath, Config.TrackNameFieldName),
+						TEXT("InvalidTimelinePlacementTrackName"),
+						FString::Printf(TEXT("%s must be a string"), *Config.TrackNameFieldName));
+				}
 			}
 
 			if (!Config.TrackIndexFieldName.IsEmpty())
@@ -550,12 +577,12 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::Val
 		return Result;
 	}
 
-	if (!Hooks.Validate)
+	if (Hooks.Validate)
 	{
-		return TimelinePlacementUnsupportedLifecycleFailure(Config, Context, RegionPath(Context), TEXT("validate"));
+		return Hooks.Validate(Context, Entries);
 	}
 
-	return Hooks.Validate(Context, Entries);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated timeline placement region"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::PreflightRegion(
@@ -597,7 +624,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementRegionAdapter::App
 		return Result;
 	}
 
-	Result = TimelinePlacementValidateEntriesForLifecycle(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), true);
+	Result = TimelinePlacementValidateEntriesForLifecycle(Config, Hooks, Context, Entries, RegionPath(Context), TEXT("validate"), false);
 	if (!Result.bSuccess)
 	{
 		return Result;
