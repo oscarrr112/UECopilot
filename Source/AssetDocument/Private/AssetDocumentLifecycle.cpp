@@ -506,6 +506,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(
 		Result.Error = TEXT("Template AnimationBlueprints cannot author TargetSkeleton");
 		return Result;
 	}
+	if (!bIsTemplate && !ResolvedSkeletonObject)
+	{
+		Result.Error = TEXT("MissingTargetSkeleton: non-template AnimBlueprint creation requires TargetSkeleton");
+		return Result;
+	}
 
 	UObject* ResolvedPreviewMeshObject = nullptr;
 	if (!TryResolveLifecycleNestedAssetRef(

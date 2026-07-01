@@ -915,11 +915,16 @@ FAssetDocumentCapabilityResult DiffCoreObjectRegion(
 		return Result;
 	}
 
-	AddDiffIfChanged(
-		Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer,
-		MakeShared<FJsonValueObject>(CurrentObject),
-		MakeShared<FJsonValueObject>(DesiredObject),
-		OutDiffEntries);
+	const FString DiffPath = Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredObject->Values)
+	{
+		const TSharedPtr<FJsonValue> CurrentValue = CurrentObject->TryGetField(Pair.Key);
+		AddDiffIfChanged(
+			DiffPath,
+			CurrentValue.IsValid() ? CurrentValue : MakeShared<FJsonValueNull>(),
+			Pair.Value.IsValid() ? Pair.Value : MakeShared<FJsonValueNull>(),
+			OutDiffEntries);
+	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimBlueprint object region"));
 }
 
@@ -1155,6 +1160,13 @@ FAssetDocumentCapabilityResult ValidateAnimBlueprintCrossRegion(
 	if (!Result.bSuccess)
 	{
 		return Result;
+	}
+	if (!DesiredSkeleton && !BodyObject->HasField(TEXT("TargetSkeleton")) && !IsTemplateFlagTrue(BodyObject))
+	{
+		if (const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset))
+		{
+			DesiredSkeleton = AnimBlueprint->TargetSkeleton.Get();
+		}
 	}
 
 	USkeletalMesh* PreviewMesh = nullptr;

@@ -343,6 +343,36 @@ TSharedRef<FJsonValue> MakeBodyWithTargetSkeletonAndPreviewApplicationMethod(con
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonValue> MakeBodyWithSparseDefaultCoreObjects()
+{
+	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
+	Template->SetBoolField(TEXT("bIsTemplate"), false);
+
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), TEXT("LinkedLayers"));
+
+	TSharedRef<FJsonObject> Optimization = MakeShared<FJsonObject>();
+	Optimization->SetBoolField(TEXT("bUseMultiThreadedAnimationUpdate"), true);
+	Optimization->SetBoolField(TEXT("bWarnAboutBlueprintUsage"), false);
+	Optimization->SetBoolField(TEXT("bEnableLinkedAnimLayerInstanceSharing"), false);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Template"), Template);
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	Body->SetObjectField(TEXT("Optimization"), Optimization);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithSparseChangedPreview()
+{
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), TEXT("LinkedAnimGraph"));
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithMismatchedPreviewSkeleton()
 {
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
@@ -1123,6 +1153,22 @@ bool FAssetDocumentAnimBlueprintCoreObjectRegionsTest::RunTest(const FString&)
 	TestTrue(TEXT("Preview object diff succeeds"), ObjectDiffResult.bSuccess);
 	TestTrue(TEXT("Preview object diff reports region path"), HasDiffPath(DiffEntries, TEXT("/Body/Preview")));
 
+	FAssetDocumentCapabilityContext SparseDiffContext;
+	SparseDiffContext.Asset = NewObject<UAnimBlueprint>(GetTransientPackage());
+	SparseDiffContext.AssetClass = UAnimBlueprint::StaticClass();
+
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult SparseNoChangeDiffResult =
+		Capability.Diff(SparseDiffContext, MakeBodyWithSparseDefaultCoreObjects(), DiffEntries);
+	TestTrue(TEXT("Sparse default object diff succeeds"), SparseNoChangeDiffResult.bSuccess);
+	TestEqual(TEXT("Sparse default object diff does not report omitted defaults"), DiffEntries.Num(), 0);
+
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult SparseChangedDiffResult =
+		Capability.Diff(SparseDiffContext, MakeBodyWithSparseChangedPreview(), DiffEntries);
+	TestTrue(TEXT("Sparse changed object diff succeeds"), SparseChangedDiffResult.bSuccess);
+	TestTrue(TEXT("Sparse changed object diff reports Preview"), HasDiffPath(DiffEntries, TEXT("/Body/Preview")));
+
 	DiffEntries.Reset();
 	const FAssetDocumentCapabilityResult SkeletonDiffResult =
 		Capability.Diff(
@@ -1199,6 +1245,53 @@ bool FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest::RunTest(const FString
 		nullptr,
 		*FString::Printf(TEXT("%s.%s"), *BadTarget, *FPackageName::GetLongPackageAssetName(BadTarget)));
 	TestNull(TEXT("Invalid create does not leave a loadable asset"), BadAsset);
+
+	const FString MissingSkeletonTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_MissingSkeleton_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	FAssetDocumentApplyRequest MissingSkeletonRequest;
+	MissingSkeletonRequest.Document = MakeAnimBlueprintApplyDocument(MissingSkeletonTarget, TEXT("/Script/Engine.AnimInstance"), SkeletonPath, PreviewMeshPath, false);
+	MissingSkeletonRequest.Document->GetObjectField(TEXT("Body"))->RemoveField(TEXT("TargetSkeleton"));
+	MissingSkeletonRequest.bSaveAsset = false;
+	const FAssetDocumentResult MissingSkeletonResult = Service.Apply(MissingSkeletonRequest);
+	TestFalse(TEXT("Service create rejects non-template AnimBlueprint without TargetSkeleton"), MissingSkeletonResult.IsSuccess());
+	TestTrue(
+		TEXT("Missing skeleton create failure mentions TargetSkeleton"),
+		MissingSkeletonResult.Message.Contains(TEXT("TargetSkeleton")) || MissingSkeletonResult.Message.Contains(TEXT("MissingTargetSkeleton")));
+	UObject* MissingSkeletonAsset = FindObject<UObject>(
+		nullptr,
+		*FString::Printf(TEXT("%s.%s"), *MissingSkeletonTarget, *FPackageName::GetLongPackageAssetName(MissingSkeletonTarget)));
+	TestNull(TEXT("Missing skeleton create does not leave a loadable asset"), MissingSkeletonAsset);
+
+	const FString MismatchedPreviewTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_UpdatePreview_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString MismatchedPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+	FAssetDocumentApplyRequest PreviewBaseRequest;
+	PreviewBaseRequest.Document = MakeAnimBlueprintApplyDocument(MismatchedPreviewTarget, TEXT("/Script/Engine.AnimInstance"), SkeletonPath, PreviewMeshPath, false);
+	PreviewBaseRequest.bSaveAsset = false;
+	const FAssetDocumentResult PreviewBaseResult = Service.Apply(PreviewBaseRequest);
+	if (!PreviewBaseResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimBlueprint preview mismatch base apply failed: %s"), *PreviewBaseResult.Message));
+	}
+	TestTrue(TEXT("Preview mismatch base AnimBlueprint apply succeeds"), PreviewBaseResult.IsSuccess());
+
+	TSharedRef<FJsonObject> PreviewUpdateDocument = MakeAnimBlueprintApplyDocument(MismatchedPreviewTarget, TEXT("/Script/Engine.AnimInstance"), SkeletonPath, PreviewMeshPath, false);
+	TSharedPtr<FJsonObject> PreviewUpdateBody = PreviewUpdateDocument->GetObjectField(TEXT("Body"));
+	PreviewUpdateBody->Values.Empty();
+	TSharedRef<FJsonObject> PreviewUpdate = MakeShared<FJsonObject>();
+	PreviewUpdate->SetObjectField(TEXT("PreviewSkeletalMesh"), MakeAssetRef(MismatchedPreviewMeshPath));
+	PreviewUpdateBody->SetObjectField(TEXT("Preview"), PreviewUpdate);
+
+	FAssetDocumentApplyRequest PreviewUpdateRequest;
+	PreviewUpdateRequest.Document = PreviewUpdateDocument;
+	PreviewUpdateRequest.bSaveAsset = false;
+	const FAssetDocumentResult PreviewUpdateResult = Service.Apply(PreviewUpdateRequest);
+	TestFalse(TEXT("Update-only PreviewSkeletalMesh rejects skeleton mismatch against existing TargetSkeleton"), PreviewUpdateResult.IsSuccess());
+	TestTrue(
+		TEXT("Update-only preview mismatch reports PreviewSkeletalMesh diagnostic"),
+		PreviewUpdateResult.Diagnostics.ContainsByPredicate([](const FAssetDocumentDiagnostic& Diagnostic)
+		{
+			return Diagnostic.Path == TEXT("/Body/Preview/PreviewSkeletalMesh")
+				&& Diagnostic.Code == TEXT("MismatchedPreviewSkeletalMeshSkeleton");
+		}));
 	return true;
 }
 
