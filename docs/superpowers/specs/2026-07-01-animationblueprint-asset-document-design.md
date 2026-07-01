@@ -50,7 +50,7 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 
 1. **Lifecycle-only profile**：只支持 create/extract skeleton/preview。这个方案太浅，不能证明 public runtime 接入新资产的价值。
 2. **One-shot private full parser**：一次实现 AnimGraph、state machine 和 transition graph，但把语义都塞进 `FAnimBlueprintAssetDocumentCapability`。这个方案会违背 public runtime / thin hook 方向。
-3. **推荐方案**：一个完整 ABP spec，多个 implementation milestones。先落 stable lifecycle / reference / Blueprint-common surface；再设计 animation graph 公共 adapter；最后接 state machine、transition、layer、parent override 等复杂 region。
+3. **推荐方案**：一个完整 ABP spec，一个 master implementation plan，plan 内部拆成多个 milestones。先落 stable lifecycle / reference / Blueprint-common surface；再设计 animation graph 公共 adapter；最后接 state machine、transition、layer、parent override 等复杂 region。
 
 ## 3. 目标
 
@@ -348,9 +348,11 @@ External smoke:
 - `diff` has no unexpected changed entries for managed regions.
 - The real asset and sidecar remain inspectable.
 
-## 13. Staged Implementation And Deferred Tracking
+## 13. Master Plan And Deferred Tracking
 
-This spec is intentionally broader than the first implementation slice. The implementation plan may split it into separate branches or task groups, but each branch must keep the same final ABP target.
+This spec is intentionally broader than the first implementation slice. The next implementation artifact should be one master plan for the full ABP AssetDocument chain. That plan may split the work into milestones, task groups, checkpoint commits and review gates, but it should keep one ordered plan file and one final ABP target.
+
+If a later milestone discovers that a graph-family adapter boundary is still underspecified, the master plan should include a spec-review gate or a focused sub-spec task before implementation continues. That gate pauses execution; it does not mean the ABP work loses its single master-plan structure.
 
 Recommended milestones:
 
@@ -373,7 +375,7 @@ Recommended milestones:
    - remove or close deferred entries that have real managed implementations
    - keep excluded derived/debug/cache fields excluded
 
-Stage 1 implementation must add:
+The master plan's first milestone must add:
 
 ```text
 docs/superpowers/specs/asset-document-deferred-fields/2026-07-01-animationblueprint.md
@@ -394,7 +396,7 @@ Each entry must include current behavior, deferred reason, cleanup trigger, upgr
 
 ## 14. Implementation Plan Boundaries
 
-The first implementation plan must split stage 1 into checkpointed tasks:
+The master implementation plan must cover the full ABP chain, starting with stage 1 checkpointed tasks:
 
 1. Profile skeleton and template/inspection.
 2. Lifecycle create/update hook with `UAnimBlueprintFactory`.
@@ -402,11 +404,14 @@ The first implementation plan must split stage 1 into checkpointed tasks:
 4. `SyncGroups` named-array region.
 5. Common Blueprint regions reuse/extraction: interfaces, variables, class defaults, K2 `UbergraphPages`.
 6. Stage-gated graph regions and deferred-fields doc.
-7. Focused automation, full verification, MCP, external smoke, final review.
+7. Animation graph adapter boundary gate and pilot.
+8. State machine and transition graph milestone.
+9. Anim layer and parent override milestone.
+10. Focused automation, full verification, MCP, external smoke, final review.
 
 Each task must declare `TASK_BASE`, allowed files, forbidden files, focused tests, checkpoint commit, and review diff range.
 
-Later implementation plans must not reopen the ABP surface inventory from scratch. They should reference this spec and focus on the next milestone's adapter boundary, identity model, diagnostic contract and verification.
+Later milestones inside the same plan must not reopen the ABP surface inventory from scratch. They should reference this spec and focus on the next adapter boundary, identity model, diagnostic contract and verification.
 
 ## 15. Stop Conditions
 
@@ -429,7 +434,7 @@ This spec is complete when:
 - Public runtime composition is fixed as dispatcher + adapters + hooks.
 - AnimGraph/state-machine authoring is part of the full ABP target, with explicit stage gates and adapter requirements.
 - Stage 1 verification includes focused ABP automation, regression automation, MCP tests and external smoke.
-- Later implementation plans can advance the next ABP milestone without reopening asset surface inventory.
+- The master implementation plan can advance each ABP milestone without reopening asset surface inventory.
 
 After this spec is approved, the next step is an implementation plan under:
 
