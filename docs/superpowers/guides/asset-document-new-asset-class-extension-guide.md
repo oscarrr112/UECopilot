@@ -14,6 +14,8 @@
 - Agent 编辑 `.assetdoc.json`，不编辑 patch operation DSL。
 - 新 asset class 优先扩展 profile、schema、capability、region policy 和 verification，不新增专用 MCP tool。
 - 能用 UE reflection、profile/schema、RegionPolicy 表达的能力，不默认扩张成 per-asset generator 或 per-structure reducer。
+- 新 asset class 默认采用 full-surface mode：一个 spec / master implementation plan 必须一次性覆盖该 asset class 的完整 managed authored surface。milestone 只表示执行顺序、checkpoint commit 和 subagent 分工，不表示可以交付一个保守第一版。
+- Deferred fields 文档只记录债务和诊断边界，不缩小完成目标。属于 managed authored surface 的 deferred entry 必须在同一个 master plan 中有清理 task，或记录用户明确批准的 blocker；否则 final 状态是 partial/blocked，不是 complete。
 - 用户面向文档、计划、报告默认使用中文；代码标识符和 schema key 保持英文。
 
 ## 新 Session 启动顺序
@@ -65,9 +67,10 @@ MCP/src/index.ts
 | Reflected property delta | 普通 editable property，CDO/default diff 足够表达 | 放入 `Properties` 或 reflected scalar region |
 | Referenced asset-owned data | 数据属于被引用 asset，不属于当前 asset | 不放进当前 sidecar，交给对应 asset class |
 | Derived/cache data | UE 根据 authored data 计算或刷新 | 不 author，最多作为 evidence/diagnostic |
-| Editor-only layout/user state | per-user 或 transient 编辑器显示状态 | 通常排除 |
+| Editor-authored layout / organization | 稳定保存、影响作者理解或维护的编辑器布局，例如 Blueprint/graph node position、comment box、track/section organization | 属于 managed authored surface，必须定义 `Body.*` region 或纳入对应 graph/tree/timeline region |
+| Per-user / transient editor state | 选择状态、当前 viewport/camera、临时展开折叠、tab focus、local user preference 等不属于资产作者语义的数据 | 排除，最多作为 diagnostic |
 | Deprecated/migration data | UE 标记 deprecated 或仅迁移用 | 排除，除非有明确兼容任务 |
-| Unknown/risky data | API、所有权或持久化语义不清楚 | 进入 deferred fields 文档 |
+| Unknown/risky data | API、所有权或持久化语义不清楚 | 先作为 blocker/research 处理；若属于 managed authored surface，不得自动退出本轮完成目标，除非用户明确批准 deferred |
 
 inventory 产物应写成中文 spec 或 research 文档，至少包含：
 
@@ -76,6 +79,7 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 - 每个候选 field/struct 的分类。
 - 初始 managed region 列表。
 - 明确的 deferred / excluded 列表。
+- 每个 managed authored deferred/blocker 的清理 task 或用户批准记录。
 - 推荐 benchmark smoke asset。
 
 ## 第二阶段：定义 Body Regions
@@ -93,6 +97,7 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 - scalar/reference object：可以合并为小 object region，例如 `Body.RootMotion`。
 - timeline/array/map：单独 region，例如 `Body.Notifies`、`Body.Curves`。
 - graph/tree：单独 graph/tree region，不要塞进 `Properties`。
+- editor-authored layout：如果 layout 稳定保存在 asset 中并影响作者维护，例如 Blueprint graph node position、comment box、animation track/section organization，必须随对应 graph/tree/timeline region author/extract/diff。
 - derived/cache：不要作为 authoring region。
 
 缺失字段语义：
@@ -222,22 +227,22 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 命中 checklist 后，spec 或 implementation plan 必须选择一种路径：
 
 1. 使用 `FAssetDocumentTimelinePlacementRegionAdapter` + `FAssetDocumentTimelinePlacementUtils` + profile-specific hooks。
-2. 只复用 `FAssetDocumentTimelinePlacementUtils`，并说明为什么完整 adapter 暂不适用。
+2. 先实现或扩展适合该 region 的 public adapter / utility，再继续完成该 managed region。
 3. 新写更贴合的 public adapter spec，例如 nested track/segment、graph/tree、source import 或非 timeline lifecycle。
 
 禁止把命中 checklist 的 region 直接写成新的 asset-specific parser，除非文档同时说明：
 
 - 为什么现有 timeline adapter/utility 不能表达。
-- 当前允许保守处理的精确范围。
-- 后续升级触发条件。
+- 同一 master plan 中要先补哪一个 public adapter / hook / verification task。
+- 若暂时不实现，用户批准的 blocker 证据。
 - 升级入口文件/类。
 - 清理成功标准。
 - 需要保留或新增的测试/验证项。
 
-当前已知保守边界：
+历史保守边界不能作为新 spec 的默认模板：
 
-- `CompositeSections`：第一版可只复用 timeline utility；section linking、section order、`NextSectionName` reference validation 保留在 AnimMontage profile。
-- `SlotAnimTracks` / `AnimSegments`：第一版不进入 timeline placement adapter；后续应单独评估 nested track/segment public adapter。
+- `CompositeSections`、`SlotAnimTracks`、`AnimSegments` 这类 region 如果属于当前 asset 的 managed authored surface，必须在同一个 master plan 中安排实现或公共 adapter 扩展。
+- 只有用户明确批准的 blocker 才能保留为 deferred，并且 final report 必须标记 partial/blocked，而不是 complete。
 
 ### Canonicalizer 与 unsupported/deferred 暴露规则
 
@@ -253,7 +258,7 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 
 - 新的等价归一进入 profile policy hook 或对应 canonicalizer strategy。
 - unsupported 内容通过 diagnostic、`_Skipped.*`、diff `skipped` entries 或 explicit deferred rejection 暴露。
-- deferred 或保守处理项同步写入 `docs/superpowers/specs/asset-document-deferred-fields/`，包含当前处理方式、deferred 原因、清理条件、升级入口和验证要求。
+- deferred 或保守处理项同步写入 `docs/superpowers/specs/asset-document-deferred-fields/`，包含当前处理方式、deferred 原因、清理条件、升级入口和验证要求。若该项属于 managed authored surface，还必须在同一个 master plan 中安排清理 task，或记录用户明确批准的 blocker。
 
 Profile inspection surface 必须保持稳定：
 
@@ -285,7 +290,9 @@ docs/superpowers/specs/asset-document-deferred-fields/YYYY-MM-DD-<asset-class>.m
 - deferred 原因。
 - 清理条件。
 
-不要把“已经决定排除的 derived/cache data”和“以后可能支持的 authoring data”混在一起。两者都可以出现在文档中，但必须说明差异。
+不要把“已经决定排除的 derived/cache data”和“managed authored data 暂时未实现”混在一起。前者可以作为 excluded/non-authoring 记录；后者是未清债务，必须在同一 master plan 中安排清理 task，或记录用户明确批准的 blocker。
+
+Deferred fields 文档不得作为完成范围的缩小依据。Review 时必须先判断 deferred entry 是否属于 managed authored surface；如果属于且没有清理 task 或用户批准，当前 asset class 不能标记 complete。
 
 ## 第六阶段：Implementation Plan 必备项
 
@@ -304,18 +311,19 @@ docs/superpowers/plans/YYYY-MM-DD-<asset-class>-asset-document-implementation.md
 - checkpoint commit
 - spec review 和 code-quality review 范围
 
-不要把完整 asset class 一次性交给一个 worker。按 region 或相邻 region 分 task。
+不要把完整 asset class 一次性交给一个 worker。按 region 或相邻 region 分 task，但所有 task 必须留在同一个 master plan 的 full-surface 目标下连续推进。不得把第一批 task、Milestone 1、pilot adapter 或 deferred gate 描述成 asset class 已完成。
 
 推荐 task 顺序：
 
 1. Region inventory contract：body keys、schema hint、template、region policies。
-2. 低风险 scalar/reference regions。
-3. 小 struct regions。
-4. array/timeline/map regions。
+2. 公共 adapter / hook blocker 清理：对复杂 graph/tree/timeline/fragment region，先补必要公共层，不把复杂 region自动 deferred。
+3. scalar/reference/object regions。
+4. struct、array、timeline、map regions。
 5. metadata/subobject/fragments。
-6. derived-cache repair 和 validation hardening。
-7. apply-file sync、extract/diff、external smoke。
-8. final branch-level review report。
+6. graph/tree/state-machine/animation-layer 等复杂 authored regions。
+7. derived-cache repair 和 validation hardening。
+8. apply-file sync、extract/diff、external smoke。
+9. final branch-level review report。
 
 ## 第七阶段：实现检查清单
 
@@ -399,7 +407,7 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 - worktree、branch、base、reviewed range、closure checkpoint。
 - 完成的 managed regions。
 - excluded derived/cache fields。
-- deferred fields。
+- deferred fields；若其中仍有 managed authored surface，必须列为用户批准的 blocker 或未完成项。
 - UBT result。
 - focused automation result。
 - full AssetDocument automation result。
@@ -409,7 +417,7 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 - reviewer findings 和修复结果。
 - 哪些是已完成，哪些只是目标方向。
 
-如果某个旧验证入口失败或被废弃，可以记录为 historical blocked，但必须明确它不计为 passing verification。
+如果某个旧验证入口失败或被废弃，可以记录为 historical blocked，但必须明确它不计为 passing verification。若 final report 仍存在未获用户批准的 authored unsupported/deferred region，报告标题和结论不得使用 complete benchmark。
 
 ## 不要做的事
 
@@ -423,6 +431,8 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 - 不要用 array index 当稳定 identity，除非已经证明该数组不会被用户排序、插入或删除。
 - 不要把 referenced asset 的数据塞进当前 asset sidecar。
 - 不要 author derived/cache fields。
+- 不要把 deferred 文档当成 scope 缩小或完成证明。
+- 不要把 Milestone 1、pilot、deferred gate、explicit diagnostic 当成 asset class 完成。
 - 不要把 sidecar sync state 写入 `.uasset` 作为 v1 默认策略。
 - 不要把目标架构文档中的 future class 当成已经存在的 production implementation。
 
@@ -440,20 +450,21 @@ docs/reports/asset-document-<asset-class>-complete-region-benchmark.md
 
 任务目标：
 1. 不扫全仓，只读取 <AssetClass> 相关 UE headers、现有 AssetDocument profile/capability/test 锚点。
-2. 先写中文 region inventory，分类 managed / deferred / excluded / referenced-owned / derived-cache。
-3. 再写 implementation plan，不直接改 production code。
+2. 先写中文 region inventory，分类 managed authored surface / editor-authored layout / excluded derived-cache-transient-per-user / referenced-owned / blocker。
+3. 再写 full-surface implementation plan，不直接改 production code；milestone 只能作为 checkpoint，不得缩小完成目标。
 4. 保持 AssetDoc delta-first sidecar，不新增 patch DSL，不新增专用 MCP tool。
-5. 所有面向用户的报告、计划和结论用中文。
+5. 如果某个 managed authored region 想 deferred，必须给出 blocker 证据并等待用户批准；否则在同一 master plan 中安排清理 task。
+6. 所有面向用户的报告、计划和结论用中文。
 ```
 
 ## 完成定义
 
-一个新 asset class benchmark 只有同时满足以下条件，才算阶段完成：
+一个新 asset class benchmark 只有同时满足以下条件，才算完整完成：
 
-- spec 明确 owned surface、managed regions、deferred/excluded boundaries。
+- spec 明确 owned surface、完整 managed authored regions、editor-authored layout regions、excluded derived/cache/transient/per-user boundaries、referenced-owned boundaries。
 - implementation plan 中每个 task 都有 checkpoint commit。
 - production implementation 覆盖 apply、extract、diff、validate。
 - apply-file sync 有 per-region evidence。
 - 有真实 smoke asset 和 sidecar。
 - UBT、focused automation、full AssetDocument automation、MCP tests、external smoke 都有记录。
-- final report 明确区分已完成能力和后续目标方向。
+- final report 明确区分已完成能力、excluded 非 authoring 数据、用户批准的 blocker。没有用户批准的 managed authored deferred/unsupported region 时，才允许写 complete。
