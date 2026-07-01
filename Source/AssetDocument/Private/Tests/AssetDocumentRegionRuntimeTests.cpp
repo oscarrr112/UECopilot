@@ -11,6 +11,7 @@
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 #include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
+#include "Regions/AssetDocumentTimelinePlacementRegionAdapter.h"
 #include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
 #include "Dom/JsonObject.h"
@@ -3492,6 +3493,254 @@ bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(
 	TestFalse(TEXT("Missing diff lifecycle fails"), MissingDiffResult.bSuccess);
 	TestEqual(TEXT("Missing diff lifecycle code"), MissingDiffResult.Diagnostics.Num() > 0 ? MissingDiffResult.Diagnostics[0].Code : FString(), FString(TEXT("UnsupportedFragmentArrayLifecycle")));
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTimelinePlacementUtilsRejectsInvalidShapesTest,
+	"AssetFactory.AssetDocument.RegionRuntime.TimelinePlacement.InvalidShapes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTimelinePlacementUtilsRejectsInvalidShapesTest::RunTest(const FString&)
+{
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("TimelinePlacementTest");
+	Config.RegionId = TEXT("Body.TestTimeline");
+	Config.JsonPointer = TEXT("/Body/TestTimeline");
+	Config.TimeFieldName = TEXT("Time");
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+			MakeShared<FJsonValueString>(TEXT("bad")),
+			Config,
+			TEXT("/Body/TestTimeline"),
+			nullptr,
+			Entries);
+
+	TestFalse(TEXT("Non-array timeline region fails"), Result.bSuccess);
+	TestEqual(TEXT("Non-array diagnostic path is region path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline")));
+	TestEqual(TEXT("Non-array diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementRegionType")));
+
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Add(MakeShared<FJsonValueString>(TEXT("bad-entry")));
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		MakeShared<FJsonValueArray>(Values),
+		Config,
+		TEXT("/Body/TestTimeline"),
+		nullptr,
+		Entries);
+
+	TestFalse(TEXT("Non-object timeline entry fails"), Result.bSuccess);
+	TestEqual(TEXT("Non-object diagnostic path includes index"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0")));
+	TestEqual(TEXT("Non-object diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementEntryType")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTimelinePlacementUtilsValidatesNumbersAndDuplicatesTest,
+	"AssetFactory.AssetDocument.RegionRuntime.TimelinePlacement.NumbersAndDuplicates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTimelinePlacementUtilsValidatesNumbersAndDuplicatesTest::RunTest(const FString&)
+{
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("TimelinePlacementTest");
+	Config.RegionId = TEXT("Body.TestTimeline");
+	Config.JsonPointer = TEXT("/Body/TestTimeline");
+	Config.TimeFieldName = TEXT("Time");
+	Config.DurationFieldName = TEXT("Duration");
+	Config.bHasDuration = true;
+	Config.bRequireDuration = true;
+	Config.bValidateEndTime = true;
+	Config.NameFieldName = TEXT("Name");
+	Config.bHasName = true;
+	Config.bRequireName = true;
+
+	TSharedRef<FJsonObject> First = MakeShared<FJsonObject>();
+	First->SetStringField(TEXT("Name"), TEXT("Hit"));
+	First->SetNumberField(TEXT("Time"), 1.0);
+	First->SetNumberField(TEXT("Duration"), 2.0);
+
+	TSharedRef<FJsonObject> Duplicate = MakeShared<FJsonObject>();
+	Duplicate->SetStringField(TEXT("Name"), TEXT("Hit"));
+	Duplicate->SetNumberField(TEXT("Time"), 1.0);
+	Duplicate->SetNumberField(TEXT("Duration"), 2.0);
+
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Add(MakeShared<FJsonValueObject>(First));
+	Values.Add(MakeShared<FJsonValueObject>(Duplicate));
+
+	FAssetDocumentTimelineRange Range;
+	Range.MinTime = 0.0;
+	Range.MaxTime = 5.0;
+	Range.bHasMaxTime = true;
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+			MakeShared<FJsonValueArray>(Values),
+			Config,
+			TEXT("/Body/TestTimeline"),
+			&Range,
+			Entries);
+
+	TestFalse(TEXT("Duplicate placement key fails"), Result.bSuccess);
+	TestEqual(TEXT("Duplicate diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
+
+	Duplicate->SetNumberField(TEXT("Time"), 4.5);
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		MakeShared<FJsonValueArray>(Values),
+		Config,
+		TEXT("/Body/TestTimeline"),
+		&Range,
+		Entries);
+
+	TestFalse(TEXT("Duration end outside range fails"), Result.bSuccess);
+	TestEqual(TEXT("End range diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementEndTime")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTimelinePlacementRegionAdapterDelegatesLifecycleTest,
+	"AssetFactory.AssetDocument.RegionRuntime.TimelinePlacement.DelegatesLifecycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTimelinePlacementRegionAdapterDelegatesLifecycleTest::RunTest(const FString&)
+{
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("TimelinePlacementTest");
+	Config.RegionId = TEXT("Body.TestTimeline");
+	Config.BodyPath = TEXT("Body.TestTimeline");
+	Config.JsonPointer = TEXT("/Body/TestTimeline");
+	Config.TimeFieldName = TEXT("Time");
+	Config.NameFieldName = TEXT("Name");
+	Config.bHasName = true;
+	Config.bRequireName = true;
+
+	int32 ValidateCalls = 0;
+	int32 ApplyCalls = 0;
+	FAssetDocumentTimelinePlacementHooks Hooks;
+	Hooks.Validate = [&ValidateCalls](const FAssetDocumentRegionContext&, TArray<FAssetDocumentTimelinePlacementEntry>& Entries)
+	{
+		++ValidateCalls;
+		return Entries.Num() == 1 && Entries[0].Name.IsSet() && Entries[0].Name.GetValue() == TEXT("Hit")
+			? FAssetDocumentCapabilityResult::Success(TEXT("validated timeline placement"))
+			: FAssetDocumentCapabilityResult::Failure(TEXT("unexpected timeline entry"), TEXT("/Body/TestTimeline"), TEXT("UnexpectedTimelineEntry"));
+	};
+	Hooks.Apply = [&ApplyCalls](
+		FAssetDocumentRegionContext&,
+		const TArray<FAssetDocumentTimelinePlacementEntry>& Entries,
+		bool& bOutChanged)
+	{
+		++ApplyCalls;
+		bOutChanged = Entries.Num() == 1;
+		return FAssetDocumentCapabilityResult::Success(TEXT("applied timeline placement"));
+	};
+	Hooks.Extract = [](const FAssetDocumentRegionContext&, TArray<TSharedRef<FJsonObject>>& OutEntries)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("Name"), TEXT("Hit"));
+		Entry->SetNumberField(TEXT("Time"), 1.0);
+		OutEntries.Add(Entry);
+		return FAssetDocumentCapabilityResult::Success(TEXT("extracted timeline placement"));
+	};
+
+	FAssetDocumentTimelinePlacementRegionAdapter Adapter(MoveTemp(Config), MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.TestTimeline"), TEXT("Body.TestTimeline"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.TestTimeline"), TEXT("/Body/TestTimeline"), &Policy);
+
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("Name"), TEXT("Hit"));
+	Entry->SetNumberField(TEXT("Time"), 1.0);
+	TArray<TSharedPtr<FJsonValue>> DesiredValues;
+	DesiredValues.Add(MakeShared<FJsonValueObject>(Entry));
+	const TSharedPtr<FJsonValue> Desired = MakeArrayValue(MoveTemp(DesiredValues));
+
+	TestTrue(TEXT("Adapter supports configured region"), Adapter.SupportsRegion(Context));
+	TestTrue(TEXT("Validate succeeds"), Adapter.ValidateRegion(Context, Desired).bSuccess);
+
+	bool bChanged = false;
+	TestTrue(TEXT("Apply succeeds"), Adapter.ApplyRegion(Context, Desired, bChanged).bSuccess);
+	TestTrue(TEXT("Apply reports changed"), bChanged);
+	TestEqual(TEXT("Validate called twice"), ValidateCalls, 2);
+	TestEqual(TEXT("Apply called once"), ApplyCalls, 1);
+
+	TSharedPtr<FJsonValue> Extracted;
+	TestTrue(TEXT("Extract succeeds"), Adapter.ExtractRegion(Context, Extracted).bSuccess);
+	TestTrue(TEXT("Extract returns array"), Extracted.IsValid() && Extracted->Type == EJson::Array);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTimelinePlacementRegionAdapterResolvesTracksTest,
+	"AssetFactory.AssetDocument.RegionRuntime.TimelinePlacement.TrackResolver",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTimelinePlacementRegionAdapterResolvesTracksTest::RunTest(const FString&)
+{
+	FAssetDocumentTimelinePlacementRegionConfig Config;
+	Config.AdapterName = TEXT("TimelinePlacementTest");
+	Config.RegionId = TEXT("Body.TestTimeline");
+	Config.JsonPointer = TEXT("/Body/TestTimeline");
+	Config.TimeFieldName = TEXT("Time");
+	Config.TrackNameFieldName = TEXT("TrackName");
+	Config.bHasTrackIdentity = true;
+
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetNumberField(TEXT("Time"), 1.0);
+	Entry->SetStringField(TEXT("TrackName"), TEXT("Action"));
+	TArray<TSharedPtr<FJsonValue>> DesiredValues;
+	DesiredValues.Add(MakeShared<FJsonValueObject>(Entry));
+	const TSharedPtr<FJsonValue> Desired = MakeArrayValue(MoveTemp(DesiredValues));
+
+	int32 ResolverCalls = 0;
+	FAssetDocumentTimelineTrackResolver Resolver;
+	Resolver.Resolve = [&ResolverCalls](const FAssetDocumentTimelineTrackResolveRequest& Request)
+	{
+		++ResolverCalls;
+		FAssetDocumentTimelineTrackResolveResult Result;
+		if (Request.TrackName.IsSet() && Request.TrackName.GetValue() == TEXT("Action"))
+		{
+			Result.bResolved = true;
+			Result.TrackIndex = 3;
+			Result.CanonicalTrackName = TEXT("Action");
+			Result.Error = FAssetDocumentCapabilityResult::Success(TEXT("resolved track"));
+			return Result;
+		}
+		Result.Error = FAssetDocumentCapabilityResult::Failure(
+			TEXT("unknown track"),
+			Request.JsonPointer,
+			TEXT("UnknownTimelineTrack"));
+		return Result;
+	};
+	Config.TrackResolver = Resolver;
+
+	TArray<FAssetDocumentTimelinePlacementEntry> Entries;
+	FAssetDocumentCapabilityResult Result =
+		FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+			Desired,
+			Config,
+			TEXT("/Body/TestTimeline"),
+			nullptr,
+			Entries);
+
+	TestTrue(TEXT("Resolver success parses entries"), Result.bSuccess);
+	TestEqual(TEXT("Resolver called once"), ResolverCalls, 1);
+	TestEqual(TEXT("Resolved track index is copied"), Entries.Num() > 0 && Entries[0].ResolvedTrackIndex.IsSet() ? Entries[0].ResolvedTrackIndex.GetValue() : INDEX_NONE, 3);
+	TestEqual(TEXT("Canonical track name is copied"), Entries.Num() > 0 ? Entries[0].CanonicalTrackName : FString(), FString(TEXT("Action")));
+
+	Entry->SetStringField(TEXT("TrackName"), TEXT("Missing"));
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		Desired,
+		Config,
+		TEXT("/Body/TestTimeline"),
+		nullptr,
+		Entries);
+
+	TestFalse(TEXT("Resolver failure propagates"), Result.bSuccess);
+	TestEqual(TEXT("Resolver failure code propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnknownTimelineTrack")));
+	TestEqual(TEXT("Resolver failure path propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0")));
 	return true;
 }
 
