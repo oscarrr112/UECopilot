@@ -29,7 +29,7 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 
 ## 2. 设计结论
 
-第一版采用“ABP profile + common Blueprint regions + animation-specific thin hooks”的中间方案：
+本 spec 定义完整 ABP AssetDocument 目标，不把第一阶段实现切片当成最终能力边界。实现必须分阶段推进，但所有阶段都沿同一条架构线：
 
 - 新增 exact-class profile：`/Script/Engine.AnimBlueprint` / `UAnimBlueprint::StaticClass()`。
 - 使用 `FAssetDocumentBodyRegionDispatcher` 管理 Body lifecycle，不写完整 asset-specific body parser。
@@ -43,31 +43,33 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
   - `Source/AssetDocument/Private/Tests/AssetDocumentRegionRuntimeTestFixture.h`
 - 复用或抽出小的 common Blueprint hooks，承接 `ParentClass`、`ImplementedInterfaces`、`Variables`、`ClassDefaults`、K2 `UbergraphPages` 这类 `UBlueprint` 通用语义。
 - ABP-specific hook 只负责 `TargetSkeleton`、template flag、preview mesh / preview anim blueprint、optimization flags、sync groups、compile/rebuild/refresh。
-- `AnimGraph`、state machine、transition graph、asset player node override、pose watch/debug data 第一版不 author，必须进入 deferred/excluded 文档和 profile inspection evidence。
+- AnimGraph / state machine / transition / anim layer / parent override 也是完整 ABP AssetDocument 的目标 surface，但必须通过后续公共 graph-family adapter 或 dedicated adapter spec 接入，不能写进 ABP 私有巨型 parser。
+- 第一阶段允许把这些复杂 region 作为 declared deferred regions 暴露，用 exact diagnostic 保护边界；后续阶段逐步解除 deferred。
 
-推荐方案不是：
+设计分层不是：
 
 1. **Lifecycle-only profile**：只支持 create/extract skeleton/preview。这个方案太浅，不能证明 public runtime 接入新资产的价值。
-2. **Full AnimGraph AssetDocument**：第一版直接 author AnimGraph、state machine 和 transition graph。这个方案过宽，容易把 `UAnimBlueprint` 私有 graph parser 写进 capability。
-3. **推荐方案**：先管理 ABP 的 stable lifecycle / reference / Blueprint-common surface，同时显式 deferred AnimGraph。它能验证 thin hook 方向，也给下一环 AnimGraph 公共 adapter 留出清晰入口。
+2. **One-shot private full parser**：一次实现 AnimGraph、state machine 和 transition graph，但把语义都塞进 `FAnimBlueprintAssetDocumentCapability`。这个方案会违背 public runtime / thin hook 方向。
+3. **推荐方案**：一个完整 ABP spec，多个 implementation milestones。先落 stable lifecycle / reference / Blueprint-common surface；再设计 animation graph 公共 adapter；最后接 state machine、transition、layer、parent override 等复杂 region。
 
 ## 3. 目标
 
 1. 让 `/Script/Engine.AnimBlueprint` 出现在 AssetDocument registered profiles、template、inspect、validate、apply、extract、diff 的常规通路中。
-2. 第一版支持真实 `UAnimBlueprint` create/update lifecycle，使用 `UAnimBlueprintFactory`，并保留 factory 级字段约束。
+2. 支持真实 `UAnimBlueprint` create/update lifecycle，使用 `UAnimBlueprintFactory`，并保留 factory 级字段约束。
 3. 为 ABP 建立明确 `Body.*` authoring surface，避免把 derived/debug/editor transient 数据误写进 sidecar。
 4. 复用 public region runtime 和现有 Blueprint / animation 公共 helper；如发现必须复制 UBlueprint 逻辑，先抽小公共 helper，再接 ABP。
-5. 把 unsupported AnimGraph/state-machine 等内容作为 explicit deferred evidence 暴露，不静默吞掉。
-6. 用 focused automation、full AssetDocument automation、MCP tests、external smoke 验证真实 asset 和 sidecar contract。
+5. 把 AnimGraph/state-machine 等复杂 authored surface 纳入完整目标；实现前必须先定义公共 adapter 边界、identity、canonicalization 和 verification。
+6. 对尚未实现的复杂 region 使用 explicit deferred evidence 暴露，不静默吞掉。
+7. 用 focused automation、full AssetDocument automation、MCP tests、external smoke 验证真实 asset 和 sidecar contract。
 
 ## 4. 非目标
 
-第一版不做：
+本 spec 不允许：
 
 - 不新增 `create_animation_blueprint`、`update_anim_graph` 等专用 MCP tools。
 - 不恢复旧 `AnimationBlueprint` generator 作为 AssetDocument 的入口。
-- 不 author full `AnimGraph`、state machine、transition graph、blend tree 或 `UAnimGraphNode_*`。
-- 不支持 Anim Layer Interface 资产；`UAnimLayerInterfaceFactory` 是后续单独 asset/profile 或 deferred 项。
+- 不通过 ABP 私有 parser author full `AnimGraph`、state machine、transition graph、blend tree 或 `UAnimGraphNode_*`。
+- 不把 Anim Layer Interface 与普通 `UAnimBlueprint` 混成同一个 exact-class profile；`UAnimLayerInterfaceFactory` 需要后续单独 asset/profile 或明确 region extension。
 - 不迁移 `PoseWatches`、`PoseWatchFolders`、debug data、compiled generated class caches。
 - 不把 `UAnimBlueprintGeneratedClass`、`FAnimBlueprintDebugData`、property access library 或 node property index 当成 authored sidecar。
 - 不新增 universal Blueprint adapter，也不让 public runtime 按 `UAnimBlueprint` 做全局 switch。
@@ -76,7 +78,7 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 
 ### 5.1 Managed authored data
 
-| UE surface | AssetDocument region | 第一版处理 |
+| UE surface | AssetDocument region | Handling |
 | --- | --- | --- |
 | `ParentClass` from factory / Blueprint parent | `Body.ParentClass` | object region，必须是 `UAnimInstance` 子类 |
 | `TargetSkeleton` | `Body.TargetSkeleton` | object/scalar reference region，template ABP 时必须为 null/absent |
@@ -92,21 +94,29 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 | Blueprint interfaces | `Body.ImplementedInterfaces` | common Blueprint array behavior |
 | Blueprint variables | `Body.Variables` | common Blueprint identity-array behavior |
 | Blueprint class defaults | `Body.ClassDefaults` | common Blueprint default-diff behavior |
-| Event/K2 graph | `Body.UbergraphPages` | common Blueprint graph wrapper，第一版只覆盖 K2-supported subset |
+| Event/K2 graph | `Body.UbergraphPages` | common Blueprint graph wrapper，覆盖 K2-supported subset |
+| Anim graph root and `UAnimGraphNode_*` | `Body.AnimGraph` | planned managed graph region；需要 animation graph node adapter |
+| State machines / states / transitions | `Body.StateMachines` | planned managed nested graph/tree region |
+| Transition blend graphs | `Body.TransitionGraphs` | planned managed graph region，归属 transition identity |
+| Anim layer graph/interface authoring | `Body.AnimLayers` | planned managed region；涉及 Anim Layer Interface 与 linked layer compatibility |
+| Parent node asset overrides | `Body.ParentAssetOverrides` | planned managed identity-array region，identity 为 parent node GUID |
+| Default binding class | `Body.DefaultBinding` | object region；如果实现时确认只能作为 editor node creation policy，可阶段性 deferred |
+| Function graphs / macro graphs | `Body.FunctionGraphs` / `Body.MacroGraphs` | inherited Blueprint graph regions；是否解除 deferred 取决于 common Blueprint graph plan |
 
-### 5.2 Deferred authoring data
+### 5.2 Stage-gated managed data
 
-| UE surface | AssetDocument path | Deferred 原因 |
+以下 region 属于完整 ABP AssetDocument 目标，但不允许在第一阶段直接实现为 ABP 私有 parser。阶段实现前必须先写 adapter spec 或在 implementation plan 中引用已存在公共 adapter：
+
+| AssetDocument path | Required public abstraction | Stage-1 behavior |
 | --- | --- | --- |
-| Anim graph root and `UAnimGraphNode_*` | `Body.AnimGraph` | 需要 animation graph node semantic adapter，不应写进 ABP profile 私有 parser |
-| State machines / states / transitions | `Body.StateMachines` | nested graph/tree + transition lifecycle，第一版无公共 adapter |
-| Transition blend graphs | `Body.TransitionGraphs` | 依赖 state machine ownership 和 transition identity |
-| Anim layer graph/interface authoring | `Body.AnimLayers` | 涉及 Anim Layer Interface 与 linked layer compatibility |
-| Parent node asset overrides | `Body.ParentAssetOverrides` | identity 是 parent node GUID，依赖 deferred AnimGraph node identity |
-| Default binding class | `Body.DefaultBinding` | `DefaultBindingClass` 是 editor-only node creation policy，第一版先不 author；如实现时确认可稳定反射写入，可从 deferred 升级为 object region |
-| Function graphs / macro graphs | `Body.FunctionGraphs` / `Body.MacroGraphs` | 继承 UBlueprint deferred 策略，除非 implementation plan 先解除通用 Blueprint deferred |
+| `Body.AnimGraph` | animation graph node adapter + graph wrapper strategy | declared deferred，非空 exact diagnostic |
+| `Body.StateMachines` | nested state-machine adapter，定义 state/transition identity | declared deferred，非空 exact diagnostic |
+| `Body.TransitionGraphs` | transition graph adapter tied to state-machine identity | declared deferred，非空 exact diagnostic |
+| `Body.AnimLayers` | anim layer/interface adapter or separate profile | declared deferred，非空 exact diagnostic |
+| `Body.ParentAssetOverrides` | identity-array helper + parent node GUID resolver | declared deferred until `Body.AnimGraph` identity exists |
+| `Body.FunctionGraphs` / `Body.MacroGraphs` | common Blueprint graph support | follows UBlueprint deferred status |
 
-Deferred region 必须使用 `FAssetDocumentDeferredRegionAdapter` 或 equivalent declared policy：允许 empty array/object/null，非空值返回 exact diagnostic，不得静默忽略。
+Stage-gated region 必须使用 `FAssetDocumentDeferredRegionAdapter` 或 equivalent declared policy：允许 empty array/object/null，非空值返回 exact diagnostic，不得静默忽略。解除 deferred 时，必须删除对应 deferred entry 或改成已完成记录。
 
 ### 5.3 Excluded / derived / cache data
 
@@ -116,12 +126,12 @@ Deferred region 必须使用 `FAssetDocumentDeferredRegionAdapter` 或 equivalen
 | `FAnimBlueprintDebugData` | runtime/debug evidence，不 author |
 | `FStateMachineDebugData` / node-to-index maps | derived debug mapping，不 author |
 | `PropertyAccessLibrary` and compiled node property indexes | compiler output，不 author |
-| `PoseWatches` / `PoseWatchFolders` | editor debug state，第一版排除 |
+| `PoseWatches` / `PoseWatchFolders` | editor debug state，排除 |
 | `bRefreshExtensions` | transient refresh flag，不 author |
 
 ## 6. Body Schema
 
-第一版 template 建议：
+Template 建议从完整 ABP schema 起步，但 stage-gated regions 可以是 empty/deferred values：
 
 ```json
 {
@@ -159,7 +169,11 @@ Deferred region 必须使用 `FAssetDocumentDeferredRegionAdapter` 或 equivalen
     "Variables": [],
     "ClassDefaults": {},
     "UbergraphPages": [],
-    "AnimGraph": []
+    "AnimGraph": [],
+    "StateMachines": [],
+    "TransitionGraphs": [],
+    "AnimLayers": [],
+    "ParentAssetOverrides": []
   }
 }
 ```
@@ -167,7 +181,7 @@ Deferred region 必须使用 `FAssetDocumentDeferredRegionAdapter` 或 equivalen
 Notes：
 
 - `TargetSkeleton` 可以是 `null`，但仅当 `Template.bIsTemplate == true`。
-- `Body.AnimGraph` 第一版只允许 empty array 或 explicit deferred empty value。
+- `Body.AnimGraph` / `Body.StateMachines` / `Body.TransitionGraphs` / `Body.AnimLayers` / `Body.ParentAssetOverrides` 在阶段 1 只允许 empty array 或 explicit deferred empty value；完整目标仍是 authored regions。
 - `FunctionGraphs` / `MacroGraphs` 可以不出现在 template 中；如果实现选择暴露它们，必须按 deferred policy 处理。
 - `Properties` 只承接未被 Body 管理的 reflected delta，不得包含 `TargetSkeleton`、`PreviewSkeletalMesh`、optimization flags 等已由 Body 管理的字段。
 
@@ -185,7 +199,11 @@ Notes：
 | `Body.Variables` | array | managed region | `NewVariables` | common Blueprint identity-array hook |
 | `Body.ClassDefaults` | object | default diff | generated class CDO vs parent CDO | common Blueprint class-default hook |
 | `Body.UbergraphPages` | graph | managed region | `UbergraphPages` | graph wrapper + `UBlueprintGraph` canonicalizer |
-| `Body.AnimGraph` | graph/deferred | managed deferred | anim graph editor graphs | deferred adapter |
+| `Body.AnimGraph` | graph | stage-gated managed region | anim graph editor graphs | stage 1 deferred; later animation graph adapter |
+| `Body.StateMachines` | graph/tree | stage-gated managed region | state machine graphs | stage 1 deferred; later state-machine adapter |
+| `Body.TransitionGraphs` | graph | stage-gated managed region | transition graphs | stage 1 deferred; later transition graph adapter |
+| `Body.AnimLayers` | graph/array | stage-gated managed region | anim layer graphs/interfaces | stage 1 deferred; later layer adapter/profile |
+| `Body.ParentAssetOverrides` | array | stage-gated managed region | `ParentAssetOverrides` | stage 1 deferred; later identity-array hook |
 
 Policies must list `ManagedUePropertyPaths` so profile inspection and sync evidence can explain ownership. If a field is private but accessible only through `UAnimBlueprint` methods, the policy still names the conceptual UE surface and the hook handles materialization.
 
@@ -261,7 +279,7 @@ Required diagnostic examples:
 | non-template without skeleton on create | `/Body/TargetSkeleton` | `MissingTargetSkeleton` |
 | preview mesh skeleton mismatch | `/Body/Preview/PreviewSkeletalMesh` | `PreviewMeshSkeletonMismatch` |
 | duplicate sync group | `/Body/SyncGroups/<Index>/Name` | `DuplicateSyncGroupName` |
-| non-empty AnimGraph | `/Body/AnimGraph` | `UnsupportedAnimBlueprintRegion` |
+| non-empty stage-gated graph region before adapter support | `/Body/AnimGraph` or sibling region | `UnsupportedAnimBlueprintRegion` |
 
 Exact path/code assertions are required in tests. Runtime adapter tests should use `AssetDocumentRegionRuntimeTestFixture.h`; profile automation still verifies UE materialization.
 
@@ -286,7 +304,7 @@ Add `AssetDocumentAnimBlueprintTests.cpp` with at least:
 - profile registration and template shape.
 - body schema validation for `ParentClass`, `TargetSkeleton`, `Template`, `Preview`, `Optimization`, `SyncGroups`.
 - dispatcher unknown key and missing/invalid type behavior.
-- deferred `AnimGraph` accepts empty value and rejects non-empty value with exact path/code.
+- stage-gated graph regions accept empty values and reject non-empty values with exact path/code until their adapter stage lands.
 - `SyncGroups` duplicate and extract/diff path stability.
 - create/update real `UAnimBlueprint` with `TargetSkeleton` and preview mesh.
 - extract returns canonical Body regions and does not emit derived/debug/cache data.
@@ -330,15 +348,38 @@ External smoke:
 - `diff` has no unexpected changed entries for managed regions.
 - The real asset and sidecar remain inspectable.
 
-## 13. Deferred Fields Document
+## 13. Staged Implementation And Deferred Tracking
 
-Implementation must add:
+This spec is intentionally broader than the first implementation slice. The implementation plan may split it into separate branches or task groups, but each branch must keep the same final ABP target.
+
+Recommended milestones:
+
+1. **ABP core profile and lifecycle**
+   - profile registration, template, inspection, `UAnimBlueprintFactory` create/update
+   - `ParentClass`, `TargetSkeleton`, `Template`, `Preview`, `Optimization`, `SyncGroups`
+   - common Blueprint regions that can be reused safely
+   - stage-gated graph regions declared as deferred
+2. **Animation graph adapter spec and pilot**
+   - define `Body.AnimGraph` semantic identity
+   - decide node/pin representation and canonicalization
+   - prove at least one simple anim graph roundtrip without ABP-private parser sprawl
+3. **State machine and transition graph support**
+   - define state identity, transition identity and nested graph ownership
+   - connect transition blend graphs through a dedicated public adapter or graph-family wrapper
+4. **Anim layer and parent override support**
+   - decide whether Anim Layer Interface needs a separate profile
+   - implement `Body.ParentAssetOverrides` only after parent node GUID identity is stable
+5. **Full ABP smoke and cleanup**
+   - remove or close deferred entries that have real managed implementations
+   - keep excluded derived/debug/cache fields excluded
+
+Stage 1 implementation must add:
 
 ```text
 docs/superpowers/specs/asset-document-deferred-fields/2026-07-01-animationblueprint.md
 ```
 
-It must record:
+It must record stage-gated regions and excluded fields:
 
 - `Body.AnimGraph`
 - `Body.StateMachines`
@@ -349,21 +390,23 @@ It must record:
 - `Body.FunctionGraphs` / `Body.MacroGraphs` if exposed as deferred
 - excluded derived/debug/cache fields
 
-Each entry must include current behavior, deferred reason, cleanup trigger, upgrade entrypoint, and required verification.
+Each entry must include current behavior, deferred reason, cleanup trigger, upgrade entrypoint, and required verification. When a later milestone implements a region, that milestone must update this file in the same commit chain or task.
 
 ## 14. Implementation Plan Boundaries
 
-The implementation plan must split work into checkpointed tasks:
+The first implementation plan must split stage 1 into checkpointed tasks:
 
 1. Profile skeleton and template/inspection.
 2. Lifecycle create/update hook with `UAnimBlueprintFactory`.
 3. Dispatcher/object regions: `ParentClass`, `TargetSkeleton`, `Template`, `Preview`, `Optimization`.
 4. `SyncGroups` named-array region.
 5. Common Blueprint regions reuse/extraction: interfaces, variables, class defaults, K2 `UbergraphPages`.
-6. Deferred regions and deferred-fields doc.
+6. Stage-gated graph regions and deferred-fields doc.
 7. Focused automation, full verification, MCP, external smoke, final review.
 
 Each task must declare `TASK_BASE`, allowed files, forbidden files, focused tests, checkpoint commit, and review diff range.
+
+Later implementation plans must not reopen the ABP surface inventory from scratch. They should reference this spec and focus on the next milestone's adapter boundary, identity model, diagnostic contract and verification.
 
 ## 15. Stop Conditions
 
@@ -375,18 +418,18 @@ Stop and return to spec discussion if any implementation task requires:
 - adding a capability base inheritance chain.
 - treating `UAnimBlueprintGeneratedClass` or debug data as authored state.
 - changing existing UBlueprint / WidgetBlueprint / AnimSequence behavior without a dedicated migration task.
-- accepting non-empty deferred `AnimGraph` content without explicit diagnostic.
+- accepting non-empty stage-gated graph content before the corresponding adapter milestone lands.
 
 ## 16. Completion Definition
 
 This spec is complete when:
 
-- ABP owned/deferred/excluded surface is explicit.
-- First-version Body keys and policies are defined.
+- ABP owned/stage-gated/excluded surface is explicit.
+- Full target Body keys and stage 1 policies are defined.
 - Public runtime composition is fixed as dispatcher + adapters + hooks.
-- AnimGraph/state-machine authoring is explicitly deferred, not silently unsupported.
-- Verification includes focused ABP automation, regression automation, MCP tests and external smoke.
-- Implementation plan can be written without reopening asset surface inventory.
+- AnimGraph/state-machine authoring is part of the full ABP target, with explicit stage gates and adapter requirements.
+- Stage 1 verification includes focused ABP automation, regression automation, MCP tests and external smoke.
+- Later implementation plans can advance the next ABP milestone without reopening asset surface inventory.
 
 After this spec is approved, the next step is an implementation plan under:
 
