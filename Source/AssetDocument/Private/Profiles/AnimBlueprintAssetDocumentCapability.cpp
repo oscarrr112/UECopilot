@@ -5,6 +5,7 @@
 #include "AssetDocumentBodyRegionDispatcher.h"
 #include "AssetDocumentFragmentCompiler.h"
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
+#include "Profiles/BlueprintAssetDocumentCommon.h"
 
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
@@ -1052,6 +1053,8 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	FAssetDocumentObjectRegionAdapter ObjectAdapter = MakeCoreObjectRegionAdapter();
 	FAnimBlueprintTargetSkeletonRegionAdapter TargetSkeletonAdapter;
 	FAssetDocumentNamedArrayRegionAdapter SyncGroupsAdapter = MakeSyncGroupsRegionAdapter();
+	FBlueprintAssetDocumentCommonRegionAdapter BlueprintCommonAdapter(
+		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName());
 	FAssetDocumentDeferredRegionAdapter DeferredAdapter(
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 		TEXT("UnsupportedAnimBlueprintRegion"),
@@ -1061,6 +1064,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	Adapters.Add(ObjectAdapter.GetName(), &ObjectAdapter);
 	Adapters.Add(TargetSkeletonAdapter.GetName(), &TargetSkeletonAdapter);
 	Adapters.Add(SyncGroupsAdapter.GetName(), &SyncGroupsAdapter);
+	Adapters.Add(BlueprintCommonAdapter.GetName(), &BlueprintCommonAdapter);
 	Adapters.Add(DeferredAdapter.GetName(), &DeferredAdapter);
 
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
@@ -1154,6 +1158,7 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 		FAnimBlueprintAssetDocumentProfile::ObjectRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::TargetSkeletonRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName(),
+		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 	};
 }

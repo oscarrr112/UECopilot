@@ -20,3 +20,8 @@ public:
 		const TSharedRef<FJsonObject>& DesiredBody,
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const;
 };
+
+FAssetDocumentCapabilityResult ApplyUBlueprintGraphRegions(
+	FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& DesiredBody,
+	bool& bOutChanged);

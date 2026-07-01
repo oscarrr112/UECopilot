@@ -9,6 +9,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
 #include "Dom/JsonObject.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
@@ -223,6 +224,53 @@ void SetSyncGroups(const TSharedRef<FJsonObject>& Document, std::initializer_lis
 	Body->SetArrayField(TEXT("SyncGroups"), MakeSyncGroupArray(Names));
 }
 
+TSharedPtr<FJsonObject> MakeFloatVariable(const TCHAR* Name, const TCHAR* DefaultValue)
+{
+	TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
+	Variable->SetStringField(TEXT("Name"), Name);
+	TSharedPtr<FJsonObject> Type = MakeShared<FJsonObject>();
+	Type->SetStringField(TEXT("PinCategory"), TEXT("real"));
+	Type->SetStringField(TEXT("PinSubCategory"), TEXT("float"));
+	Variable->SetObjectField(TEXT("Type"), Type);
+	Variable->SetStringField(TEXT("DefaultValue"), DefaultValue);
+	return Variable;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeVariableArray(std::initializer_list<TSharedPtr<FJsonObject>> Variables)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedPtr<FJsonObject>& Variable : Variables)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Variable.ToSharedRef()));
+	}
+	return Values;
+}
+
+TSharedPtr<FJsonObject> MakeImplementedInterface(const FString& InterfacePath)
+{
+	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
+	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(InterfacePath));
+	return InterfaceEntry;
+}
+
+void SetImplementedInterfaces(const TSharedRef<FJsonObject>& Document, std::initializer_list<TSharedPtr<FJsonObject>> Interfaces)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedPtr<FJsonObject>& Interface : Interfaces)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Interface.ToSharedRef()));
+	}
+	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("ImplementedInterfaces"), Values);
+}
+
+bool HasBlueprintVariable(const UBlueprint* Blueprint, FName Name)
+{
+	return Blueprint && Blueprint->NewVariables.ContainsByPredicate([Name](const FBPVariableDescription& Variable)
+	{
+		return Variable.VarName == Name;
+	});
+}
+
 TSharedRef<FJsonValue> MakeBodyWithSyncGroups(std::initializer_list<const TCHAR*> Names)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
@@ -260,6 +308,12 @@ bool HasNumericSyncGroupDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntri
 			&& Path.Len() > FString(TEXT("/Body/SyncGroups/")).Len()
 			&& FChar::IsDigit(Path[FString(TEXT("/Body/SyncGroups/")).Len()]);
 	});
+}
+
+bool HasArrayFieldCount(const TSharedPtr<FJsonObject>& Object, const FString& FieldName, int32 ExpectedCount)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	return Object.IsValid() && Object->TryGetArrayField(FieldName, Values) && Values && Values->Num() == ExpectedCount;
 }
 
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
@@ -601,6 +655,94 @@ bool FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest::RunTest(const FString
 		nullptr,
 		*FString::Printf(TEXT("%s.%s"), *BadTarget, *FPackageName::GetLongPackageAssetName(BadTarget)));
 	TestNull(TEXT("Invalid create does not leave a loadable asset"), BadAsset);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintBlueprintCommonRegionsTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.BlueprintCommonRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintBlueprintCommonRegionsTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_Common_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	const FString InterfacePath = TEXT("/Script/Engine.ActorSoundParameterInterface");
+
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	SetImplementedInterfaces(Document, {MakeImplementedInterface(InterfacePath)});
+	Body->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Speed"), TEXT("123.0"))}));
+	Body->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bUseMainInstanceMontageEvaluationData"), true);
+	Body->SetArrayField(TEXT("UbergraphPages"), {});
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimBlueprint common region apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Blueprint common regions apply succeeds"), ApplyResult.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
+	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
+	TestNotNull(TEXT("Interface class loads"), InterfaceClass);
+	if (AnimBlueprint && InterfaceClass)
+	{
+		TestTrue(
+			TEXT("AnimBlueprint implements authored interface"),
+			AnimBlueprint->ImplementedInterfaces.ContainsByPredicate([InterfaceClass](const FBPInterfaceDescription& Interface)
+			{
+				return Interface.Interface == InterfaceClass;
+			}));
+		TestTrue(TEXT("AnimBlueprint has authored variable"), HasBlueprintVariable(AnimBlueprint, TEXT("Speed")));
+
+		UObject* GeneratedCDO = AnimBlueprint->GeneratedClass ? AnimBlueprint->GeneratedClass->GetDefaultObject(false) : nullptr;
+		FBoolProperty* MontageDataProperty = GeneratedCDO
+			? FindFProperty<FBoolProperty>(GeneratedCDO->GetClass(), TEXT("bUseMainInstanceMontageEvaluationData"))
+			: nullptr;
+		TestNotNull(TEXT("ClassDefaults property resolves on generated CDO"), MontageDataProperty);
+		if (GeneratedCDO && MontageDataProperty)
+		{
+			TestTrue(TEXT("ClassDefaults bool is applied"), MontageDataProperty->GetPropertyValue_InContainer(GeneratedCDO));
+		}
+	}
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+	TestTrue(TEXT("Extract succeeds"), ExtractResult.bSuccess);
+	TestTrue(TEXT("Extract includes one implemented interface"), HasArrayFieldCount(ExtractedBody, TEXT("ImplementedInterfaces"), 1));
+	TestTrue(TEXT("Extract includes one variable"), HasArrayFieldCount(ExtractedBody, TEXT("Variables"), 1));
+	TestTrue(TEXT("Extract includes empty UbergraphPages"), HasArrayFieldCount(ExtractedBody, TEXT("UbergraphPages"), 0));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Capability.Diff(Context, MakeShared<FJsonValueObject>(Body.ToSharedRef()), DiffEntries);
+	TestTrue(TEXT("Diff succeeds for Blueprint common regions"), DiffResult.bSuccess);
+	TestTrue(TEXT("Diff reports implemented interface semantic path"), HasDiffPath(DiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath)));
+	TestTrue(TEXT("Diff reports variable semantic path"), HasDiffPath(DiffEntries, TEXT("/Body/Variables/Speed")));
+
+	FAssetDocumentCapabilityContext ValidationContext;
+	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
+	TSharedRef<FJsonObject> InvalidInterfaceBody = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> InvalidInterfaces;
+	InvalidInterfaces.Add(MakeShared<FJsonValueObject>(MakeImplementedInterface(TEXT("/Script/Engine.Actor")).ToSharedRef()));
+	InvalidInterfaceBody->SetArrayField(TEXT("ImplementedInterfaces"), InvalidInterfaces);
+	const FAssetDocumentCapabilityResult InvalidInterfaceResult =
+		Capability.Validate(ValidationContext, MakeShared<FJsonValueObject>(InvalidInterfaceBody));
+	TestFalse(TEXT("ImplementedInterfaces validates interface classes"), InvalidInterfaceResult.bSuccess);
+	TestTrue(
+		TEXT("Invalid interface reports exact common diagnostic"),
+		HasDiagnostic(InvalidInterfaceResult, TEXT("/Body/ImplementedInterfaces/0/Interface/Class"), TEXT("InvalidInterfaceClass")));
+
 	return true;
 }
 

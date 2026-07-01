@@ -74,6 +74,11 @@ FName FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName()
 	return TEXT("AnimBlueprintSyncGroupsNamedArrayRegionAdapter");
 }
 
+FName FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName()
+{
+	return TEXT("AnimBlueprintBlueprintCommonRegionAdapter");
+}
+
 FName FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName()
 {
 	return TEXT("AnimBlueprintDeferredRegionAdapter");
@@ -88,10 +93,10 @@ TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegi
 		{TEXT("Preview"), TEXT("Body.Preview"), ObjectRegionAdapterName(), 40, false},
 		{TEXT("Optimization"), TEXT("Body.Optimization"), ObjectRegionAdapterName(), 50, false},
 		{TEXT("SyncGroups"), TEXT("Body.SyncGroups"), SyncGroupsRegionAdapterName(), 60, false},
-		{TEXT("ImplementedInterfaces"), TEXT("Body.ImplementedInterfaces"), DeferredRegionAdapterName(), 70, false},
-		{TEXT("Variables"), TEXT("Body.Variables"), DeferredRegionAdapterName(), 80, false},
-		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), DeferredRegionAdapterName(), 90, false},
-		{TEXT("UbergraphPages"), TEXT("Body.UbergraphPages"), DeferredRegionAdapterName(), 100, false},
+		{TEXT("ImplementedInterfaces"), TEXT("Body.ImplementedInterfaces"), BlueprintCommonRegionAdapterName(), 70, false},
+		{TEXT("Variables"), TEXT("Body.Variables"), BlueprintCommonRegionAdapterName(), 80, false},
+		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), BlueprintCommonRegionAdapterName(), 90, false},
+		{TEXT("UbergraphPages"), TEXT("Body.UbergraphPages"), BlueprintCommonRegionAdapterName(), 100, false},
 		{TEXT("AnimGraph"), TEXT("Body.AnimGraph"), DeferredRegionAdapterName(), 200, false},
 		{TEXT("StateMachines"), TEXT("Body.StateMachines"), DeferredRegionAdapterName(), 210, false},
 		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), DeferredRegionAdapterName(), 220, false},
