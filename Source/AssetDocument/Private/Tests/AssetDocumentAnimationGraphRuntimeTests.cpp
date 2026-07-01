@@ -3,6 +3,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Graphs/AssetDocumentGraphFieldRules.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
 
 #include "Animation/AnimationAsset.h"
 #include "Dom/JsonObject.h"
@@ -37,6 +38,92 @@ TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
 	ClassRef->SetStringField(TEXT("Path"), ClassPath);
 	return ClassRef;
+}
+
+TSharedPtr<FJsonObject> MakeSpawner(const FString& ActionKey)
+{
+	TSharedRef<FJsonObject> Spawner = MakeShared<FJsonObject>();
+	Spawner->SetStringField(TEXT("ActionKey"), ActionKey);
+	return Spawner;
+}
+
+FAssetDocumentGraphSpec MakeRuntimeGraphWithNode(const FAssetDocumentNodeSpec& Node)
+{
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(Node);
+	return Graph;
+}
+
+FAssetDocumentNodeSpec MakeRuntimeNode(const FString& Id, const FString& ClassPath)
+{
+	FAssetDocumentNodeSpec Node;
+	Node.Id = Id;
+	Node.Class = ClassPath;
+	return Node;
+}
+
+class FFakeAnimationGraphCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
+{
+public:
+	TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
+	int32 QueryCount = 0;
+
+	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context) const override
+	{
+		++const_cast<FFakeAnimationGraphCandidateProvider*>(this)->QueryCount;
+		return Candidates;
+	}
+};
+
+class FFakeAnimationGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
+{
+public:
+	int32 LocateCount = 0;
+	int32 RepairCount = 0;
+
+	virtual FAssetDocumentCapabilityResult LocateOrCreateGraph(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		FAssetDocumentAnimationGraphContext& InOutContext) override
+	{
+		++LocateCount;
+		InOutContext.GraphKind = GraphSpec.Kind;
+		InOutContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	virtual FAssetDocumentCapabilityResult RepairAfterApply(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentAnimationGraphContext& Context) override
+	{
+		++RepairCount;
+		return FAssetDocumentCapabilityResult::Success();
+	}
+};
+
+FAssetDocumentAnimationGraphNodeSpawnCandidate MakeCandidate(
+	const FString& ClassPath,
+	const FString& ActionKey = FString(),
+	bool bSpawnable = true)
+{
+	FAssetDocumentAnimationGraphNodeSpawnCandidate Candidate;
+	Candidate.ClassPath = ClassPath;
+	Candidate.ActionKey = ActionKey;
+	Candidate.MenuName = ActionKey;
+	Candidate.bSpawnable = bSpawnable;
+	if (!ActionKey.IsEmpty())
+	{
+		Candidate.Spawner = MakeSpawner(ActionKey);
+	}
+	return Candidate;
+}
+
+FString FirstDiagnosticCode(const FAssetDocumentCapabilityResult& Result)
+{
+	return Result.Diagnostics.IsEmpty() ? FString() : Result.Diagnostics[0].Code;
 }
 }
 
@@ -237,6 +324,125 @@ bool FAssetDocumentGraphFieldRulesStagedApplyOrderTest::RunTest(const FString&)
 		TestEqual(TEXT("Repair runs after links"), Stages[7], EAssetDocumentGraphFieldApplyStage::Repair);
 		TestEqual(TEXT("Post-apply evidence is last"), Stages[8], EAssetDocumentGraphFieldApplyStage::PostApplyEvidence);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeUniqueCandidateTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.UniqueCandidate",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeUniqueCandidateTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+
+	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	const FAssetDocumentGraphSpec Graph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ValidateGraph(Graph, Context);
+	TestTrue(TEXT("Single candidate validates without explicit spawner"), Result.bSuccess);
+	TestEqual(TEXT("Candidate provider is queried once"), Provider->QueryCount, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeDuplicateCandidateRequiresSpawnerTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.DuplicateCandidateRequiresSpawner",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeDuplicateCandidateRequiresSpawnerTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"), TEXT("BlendSpace")));
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"), TEXT("AimOffset")));
+
+	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	const FAssetDocumentGraphSpec AmbiguousGraph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("MovePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer")));
+
+	const FAssetDocumentCapabilityResult AmbiguousResult = Runtime.ValidateGraph(AmbiguousGraph, Context);
+	TestFalse(TEXT("Duplicate candidates require Node.Spawner"), AmbiguousResult.bSuccess);
+	TestEqual(TEXT("Duplicate candidate code"), FirstDiagnosticCode(AmbiguousResult), FString(TEXT("AmbiguousGraphNodeSpawner")));
+
+	FAssetDocumentNodeSpec DisambiguatedNode =
+		MakeRuntimeNode(TEXT("MovePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_BlendSpacePlayer"));
+	DisambiguatedNode.Spawner = MakeSpawner(TEXT("BlendSpace"));
+	const FAssetDocumentCapabilityResult DisambiguatedResult =
+		Runtime.ValidateGraph(MakeRuntimeGraphWithNode(DisambiguatedNode), Context);
+	TestTrue(TEXT("Explicit spawner disambiguates candidates"), DisambiguatedResult.bSuccess);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeUnspawnableClassTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.UnspawnableClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeUnspawnableClassTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly"), FString(), false));
+
+	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	const FAssetDocumentGraphSpec Graph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ValidateGraph(Graph, Context);
+	TestFalse(TEXT("Unspawnable candidate fails preflight"), Result.bSuccess);
+	TestEqual(TEXT("Unspawnable diagnostic code"), FirstDiagnosticCode(Result), FString(TEXT("UnspawnableGraphNodeClass")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.StructuralHookBoundary",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec Graph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Graph.Id = TEXT("AnimGraph");
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("ApplyGraph succeeds with fake structural hook"), Result.bSuccess);
+	TestEqual(TEXT("Structural hook locates graph once"), Hook.LocateCount, 1);
+	TestEqual(TEXT("Structural hook repairs graph once"), Hook.RepairCount, 1);
+	TestEqual(TEXT("Candidate provider handles node parsing/materialization boundary"), Provider->QueryCount, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractSkippedEvidence",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest::RunTest(const FString&)
+{
+	FAssetDocumentAnimationGraphRuntime Runtime;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphKind = TEXT("AnimGraph");
+
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
+
+	TestTrue(TEXT("Runtime shell extract succeeds"), Result.bSuccess);
+	TestTrue(TEXT("Runtime shell emits extract-only evidence"), ExtractedGraph.Evidence.IsValid());
+	TestTrue(TEXT("Runtime shell evidence surfaces skipped extraction"), ExtractedGraph.Evidence->HasField(TEXT("_Skipped")));
 	return true;
 }
 
