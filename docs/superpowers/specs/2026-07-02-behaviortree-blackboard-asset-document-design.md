@@ -1,0 +1,521 @@
+# BehaviorTree + BlackboardData AssetDocument Design
+
+日期：2026-07-02
+
+状态：待审核（正式 spec）
+
+适用分支：`feature/asset-document-behaviortree-blackboard-spec`
+
+基线：`12ea6ae87c37227cb73f65dd848b2a79c8ac2ee8`
+
+## 1. 背景
+
+AssetDocument 已经完成 public region runtime、Blueprint / WidgetBlueprint / animation-family profiles，以及 `UAnimBlueprint` 这类复杂 asset 的 exact profile 接入。下一环选择 `UBehaviorTree` 与 `UBlackboardData`，目标是定义新的 AssetDocument contract，并验证以下公共能力能否进入 AssetDocument runtime：
+
+```text
+sidecar + profile + policy + public region runtime + tree/key adapters + thin asset-specific hook
+```
+
+`UBehaviorTree` 的 authoring 语义天然依赖 `UBlackboardData`：
+
+- BT asset 引用一个 Blackboard asset。
+- BT task / decorator / service 经常包含 `FBlackboardKeySelector`。
+- subtree BT 需要验证 parent / child blackboard compatibility。
+- BT node diff path 不能依赖 UE transient editor graph index。
+
+因此本 spec 把 BehaviorTree 与 BlackboardData 放入同一个完整 AssetDocument 目标中，但实现必须拆成 milestones。BlackboardData 是 first-class AssetDocument profile，不是 BT 的 inline 私有配置。
+
+## 2. 设计结论
+
+本 spec 定义 combined BT+BB AssetDocument 目标：
+
+- 新增 exact-class profile：
+  - `/Script/AIModule.BlackboardData` / `UBlackboardData::StaticClass()`
+  - `/Script/AIModule.BehaviorTree` / `UBehaviorTree::StaticClass()`
+- `UBehaviorTree` 只通过 `Body.Blackboard` 引用 `UBlackboardData`：
+  - 形态：`{"Kind":"AssetRef","Path":"/Game/AI/BB_Enemy.BB_Enemy"}`
+  - 第一版不支持 `Body.BlackboardInline`。
+  - 如果需要同时创建 BB 和 BT，应由两个 AssetDocument sidecar 或 Definitions / workflow order 管理，不允许 BT capability 内创建私有 inline blackboard。
+- BlackboardData profile 先落 `Body.Parent` 与 `Body.Keys`，并抽公共 key schema / lookup utility 供 BT 复用。
+- BehaviorTree profile 使用 public tree adapter 管理 `Body.Tree`，BT capability 只负责：
+  - lifecycle create/load
+  - BlackboardAsset reference materialization
+  - UE node object creation / reflection property apply hook
+  - editor graph rebuild / post-apply repair
+  - cross-region validation orchestration
+- BT tree parser、blackboard key validation、identity diff、JSON Pointer diagnostic 不得写成 `FBehaviorTreeAssetDocumentCapability` 私有巨型 parser。
+
+设计分层不是：
+
+1. **BT-only profile**：只把 `BlackboardAsset` 当字符串引用，节点里的 key selector 由 BT 私有 helper 校验。这个方案短期快，但会阻断 BlackboardData / StateTree / AI asset 复用。
+2. **Inline blackboard profile**：BT body 里直接嵌入 `BlackboardInline` 并由 BT apply 创建 BB。这个方案会混淆 asset ownership，导致 sidecar source-of-truth 不清楚。
+3. **推荐方案**：一个 combined spec，一个 master implementation plan，milestones 先落 BlackboardData key profile / utility，再落 BehaviorTree lifecycle / tree adapter / BT-BB validation。
+
+## 3. 目标
+
+1. 让 `BlackboardData` 与 `BehaviorTree` 出现在 AssetDocument registered profiles、template、inspect、validate、apply、extract、diff 的常规通路中。
+2. 定义 BlackboardData 的稳定 key authoring surface，支持 parent inheritance、key type、base class / enum metadata、stable identity 和 semantic diff。
+3. 定义 BehaviorTree 的 stable tree authoring surface，支持 root/composite/task/decorator/service 的 validate/apply/extract/diff。
+4. 抽出可复用的 blackboard key utility，供 BT key selector validation 使用，后续也可服务 StateTree 或其它 AI asset。
+5. 抽出 public tree region adapter / helper，避免每个 tree-like asset 都写自己的 extractor/applier/reducer/diff helper。
+6. 对暂不支持的 BT node class、decorator/service property、editor-only layout、debug/cache field 返回 exact diagnostic 或明确 excluded，不静默吞掉。
+7. 用 BB focused automation、BT focused automation、BT+BB integrated roundtrip、full AssetDocument automation、MCP tests 和 smoke runner 验证真实 asset contract。
+
+## 4. 非目标
+
+本 spec 不允许：
+
+- 不新增 `create_behavior_tree`、`update_blackboard` 等专用 MCP tool。
+- 不从非 AssetDocument payload 反推 schema；本 spec 只定义新的 AssetDocument body contract。
+- 不支持 `Body.BlackboardInline`；BT 引用 BB 必须走 AssetRef。
+- 不在 BT capability 中维护一套私有 blackboard key parser。
+- 不把 BT editor graph layout、pin positions、GraphNode GUID、debug execution state、runtime instance memory 写入 sidecar。
+- 不让 `Properties` 管理 `BlackboardAsset`、`RootNode`、`Services`、`Decorators`、`Children` 等已由 `Body.*` 管理的字段。
+- 不通过硬编码节点类 switch 扩展行为；节点 class resolution 必须使用动态 class loading / reflection。
+- 不在 `FAssetDocumentCanonicalJson` 中加入 BT/BB domain-specific normalization。
+
+## 5. UE Surface Inventory
+
+### 5.1 BlackboardData managed authored data
+
+| UE surface | AssetDocument region | Handling |
+| --- | --- | --- |
+| `UBlackboardData::Parent` | `Body.Parent` | AssetRef<UBlackboardData> or null |
+| `UBlackboardData::Keys` | `Body.Keys` | named array region，identity 为 `Name` |
+| `FBlackboardEntry::EntryName` | `Body.Keys[].Name` | stable key identity，case-sensitive FName display preserved |
+| `FBlackboardEntry::KeyType` | `Body.Keys[].Type` / `Body.Keys[].KeyTypeClass` | public key type schema utility |
+| `FBlackboardEntry::bInstanceSynced` | `Body.Keys[].bInstanceSynced` | optional bool，default false |
+| `UBlackboardKeyType_Object::BaseClass` | `Body.Keys[].BaseClass` | ClassRef when type is Object |
+| `UBlackboardKeyType_Class::BaseClass` | `Body.Keys[].BaseClass` | ClassRef when type is Class |
+| `UBlackboardKeyType_Enum::EnumType` / `EnumName` | `Body.Keys[].Enum` | AssetRef/Class-like enum reference, exact representation defined by key utility |
+
+### 5.2 BehaviorTree managed authored data
+
+| UE surface | AssetDocument region | Handling |
+| --- | --- | --- |
+| `UBehaviorTree::BlackboardAsset` | `Body.Blackboard` | AssetRef<UBlackboardData>，required for non-trivial BT |
+| `UBehaviorTree::RootNode` | `Body.Tree.Root` | public tree adapter root |
+| `UBTCompositeNode::Children` | `Body.Tree.Root.Children[]` | tree child array，order is authored semantic order |
+| `UBTCompositeNode::Services` | `Body.Tree.*.Services[]` | service child region under owning composite |
+| `UBTCompositeChild::Decorators` | `Body.Tree.*.Decorators[]` | decorator child region on edge / child binding |
+| `UBTTaskNode` | `Body.Tree.*` | leaf node kind |
+| `UBTNode` editable properties | `Body.Tree.*.Properties` | reflected property object，schema by node class reflection |
+| `FBlackboardKeySelector` properties | `Body.Tree.*.Properties.<Field>` | key selector object, validated against `Body.Blackboard` |
+| subtree references such as `UBTTask_RunBehavior` | `Body.Tree.*.Properties.<Field>` | AssetRef<UBehaviorTree>, validate blackboard compatibility |
+
+### 5.3 Excluded / derived / editor data
+
+| UE surface | Reason |
+| --- | --- |
+| `UBehaviorTree::BTGraph` / `UBehaviorTreeGraph` nodes | editor visualization derived from runtime tree; rebuilt after apply |
+| editor graph node positions / comments | editor layout/user state; excluded from first profile |
+| `ExecutionIndex`, `TreeDepth`, runtime instance memory | derived/runtime data |
+| debugger breakpoints, active node state, search data | debug/transient evidence |
+| generated node display labels if derivable from class/properties | derived display data |
+| unknown custom node internal caches | excluded unless reflected editable property proves authored ownership |
+
+## 6. Body Schema
+
+### 6.1 BlackboardData schema
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/AI/BB_Enemy",
+  "Class": "/Script/AIModule.BlackboardData",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "Parent": null,
+    "Keys": [
+      {
+        "Name": "TargetActor",
+        "Type": "Object",
+        "BaseClass": {
+          "Kind": "ClassRef",
+          "Class": "/Script/Engine.Actor"
+        },
+        "bInstanceSynced": false
+      },
+      {
+        "Name": "HasTarget",
+        "Type": "Bool"
+      },
+      {
+        "Name": "MoveLocation",
+        "Type": "Vector"
+      }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `Body.Parent` is `AssetRef<UBlackboardData> | null`.
+- `Body.Keys` is a managed named array. Missing `Body.Keys` means no authored key delta; when present, it is source-of-truth for local keys owned by this BlackboardData asset.
+- Parent keys are visible to BT validation but are not re-authored in child `Body.Keys`.
+- Duplicate key names within the same BlackboardData are rejected at `/Body/Keys/<Name>`.
+- If a local key shadows a parent key, first implementation must reject it unless UE behavior is explicitly verified and documented.
+- `Type` supports known aliases (`Bool`, `Int`, `Float`, `String`, `Name`, `Vector`, `Rotator`, `Object`, `Class`, `Enum`) and may also support explicit `KeyTypeClass` for custom `UBlackboardKeyType` subclasses.
+- `Object` and `Class` keys require `BaseClass`.
+- `Enum` keys require an enum reference.
+
+### 6.2 BehaviorTree schema
+
+```json
+{
+  "SchemaVersion": 1,
+  "Target": "/Game/AI/BT_Enemy",
+  "Class": "/Script/AIModule.BehaviorTree",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "Blackboard": {
+      "Kind": "AssetRef",
+      "Path": "/Game/AI/BB_Enemy.BB_Enemy"
+    },
+    "Tree": {
+      "Root": {
+        "Id": "RootSelector",
+        "Class": "/Script/AIModule.BTComposite_Selector",
+        "Properties": {},
+        "Services": [],
+        "Children": [
+          {
+            "Id": "MoveToTarget",
+            "Class": "/Script/AIModule.BTTask_MoveTo",
+            "Properties": {
+              "BlackboardKey": {
+                "Key": "TargetActor"
+              }
+            },
+            "Decorators": [],
+            "Services": []
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Rules:
+
+- `Body.Blackboard` is required when `Body.Tree` contains any node with blackboard key selectors or subtree compatibility checks.
+- `Body.BlackboardInline` is not a valid key. It must return `UnknownBodyKey` or `UnsupportedBehaviorTreeRegion` if explicitly declared by policy during migration.
+- `Body.Tree.Root` is required for authored tree apply.
+- Every node must have stable `Id` unique within the tree.
+- `Class` must resolve dynamically to a non-abstract `UBTNode` subclass compatible with the node position:
+  - root / internal composite: `UBTCompositeNode`
+  - leaf task: `UBTTaskNode`
+  - decorator: `UBTDecorator`
+  - service: `UBTService`
+- `Properties` is a reflected property object. Unsupported property type must return exact diagnostic, not be silently ignored.
+- `Decorators` and `Services` are child arrays with their own stable `Id`.
+- child order under `Children` is semantic and preserved.
+
+## 7. Region Policy
+
+### 7.1 BlackboardData policies
+
+| RegionId | Kind | Managed UE surface | Adapter / hook |
+| --- | --- | --- | --- |
+| `Body.Parent` | object/scalar ref | `UBlackboardData::Parent` | object/ref adapter + BB parent hook |
+| `Body.Keys` | array | `UBlackboardData::Keys` | blackboard key named-array adapter |
+
+### 7.2 BehaviorTree policies
+
+| RegionId | Kind | Managed UE surface | Adapter / hook |
+| --- | --- | --- | --- |
+| `Body.Blackboard` | object/scalar ref | `UBehaviorTree::BlackboardAsset` | object/ref adapter + BT blackboard hook |
+| `Body.Tree` | tree | `RootNode`, `Children`, `Decorators`, `Services` | public tree adapter + BT node materializer |
+
+Policies must name managed UE surfaces so inspect/template output can explain ownership. `Properties` must reject writes for fields already owned by `Body.Blackboard` or `Body.Tree`.
+
+## 8. Public Runtime Composition
+
+### 8.1 Required public utilities / adapters
+
+Implementation should introduce or reuse these public-ish components:
+
+1. `FAssetDocumentBlackboardKeySchemaUtils`
+   - parse key JSON
+   - resolve key type class dynamically
+   - canonicalize key type representation
+   - extract key type metadata
+   - lookup keys through parent chain
+   - validate key existence and type compatibility
+
+2. `FAssetDocumentBlackboardKeyRegionAdapter`
+   - named array adapter for `Body.Keys`
+   - identity: `Name`
+   - validate/apply/extract/diff local keys
+   - duplicate local key rejection
+   - parent shadowing policy
+
+3. `FAssetDocumentTreeRegionAdapter`
+   - generic tree lifecycle adapter shape
+   - stable node identity and semantic diff path
+   - recursive validate/apply/extract/diff hooks
+   - child arrays for `Children`, `Decorators`, `Services`
+
+4. `FAssetDocumentBehaviorTreeNodeMaterializer`
+   - BT-specific hook used by tree adapter
+   - dynamic node class resolution
+   - reflected property apply/extract
+   - `FBlackboardKeySelector` conversion through key utility
+   - subtree BT AssetRef validation
+
+These components must be composition-based. Do not add an inheritance base capability for BT/BB profiles.
+
+### 8.2 Profile capabilities
+
+Expected profile classes:
+
+- `FBlackboardDataAssetDocumentProfile`
+- `FBlackboardDataAssetDocumentCapability`
+- `FBehaviorTreeAssetDocumentProfile`
+- `FBehaviorTreeAssetDocumentCapability`
+
+Both capabilities should use `FAssetDocumentBodyRegionDispatcher`. They may wire profile-specific hooks, but must not duplicate dispatcher behavior:
+
+- Body object validation
+- known key rejection
+- adapter dispatch
+- JSON Pointer escaping
+- canonical JSON compare
+- diff entry construction
+
+## 9. Lifecycle
+
+### 9.1 BlackboardData lifecycle
+
+Create/update:
+
+- Create or load target `UBlackboardData`.
+- Resolve `Body.Parent` AssetRef if present.
+- Apply `Body.Keys` as local key source-of-truth.
+- Recreate `UBlackboardKeyType` instances under the Blackboard asset.
+- Mark package dirty and notify asset registry as needed.
+
+Extract:
+
+- Extract `Parent` as AssetRef or null.
+- Extract only local `Keys`, not inherited parent keys.
+- Key order should preserve UE authored order unless canonicalization by identity is explicitly chosen.
+
+Diff:
+
+- Parent diff at `/Body/Parent`.
+- Local key diff at `/Body/Keys/<Name>`.
+- Parent-inherited key lookup may be used for BT validation, but inherited keys are not reported as local key additions.
+
+### 9.2 BehaviorTree lifecycle
+
+Create/update:
+
+- Create or load target `UBehaviorTree`.
+- Resolve `Body.Blackboard` AssetRef.
+- Apply `Body.Tree` using the public tree adapter and BT materializer.
+- Rebuild editor graph / refresh tree after structural changes.
+- Validate no half-applied tree remains after failed preflight. Use staged preview/apply or rollback strategy when needed.
+
+Extract:
+
+- Extract `Blackboard` as AssetRef.
+- Extract runtime authored tree from `RootNode`, not from editor graph layout.
+- Extract stable node `Id`. If existing UE nodes lack authored identity, implementation must define deterministic identity generation and document collision behavior.
+
+Diff:
+
+- Blackboard diff at `/Body/Blackboard`.
+- Tree node diff at `/Body/Tree/<NodeId>`.
+- Child additions/removals use semantic path, not transient UE graph index.
+
+## 10. BT + BB Cross-Region Validation
+
+BehaviorTree validation must compose BlackboardData key utility:
+
+- `Body.Blackboard` must resolve to `UBlackboardData`.
+- `FBlackboardKeySelector` fields in node `Properties` must reference existing keys from:
+  - the referenced blackboard local keys
+  - its parent chain
+- key selector type compatibility must be validated when UE exposes allowed key filters or property metadata.
+- node classes with BT asset references must validate referenced subtree blackboard compatibility:
+  - child BT with no blackboard is allowed only if UE runtime permits it.
+  - child BT with a blackboard must be related to parent blackboard according to verified UE compatibility behavior.
+- errors must point to the authored property path, for example:
+  - `/Body/Tree/MoveToTarget/Properties/BlackboardKey/Key`
+  - `/Body/Tree/RunSubtree/Properties/BehaviorAsset`
+
+Validation must not mutate the real asset.
+
+## 11. Node Identity And Diff Paths
+
+Required identity rules:
+
+- Node `Id` is required for every authored tree node, decorator, and service.
+- `Id` must be unique within the owning BehaviorTree.
+- The same `Id` cannot appear as both task and decorator/service.
+- IDs are case-sensitive for display but duplicate detection should use `FName` normalization unless implementation proves UE treats them case-sensitive.
+- Semantic diff paths:
+  - root node: `/Body/Tree/<Id>`
+  - child node: `/Body/Tree/<Id>`
+  - decorator: `/Body/Tree/<OwnerId>/Decorators/<Id>`
+  - service: `/Body/Tree/<OwnerId>/Services/<Id>`
+  - property: `/Body/Tree/<Id>/Properties/<PropertyName>`
+
+Array index paths are allowed only for malformed JSON before identity can be read.
+
+## 12. Property Reflection Rules
+
+BT node `Properties` should use existing dynamic style:
+
+- resolve node class dynamically with `ClassFinderUtils`, `StaticLoadClass`, or equivalent runtime class loading.
+- set reflected properties through `PropertySetterUtils` or a focused AssetDocument property helper.
+- do not include every possible BT node header just to support common nodes.
+- `FBlackboardKeySelector` needs a dedicated conversion utility because it is semantic, not plain scalar.
+- Asset references inside node properties should use AssetRef shape where possible.
+- unsupported reflected property types must fail validation with exact path/code.
+
+First implementation should support a verified subset of reflected property types and document deferred property kinds. It must not silently ignore unknown fields in `Properties`.
+
+## 13. Deferred And Excluded Boundaries
+
+The following boundaries must be documented in `docs/superpowers/specs/asset-document-deferred-fields/` during implementation:
+
+| Entry | Stage behavior | Cleanup trigger |
+| --- | --- | --- |
+| unsupported BT node class | validation failure with `/Body/Tree/<Id>/Class` | dynamic class materializer proves safe apply/extract |
+| unsupported BT reflected property type | validation failure at property path | property adapter supports type roundtrip |
+| editor graph layout | excluded | separate explicit editor-layout spec |
+| node comments / graph comments | excluded or deferred | explicit authoring requirement and stable storage |
+| advanced key selector filters | conservative validation | reliable UE metadata extraction and tests |
+| custom `UBlackboardKeyType` metadata | supported only via `KeyTypeClass` plus reflected metadata if implemented | key type metadata adapter |
+| subtree blackboard compatibility edge cases | conservative rejection | verified UE runtime behavior and tests |
+
+## 14. Diagnostics
+
+Required diagnostic examples:
+
+| Case | Path | Code |
+| --- | --- | --- |
+| unknown BB Body key | `/Body/<Key>` | `UnknownBodyKey` |
+| duplicate BB key | `/Body/Keys/<Name>` | `DuplicateBlackboardKey` |
+| missing BB key name | `/Body/Keys/<Index>/Name` | `MissingBlackboardKeyName` |
+| invalid BB key type | `/Body/Keys/<Name>/Type` | `InvalidBlackboardKeyType` |
+| missing Object/Class BaseClass | `/Body/Keys/<Name>/BaseClass` | `MissingBlackboardKeyBaseClass` |
+| BT Blackboard missing | `/Body/Blackboard` | `MissingBehaviorTreeBlackboard` |
+| BT Blackboard unresolved | `/Body/Blackboard` | `UnresolvedBehaviorTreeBlackboard` |
+| `BlackboardInline` provided | `/Body/BlackboardInline` | `UnknownBodyKey` or `UnsupportedBehaviorTreeRegion` |
+| duplicate BT node id | `/Body/Tree/<Id>` | `DuplicateBehaviorTreeNodeId` |
+| invalid node class | `/Body/Tree/<Id>/Class` | `InvalidBehaviorTreeNodeClass` |
+| blackboard key missing | `/Body/Tree/<Id>/Properties/<Field>/Key` | `UnknownBlackboardKey` |
+| key type mismatch | `/Body/Tree/<Id>/Properties/<Field>/Key` | `IncompatibleBlackboardKeyType` |
+| subtree blackboard mismatch | `/Body/Tree/<Id>/Properties/<Field>` | `IncompatibleBehaviorTreeBlackboard` |
+
+## 15. Milestones
+
+The implementation plan should execute this combined spec through one branch chain:
+
+1. **Blackboard key utility and tests**
+   - key type resolution/canonicalization
+   - parent-chain lookup
+   - duplicate and shadowing policy
+   - no production profile changes until utility tests exist
+
+2. **BlackboardData AssetDocument profile**
+   - profile/template/policies
+   - `Body.Parent`
+   - `Body.Keys`
+   - apply/extract/diff focused automation
+
+3. **Public tree region adapter**
+   - generic tree JSON shape
+   - identity/diff helper
+   - malformed JSON diagnostics
+   - fixture-level tests
+
+4. **BehaviorTree profile and lifecycle**
+   - exact profile/template/policies
+   - `Body.Blackboard`
+   - create/update/extract/diff without full node apply if tree adapter is still empty-gated
+
+5. **BT node materialization**
+   - root/composite/task/decorator/service apply/extract
+   - dynamic class loading
+   - reflected property subset
+   - editor graph rebuild hook
+
+6. **BT-BB integrated validation**
+   - key selector validation
+   - subtree BT AssetRef compatibility
+   - full BT+BB roundtrip
+
+7. **Final verification and report**
+   - UBT
+   - BB focused automation
+   - BT focused automation
+   - full `AssetFactory.AssetDocument`
+   - `npm --prefix MCP test`
+   - smoke runner or documented environment blocker
+
+Each milestone must end with a checkpoint commit and a scoped review range. Review prompts must not include unrelated prior thread history.
+
+## 16. Verification Requirements
+
+Minimum focused automation:
+
+- `AssetFactory.AssetDocument.BlackboardData.ProfileShape`
+- `AssetFactory.AssetDocument.BlackboardData.Keys`
+- `AssetFactory.AssetDocument.BlackboardData.ParentInheritance`
+- `AssetFactory.AssetDocument.BehaviorTree.ProfileShape`
+- `AssetFactory.AssetDocument.BehaviorTree.BlackboardReference`
+- `AssetFactory.AssetDocument.BehaviorTree.Tree`
+- `AssetFactory.AssetDocument.BehaviorTree.BlackboardKeySelectors`
+- `AssetFactory.AssetDocument.BehaviorTree.SubtreeBlackboardCompatibility`
+
+Required command-level verification:
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/Users/HP/.config/superpowers/validation-hosts/<bt-bb-host>/AVH1.uproject" -NoHotReload
+```
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "<validation-host>.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=<report>" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument.BehaviorTree; Automation RunTests AssetFactory.AssetDocument.BlackboardData; Quit"
+```
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "<validation-host>.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=<report>" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument; Quit"
+```
+
+```powershell
+npm --prefix MCP test
+```
+
+If HTTP/editor smoke is blocked by host listener or editor environment, the report must mark it blocked and not count it as passed.
+
+## 17. Success Criteria
+
+The spec is complete only when:
+
+- BlackboardData and BehaviorTree both have exact AssetDocument profiles.
+- BT references BB through AssetRef only.
+- BB key lookup and key type compatibility live in shared utility/adapter code, not BT capability private code.
+- BT tree validate/apply/extract/diff uses public tree adapter composition.
+- unsupported node/property/key cases produce exact path/code diagnostics.
+- extract/diff paths are semantic and stable.
+- final report records fresh UBT, automation, MCP, and smoke/blocker evidence.
+
+## 18. Long-Term Maintenance Rules
+
+When adding or extending BT/BB-like assets:
+
+- If a region contains named keys, parent key inheritance, or key type compatibility, use `FAssetDocumentBlackboardKeySchemaUtils` or extend it first.
+- If a region contains tree nodes, child arrays, decorators/services, or stable node ids, use `FAssetDocumentTreeRegionAdapter` or extend it first.
+- Do not add a new asset-specific tree parser after this spec lands unless the tree semantics are proven unrelated to BT tree identity/diff/apply.
+- Do not add inline referenced asset authoring inside another asset's body unless a separate spec proves ownership and sync semantics.
+- If a second asset needs blackboard-like key selector validation, promote any remaining BT-specific helper into public utility before implementing the second copy.
