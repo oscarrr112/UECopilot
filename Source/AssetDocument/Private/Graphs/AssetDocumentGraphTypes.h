@@ -69,9 +69,15 @@ struct FAssetDocumentNodeSpec
 	FString NodeGuid;
 	FString Class;
 	FString Capability;
+	FString Kind;
+	TSharedPtr<FJsonObject> Spawner;
+	TSharedPtr<FJsonObject> Fields;
+	TSharedPtr<FJsonObject> Pins;
 	TSharedPtr<FJsonObject> Member;
 	TArray<FAssetDocumentPinOverrideSpec> PinOverrides;
 	TSharedPtr<FJsonObject> Position;
+	TSharedPtr<FJsonObject> SubgraphRefs;
+	TSharedPtr<FJsonObject> Evidence;
 	FString Comment;
 	bool bHasComment = false;
 
@@ -80,14 +86,20 @@ struct FAssetDocumentNodeSpec
 
 struct FAssetDocumentGraphSpec
 {
+	FString Id;
+	FString Kind;
+	TSharedPtr<FJsonObject> Owner;
 	FString Name;
 	FString Schema;
 	FString GraphGuid;
 	FString Category;
 	FString Description;
 	TSharedPtr<FJsonObject> Signature;
+	TSharedPtr<FJsonObject> Position;
+	TSharedPtr<FJsonObject> Evidence;
 	TArray<FAssetDocumentNodeSpec> Nodes;
 	TArray<FAssetDocumentLinkSpec> Links;
+	TArray<FAssetDocumentGraphSpec> Subgraphs;
 
 	TSharedRef<FJsonObject> ToJsonObject() const;
 };

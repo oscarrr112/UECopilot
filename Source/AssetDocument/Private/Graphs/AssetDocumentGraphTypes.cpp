@@ -90,8 +90,21 @@ TSharedRef<FJsonObject> FAssetDocumentNodeSpec::ToJsonObject() const
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("Id"), Id);
 	SetOptionalString(Object, TEXT("NodeGuid"), NodeGuid);
-	Object->SetStringField(TEXT("Class"), Class);
+	SetOptionalString(Object, TEXT("Class"), Class);
 	SetOptionalString(Object, TEXT("Capability"), Capability);
+	SetOptionalString(Object, TEXT("Kind"), Kind);
+	if (Spawner.IsValid())
+	{
+		Object->SetObjectField(TEXT("Spawner"), AssetDocumentGraphJson::CloneJsonObject(Spawner));
+	}
+	if (Fields.IsValid())
+	{
+		Object->SetObjectField(TEXT("Fields"), AssetDocumentGraphJson::CloneJsonObject(Fields));
+	}
+	if (Pins.IsValid())
+	{
+		Object->SetObjectField(TEXT("Pins"), AssetDocumentGraphJson::CloneJsonObject(Pins));
+	}
 	if (Member.IsValid())
 	{
 		Object->SetObjectField(TEXT("Member"), AssetDocumentGraphJson::CloneJsonObject(Member));
@@ -115,6 +128,14 @@ TSharedRef<FJsonObject> FAssetDocumentNodeSpec::ToJsonObject() const
 	{
 		Object->SetObjectField(TEXT("Position"), AssetDocumentGraphJson::CloneJsonObject(Position));
 	}
+	if (SubgraphRefs.IsValid())
+	{
+		Object->SetObjectField(TEXT("SubgraphRefs"), AssetDocumentGraphJson::CloneJsonObject(SubgraphRefs));
+	}
+	if (Evidence.IsValid())
+	{
+		Object->SetObjectField(TEXT("Evidence"), AssetDocumentGraphJson::CloneJsonObject(Evidence));
+	}
 	if (bHasComment)
 	{
 		Object->SetStringField(TEXT("Comment"), Comment);
@@ -125,14 +146,32 @@ TSharedRef<FJsonObject> FAssetDocumentNodeSpec::ToJsonObject() const
 TSharedRef<FJsonObject> FAssetDocumentGraphSpec::ToJsonObject() const
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetStringField(TEXT("Name"), Name);
-	Object->SetStringField(TEXT("Schema"), Schema);
+	SetOptionalString(Object, TEXT("Id"), Id);
+	SetOptionalString(Object, TEXT("Kind"), Kind);
+	if (Owner.IsValid())
+	{
+		Object->SetObjectField(TEXT("Owner"), AssetDocumentGraphJson::CloneJsonObject(Owner));
+	}
+	else if (!Id.IsEmpty() || !Kind.IsEmpty())
+	{
+		Object->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	}
+	SetOptionalString(Object, TEXT("Name"), Name);
+	SetOptionalString(Object, TEXT("Schema"), Schema);
 	SetOptionalString(Object, TEXT("GraphGuid"), GraphGuid);
 	SetOptionalString(Object, TEXT("Category"), Category);
 	SetOptionalString(Object, TEXT("Description"), Description);
 	if (Signature.IsValid())
 	{
 		Object->SetObjectField(TEXT("Signature"), AssetDocumentGraphJson::CloneJsonObject(Signature));
+	}
+	if (Position.IsValid())
+	{
+		Object->SetObjectField(TEXT("Position"), AssetDocumentGraphJson::CloneJsonObject(Position));
+	}
+	if (Evidence.IsValid())
+	{
+		Object->SetObjectField(TEXT("Evidence"), AssetDocumentGraphJson::CloneJsonObject(Evidence));
 	}
 
 	TArray<FAssetDocumentNodeSpec> SortedNodes = Nodes;
@@ -160,6 +199,22 @@ TSharedRef<FJsonObject> FAssetDocumentGraphSpec::ToJsonObject() const
 		LinkValues.Add(MakeShared<FJsonValueObject>(Link.ToJsonObject()));
 	}
 	Object->SetArrayField(TEXT("Links"), MoveTemp(LinkValues));
+
+	if (!Subgraphs.IsEmpty() || !Id.IsEmpty() || !Kind.IsEmpty())
+	{
+		TArray<FAssetDocumentGraphSpec> SortedSubgraphs = Subgraphs;
+		SortedSubgraphs.Sort([](const FAssetDocumentGraphSpec& Left, const FAssetDocumentGraphSpec& Right)
+		{
+			return Left.Id < Right.Id;
+		});
+
+		TArray<TSharedPtr<FJsonValue>> SubgraphValues;
+		for (const FAssetDocumentGraphSpec& Subgraph : SortedSubgraphs)
+		{
+			SubgraphValues.Add(MakeShared<FJsonValueObject>(Subgraph.ToJsonObject()));
+		}
+		Object->SetArrayField(TEXT("Subgraphs"), MoveTemp(SubgraphValues));
+	}
 
 	return Object;
 }

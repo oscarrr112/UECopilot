@@ -23,5 +23,10 @@ public:
 		const TArray<FAssetDocumentGraphSpec>& CurrentGraphs,
 		const TSharedPtr<FJsonObject>& Definitions);
 
+	static TArray<FAssetDocumentGraphDiffEntry> CompareGraphRegion(
+		const TArray<FAssetDocumentGraphSpec>& DesiredGraphs,
+		const TArray<FAssetDocumentGraphSpec>& CurrentGraphs,
+		const FString& RegionPath);
+
 	static FAssetDocumentGraphDiffEntry MakeUnsupported(const FString& Path, const FString& Message);
 };

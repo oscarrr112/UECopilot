@@ -104,6 +104,54 @@ bool HasDiffStatusAtPath(
 			return Entry.Path == Path && Entry.Status == Status;
 		});
 }
+
+TSharedPtr<FJsonObject> MakeRecursiveGraphRegion()
+{
+	return ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    {
+      "Id": "Locomotion",
+      "Kind": "StateMachine",
+      "Owner": { "StateMachine": "Locomotion" },
+      "Position": { "X": 10, "Y": 20 },
+      "Evidence": { "GraphGuid": "root-guid" },
+      "Nodes": [
+        {
+          "Id": "IdleState",
+          "Class": "/Script/AnimGraph.AnimStateNode",
+          "Kind": "State",
+          "Spawner": { "ActionKey": "AnimState" },
+          "Fields": { "DisplayName": "Idle" },
+          "Pins": { "Pose": { "Direction": "Output" } },
+          "SubgraphRefs": { "StatePose": "IdlePose" },
+          "Position": { "X": 120, "Y": 80 },
+          "Evidence": { "NodeGuid": "idle-node-guid" }
+        }
+      ],
+      "Links": [],
+      "Subgraphs": [
+        {
+          "Id": "IdleToRunRule",
+          "Kind": "TransitionRule",
+          "Owner": { "StateMachine": "Locomotion", "Transition": "IdleToRun" },
+          "Nodes": [
+            {
+              "Id": "SpeedCheck",
+              "Class": "/Script/BlueprintGraph.K2Node_VariableGet",
+              "Fields": { "Variable": "Speed" },
+              "Position": { "X": 320, "Y": 160 }
+            }
+          ],
+          "Links": [],
+          "Subgraphs": []
+        }
+      ]
+    }
+  ]
+}
+)JSON"));
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -893,6 +941,221 @@ bool FAssetDocumentGraphCoreReportMissingExtraChangedGraphDiffsTest::RunTest(con
 			Entries,
 			TEXT("/Body/UbergraphPages/EventGraph/Links/ExtraInCurrent:self->Print:self"),
 			TEXT("extra")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreRecursiveGraphParserTest,
+	"AssetFactory.AssetDocument.GraphCore.RecursiveGraphParser",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreRecursiveGraphParserTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = TEXT("/Body/StateMachines");
+	const FAssetDocumentGraphParseResult Result =
+		FAssetDocumentGraphParser::ParseGraphRegion(MakeRecursiveGraphRegion().ToSharedRef(), Options);
+
+	TestTrue(TEXT("Recursive graph region parses"), Result.IsValid());
+	TestEqual(TEXT("One root graph"), Result.Graphs.Num(), 1);
+	if (Result.Graphs.Num() == 1)
+	{
+		const FAssetDocumentGraphSpec& RootGraph = Result.Graphs[0];
+		TestEqual(TEXT("Root graph id"), RootGraph.Id, FString(TEXT("Locomotion")));
+		TestEqual(TEXT("Root graph kind"), RootGraph.Kind, FString(TEXT("StateMachine")));
+		TestTrue(TEXT("Root owner is preserved"), RootGraph.Owner.IsValid());
+		TestTrue(TEXT("Root position is preserved"), RootGraph.Position.IsValid());
+		TestTrue(TEXT("Root evidence is preserved"), RootGraph.Evidence.IsValid());
+		TestEqual(TEXT("Root node count"), RootGraph.Nodes.Num(), 1);
+		TestEqual(TEXT("Nested graph count"), RootGraph.Subgraphs.Num(), 1);
+
+		if (RootGraph.Nodes.Num() == 1)
+		{
+			const FAssetDocumentNodeSpec& Node = RootGraph.Nodes[0];
+			TestEqual(TEXT("Node kind is preserved"), Node.Kind, FString(TEXT("State")));
+			TestTrue(TEXT("Node spawner is preserved"), Node.Spawner.IsValid());
+			TestTrue(TEXT("Node fields are preserved"), Node.Fields.IsValid());
+			TestTrue(TEXT("Node pins are preserved"), Node.Pins.IsValid());
+			TestTrue(TEXT("Node subgraph refs are preserved"), Node.SubgraphRefs.IsValid());
+			TestTrue(TEXT("Node evidence is preserved"), Node.Evidence.IsValid());
+		}
+
+		if (RootGraph.Subgraphs.Num() == 1)
+		{
+			TestEqual(TEXT("Nested graph id"), RootGraph.Subgraphs[0].Id, FString(TEXT("IdleToRunRule")));
+			TestEqual(TEXT("Nested graph kind"), RootGraph.Subgraphs[0].Kind, FString(TEXT("TransitionRule")));
+			TestEqual(TEXT("Nested graph node id"), RootGraph.Subgraphs[0].Nodes[0].Id, FString(TEXT("SpeedCheck")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreWriteCanonicalRecursiveGraphRegionTest,
+	"AssetFactory.AssetDocument.GraphCore.WriteCanonicalRecursiveGraphRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreWriteCanonicalRecursiveGraphRegionTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = TEXT("/Body/StateMachines");
+	const FAssetDocumentGraphParseResult Result =
+		FAssetDocumentGraphParser::ParseGraphRegion(MakeRecursiveGraphRegion().ToSharedRef(), Options);
+	TestTrue(TEXT("Recursive graph region parses before write"), Result.IsValid());
+
+	const TSharedRef<FJsonObject> Canonical =
+		FAssetDocumentGraphParser::WriteCanonicalGraphRegion(Result.Graphs);
+	const TArray<TSharedPtr<FJsonValue>>& Graphs = Canonical->GetArrayField(TEXT("Graphs"));
+	TestEqual(TEXT("Canonical root graph count"), Graphs.Num(), 1);
+
+	const TSharedPtr<FJsonObject> RootGraph = Graphs[0]->AsObject();
+	TestEqual(TEXT("Canonical root graph id"), RootGraph->GetStringField(TEXT("Id")), FString(TEXT("Locomotion")));
+	TestTrue(TEXT("Canonical root position is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("Position")));
+	TestTrue(TEXT("Canonical root evidence is written"), RootGraph->HasTypedField<EJson::Object>(TEXT("Evidence")));
+	TestTrue(TEXT("Canonical subgraphs are written"), RootGraph->HasTypedField<EJson::Array>(TEXT("Subgraphs")));
+
+	const TSharedPtr<FJsonObject> RootNode = RootGraph->GetArrayField(TEXT("Nodes"))[0]->AsObject();
+	TestTrue(TEXT("Canonical node fields are written"), RootNode->HasTypedField<EJson::Object>(TEXT("Fields")));
+	TestTrue(TEXT("Canonical node pins are written"), RootNode->HasTypedField<EJson::Object>(TEXT("Pins")));
+	TestTrue(TEXT("Canonical node subgraph refs are written"), RootNode->HasTypedField<EJson::Object>(TEXT("SubgraphRefs")));
+	TestTrue(TEXT("Canonical node evidence is written"), RootNode->HasTypedField<EJson::Object>(TEXT("Evidence")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest,
+	"AssetFactory.AssetDocument.GraphCore.RejectInvalidRecursiveGraphRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const FString& Parameters)
+{
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = TEXT("/Body/StateMachines");
+
+	const TSharedPtr<FJsonObject> DuplicateGraphs = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    { "Id": "Locomotion", "Kind": "StateMachine", "Nodes": [], "Links": [], "Subgraphs": [] },
+    { "Id": "Locomotion", "Kind": "StateMachine", "Nodes": [], "Links": [], "Subgraphs": [] }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult DuplicateGraphResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(DuplicateGraphs.ToSharedRef(), Options);
+	TestFalse(TEXT("Duplicate sibling graph ids fail"), DuplicateGraphResult.IsValid());
+	TestTrue(
+		TEXT("DuplicateGraphId diagnostic is emitted"),
+		HasDiagnosticCode(DuplicateGraphResult, TEXT("DuplicateGraphId")));
+
+	const TSharedPtr<FJsonObject> DuplicateNodes = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    {
+      "Id": "Locomotion",
+      "Kind": "StateMachine",
+      "Nodes": [
+        { "Id": "SpeedCheck", "Class": "/Script/BlueprintGraph.K2Node_VariableGet" },
+        { "Id": "SpeedCheck", "Class": "/Script/BlueprintGraph.K2Node_VariableGet" }
+      ],
+      "Links": [],
+      "Subgraphs": []
+    }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult DuplicateNodeResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(DuplicateNodes.ToSharedRef(), Options);
+	TestFalse(TEXT("Duplicate node ids fail"), DuplicateNodeResult.IsValid());
+	TestTrue(
+		TEXT("DuplicateGraphNodeId diagnostic is emitted"),
+		HasDiagnosticCode(DuplicateNodeResult, TEXT("DuplicateGraphNodeId")));
+
+	const TSharedPtr<FJsonObject> InvalidSubgraphs = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    { "Id": "Locomotion", "Kind": "StateMachine", "Nodes": [], "Links": [], "Subgraphs": "nope" }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidSubgraphsResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(InvalidSubgraphs.ToSharedRef(), Options);
+	TestFalse(TEXT("Invalid Subgraphs shape fails"), InvalidSubgraphsResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphRegionType diagnostic is emitted for Subgraphs"),
+		HasDiagnosticCode(InvalidSubgraphsResult, TEXT("InvalidGraphRegionType")));
+
+	const TSharedPtr<FJsonObject> InvalidOwner = ParseJsonObject(TEXT(R"JSON(
+{
+  "Graphs": [
+    { "Id": "Locomotion", "Kind": "StateMachine", "Owner": "nope", "Nodes": [], "Links": [], "Subgraphs": [] }
+  ]
+}
+)JSON"));
+	const FAssetDocumentGraphParseResult InvalidOwnerResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(InvalidOwner.ToSharedRef(), Options);
+	TestFalse(TEXT("Invalid Owner shape fails"), InvalidOwnerResult.IsValid());
+	TestTrue(
+		TEXT("InvalidGraphOwner diagnostic is emitted"),
+		HasDiagnosticCode(InvalidOwnerResult, TEXT("InvalidGraphOwner")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentGraphCoreCompareRecursiveGraphRegionTest,
+	"AssetFactory.AssetDocument.GraphCore.CompareRecursiveGraphRegion",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentGraphCoreCompareRecursiveGraphRegionTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonObject> DesiredRegion = MakeRecursiveGraphRegion();
+	const TSharedPtr<FJsonObject> CurrentRegion = MakeRecursiveGraphRegion();
+	CurrentRegion->GetArrayField(TEXT("Graphs"))[0]
+		->AsObject()
+		->GetArrayField(TEXT("Subgraphs"))[0]
+		->AsObject()
+		->GetArrayField(TEXT("Nodes"))[0]
+		->AsObject()
+		->GetObjectField(TEXT("Fields"))
+		->SetStringField(TEXT("Variable"), TEXT("Velocity"));
+	CurrentRegion->GetArrayField(TEXT("Graphs"))[0]
+		->AsObject()
+		->GetArrayField(TEXT("Subgraphs"))[0]
+		->AsObject()
+		->GetArrayField(TEXT("Nodes"))[0]
+		->AsObject()
+		->GetObjectField(TEXT("Position"))
+		->SetNumberField(TEXT("X"), 640);
+
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = TEXT("/Body/StateMachines");
+	const FAssetDocumentGraphParseResult DesiredParseResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(DesiredRegion.ToSharedRef(), Options);
+	const FAssetDocumentGraphParseResult CurrentParseResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(CurrentRegion.ToSharedRef(), Options);
+	TestTrue(TEXT("Desired recursive region parses"), DesiredParseResult.IsValid());
+	TestTrue(TEXT("Current recursive region parses"), CurrentParseResult.IsValid());
+
+	const TArray<FAssetDocumentGraphDiffEntry> Entries = FAssetDocumentGraphDiff::CompareGraphRegion(
+		DesiredParseResult.Graphs,
+		CurrentParseResult.Graphs,
+		TEXT("/Body/StateMachines"));
+
+	TestTrue(
+		TEXT("Changed nested field uses semantic graph and node path"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/StateMachines/Graphs/Locomotion/Subgraphs/IdleToRunRule/Nodes/SpeedCheck/Fields/Variable"),
+			TEXT("changed")));
+	TestTrue(
+		TEXT("Changed nested layout uses semantic graph and node path"),
+		HasDiffStatusAtPath(
+			Entries,
+			TEXT("/Body/StateMachines/Graphs/Locomotion/Subgraphs/IdleToRunRule/Nodes/SpeedCheck/Position"),
+			TEXT("changed")));
 
 	return true;
 }

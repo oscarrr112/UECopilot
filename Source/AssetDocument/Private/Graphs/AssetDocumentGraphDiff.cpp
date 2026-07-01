@@ -74,6 +74,16 @@ TMap<FString, const FAssetDocumentGraphSpec*> MapGraphsByName(const TArray<FAsse
 	return GraphMap;
 }
 
+TMap<FString, const FAssetDocumentGraphSpec*> MapGraphsById(const TArray<FAssetDocumentGraphSpec>& Graphs)
+{
+	TMap<FString, const FAssetDocumentGraphSpec*> GraphMap;
+	for (const FAssetDocumentGraphSpec& Graph : Graphs)
+	{
+		GraphMap.Add(Graph.Id, &Graph);
+	}
+	return GraphMap;
+}
+
 TMap<FString, const FAssetDocumentNodeSpec*> MapNodesById(const FAssetDocumentGraphSpec& Graph)
 {
 	TMap<FString, const FAssetDocumentNodeSpec*> NodeMap;
@@ -121,6 +131,17 @@ TArray<FString> SortedUnionKeys(const TArray<FString>& LeftKeys, const TArray<FS
 	return Keys;
 }
 
+TArray<FString> SortedJsonObjectKeys(const TSharedPtr<FJsonObject>& Object)
+{
+	TArray<FString> Keys;
+	if (Object.IsValid())
+	{
+		Object->Values.GetKeys(Keys);
+		Keys.Sort();
+	}
+	return Keys;
+}
+
 template <typename ValueType>
 TArray<FString> SortedMapKeys(const TMap<FString, ValueType>& Map)
 {
@@ -128,6 +149,71 @@ TArray<FString> SortedMapKeys(const TMap<FString, ValueType>& Map)
 	Map.GetKeys(Keys);
 	Keys.Sort();
 	return Keys;
+}
+
+TSharedPtr<FJsonValue> MakeJsonObjectValue(const TSharedPtr<FJsonObject>& Object)
+{
+	const TSharedPtr<FJsonObject> Clone = AssetDocumentGraphJson::CloneJsonObject(Object);
+	if (!Clone.IsValid())
+	{
+		return nullptr;
+	}
+	return MakeShared<FJsonValueObject>(Clone.ToSharedRef());
+}
+
+void CompareObjectAsWhole(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& Path,
+	const TSharedPtr<FJsonObject>& DesiredObject,
+	const TSharedPtr<FJsonObject>& CurrentObject,
+	const FString& Message = FString())
+{
+	if (!DesiredObject.IsValid() && !CurrentObject.IsValid())
+	{
+		return;
+	}
+
+	const FString Status = !DesiredObject.IsValid()
+		? TEXT("extra")
+		: !CurrentObject.IsValid()
+			? TEXT("missing")
+			: AssetDocumentGraphJson::AreJsonObjectsEqual(DesiredObject, CurrentObject)
+				? TEXT("unchanged")
+				: TEXT("changed");
+	AddEntry(Entries, Path, Status, MakeJsonObjectValue(DesiredObject), MakeJsonObjectValue(CurrentObject), Message);
+}
+
+void CompareObjectFields(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& ObjectPath,
+	const TSharedPtr<FJsonObject>& DesiredObject,
+	const TSharedPtr<FJsonObject>& CurrentObject)
+{
+	if (!DesiredObject.IsValid() || !CurrentObject.IsValid())
+	{
+		CompareObjectAsWhole(Entries, ObjectPath, DesiredObject, CurrentObject);
+		return;
+	}
+
+	const TArray<FString> Keys = SortedUnionKeys(SortedJsonObjectKeys(DesiredObject), SortedJsonObjectKeys(CurrentObject));
+	for (const FString& Key : Keys)
+	{
+		const TSharedPtr<FJsonValue>* DesiredValue = DesiredObject->Values.Find(Key);
+		const TSharedPtr<FJsonValue>* CurrentValue = CurrentObject->Values.Find(Key);
+		const FString FieldPath = JoinPath(ObjectPath, Key);
+		if (!DesiredValue)
+		{
+			AddEntry(Entries, FieldPath, TEXT("extra"), nullptr, AssetDocumentGraphJson::CloneJsonValue(*CurrentValue));
+		}
+		else if (!CurrentValue)
+		{
+			AddEntry(Entries, FieldPath, TEXT("missing"), AssetDocumentGraphJson::CloneJsonValue(*DesiredValue), nullptr);
+		}
+		else
+		{
+			AddComparisonEntry(Entries, FieldPath, *DesiredValue, *CurrentValue);
+		}
+	}
 }
 
 void ComparePins(
@@ -172,6 +258,30 @@ void ComparePins(
 				MakeShared<FJsonValueObject>((*CurrentPin)->ToJsonObject()));
 		}
 	}
+}
+
+void CompareNodeDetails(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& NodePath,
+	const FAssetDocumentNodeSpec& DesiredNode,
+	const FAssetDocumentNodeSpec& CurrentNode)
+{
+	AddComparisonEntry(
+		Entries,
+		NodePath,
+		MakeShared<FJsonValueObject>(DesiredNode.ToJsonObject()),
+		MakeShared<FJsonValueObject>(CurrentNode.ToJsonObject()));
+	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Fields")), DesiredNode.Fields, CurrentNode.Fields);
+	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Pins")), DesiredNode.Pins, CurrentNode.Pins);
+	CompareObjectAsWhole(
+		Entries,
+		JoinPath(NodePath, TEXT("Position")),
+		DesiredNode.Position,
+		CurrentNode.Position,
+		TEXT("layout"));
+	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Spawner")), DesiredNode.Spawner, CurrentNode.Spawner);
+	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("SubgraphRefs")), DesiredNode.SubgraphRefs, CurrentNode.SubgraphRefs);
+	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Evidence")), DesiredNode.Evidence, CurrentNode.Evidence);
 }
 
 void CompareLinks(
@@ -253,12 +363,82 @@ void CompareNodes(
 		}
 		else
 		{
-			AddComparisonEntry(
-				Entries,
-				NodePath,
-				MakeShared<FJsonValueObject>((*DesiredNode)->ToJsonObject()),
-				MakeShared<FJsonValueObject>((*CurrentNode)->ToJsonObject()));
+			CompareNodeDetails(Entries, NodePath, **DesiredNode, **CurrentNode);
 			ComparePins(Entries, NodePath, **DesiredNode, **CurrentNode);
+		}
+	}
+}
+
+void CompareGraphListById(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& GraphsPath,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs,
+	const TArray<FAssetDocumentGraphSpec>& CurrentGraphs);
+
+void CompareGraphDetails(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& GraphPath,
+	const FAssetDocumentGraphSpec& DesiredGraph,
+	const FAssetDocumentGraphSpec& CurrentGraph)
+{
+	AddComparisonEntry(
+		Entries,
+		GraphPath,
+		MakeShared<FJsonValueObject>(DesiredGraph.ToJsonObject()),
+		MakeShared<FJsonValueObject>(CurrentGraph.ToJsonObject()));
+	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Owner")), DesiredGraph.Owner, CurrentGraph.Owner);
+	CompareObjectAsWhole(
+		Entries,
+		JoinPath(GraphPath, TEXT("Position")),
+		DesiredGraph.Position,
+		CurrentGraph.Position,
+		TEXT("layout"));
+	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Evidence")), DesiredGraph.Evidence, CurrentGraph.Evidence);
+	CompareNodes(Entries, GraphPath, DesiredGraph, CurrentGraph);
+	CompareLinks(Entries, GraphPath, DesiredGraph, CurrentGraph);
+	CompareGraphListById(
+		Entries,
+		JoinPath(GraphPath, TEXT("Subgraphs")),
+		DesiredGraph.Subgraphs,
+		CurrentGraph.Subgraphs);
+}
+
+void CompareGraphListById(
+	TArray<FAssetDocumentGraphDiffEntry>& Entries,
+	const FString& GraphsPath,
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs,
+	const TArray<FAssetDocumentGraphSpec>& CurrentGraphs)
+{
+	const TMap<FString, const FAssetDocumentGraphSpec*> DesiredGraphMap = MapGraphsById(DesiredGraphs);
+	const TMap<FString, const FAssetDocumentGraphSpec*> CurrentGraphMap = MapGraphsById(CurrentGraphs);
+	const TArray<FString> GraphKeys = SortedUnionKeys(SortedMapKeys(DesiredGraphMap), SortedMapKeys(CurrentGraphMap));
+
+	for (const FString& GraphKey : GraphKeys)
+	{
+		const FAssetDocumentGraphSpec* const* DesiredGraph = DesiredGraphMap.Find(GraphKey);
+		const FAssetDocumentGraphSpec* const* CurrentGraph = CurrentGraphMap.Find(GraphKey);
+		const FString GraphPath = JoinPath(GraphsPath, GraphKey);
+		if (!DesiredGraph)
+		{
+			AddEntry(
+				Entries,
+				GraphPath,
+				TEXT("extra"),
+				nullptr,
+				MakeShared<FJsonValueObject>((*CurrentGraph)->ToJsonObject()));
+		}
+		else if (!CurrentGraph)
+		{
+			AddEntry(
+				Entries,
+				GraphPath,
+				TEXT("missing"),
+				MakeShared<FJsonValueObject>((*DesiredGraph)->ToJsonObject()),
+				nullptr);
+		}
+		else
+		{
+			CompareGraphDetails(Entries, GraphPath, **DesiredGraph, **CurrentGraph);
 		}
 	}
 }
@@ -355,6 +535,16 @@ TArray<FAssetDocumentGraphDiffEntry> FAssetDocumentGraphDiff::CompareUbergraphPa
 		}
 	}
 
+	return Entries;
+}
+
+TArray<FAssetDocumentGraphDiffEntry> FAssetDocumentGraphDiff::CompareGraphRegion(
+	const TArray<FAssetDocumentGraphSpec>& DesiredGraphs,
+	const TArray<FAssetDocumentGraphSpec>& CurrentGraphs,
+	const FString& RegionPath)
+{
+	TArray<FAssetDocumentGraphDiffEntry> Entries;
+	CompareGraphListById(Entries, JoinPath(RegionPath, TEXT("Graphs")), DesiredGraphs, CurrentGraphs);
 	return Entries;
 }
 
