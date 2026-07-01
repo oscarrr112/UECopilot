@@ -60,23 +60,40 @@ TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredRegion(const TCHAR* RegionNam
 	return MakeShared<FJsonValueObject>(Body);
 }
 
-TArray<TSharedPtr<FJsonValue>> MakeCanonicalAnimGraphArray()
+TSharedRef<FJsonObject> MakeCanonicalAnimGraphObject()
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Graph->SetArrayField(TEXT("Nodes"), {});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
+	return Region;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeLegacyAnimGraphArray()
 {
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
 	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
 	Graph->SetArrayField(TEXT("Nodes"), {});
-
-	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
-	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
-	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
 	return {MakeShared<FJsonValueObject>(Graph)};
 }
 
 TSharedRef<FJsonValue> MakeBodyWithCanonicalAnimGraph()
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
+	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithLegacyAnimGraphArray()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("AnimGraph"), MakeLegacyAnimGraphArray());
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -85,18 +102,21 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetStringField(TEXT("Id"), TEXT("IdlePlayer"));
 	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
 
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
-	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
 	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
 
-	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
-	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
-	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
 
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetArrayField(TEXT("AnimGraph"), {MakeShared<FJsonValueObject>(Graph)});
+	Body->SetObjectField(TEXT("AnimGraph"), Region);
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -457,7 +477,7 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Body->SetArrayField(TEXT("Variables"), {});
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), {});
-	Body->SetArrayField(TEXT("AnimGraph"), {});
+	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
 	Body->SetArrayField(TEXT("StateMachines"), {});
 	Body->SetArrayField(TEXT("TransitionGraphs"), {});
 	Body->SetArrayField(TEXT("AnimLayers"), {});
@@ -574,6 +594,30 @@ bool HasArrayFieldCount(const TSharedPtr<FJsonObject>& Object, const FString& Fi
 {
 	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
 	return Object.IsValid() && Object->TryGetArrayField(FieldName, Values) && Values && Values->Num() == ExpectedCount;
+}
+
+bool HasCanonicalAnimGraphObject(const TSharedPtr<FJsonObject>& Body)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs || Graphs->Num() != 1)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> RootGraph = (*Graphs)[0].IsValid() ? (*Graphs)[0]->AsObject() : nullptr;
+	FString Id;
+	FString Kind;
+	return RootGraph.IsValid()
+		&& RootGraph->TryGetStringField(TEXT("Id"), Id)
+		&& RootGraph->TryGetStringField(TEXT("Kind"), Kind)
+		&& Id == TEXT("AnimGraph")
+		&& Kind == TEXT("AnimGraph");
 }
 
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
@@ -795,19 +839,29 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	TestTrue(TEXT("Canonical root-only AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
+	TestTrue(TEXT("Canonical recursive AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
+
+	const FAssetDocumentCapabilityResult LegacyArrayResult =
+		Capability.Validate(ValidationContext, MakeBodyWithLegacyAnimGraphArray());
+	TestFalse(TEXT("Legacy AnimGraph array rejects under recursive schema"), LegacyArrayResult.bSuccess);
+	TestTrue(
+		TEXT("Legacy array diagnostic uses AnimGraph region path"),
+		HasDiagnostic(LegacyArrayResult, TEXT("/Body/AnimGraph"), TEXT("InvalidAnimGraphRegionType")));
 
 	const FAssetDocumentCapabilityResult UnsupportedNodeResult =
 		Capability.Validate(ValidationContext, MakeBodyWithUnsupportedAnimGraphNode());
 	TestFalse(TEXT("Unsupported AnimGraph node rejects"), UnsupportedNodeResult.bSuccess);
 	TestTrue(
 		TEXT("Unsupported node diagnostic uses semantic AnimGraph path"),
-		HasDiagnostic(UnsupportedNodeResult, TEXT("/Body/AnimGraph/AnimGraph/Nodes/0"), TEXT("UnsupportedAnimGraphNode")));
+		HasDiagnostic(
+			UnsupportedNodeResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Nodes/IdlePlayer/Class"),
+			TEXT("UnspawnableGraphNodeClass")));
 
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
-	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
+	Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
 
 	FAssetDocumentService Service;
 	FAssetDocumentApplyRequest Request;
@@ -816,9 +870,9 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
 	if (!ApplyResult.IsSuccess())
 	{
-		AddError(FString::Printf(TEXT("AnimGraph pilot apply failed: %s"), *ApplyResult.Message));
+		AddError(FString::Printf(TEXT("AnimGraph recursive apply failed: %s"), *ApplyResult.Message));
 	}
-	TestTrue(TEXT("Root-only AnimGraph apply succeeds"), ApplyResult.IsSuccess());
+	TestTrue(TEXT("Recursive AnimGraph apply succeeds"), ApplyResult.IsSuccess());
 
 	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
 	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
@@ -829,13 +883,13 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
 	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
 	TestTrue(TEXT("AnimGraph extract succeeds"), ExtractResult.bSuccess);
-	TestTrue(TEXT("Extract includes canonical root-only AnimGraph"), HasArrayFieldCount(ExtractedBody, TEXT("AnimGraph"), 1));
+	TestTrue(TEXT("Extract includes canonical recursive AnimGraph"), HasCanonicalAnimGraphObject(ExtractedBody));
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
 		Capability.Diff(Context, MakeBodyWithCanonicalAnimGraph(), DiffEntries);
 	TestTrue(TEXT("AnimGraph diff succeeds"), DiffResult.bSuccess);
-	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/AnimGraph")));
+	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph")));
 
 	return true;
 }

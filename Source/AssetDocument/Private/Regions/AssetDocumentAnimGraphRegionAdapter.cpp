@@ -3,198 +3,189 @@
 #include "Regions/AssetDocumentAnimGraphRegionAdapter.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
+#include "Graphs/AssetDocumentGraphDiff.h"
+#include "Graphs/AssetDocumentGraphParser.h"
 
 #include "Dom/JsonValue.h"
 
 namespace
 {
 constexpr const TCHAR* AnimGraphPath = TEXT("/Body/AnimGraph");
-constexpr const TCHAR* CanonicalGraphName = TEXT("AnimGraph");
-constexpr const TCHAR* CanonicalOutputPin = TEXT("Result");
+constexpr const TCHAR* CanonicalGraphId = TEXT("AnimGraph");
+constexpr const TCHAR* CanonicalGraphKind = TEXT("AnimGraph");
 
 FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-TSharedRef<FJsonObject> MakeCanonicalGraphObject()
+FAssetDocumentCapabilityResult FromGraphDiagnostics(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
 {
-	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
-	Graph->SetStringField(TEXT("Name"), CanonicalGraphName);
-	Graph->SetArrayField(TEXT("Nodes"), {});
-
-	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
-	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-	OutputPose->SetStringField(TEXT("Pin"), CanonicalOutputPin);
-	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
-	return Graph;
-}
-
-TSharedPtr<FJsonValue> MakeCanonicalValue()
-{
-	TArray<TSharedPtr<FJsonValue>> Graphs;
-	Graphs.Add(MakeShared<FJsonValueObject>(MakeCanonicalGraphObject()));
-	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
-}
-
-bool IsEmptyCompatibilityValue(const TSharedPtr<FJsonValue>& Value)
-{
-	if (!Value.IsValid() || Value->Type == EJson::Null)
-	{
-		return true;
-	}
-	if (Value->Type == EJson::Array)
-	{
-		return Value->AsArray().Num() == 0;
-	}
-	if (Value->Type == EJson::Object)
-	{
-		const TSharedPtr<FJsonObject> Object = Value->AsObject();
-		return Object.IsValid() && Object->Values.Num() == 0;
-	}
-	return false;
-}
-
-FAssetDocumentCapabilityResult ValidateOutputPose(const TSharedPtr<FJsonObject>& OutputPose)
-{
-	if (!OutputPose.IsValid())
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/OutputPose"),
-			TEXT("InvalidAnimGraphOutputPose"),
-			TEXT("Body.AnimGraph root-only pilot requires OutputPose object"));
-	}
-
-	const TSharedPtr<FJsonValue>* NodeValue = OutputPose->Values.Find(TEXT("Node"));
-	if (!NodeValue || !NodeValue->IsValid() || (*NodeValue)->Type != EJson::Null)
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/OutputPose/Node"),
-			TEXT("UnsupportedAnimGraphOutputSource"),
-			TEXT("Body.AnimGraph root-only pilot only supports null OutputPose.Node"));
-	}
-
-	FString Pin;
-	if (!OutputPose->TryGetStringField(TEXT("Pin"), Pin) || Pin != CanonicalOutputPin)
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/OutputPose/Pin"),
-			TEXT("UnsupportedAnimGraphOutputPin"),
-			TEXT("Body.AnimGraph root-only pilot only supports OutputPose.Pin='Result'"));
-	}
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : OutputPose->Values)
-	{
-		if (Pair.Key != TEXT("Node") && Pair.Key != TEXT("Pin"))
-		{
-			return Failure(
-				FString::Printf(TEXT("/Body/AnimGraph/AnimGraph/OutputPose/%s"), *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Pair.Key)),
-				TEXT("UnknownAnimGraphField"),
-				FString::Printf(TEXT("Unknown Body.AnimGraph OutputPose field '%s'"), *Pair.Key));
-		}
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
-}
-
-FAssetDocumentCapabilityResult ValidateCanonicalRootGraph(const TSharedPtr<FJsonObject>& Graph)
-{
-	if (!Graph.IsValid())
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/0"),
-			TEXT("InvalidAnimGraph"),
-			TEXT("Body.AnimGraph entries must be graph objects"));
-	}
-
-	FString Name;
-	if (!Graph->TryGetStringField(TEXT("Name"), Name) || Name != CanonicalGraphName)
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/0/Name"),
-			TEXT("InvalidAnimGraphName"),
-			TEXT("Body.AnimGraph pilot only supports Name='AnimGraph'"));
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
-	if (!Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/Nodes"),
-			TEXT("InvalidAnimGraphNodes"),
-			TEXT("Body.AnimGraph root-only pilot requires Nodes array"));
-	}
-	if (Nodes->Num() > 0)
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/Nodes/0"),
-			TEXT("UnsupportedAnimGraphNode"),
-			TEXT("Body.AnimGraph pilot does not support authored pose nodes yet"));
-	}
-
-	const TSharedPtr<FJsonObject>* OutputPose = nullptr;
-	if (!Graph->TryGetObjectField(TEXT("OutputPose"), OutputPose) || !OutputPose || !OutputPose->IsValid())
-	{
-		return Failure(
-			TEXT("/Body/AnimGraph/AnimGraph/OutputPose"),
-			TEXT("InvalidAnimGraphOutputPose"),
-			TEXT("Body.AnimGraph root-only pilot requires OutputPose object"));
-	}
-
-	const FAssetDocumentCapabilityResult OutputResult = ValidateOutputPose(*OutputPose);
-	if (!OutputResult.bSuccess)
-	{
-		return OutputResult;
-	}
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Graph->Values)
-	{
-		if (Pair.Key != TEXT("Name") && Pair.Key != TEXT("Nodes") && Pair.Key != TEXT("OutputPose"))
-		{
-			return Failure(
-				FString::Printf(TEXT("/Body/AnimGraph/AnimGraph/%s"), *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Pair.Key)),
-				TEXT("UnknownAnimGraphField"),
-				FString::Printf(TEXT("Unknown Body.AnimGraph graph field '%s'"), *Pair.Key));
-		}
-	}
-
-	return FAssetDocumentCapabilityResult::Success();
-}
-
-FAssetDocumentCapabilityResult ValidateAnimGraphValue(const TSharedPtr<FJsonValue>& DesiredValue)
-{
-	if (IsEmptyCompatibilityValue(DesiredValue))
+	if (Diagnostics.IsEmpty())
 	{
 		return FAssetDocumentCapabilityResult::Success();
 	}
-	if (DesiredValue->Type != EJson::Array)
+
+	FAssetDocumentCapabilityResult Result;
+	Result.bSuccess = false;
+	Result.Message = Diagnostics[0].Message;
+	for (const FAssetDocumentGraphDiagnostic& GraphDiagnostic : Diagnostics)
+	{
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = GraphDiagnostic.Path;
+		Diagnostic.Code = GraphDiagnostic.Code;
+		Diagnostic.Message = GraphDiagnostic.Message;
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return Result;
+}
+
+FAssetDocumentGraphSpec MakeCanonicalGraphSpec()
+{
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = CanonicalGraphId;
+	Graph.Kind = CanonicalGraphKind;
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeCanonicalRegionObject()
+{
+	TArray<TSharedPtr<FJsonValue>> Graphs;
+	Graphs.Add(MakeShared<FJsonValueObject>(MakeCanonicalGraphSpec().ToJsonObject()));
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), MoveTemp(Graphs));
+	return Region;
+}
+
+FAssetDocumentCapabilityResult ParseAnimGraphRegion(
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	TArray<FAssetDocumentGraphSpec>& OutGraphs)
+{
+	if (!DesiredValue.IsValid() || DesiredValue->Type != EJson::Object)
 	{
 		return Failure(
 			AnimGraphPath,
 			TEXT("InvalidAnimGraphRegionType"),
-			TEXT("Body.AnimGraph must be null, empty object, empty array, or canonical root-only graph array"));
+			TEXT("Body.AnimGraph must be an object with a Graphs array."));
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>& Graphs = DesiredValue->AsArray();
-	if (Graphs.Num() != 1)
+	const TSharedPtr<FJsonObject> RegionObject = DesiredValue->AsObject();
+	if (!RegionObject.IsValid())
+	{
+		return Failure(
+			AnimGraphPath,
+			TEXT("InvalidAnimGraphRegionType"),
+			TEXT("Body.AnimGraph must be an object with a Graphs array."));
+	}
+
+	FAssetDocumentGraphParseOptions Options;
+	Options.Path = AnimGraphPath;
+	const FAssetDocumentGraphParseResult ParseResult =
+		FAssetDocumentGraphParser::ParseGraphRegion(RegionObject.ToSharedRef(), Options);
+	if (!ParseResult.IsValid())
+	{
+		return FromGraphDiagnostics(ParseResult.Diagnostics);
+	}
+
+	if (ParseResult.Graphs.Num() != 1)
 	{
 		return Failure(
 			AnimGraphPath,
 			TEXT("InvalidAnimGraphCount"),
-			TEXT("Body.AnimGraph pilot supports exactly one AnimGraph graph object"));
+			TEXT("Body.AnimGraph requires exactly one root AnimGraph graph."));
 	}
 
-	const TSharedPtr<FJsonObject> Graph = Graphs[0].IsValid() ? Graphs[0]->AsObject() : nullptr;
-	return ValidateCanonicalRootGraph(Graph);
+	const FAssetDocumentGraphSpec& RootGraph = ParseResult.Graphs[0];
+	if (RootGraph.Id != CanonicalGraphId || RootGraph.Kind != CanonicalGraphKind)
+	{
+		return Failure(
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph"),
+			TEXT("InvalidAnimGraphRoot"),
+			TEXT("Body.AnimGraph root graph must use Id='AnimGraph' and Kind='AnimGraph'."));
+	}
+
+	OutGraphs = ParseResult.Graphs;
+	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedPtr<FJsonValue> CanonicalizeDesiredValue(const TSharedPtr<FJsonValue>& DesiredValue)
+class FEmptyAnimGraphCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
 {
-	if (IsEmptyCompatibilityValue(DesiredValue))
+public:
+	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context) const override
 	{
-		return MakeCanonicalValue();
+		return {};
 	}
-	return DesiredValue;
+};
+
+class FAnimGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
+{
+public:
+	explicit FAnimGraphStructuralHook(const FAssetDocumentRegionContext& InRegionContext)
+		: RegionContext(InRegionContext)
+	{
+	}
+
+	virtual FAssetDocumentCapabilityResult LocateOrCreateGraph(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		FAssetDocumentAnimationGraphContext& InOutContext) override
+	{
+		InOutContext.Asset = RegionContext.Asset;
+		InOutContext.GraphKind = GraphSpec.Kind;
+		InOutContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	virtual FAssetDocumentCapabilityResult RepairAfterApply(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentAnimationGraphContext& Context) override
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+private:
+	const FAssetDocumentRegionContext& RegionContext;
+};
+
+FAssetDocumentCapabilityResult ValidateAnimGraphValue(
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	const FAssetDocumentRegionContext* RegionContext = nullptr)
+{
+	TArray<FAssetDocumentGraphSpec> Graphs;
+	const FAssetDocumentCapabilityResult ParseResult = ParseAnimGraphRegion(DesiredValue, Graphs);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	FAssetDocumentAnimationGraphContext RuntimeContext;
+	RuntimeContext.Asset = RegionContext ? RegionContext->Asset : nullptr;
+	RuntimeContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	RuntimeContext.GraphKind = CanonicalGraphKind;
+	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FEmptyAnimGraphCandidateProvider>());
+	return Runtime.ValidateGraph(Graphs[0], RuntimeContext);
+}
+
+TSharedPtr<FJsonValue> MakeCanonicalValue()
+{
+	return MakeShared<FJsonValueObject>(MakeCanonicalRegionObject());
+}
+
+TSharedPtr<FJsonObject> GraphDiffEntryToBodyDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
+{
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("path"), GraphEntry.Path);
+	Entry->SetStringField(TEXT("status"), GraphEntry.Status);
+	if (!GraphEntry.Message.IsEmpty())
+	{
+		Entry->SetStringField(TEXT("message"), GraphEntry.Message);
+	}
+	Entry->SetField(TEXT("current"), AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Current));
+	Entry->SetField(TEXT("desired"), AssetDocumentGraphJson::CloneJsonValue(GraphEntry.Desired));
+	return Entry;
 }
 }
 
@@ -216,25 +207,36 @@ bool FAssetDocumentAnimGraphRegionAdapter::SupportsRegion(const FAssetDocumentRe
 TSharedRef<FJsonObject> FAssetDocumentAnimGraphRegionAdapter::GetSchemaHint(const FAssetDocumentRegionContext&) const
 {
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
-	Schema->SetStringField(TEXT("Kind"), TEXT("AnimGraphRootOnlyPilot"));
-	Schema->SetStringField(TEXT("Shape"), TEXT("array<{Name:'AnimGraph', Nodes:[], OutputPose:{Node:null, Pin:'Result'}}>"));
+	Schema->SetStringField(TEXT("Kind"), TEXT("AnimGraphRecursiveGraphRegion"));
+	Schema->SetStringField(TEXT("Shape"), TEXT("{Graphs:[{Id:'AnimGraph', Kind:'AnimGraph', Nodes:[], Links:[], Subgraphs:[]}]}"));
 	return Schema;
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ValidateRegion(
-	const FAssetDocumentRegionContext&,
+	const FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue) const
 {
-	return ValidateAnimGraphValue(DesiredValue);
+	return ValidateAnimGraphValue(DesiredValue, &Context);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ApplyRegion(
-	FAssetDocumentRegionContext&,
+	FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	bool& bOutChanged)
 {
 	bOutChanged = false;
-	return ValidateAnimGraphValue(DesiredValue);
+
+	TArray<FAssetDocumentGraphSpec> Graphs;
+	const FAssetDocumentCapabilityResult ParseResult = ParseAnimGraphRegion(DesiredValue, Graphs);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FEmptyAnimGraphCandidateProvider>());
+	FAssetDocumentAnimationGraphContext RuntimeContext;
+	FAnimGraphStructuralHook Hook(Context);
+	return Runtime.ApplyGraph(Graphs[0], RuntimeContext, Hook);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ExtractRegion(
@@ -246,28 +248,32 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ExtractRegi
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::DiffRegion(
-	const FAssetDocumentRegionContext&,
+	const FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
-	const FAssetDocumentCapabilityResult ValidateResult = ValidateAnimGraphValue(DesiredValue);
+	TArray<FAssetDocumentGraphSpec> DesiredGraphs;
+	const FAssetDocumentCapabilityResult ParseResult = ParseAnimGraphRegion(DesiredValue, DesiredGraphs);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	const FAssetDocumentCapabilityResult ValidateResult = ValidateAnimGraphValue(DesiredValue, &Context);
 	if (!ValidateResult.bSuccess)
 	{
 		return ValidateResult;
 	}
 
-	const TSharedPtr<FJsonValue> Current = MakeCanonicalValue();
-	const TSharedPtr<FJsonValue> Desired = CanonicalizeDesiredValue(DesiredValue);
-	const bool bChanged =
-		FAssetDocumentJsonRegionUtils::JsonValueToComparableString(Current)
-		!= FAssetDocumentJsonRegionUtils::JsonValueToComparableString(Desired);
+	TArray<FAssetDocumentGraphSpec> CurrentGraphs;
+	CurrentGraphs.Add(MakeCanonicalGraphSpec());
+	const TArray<FAssetDocumentGraphDiffEntry> GraphEntries =
+		FAssetDocumentGraphDiff::CompareGraphRegion(DesiredGraphs, CurrentGraphs, TEXT("/Body/AnimGraph"));
 
-	FAssetDocumentJsonRegionUtils::AddDiffEntry(
-		OutDiffEntries,
-		TEXT("/Body/AnimGraph/AnimGraph"),
-		bChanged ? TEXT("changed") : TEXT("unchanged"),
-		Current,
-		Desired);
+	for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
+	{
+		OutDiffEntries.Add(MakeShared<FJsonValueObject>(GraphDiffEntryToBodyDiffEntry(GraphEntry)));
+	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
