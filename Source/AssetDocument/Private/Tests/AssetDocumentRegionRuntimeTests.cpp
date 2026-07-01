@@ -3,6 +3,7 @@
 #include "AssetDocumentBodyRegionDispatcher.h"
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentRegionRuntime.h"
+#include "AssetDocumentRegionRuntimeTestFixture.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
 #include "Regions/AssetDocumentFragmentArrayRegionAdapter.h"
 #include "Regions/AssetDocumentGraphRegionWrapperAdapter.h"
@@ -25,27 +26,7 @@
 
 namespace
 {
-TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
-{
-	return MakeShared<FJsonValueObject>(Object);
-}
-
-TSharedPtr<FJsonValue> MakeArrayValue(TArray<TSharedPtr<FJsonValue>> Values)
-{
-	return MakeShared<FJsonValueArray>(MoveTemp(Values));
-}
-
-TSharedRef<FJsonValue> MakeObjectRef(TSharedRef<FJsonObject> Object)
-{
-	return MakeShared<FJsonValueObject>(Object);
-}
-
-TSharedRef<FJsonObject> MakeBodyWithField(const FString& FieldName, const TSharedPtr<FJsonValue>& FieldValue)
-{
-	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetField(FieldName, FieldValue);
-	return Body;
-}
+using namespace AssetDocumentRegionRuntimeTest;
 
 TSharedPtr<FJsonValue> MakeIdentityValue(const FString& Name, const int32 Count)
 {
@@ -62,66 +43,10 @@ TSharedRef<FJsonObject> MakeTestFragment(const TCHAR* Kind)
 	return Fragment;
 }
 
-FString GetDiffEntryPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const int32 Index)
-{
-	const TSharedPtr<FJsonObject> Entry = Entries.IsValidIndex(Index) && Entries[Index].IsValid()
-		? Entries[Index]->AsObject()
-		: nullptr;
-	return Entry.IsValid() ? Entry->GetStringField(TEXT("path")) : FString();
-}
-
 int32 GetIdentityCount(const TSharedPtr<FJsonValue>& Value)
 {
 	const TSharedPtr<FJsonObject> Object = Value.IsValid() ? Value->AsObject() : nullptr;
 	return Object.IsValid() ? FMath::RoundToInt(Object->GetNumberField(TEXT("Count"))) : INDEX_NONE;
-}
-
-TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
-{
-	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
-	{
-		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
-		FString Path;
-		if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath)
-		{
-			return Entry;
-		}
-	}
-	return nullptr;
-}
-
-FAssetDocumentRegionPolicy MakePolicy(const FName RegionId, const FString& BodyPath)
-{
-	FAssetDocumentRegionPolicy Policy;
-	Policy.RegionId = RegionId;
-	Policy.BodyPath = BodyPath;
-	return Policy;
-}
-
-FAssetDocumentRegionPolicy MakeDeferredPolicy(
-	const FName RegionId,
-	const FString& BodyPath,
-	const EAssetDocumentRegionKind RegionKind)
-{
-	FAssetDocumentRegionPolicy Policy = MakePolicy(RegionId, BodyPath);
-	Policy.RegionKind = RegionKind;
-	return Policy;
-}
-
-FAssetDocumentRegionBinding MakeBinding(
-	const FName BodyKey,
-	const FName RegionId,
-	const FName AdapterName,
-	const int32 ApplyOrder = 0,
-	const bool bRequired = false)
-{
-	FAssetDocumentRegionBinding Binding;
-	Binding.BodyKey = BodyKey;
-	Binding.RegionId = RegionId;
-	Binding.AdapterName = AdapterName;
-	Binding.ApplyOrder = ApplyOrder;
-	Binding.bRequired = bRequired;
-	return Binding;
 }
 
 struct FTestRegionAdapter : IAssetDocumentRegionAdapter
@@ -222,37 +147,6 @@ struct FTestRegionAdapter : IAssetDocumentRegionAdapter
 	}
 };
 
-FAssetDocumentRegionContext MakeRuntimeContext(
-	const FName RegionId = TEXT("Preview"),
-	const FString& JsonPointer = TEXT("/Body/Preview"),
-	const FAssetDocumentRegionPolicy* Policy = nullptr)
-{
-	FAssetDocumentRegionContext Context;
-	Context.RegionId = RegionId;
-	Context.BodyPath = FString::Printf(TEXT("Body.%s"), *RegionId.ToString());
-	Context.JsonPointer = JsonPointer;
-	Context.Policy = Policy;
-	return Context;
-}
-
-FAssetDocumentBodyRegionDispatcher MakeDispatcher(
-	const TArray<FAssetDocumentRegionBinding>& Bindings,
-	const TArray<FAssetDocumentRegionPolicy>& Policies,
-	const TArray<IAssetDocumentRegionAdapter*>& Adapters,
-	FAssetDocumentBodyRegionDispatcherHooks Hooks = {})
-{
-	TMap<FName, IAssetDocumentRegionAdapter*> AdapterMap;
-	for (IAssetDocumentRegionAdapter* Adapter : Adapters)
-	{
-		AdapterMap.Add(Adapter->GetName(), Adapter);
-	}
-
-	return FAssetDocumentBodyRegionDispatcher(
-		Bindings,
-		Policies,
-		AdapterMap,
-		MoveTemp(Hooks));
-}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1535,14 +1429,7 @@ bool FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyArrayTest::RunTest(
 		Adapter);
 
 	TestFalse(TEXT("Deferred non-empty array fails"), Result.bSuccess);
-	TestEqual(
-		TEXT("Non-empty array reports unsupported deferred region"),
-		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
-		FString(TEXT("UnsupportedRegion")));
-	TestEqual(
-		TEXT("Non-empty array diagnostic uses region path"),
-		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
-		FString(TEXT("/Body/FunctionGraphs")));
+	TestDiagnostic(this, TEXT("Non-empty array"), Result, TEXT("/Body/FunctionGraphs"), TEXT("UnsupportedRegion"));
 	return true;
 }
 
@@ -1565,14 +1452,7 @@ bool FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyObjectTest::RunTest
 		FAssetDocumentRegionRuntime::Validate(Context, MakeObjectValue(NonEmptyObject), Adapter);
 
 	TestFalse(TEXT("Deferred non-empty object fails"), Result.bSuccess);
-	TestEqual(
-		TEXT("Non-empty object reports unsupported deferred region"),
-		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
-		FString(TEXT("UnsupportedRegion")));
-	TestEqual(
-		TEXT("Non-empty object diagnostic uses region path"),
-		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
-		FString(TEXT("/Body/Preview")));
+	TestDiagnostic(this, TEXT("Non-empty object"), Result, TEXT("/Body/Preview"), TEXT("UnsupportedRegion"));
 	return true;
 }
 
