@@ -465,7 +465,9 @@ FAssetDocumentCapabilityResult FAssetDocumentTimelinePlacementUtils::ParsePlacem
 				}
 				if (TrackIndexNumber.IsSet())
 				{
-					if (!TimelinePlacementIsIntegerNumber(TrackIndexNumber.GetValue()) || TrackIndexNumber.GetValue() < 0.0)
+					if (!TimelinePlacementIsIntegerNumber(TrackIndexNumber.GetValue())
+						|| TrackIndexNumber.GetValue() < 0.0
+						|| TrackIndexNumber.GetValue() > static_cast<double>(MAX_int32))
 					{
 						return TimelinePlacementFailure(
 							MakeFieldPath(EntryPath, Config.TrackIndexFieldName),

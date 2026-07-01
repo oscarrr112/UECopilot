@@ -3797,6 +3797,21 @@ bool FAssetDocumentTimelinePlacementRegionAdapterResolvesTracksTest::RunTest(con
 	TestFalse(TEXT("Resolver failure propagates"), Result.bSuccess);
 	TestEqual(TEXT("Resolver failure code propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("UnknownTimelineTrack")));
 	TestEqual(TEXT("Resolver failure path propagates"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/0")));
+
+	Config.TrackIndexFieldName = TEXT("TrackIndex");
+	Entry->RemoveField(TEXT("TrackName"));
+	Entry->SetNumberField(TEXT("TrackIndex"), 2147483648.0);
+	const int32 ResolverCallsBeforeOutOfRangeIndex = ResolverCalls;
+	Result = FAssetDocumentTimelinePlacementUtils::ParsePlacementEntries(
+		Desired,
+		Config,
+		TEXT("/Body/TestTimeline"),
+		nullptr,
+		Entries);
+
+	TestFalse(TEXT("Track index above int32 range fails"), Result.bSuccess);
+	TestEqual(TEXT("Out-of-range track index diagnostic code is stable"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("InvalidTimelinePlacementTrackIndex")));
+	TestEqual(TEXT("Out-of-range track index does not call resolver"), ResolverCalls, ResolverCallsBeforeOutOfRangeIndex);
 	return true;
 }
 
