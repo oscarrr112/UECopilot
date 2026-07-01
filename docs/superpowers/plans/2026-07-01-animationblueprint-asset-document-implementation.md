@@ -1100,7 +1100,7 @@ git commit -m "feat: pilot animation blueprint anim graph region"
 
 **Acceptance criteria:**
 
-- `Body.StateMachines` and `Body.TransitionGraphs` have stable state/transition identities.
+- Review correction: stage 1 must not accept non-empty `Body.StateMachines` or `Body.TransitionGraphs` until the adapter can materialize and extract real UE graphs. Empty compatibility values are allowed; non-empty authored values return `UnsupportedAnimBlueprintRegion`.
 - no state machine logic is hardcoded in ABP body dispatcher.
 
 - [ ] **Step 1: Add state machine identity tests**

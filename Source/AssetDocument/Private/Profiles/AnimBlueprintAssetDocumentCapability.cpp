@@ -246,6 +246,21 @@ TSharedPtr<FJsonValue> MakeAssetRefValue(const UObject* Object)
 	return MakeShared<FJsonValueObject>(AssetRef);
 }
 
+void AddDiffIfChanged(
+	const FString& Path,
+	const TSharedPtr<FJsonValue>& CurrentValue,
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	if (FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue)
+		== FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue))
+	{
+		return;
+	}
+
+	FAssetDocumentJsonRegionUtils::AddDiffEntry(OutDiffEntries, Path, TEXT("changed"), CurrentValue, DesiredValue);
+}
+
 TSharedRef<FJsonObject> MakeClassRefObject(const UClass* Class)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
@@ -635,6 +650,49 @@ FAssetDocumentCapabilityResult ValidatePreviewApplicationMethod(
 		TEXT("InvalidPreviewAnimationBlueprintApplicationMethod"));
 }
 
+FAssetDocumentCapabilityResult ResolveSkeletonFromTargetSkeletonValue(
+	const TSharedPtr<FJsonValue>& TargetSkeletonValue,
+	USkeleton*& OutSkeleton)
+{
+	OutSkeleton = nullptr;
+	UObject* ResolvedObject = nullptr;
+	FAssetDocumentCapabilityResult Result =
+		ResolveAssetRefValue(TargetSkeletonValue, USkeleton::StaticClass(), TEXT("/Body/TargetSkeleton"), ResolvedObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	OutSkeleton = Cast<USkeleton>(ResolvedObject);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ResolvePreviewMeshFromBody(
+	const TSharedRef<FJsonObject>& BodyObject,
+	USkeletalMesh*& OutPreviewMesh)
+{
+	OutPreviewMesh = nullptr;
+	const TSharedPtr<FJsonObject>* PreviewObject = nullptr;
+	if (!BodyObject->TryGetObjectField(TEXT("Preview"), PreviewObject) || !PreviewObject || !PreviewObject->IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	UObject* ResolvedObject = nullptr;
+	FAssetDocumentCapabilityResult Result = ResolveAssetRefValue(
+		(*PreviewObject)->TryGetField(TEXT("PreviewSkeletalMesh")),
+		USkeletalMesh::StaticClass(),
+		TEXT("/Body/Preview/PreviewSkeletalMesh"),
+		ResolvedObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	OutPreviewMesh = Cast<USkeletalMesh>(ResolvedObject);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ValidateCoreObjectRegion(
 	const FAssetDocumentRegionContext& Context,
 	const TSharedRef<FJsonObject>& Object)
@@ -839,6 +897,32 @@ FAssetDocumentCapabilityResult ExtractCoreObjectRegion(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimBlueprint object region default"));
 }
 
+FAssetDocumentCapabilityResult DiffCoreObjectRegion(
+	const FAssetDocumentRegionContext& Context,
+	const TSharedRef<FJsonObject>& DesiredObject,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	FAssetDocumentCapabilityResult Result = ValidateCoreObjectRegion(Context, DesiredObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TSharedRef<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
+	Result = ExtractCoreObjectRegion(Context, CurrentObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	AddDiffIfChanged(
+		Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer,
+		MakeShared<FJsonValueObject>(CurrentObject),
+		MakeShared<FJsonValueObject>(DesiredObject),
+		OutDiffEntries);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimBlueprint object region"));
+}
+
 FAssetDocumentObjectRegionAdapter MakeCoreObjectRegionAdapter()
 {
 	FAssetDocumentObjectRegionAdapterHooks Hooks;
@@ -854,9 +938,9 @@ FAssetDocumentObjectRegionAdapter MakeCoreObjectRegionAdapter()
 	{
 		return ExtractCoreObjectRegion(Context, OutObject);
 	};
-	Hooks.DiffObject = [](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& Object, TArray<TSharedPtr<FJsonValue>>&)
+	Hooks.DiffObject = [](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& Object, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
 	{
-		return ValidateCoreObjectRegion(Context, Object);
+		return DiffCoreObjectRegion(Context, Object, OutDiffEntries);
 	};
 	return FAssetDocumentObjectRegionAdapter(FAnimBlueprintAssetDocumentProfile::ObjectRegionAdapterName(), MoveTemp(Hooks));
 }
@@ -989,9 +1073,27 @@ public:
 	virtual FAssetDocumentCapabilityResult DiffRegion(
 		const FAssetDocumentRegionContext& Context,
 		const TSharedPtr<FJsonValue>& DesiredValue,
-		TArray<TSharedPtr<FJsonValue>>&) const override
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const override
 	{
-		return ValidateRegion(Context, DesiredValue);
+		FAssetDocumentCapabilityResult Result = ValidateRegion(Context, DesiredValue);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		TSharedPtr<FJsonValue> CurrentValue;
+		Result = ExtractRegion(Context, CurrentValue);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		AddDiffIfChanged(
+			Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer,
+			CurrentValue,
+			DesiredValue.IsValid() ? DesiredValue : MakeShared<FJsonValueNull>(),
+			OutDiffEntries);
+		return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimBlueprint TargetSkeleton"));
 	}
 };
 
@@ -1008,6 +1110,19 @@ bool IsTemplateFlagTrue(const TSharedRef<FJsonObject>& BodyObject)
 		&& bIsTemplate;
 }
 
+bool IsTemplateFlagExplicitlyFalse(const TSharedRef<FJsonObject>& BodyObject)
+{
+	const TSharedPtr<FJsonObject>* Template = nullptr;
+	if (!BodyObject->TryGetObjectField(TEXT("Template"), Template) || !Template || !Template->IsValid())
+	{
+		return false;
+	}
+
+	bool bIsTemplate = false;
+	return (*Template)->TryGetBoolField(TEXT("bIsTemplate"), bIsTemplate)
+		&& !bIsTemplate;
+}
+
 bool HasNonNullTargetSkeleton(const TSharedRef<FJsonObject>& BodyObject)
 {
 	const TSharedPtr<FJsonValue> TargetSkeleton = BodyObject->TryGetField(TEXT("TargetSkeleton"));
@@ -1015,7 +1130,7 @@ bool HasNonNullTargetSkeleton(const TSharedRef<FJsonObject>& BodyObject)
 }
 
 FAssetDocumentCapabilityResult ValidateAnimBlueprintCrossRegion(
-	const FAssetDocumentCapabilityContext&,
+	const FAssetDocumentCapabilityContext& Context,
 	const TSharedRef<FJsonObject>& BodyObject)
 {
 	if (IsTemplateFlagTrue(BodyObject) && HasNonNullTargetSkeleton(BodyObject))
@@ -1024,6 +1139,36 @@ FAssetDocumentCapabilityResult ValidateAnimBlueprintCrossRegion(
 			TEXT("Template AnimationBlueprints cannot author TargetSkeleton"),
 			TEXT("/Body/TargetSkeleton"),
 			TEXT("InvalidTemplateSkeleton"));
+	}
+
+	if (IsTemplateFlagExplicitlyFalse(BodyObject) && !Context.Asset && !HasNonNullTargetSkeleton(BodyObject))
+	{
+		return BodyFailure(
+			TEXT("Non-template AnimationBlueprint creation requires TargetSkeleton"),
+			TEXT("/Body/TargetSkeleton"),
+			TEXT("MissingTargetSkeleton"));
+	}
+
+	USkeleton* DesiredSkeleton = nullptr;
+	FAssetDocumentCapabilityResult Result =
+		ResolveSkeletonFromTargetSkeletonValue(BodyObject->TryGetField(TEXT("TargetSkeleton")), DesiredSkeleton);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	USkeletalMesh* PreviewMesh = nullptr;
+	Result = ResolvePreviewMeshFromBody(BodyObject, PreviewMesh);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (DesiredSkeleton && PreviewMesh && PreviewMesh->GetSkeleton() != DesiredSkeleton)
+	{
+		return BodyFailure(
+			TEXT("Body.Preview.PreviewSkeletalMesh skeleton must match Body.TargetSkeleton"),
+			TEXT("/Body/Preview/PreviewSkeletalMesh"),
+			TEXT("MismatchedPreviewSkeletalMeshSkeleton"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint cross-region constraints"));

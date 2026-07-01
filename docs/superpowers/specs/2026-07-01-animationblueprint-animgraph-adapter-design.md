@@ -88,7 +88,9 @@ Adding any of those requires extending this public adapter or writing a sibling 
 
 `Body.StateMachines` and `Body.TransitionGraphs` are owned by `FAssetDocumentAnimStateMachineRegionAdapter`, not by `FAnimBlueprintAssetDocumentCapability` private parsing code.
 
-The first state-machine milestone supports stable authored identities and semantic diff paths:
+The current milestone registers that adapter boundary but only accepts empty compatibility values (`null`, empty array, empty object). Non-empty authored state-machine data must return `/Body/StateMachines` + `UnsupportedAnimBlueprintRegion` until the adapter can materialize and extract real UE state-machine graphs without losing authored data.
+
+The next state-machine milestone must support stable authored identities and semantic diff paths:
 
 ```json
 [
@@ -101,7 +103,7 @@ The first state-machine milestone supports stable authored identities and semant
 ]
 ```
 
-The adapter must validate:
+That milestone must validate:
 
 - state-machine identity: `Name`, duplicate check case-insensitive.
 - state identity: `States[].Id`, duplicate check within the owning state machine.
@@ -114,11 +116,13 @@ Diff paths must be semantic:
 - state: `/Body/StateMachines/<Name>/States/<Id>`
 - transition: `/Body/StateMachines/<Name>/Transitions/<Id>`
 
-The current milestone does not yet materialize `UAnimationStateMachineGraph`, `UAnimStateNode`, or `UAnimStateTransitionNode`; it establishes the identity contract that real nested graph materialization must preserve.
+The current milestone does not yet materialize `UAnimationStateMachineGraph`, `UAnimStateNode`, or `UAnimStateTransitionNode`; it preserves an explicit rejection boundary so apply cannot silently discard authored state-machine data.
 
 ## 10. Transition Graph Boundary
 
-`Body.TransitionGraphs` uses stable `(StateMachine, Transition)` identity:
+`Body.TransitionGraphs` currently shares the same empty-only adapter boundary. Non-empty transition graph data must return `/Body/TransitionGraphs` + `UnsupportedAnimBlueprintRegion` until transition graph apply/extract/diff roundtrip exists.
+
+The next transition graph milestone should use stable `(StateMachine, Transition)` identity:
 
 ```json
 [
@@ -131,7 +135,7 @@ The current milestone does not yet materialize `UAnimationStateMachineGraph`, `U
 ]
 ```
 
-The first milestone supports only the root-only transition rule graph. Any authored rule node must fail with:
+That milestone may first support only the root-only transition rule graph. Any authored rule node must fail with:
 
 - path: `/Body/TransitionGraphs/<StateMachine>/<Transition>/Nodes/<Index>`
 - code: `UnsupportedTransitionGraphNode`
@@ -140,7 +144,7 @@ Diff paths must be semantic:
 
 - transition graph: `/Body/TransitionGraphs/<StateMachine>/<Transition>`
 
-Adding bool literal, time remaining, sync marker, or custom blend graph nodes requires extending this public adapter or adding a sibling public graph adapter spec. The ABP capability may register and compose that adapter, but must not grow a transition graph parser.
+Adding root-only transition graphs, bool literal, time remaining, sync marker, or custom blend graph nodes requires extending this public adapter or adding a sibling public graph adapter spec, plus real apply/extract/diff tests. The ABP capability may register and compose that adapter, but must not grow a transition graph parser.
 
 ## 11. Parent Asset Override Boundary
 

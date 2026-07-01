@@ -312,6 +312,52 @@ TSharedRef<FJsonValue> MakeBodyWithTemplateAndTargetSkeleton()
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonValue> MakeBodyWithTargetSkeleton(
+	const FString& TargetSkeletonPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"))
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("TargetSkeleton"), MakeAssetRef(TargetSkeletonPath));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithNonTemplateMissingTargetSkeleton()
+{
+	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
+	Template->SetBoolField(TEXT("bIsTemplate"), false);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Template"), Template);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithTargetSkeletonAndPreviewApplicationMethod(const FString& Method)
+{
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), Method);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(
+		TEXT("TargetSkeleton"),
+		MakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton")));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithMismatchedPreviewSkeleton()
+{
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetObjectField(
+		TEXT("PreviewSkeletalMesh"),
+		MakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh")));
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(
+		TEXT("TargetSkeleton"),
+		MakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithPreviewApplicationMethod(const FString& Method)
 {
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
@@ -776,14 +822,21 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
 	TestTrue(
-		TEXT("StateMachines accepts stable state and transition identities"),
+		TEXT("StateMachines accepts empty compatibility value"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines"))).bSuccess);
+
+	const FAssetDocumentCapabilityResult AuthoredStateMachineResult =
 		Capability.Validate(
 			Context,
 			MakeBodyWithStateMachines({
 				MakeStateMachine(
 					TEXT("Locomotion"),
 					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("Run"))},
-					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})})).bSuccess);
+					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
+	TestFalse(TEXT("StateMachines rejects non-empty authored identity data until materialization exists"), AuthoredStateMachineResult.bSuccess);
+	TestTrue(
+		TEXT("StateMachines non-empty diagnostic uses region path"),
+		HasDiagnostic(AuthoredStateMachineResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult DuplicateStateResult =
 		Capability.Validate(
@@ -793,10 +846,10 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 					TEXT("Locomotion"),
 					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("idle"))},
 					{})}));
-	TestFalse(TEXT("StateMachines rejects duplicate state identities case-insensitively"), DuplicateStateResult.bSuccess);
+	TestFalse(TEXT("StateMachines still rejects duplicate authored input through deferred boundary"), DuplicateStateResult.bSuccess);
 	TestTrue(
-		TEXT("Duplicate state diagnostic uses stable machine path"),
-		HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines/Locomotion/States/1/Id"), TEXT("DuplicateStateId")));
+		TEXT("Duplicate state is not silently accepted"),
+		HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult UnknownEndpointResult =
 		Capability.Validate(
@@ -806,14 +859,21 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 					TEXT("Locomotion"),
 					{MakeStateMachineState(TEXT("Idle"))},
 					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
-	TestFalse(TEXT("StateMachines rejects transitions to unknown states"), UnknownEndpointResult.bSuccess);
+	TestFalse(TEXT("StateMachines rejects transitions while materialization is deferred"), UnknownEndpointResult.bSuccess);
 	TestTrue(
-		TEXT("Unknown endpoint diagnostic uses transition identity path"),
-		HasDiagnostic(UnknownEndpointResult, TEXT("/Body/StateMachines/Locomotion/Transitions/IdleToRun/To"), TEXT("UnknownTransitionState")));
+		TEXT("Unknown endpoint is not silently accepted"),
+		HasDiagnostic(UnknownEndpointResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	TestTrue(
-		TEXT("TransitionGraphs accepts root-only transition rule graph identity"),
-		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))})).bSuccess);
+		TEXT("TransitionGraphs accepts empty compatibility value"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("TransitionGraphs"))).bSuccess);
+
+	const FAssetDocumentCapabilityResult AuthoredTransitionGraphResult =
+		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
+	TestFalse(TEXT("TransitionGraphs rejects non-empty root-only data until materialization exists"), AuthoredTransitionGraphResult.bSuccess);
+	TestTrue(
+		TEXT("TransitionGraphs non-empty diagnostic uses region path"),
+		HasDiagnostic(AuthoredTransitionGraphResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult DuplicateTransitionGraphResult =
 		Capability.Validate(
@@ -821,31 +881,28 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 			MakeBodyWithTransitionGraphs({
 				MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun")),
 				MakeTransitionGraph(TEXT("locomotion"), TEXT("idletorun"))}));
-	TestFalse(TEXT("TransitionGraphs rejects duplicate machine/transition identity"), DuplicateTransitionGraphResult.bSuccess);
+	TestFalse(TEXT("TransitionGraphs rejects duplicate authored input through deferred boundary"), DuplicateTransitionGraphResult.bSuccess);
 	TestTrue(
-		TEXT("Duplicate transition graph diagnostic uses semantic identity path"),
-		HasDiagnostic(DuplicateTransitionGraphResult, TEXT("/Body/TransitionGraphs/locomotion/idletorun"), TEXT("DuplicateTransitionGraph")));
+		TEXT("Duplicate transition graph is not silently accepted"),
+		HasDiagnostic(DuplicateTransitionGraphResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult UnsupportedRuleNodeResult =
 		Capability.Validate(
 			Context,
 			MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"), true)}));
-	TestFalse(TEXT("TransitionGraphs rejects authored rule nodes until graph adapter expands"), UnsupportedRuleNodeResult.bSuccess);
+	TestFalse(TEXT("TransitionGraphs rejects authored rule nodes while materialization is deferred"), UnsupportedRuleNodeResult.bSuccess);
 	TestTrue(
-		TEXT("Unsupported transition graph node diagnostic uses semantic path"),
+		TEXT("Unsupported transition graph node is not silently accepted"),
 		HasDiagnostic(
 			UnsupportedRuleNodeResult,
-			TEXT("/Body/TransitionGraphs/Locomotion/IdleToRun/Nodes/0"),
-			TEXT("UnsupportedTransitionGraphNode")));
+			TEXT("/Body/TransitionGraphs"),
+			TEXT("UnsupportedAnimBlueprintRegion")));
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
-		Capability.Diff(Context, MakeBodyWithStateMachineAndTransitionGraph(), DiffEntries);
+		Capability.Diff(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines")), DiffEntries);
 	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
-	TestTrue(TEXT("StateMachines diff uses machine identity path"), HasDiffPath(DiffEntries, TEXT("/Body/StateMachines/Locomotion")));
-	TestTrue(
-		TEXT("TransitionGraphs diff uses machine/transition identity path"),
-		HasDiffPath(DiffEntries, TEXT("/Body/TransitionGraphs/Locomotion/IdleToRun")));
+	TestEqual(TEXT("Empty StateMachines diff has no authored entries"), DiffEntries.Num(), 0);
 
 	return true;
 }
@@ -944,6 +1001,32 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
 	TestTrue(TEXT("ParentAssetOverrides extract succeeds"), ExtractResult.bSuccess);
 	TestTrue(TEXT("Extract includes one parent asset override"), HasArrayFieldCount(ExtractedBody, TEXT("ParentAssetOverrides"), 1));
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedOverrides = nullptr;
+	if (ExtractedBody->TryGetArrayField(TEXT("ParentAssetOverrides"), ExtractedOverrides) && ExtractedOverrides && ExtractedOverrides->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> ExtractedOverride = (*ExtractedOverrides)[0]->AsObject();
+		TestTrue(TEXT("Extracted parent override is object"), ExtractedOverride.IsValid());
+		if (ExtractedOverride.IsValid())
+		{
+			FString ExtractedGuid;
+			TestTrue(TEXT("Extracted ParentNodeGuid is present"), ExtractedOverride->TryGetStringField(TEXT("ParentNodeGuid"), ExtractedGuid));
+			TestEqual(TEXT("Extracted ParentNodeGuid shape is stable"), ExtractedGuid, ParentGuidA);
+			const TSharedPtr<FJsonObject>* ExtractedAssetRef = nullptr;
+			TestTrue(TEXT("Extracted NewAsset is object"), ExtractedOverride->TryGetObjectField(TEXT("NewAsset"), ExtractedAssetRef));
+			if (ExtractedAssetRef && ExtractedAssetRef->IsValid())
+			{
+				FString ExtractedKind;
+				FString ExtractedPath;
+				TestTrue(TEXT("Extracted NewAsset.Kind is present"), (*ExtractedAssetRef)->TryGetStringField(TEXT("Kind"), ExtractedKind));
+				TestEqual(TEXT("Extracted NewAsset.Kind is AssetRef"), ExtractedKind, FString(TEXT("AssetRef")));
+				TestTrue(TEXT("Extracted NewAsset.Path is present"), (*ExtractedAssetRef)->TryGetStringField(TEXT("Path"), ExtractedPath));
+				if (ExpectedAsset)
+				{
+					TestEqual(TEXT("Extracted NewAsset.Path is stable"), ExtractedPath, ExpectedAsset->GetPathName());
+				}
+			}
+		}
+	}
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
@@ -994,6 +1077,23 @@ bool FAssetDocumentAnimBlueprintCoreObjectRegionsTest::RunTest(const FString&)
 		HasDiagnostic(InvalidTemplateSkeletonResult, TEXT("/Body/TargetSkeleton"), TEXT("InvalidTemplateSkeleton"))
 			|| HasDiagnostic(InvalidTemplateSkeletonResult, TEXT("/Body/Template/bIsTemplate"), TEXT("InvalidTemplateSkeleton")));
 
+	const FAssetDocumentCapabilityResult MissingCreateSkeletonResult =
+		Capability.Validate(Context, MakeBodyWithNonTemplateMissingTargetSkeleton());
+	TestFalse(TEXT("Non-template AnimBlueprint create requires TargetSkeleton"), MissingCreateSkeletonResult.bSuccess);
+	TestTrue(
+		TEXT("Missing create skeleton diagnostic uses TargetSkeleton path"),
+		HasDiagnostic(MissingCreateSkeletonResult, TEXT("/Body/TargetSkeleton"), TEXT("MissingTargetSkeleton")));
+
+	const FAssetDocumentCapabilityResult MismatchedPreviewSkeletonResult =
+		Capability.Validate(Context, MakeBodyWithMismatchedPreviewSkeleton());
+	TestFalse(TEXT("Preview skeletal mesh skeleton must match TargetSkeleton"), MismatchedPreviewSkeletonResult.bSuccess);
+	TestTrue(
+		TEXT("Preview skeleton mismatch diagnostic uses PreviewSkeletalMesh path"),
+		HasDiagnostic(
+			MismatchedPreviewSkeletonResult,
+			TEXT("/Body/Preview/PreviewSkeletalMesh"),
+			TEXT("MismatchedPreviewSkeletalMeshSkeleton")));
+
 	const FAssetDocumentCapabilityResult InvalidPreviewMethodResult =
 		Capability.Validate(Context, MakeBodyWithPreviewApplicationMethod(TEXT("Bogus")));
 	TestFalse(TEXT("Preview rejects unknown application method"), InvalidPreviewMethodResult.bSuccess);
@@ -1016,6 +1116,21 @@ bool FAssetDocumentAnimBlueprintCoreObjectRegionsTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("Dispatcher preserves UnknownBodyKey code"),
 		HasDiagnostic(UnknownBodyKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult ObjectDiffResult =
+		Capability.Diff(Context, MakeBodyWithTargetSkeletonAndPreviewApplicationMethod(TEXT("LinkedAnimGraph")), DiffEntries);
+	TestTrue(TEXT("Preview object diff succeeds"), ObjectDiffResult.bSuccess);
+	TestTrue(TEXT("Preview object diff reports region path"), HasDiffPath(DiffEntries, TEXT("/Body/Preview")));
+
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult SkeletonDiffResult =
+		Capability.Diff(
+			Context,
+			MakeBodyWithTargetSkeleton(),
+			DiffEntries);
+	TestTrue(TEXT("TargetSkeleton diff succeeds"), SkeletonDiffResult.bSuccess);
+	TestTrue(TEXT("TargetSkeleton diff reports region path"), HasDiffPath(DiffEntries, TEXT("/Body/TargetSkeleton")));
 
 	return true;
 }

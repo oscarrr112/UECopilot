@@ -8,14 +8,14 @@ Implemented body regions:
 
 - Core object regions: `ParentClass`, `TargetSkeleton`, `Template`, `Preview`, `Optimization`.
 - Named/common regions: `SyncGroups`, `ImplementedInterfaces`, `Variables`, `ClassDefaults`, `UbergraphPages`.
-- Graph-family pilots: root-only `AnimGraph`, identity-level `StateMachines`, root-only `TransitionGraphs`.
+- Graph-family pilots: root-only `AnimGraph`; `StateMachines` and `TransitionGraphs` are bound to a public adapter boundary but remain empty-only until real graph materialization can roundtrip.
 - Parent override region: `ParentAssetOverrides` by parent node GUID identity.
 
 Still deferred by design:
 
 - Authored AnimGraph pose nodes.
-- Real nested UE state-machine graph materialization.
-- Authored transition rule graph nodes.
+- Non-empty `StateMachines` authoring and real nested UE state-machine graph materialization.
+- Non-empty `TransitionGraphs` authoring and authored transition rule graph nodes.
 - `AnimLayers` in the regular `UAnimBlueprint` exact-class profile; Anim Layer Interface remains a separate profile/factory boundary.
 - Parent override authored node alias resolver beyond raw parent node GUID identity.
 
@@ -44,10 +44,10 @@ Automation RunTests AssetFactory.AssetDocument.AnimBlueprint
 Report:
 
 ```text
-C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AnimBlueprintFinal/index.json
+C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AnimBlueprintReviewFix2/index.json
 ```
 
-Result: `succeeded=9`, `succeededWithWarnings=0`, `failed=0`, `notRun=0`.
+Result after review fixes: `succeeded=9`, `succeededWithWarnings=0`, `failed=0`, `notRun=0`.
 
 AssetDocument full automation:
 
@@ -58,10 +58,10 @@ Automation RunTests AssetFactory.AssetDocument
 Report:
 
 ```text
-C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AssetDocumentFinal/index.json
+C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AssetDocumentReviewFix/index.json
 ```
 
-Result: `succeeded=291`, `failed=0`, `notRun=0`. The report includes pre-existing warnings from non-ABP tests such as missing-class negative cases and asset registry cleanup; ABP tests themselves reported no warnings.
+Result after review fixes: `succeeded=303`, `failed=0`, `notRun=0`.
 
 MCP tests:
 
@@ -100,10 +100,11 @@ Current run result: blocked by the validation host HTTP listener, not by ABP Ass
 - `2be77a4 feat: pilot animation blueprint anim graph region`
 - `290d9da feat: manage animation blueprint state machines`
 - `10e44f8 feat: manage animation blueprint layers and parent overrides`
+- review fix: reject non-empty `StateMachines` / `TransitionGraphs` until apply/extract roundtrip exists, add core object diff, create skeleton gate, preview skeleton mismatch validation, and parent override extract-shape assertions.
 
 ## Follow-up Gates
 
 - Extend `FAssetDocumentAnimGraphRegionAdapter` before accepting real pose nodes.
-- Extend `FAssetDocumentAnimStateMachineRegionAdapter` before materializing `UAnimationStateMachineGraph` nodes or authored rule nodes.
+- Extend `FAssetDocumentAnimStateMachineRegionAdapter` before accepting any non-empty `Body.StateMachines` or `Body.TransitionGraphs` value; the extension must include apply/extract/diff roundtrip so authored graph data is never silently discarded.
 - Add a separate Anim Layer Interface profile or explicit region-extension spec before accepting non-empty `Body.AnimLayers`.
 - Add an AnimGraph identity resolver before allowing parent override aliases other than raw parent node GUID.

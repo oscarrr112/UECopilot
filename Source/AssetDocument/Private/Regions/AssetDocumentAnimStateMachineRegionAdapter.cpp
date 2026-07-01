@@ -134,6 +134,13 @@ FAssetDocumentCapabilityResult ValidateStateMachinesValue(const TSharedPtr<FJson
 
 	TSet<FString> MachineIdentities;
 	const TArray<TSharedPtr<FJsonValue>>& Machines = DesiredValue->AsArray();
+	if (Machines.Num() > 0)
+	{
+		return Failure(
+			TEXT("/Body/StateMachines"),
+			TEXT("UnsupportedAnimBlueprintRegion"),
+			TEXT("Body.StateMachines authoring is deferred until state-machine graph materialization is supported"));
+	}
 	for (int32 MachineIndex = 0; MachineIndex < Machines.Num(); ++MachineIndex)
 	{
 		const TSharedPtr<FJsonObject> Machine = Machines[MachineIndex].IsValid() ? Machines[MachineIndex]->AsObject() : nullptr;
@@ -333,6 +340,13 @@ FAssetDocumentCapabilityResult ValidateTransitionGraphsValue(const TSharedPtr<FJ
 
 	TSet<FString> TransitionGraphIdentities;
 	const TArray<TSharedPtr<FJsonValue>>& Graphs = DesiredValue->AsArray();
+	if (Graphs.Num() > 0)
+	{
+		return Failure(
+			TEXT("/Body/TransitionGraphs"),
+			TEXT("UnsupportedAnimBlueprintRegion"),
+			TEXT("Body.TransitionGraphs authoring is deferred until transition rule graph materialization is supported"));
+	}
 	for (int32 GraphIndex = 0; GraphIndex < Graphs.Num(); ++GraphIndex)
 	{
 		const TSharedPtr<FJsonObject> Graph = Graphs[GraphIndex].IsValid() ? Graphs[GraphIndex]->AsObject() : nullptr;
@@ -503,8 +517,8 @@ TSharedRef<FJsonObject> FAssetDocumentAnimStateMachineRegionAdapter::GetSchemaHi
 {
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
 	Schema->SetStringField(TEXT("Kind"), TEXT("AnimStateMachineIdentityRegion"));
-	Schema->SetStringField(TEXT("StateMachines"), TEXT("array<{Name, EntryState?, States:[{Id}], Transitions:[{Id, From, To, Rule?}]}>"));
-	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("array<{StateMachine, Transition, Nodes:[], Result:{Node:null, Pin:'CanEnterTransition'}}>"));
+	Schema->SetStringField(TEXT("StateMachines"), TEXT("empty only until state-machine graph materialization supports roundtrip"));
+	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("empty only until transition rule graph materialization supports roundtrip"));
 	return Schema;
 }
 
