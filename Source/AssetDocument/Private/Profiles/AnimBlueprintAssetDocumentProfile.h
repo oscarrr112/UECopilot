@@ -13,6 +13,7 @@ public:
 	static FName TargetSkeletonRegionAdapterName();
 	static FName SyncGroupsRegionAdapterName();
 	static FName BlueprintCommonRegionAdapterName();
+	static FName AnimGraphRegionAdapterName();
 	static FName DeferredRegionAdapterName();
 	static TArray<FAssetDocumentRegionBinding> MakeRegionBindings();
 

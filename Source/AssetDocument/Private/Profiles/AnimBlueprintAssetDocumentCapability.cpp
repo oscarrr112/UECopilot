@@ -16,6 +16,7 @@
 #include "Engine/SkeletalMesh.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentAnimGraphRegionAdapter.h"
 #include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
@@ -1055,6 +1056,8 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	FAssetDocumentNamedArrayRegionAdapter SyncGroupsAdapter = MakeSyncGroupsRegionAdapter();
 	FBlueprintAssetDocumentCommonRegionAdapter BlueprintCommonAdapter(
 		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName());
+	FAssetDocumentAnimGraphRegionAdapter AnimGraphAdapter(
+		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName());
 	FAssetDocumentDeferredRegionAdapter DeferredAdapter(
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 		TEXT("UnsupportedAnimBlueprintRegion"),
@@ -1065,6 +1068,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	Adapters.Add(TargetSkeletonAdapter.GetName(), &TargetSkeletonAdapter);
 	Adapters.Add(SyncGroupsAdapter.GetName(), &SyncGroupsAdapter);
 	Adapters.Add(BlueprintCommonAdapter.GetName(), &BlueprintCommonAdapter);
+	Adapters.Add(AnimGraphAdapter.GetName(), &AnimGraphAdapter);
 	Adapters.Add(DeferredAdapter.GetName(), &DeferredAdapter);
 
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
@@ -1159,6 +1163,7 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 		FAnimBlueprintAssetDocumentProfile::TargetSkeletonRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::BlueprintCommonRegionAdapterName(),
+		FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 	};
 }
@@ -1191,7 +1196,7 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentCapability::GetSchemaHint() c
 	Schema->SetStringField(TEXT("Variables"), TEXT("Blueprint common identity-array region"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("Blueprint common generated CDO default-diff object"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("Blueprint common K2 graph wrapper region"));
-	Schema->SetStringField(TEXT("AnimGraph"), TEXT("deferred empty graph region until animation graph adapter lands"));
+	Schema->SetStringField(TEXT("AnimGraph"), TEXT("root-only graph pilot: array<{Name:'AnimGraph', Nodes:[], OutputPose:{Node:null, Pin:'Result'}}>"));
 	Schema->SetStringField(TEXT("StateMachines"), TEXT("deferred empty graph/tree region until state-machine adapter lands"));
 	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("deferred empty graph region until transition graph adapter lands"));
 	Schema->SetStringField(TEXT("AnimLayers"), TEXT("deferred empty graph/array region until anim layer adapter lands"));

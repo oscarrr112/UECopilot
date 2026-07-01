@@ -4,18 +4,32 @@
 
 ## 当前允许的保守范围
 
-第一阶段只允许 `Body.AnimGraph`、`Body.StateMachines`、`Body.TransitionGraphs`、`Body.AnimLayers` 和 `Body.ParentAssetOverrides` 使用空值占位：
+第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines`、`Body.TransitionGraphs`、`Body.AnimLayers` 和 `Body.ParentAssetOverrides` 仍只允许使用空值占位：
 
 - `null`
 - empty array
 - empty object
 
-任何非空 authored value 都必须在 `Validate` 阶段拒绝，并返回诊断：
+这些仍 deferred 的 region 遇到任何非空 authored value 都必须在 `Validate` 阶段拒绝，并返回诊断：
 
 - path: `/Body/<Key>`
 - code: `UnsupportedAnimBlueprintRegion`
 
 未知 `Body` key 必须继续返回 `UnknownBodyKey`。当前阶段不得在 `FAnimBlueprintAssetDocumentCapability` 内新增 ABP 私有 graph parser、state machine parser、transition graph parser、anim layer parser 或 parent override materializer。
+
+`Body.AnimGraph` 已解除全量 deferred gate，但第一版只支持 canonical root-only graph：
+
+```json
+[
+  {
+    "Name": "AnimGraph",
+    "Nodes": [],
+    "OutputPose": {"Node": null, "Pin": "Result"}
+  }
+]
+```
+
+任何 authored pose node 仍必须返回 `/Body/AnimGraph/AnimGraph/Nodes/<Index>` + `UnsupportedAnimGraphNode`。后续支持 SequencePlayer、BlendSpace、StateMachineRef 或 Slot 等节点前，必须先扩展公共 adapter spec，不得写入 ABP 私有 parser。
 
 `Body.SyncGroups` 已解除 region 级 deferred gate，但第一版只管理稳定 identity 字段 `Name`。`FAnimGroupInfo.Color` 暂不接受 authored value；如果作者提供 `Color`，必须在 `/Body/SyncGroups/<Index>/Color` 返回 `UnsupportedSyncGroupColor`。后续只有在颜色序列化格式和 diff canonicalization 稳定后，才能把 `Color` 加回同一个 named-array adapter。
 
@@ -73,7 +87,7 @@
 
 | Entry | Current behavior | Deferred reason | Cleanup trigger | Upgrade entrypoint | Minimum verification |
 | --- | --- | --- | --- | --- | --- |
-| `Body.AnimGraph` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/AnimGraph` + `UnsupportedAnimBlueprintRegion`。 | 需要 animation graph node adapter、node/pin identity、canonical graph compare 和 compile/rebuild hook。 | `Body.AnimGraph` adapter spec 完成，并证明至少一个 simple anim graph roundtrip 不依赖 ABP 私有 parser。 | `FAnimBlueprintAssetDocumentCapability` + public graph-family adapter。 | `DeferredGraphGates` 更新、`AssetFactory.AssetDocument.AnimBlueprint.AnimGraph`、公共 graph adapter regression、UBT。 |
+| `Body.AnimGraph` authored pose nodes | root-only pilot 已支持；`Nodes` 必须为空。非空 node 返回 `/Body/AnimGraph/AnimGraph/Nodes/<Index>` + `UnsupportedAnimGraphNode`。 | 真实 pose node 仍需要 animation graph node adapter、node/pin identity、canonical graph compare 和 compile/rebuild hook。 | `Body.AnimGraph` adapter spec 扩展到具体 node subset，并证明至少一个真实 pose node roundtrip 不依赖 ABP 私有 parser。 | `FAssetDocumentAnimGraphRegionAdapter` 或 sibling public graph-family adapter。 | `AssetFactory.AssetDocument.AnimBlueprint.AnimGraph` 扩展 node case、公共 graph adapter regression、UBT。 |
 | `Body.StateMachines` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/StateMachines` + `UnsupportedAnimBlueprintRegion`。 | 需要 nested state-machine adapter，定义 state identity、transition identity 和 graph ownership。 | state machine identity/diff/apply/extract contract 完成。 | state-machine public adapter + `FAnimBlueprintAssetDocumentCapability` hook。 | focused state-machine automation、transition identity regression、UBT。 |
 | `Body.TransitionGraphs` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/TransitionGraphs` + `UnsupportedAnimBlueprintRegion`。 | transition blend graph 必须绑定到稳定 state-machine transition identity。 | transition graph adapter 能通过 transition identity 定位、materialize、extract 和 diff。 | transition graph public adapter + state-machine adapter integration。 | transition graph focused automation、state-machine regression、UBT。 |
 | `Body.AnimLayers` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/AnimLayers` + `UnsupportedAnimBlueprintRegion`。 | Anim Layer Interface 与普通 `UAnimBlueprint` exact-class profile 边界尚未实现。 | 已决定 layer/interface profile 边界，并实现 layer graph validate/apply/extract/diff。 | anim layer adapter 或独立 exact-class profile。 | anim layer focused automation、profile boundary test、UBT。 |

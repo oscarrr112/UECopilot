@@ -59,6 +59,46 @@ TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredRegion(const TCHAR* RegionNam
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TArray<TSharedPtr<FJsonValue>> MakeCanonicalAnimGraphArray()
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
+	Graph->SetArrayField(TEXT("Nodes"), {});
+
+	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
+	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
+	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
+	return {MakeShared<FJsonValueObject>(Graph)};
+}
+
+TSharedRef<FJsonValue> MakeBodyWithCanonicalAnimGraph()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
+{
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), TEXT("IdlePlayer"));
+	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+
+	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
+	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
+	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("AnimGraph"), {MakeShared<FJsonValueObject>(Graph)});
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredObjectRegion(const TCHAR* RegionName)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
@@ -396,7 +436,7 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Policy includes Body.ParentAssetOverrides"), ParentAssetOverridesPolicy);
 	if (AnimGraphPolicy)
 	{
-		TestTrue(TEXT("AnimGraph policy is deferred/null-gated"), AnimGraphPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("AnimGraph policy is no longer deferred/null-gated"), AnimGraphPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (StateMachinesPolicy)
 	{
@@ -424,7 +464,6 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 		TestTrue(TEXT("Empty Body validates"), BodyAdapter->Validate(Context, MakeEmptyBodyValue()).bSuccess);
 
 		for (const TCHAR* DeferredKey : {
-			TEXT("AnimGraph"),
 			TEXT("StateMachines"),
 			TEXT("TransitionGraphs"),
 			TEXT("AnimLayers"),
@@ -463,7 +502,6 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
 	for (const TCHAR* DeferredKey : {
-		TEXT("AnimGraph"),
 		TEXT("StateMachines"),
 		TEXT("TransitionGraphs"),
 		TEXT("AnimLayers"),
@@ -528,6 +566,62 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 				FString::Printf(TEXT("/Body/%s"), UnknownBlueprintGraphKey),
 				TEXT("UnknownBodyKey")));
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintAnimGraphTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.AnimGraph",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
+{
+	FAssetDocumentCapabilityContext ValidationContext;
+	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+
+	TestTrue(TEXT("Canonical root-only AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
+
+	const FAssetDocumentCapabilityResult UnsupportedNodeResult =
+		Capability.Validate(ValidationContext, MakeBodyWithUnsupportedAnimGraphNode());
+	TestFalse(TEXT("Unsupported AnimGraph node rejects"), UnsupportedNodeResult.bSuccess);
+	TestTrue(
+		TEXT("Unsupported node diagnostic uses semantic AnimGraph path"),
+		HasDiagnostic(UnsupportedNodeResult, TEXT("/Body/AnimGraph/AnimGraph/Nodes/0"), TEXT("UnsupportedAnimGraphNode")));
+
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimGraph pilot apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("Root-only AnimGraph apply succeeds"), ApplyResult.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+	TestTrue(TEXT("AnimGraph extract succeeds"), ExtractResult.bSuccess);
+	TestTrue(TEXT("Extract includes canonical root-only AnimGraph"), HasArrayFieldCount(ExtractedBody, TEXT("AnimGraph"), 1));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Capability.Diff(Context, MakeBodyWithCanonicalAnimGraph(), DiffEntries);
+	TestTrue(TEXT("AnimGraph diff succeeds"), DiffResult.bSuccess);
+	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/AnimGraph")));
 
 	return true;
 }
