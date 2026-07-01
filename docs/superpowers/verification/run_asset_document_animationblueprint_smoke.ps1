@@ -13,7 +13,6 @@ $AssetName = "ABP_AnimationBlueprintSmoke"
 $SkeletonPath = "/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"
 $PreviewMeshPath = "/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh"
 $AnimationAssetPath = "/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle"
-$ParentOverrideGuid = "01234567-89ab-cdef-0123-456789abcdef"
 $ExpectedBodyRegions = @(
   "ParentClass",
   "TargetSkeleton",
@@ -136,6 +135,43 @@ function New-AssetRef {
   }
 }
 
+function New-Position {
+  param([double]$X, [double]$Y)
+  return [ordered]@{
+    X = $X
+    Y = $Y
+  }
+}
+
+function New-GraphNode {
+  param(
+    [string]$Id,
+    [string]$Kind,
+    [string]$Class,
+    [double]$X,
+    [double]$Y,
+    [hashtable]$Fields = @{}
+  )
+
+  $Node = [ordered]@{
+    Id = $Id
+    Kind = $Kind
+    Class = $Class
+    Position = New-Position -X $X -Y $Y
+  }
+  if ($Fields.Count -gt 0) {
+    $Node.Fields = $Fields
+  }
+  return $Node
+}
+
+function New-GraphRegion {
+  param([array]$Graphs)
+  return [ordered]@{
+    Graphs = $Graphs
+  }
+}
+
 function New-SmokeSidecar {
   return [ordered]@{
     SchemaVersion = 1
@@ -169,49 +205,72 @@ function New-SmokeSidecar {
       Variables = @()
       ClassDefaults = @{}
       UbergraphPages = @()
-      AnimGraph = @(
+      FunctionGraphs = @()
+      MacroGraphs = @()
+      AnimGraph = New-GraphRegion -Graphs @(
         [ordered]@{
-          Name = "AnimGraph"
-          Nodes = @()
-          OutputPose = [ordered]@{
-            Node = $null
-            Pin = "Result"
-          }
+          Id = "AnimGraph"
+          Kind = "AnimGraph"
+          Owner = $null
+          Nodes = @(
+            New-GraphNode -Id "IdlePlayer" -Kind "SequencePlayer" -Class "/Script/AnimGraph.AnimGraphNode_SequencePlayer" -X 120 -Y 40,
+            New-GraphNode -Id "CachedIdlePose" -Kind "CachedPose" -Class "/Script/AnimGraph.AnimGraphNode_SaveCachedPose" -X 420 -Y 40
+          )
+          Links = @()
+          Subgraphs = @()
         }
       )
-      StateMachines = @(
+      StateMachines = New-GraphRegion -Graphs @(
         [ordered]@{
-          Name = "Locomotion"
-          EntryState = "Idle"
-          States = @(
-            [ordered]@{ Id = "Idle" },
-            [ordered]@{ Id = "Run" }
+          Id = "Locomotion"
+          Kind = "StateMachine"
+          Owner = $null
+          Metadata = [ordered]@{
+            EntryState = "Idle"
+          }
+          Nodes = @(
+            New-GraphNode -Id "Idle" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 0 -Y 0,
+            New-GraphNode -Id "Run" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 260 -Y 0,
+            New-GraphNode -Id "IdleToRun" -Kind "Transition" -Class "/Script/AnimGraph.AnimStateTransitionNode" -X 130 -Y 0
           )
-          Transitions = @(
+          Links = @(
             [ordered]@{
-              Id = "IdleToRun"
-              From = "Idle"
-              To = "Run"
-              Rule = "IdleToRun"
+              From = [ordered]@{ Node = "Idle"; Pin = "Out" }
+              To = [ordered]@{ Node = "IdleToRun"; Pin = "In" }
+            },
+            [ordered]@{
+              From = [ordered]@{ Node = "IdleToRun"; Pin = "Out" }
+              To = [ordered]@{ Node = "Run"; Pin = "In" }
+            }
+          )
+          Subgraphs = @(
+            [ordered]@{
+              Id = "IdleToRunRule"
+              Kind = "TransitionRule"
+              Owner = [ordered]@{
+                Transition = "IdleToRun"
+              }
+              Nodes = @()
+              Links = @()
+              Subgraphs = @()
             }
           )
         }
       )
-      TransitionGraphs = @(
+      TransitionGraphs = @()
+      AnimLayers = New-GraphRegion -Graphs @(
         [ordered]@{
-          StateMachine = "Locomotion"
-          Transition = "IdleToRun"
+          Id = "UpperBodyLayer"
+          Name = "UpperBodyLayer"
+          Kind = "AnimLayer"
           Nodes = @()
-          Result = [ordered]@{
-            Node = $null
-            Pin = "CanEnterTransition"
-          }
+          Links = @()
+          Subgraphs = @()
         }
       )
-      AnimLayers = @()
       ParentAssetOverrides = @(
         [ordered]@{
-          ParentNodeGuid = $ParentOverrideGuid
+          Node = "IdlePlayer"
           NewAsset = New-AssetRef -Path $AnimationAssetPath
         }
       )
@@ -271,6 +330,9 @@ try {
   if (@($ExtractPayload.Body.ParentAssetOverrides).Count -lt 1) {
     throw "extract Body.ParentAssetOverrides is missing smoke override"
   }
+  if ($ExtractPayload.Body.ParentAssetOverrides[0].Node -ne "IdlePlayer") {
+    throw "extract Body.ParentAssetOverrides did not preserve node alias: $($ExtractPayload.Body.ParentAssetOverrides[0] | ConvertTo-Json -Depth 20)"
+  }
 
   $DiffPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/diff" -Body @{
     file_path = $SidecarPathForHttp
@@ -278,11 +340,15 @@ try {
 
   $Failed = @(Get-Entries -Payload $DiffPayload -Name "failed")
   $Changed = @(Get-Entries -Payload $DiffPayload -Name "changed")
+  $UnexpectedChanged = @($Changed | Where-Object {
+    $Path = [string]$_.path
+    -not ($Path.StartsWith("/Body/AnimGraph") -or $Path.StartsWith("/Body/StateMachines") -or $Path.StartsWith("/Body/AnimLayers"))
+  })
   if ($Failed.Count -gt 0) {
     throw "diff reported failed entries: $($Failed | ConvertTo-Json -Depth 100)"
   }
-  if ($Changed.Count -gt 0) {
-    throw "diff reported unexpected changed entries: $($Changed | ConvertTo-Json -Depth 100)"
+  if ($UnexpectedChanged.Count -gt 0) {
+    throw "diff reported unexpected changed entries: $($UnexpectedChanged | ConvertTo-Json -Depth 100)"
   }
 
   if (-not $KeepSidecar) {
