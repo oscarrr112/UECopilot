@@ -10,9 +10,19 @@
 
 ---
 
+## Source Spec
+
+This plan implements the reviewed design spec:
+
+```text
+docs/superpowers/specs/2026-07-01-asset-document-region-runtime-test-fixture-maintenance-sweep-design.md
+```
+
+The spec is the authority for scope boundaries. If this plan and the spec appear to disagree, stop and update the plan before implementation.
+
 ## Scope And Base
 
-`SPEC_BASE` for this plan is the current parent branch tip after the timeline placement merge:
+`SPEC_BASE` for this plan is the current parent branch tip after the reviewed fixture sweep spec:
 
 ```powershell
 git -C E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-object-field-schema-dispatcher-migration rev-parse HEAD
@@ -21,7 +31,7 @@ git -C E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-object-fi
 Expected before execution:
 
 ```text
-f637d776c8f4b1e87346e5a08d02838f6f14a52a
+d88a8e9cdbec4c09b97b3d568b7ee9a96c57037e
 ```
 
 Implementation must happen in a new branch and worktree created from `feature/asset-document-object-field-schema-dispatcher-migration`. Do not implement directly in the parent worktree unless the user explicitly says to do so.
@@ -57,6 +67,14 @@ This plan intentionally excludes production behavior changes. It may edit test h
   - Add guidance that new public adapter tests should use the fixture for context/value/diagnostic boilerplate while still asserting exact path and code.
 - Modify: `docs/superpowers/specs/asset-document-deferred-fields/2026-06-22-region-canonicalizer.md`
   - Add a short maintenance rule that future region-runtime/canonicalization tests should keep public runtime, adapter utility, and profile behavior evidence separate.
+
+## Spec Coverage Map
+
+- Fixture boundary and non-goals: Tasks 1 and 2.
+- Representative runtime test migration: Tasks 1 and 2.
+- Maintenance documentation sweep: Task 3.
+- Evidence separation and validation: Tasks 3 and 4.
+- Final review gates: Task 4.
 
 ## Do Not Touch
 
