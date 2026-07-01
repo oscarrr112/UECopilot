@@ -76,6 +76,73 @@ TSharedRef<FJsonValue> MakeBodyWithUnknownKey(const TCHAR* UnknownKey = TEXT("Un
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
+{
+	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
+	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Class"), ClassPath);
+	return ClassRef;
+}
+
+TSharedRef<FJsonObject> MakeAssetRef(const FString& AssetPath)
+{
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), AssetPath);
+	return AssetRef;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithMissingParentClass()
+{
+	TSharedRef<FJsonObject> ParentClass = MakeShared<FJsonObject>();
+	ParentClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("ParentClass"), ParentClass);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithParentClass(const FString& ClassPath)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(ClassPath));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithTemplateAndTargetSkeleton()
+{
+	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
+	Template->SetBoolField(TEXT("bIsTemplate"), true);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Template"), Template);
+	Body->SetObjectField(
+		TEXT("TargetSkeleton"),
+		MakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithPreviewApplicationMethod(const FString& Method)
+{
+	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
+	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), Method);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Preview"), Preview);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithUnknownOptimizationField()
+{
+	TSharedRef<FJsonObject> Optimization = MakeShared<FJsonObject>();
+	Optimization->SetBoolField(TEXT("bUseMultiThreadedAnimationUpdate"), true);
+	Optimization->SetBoolField(TEXT("bUnknownOptimizationFlag"), true);
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("Optimization"), Optimization);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
@@ -296,6 +363,65 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 				FString::Printf(TEXT("/Body/%s"), UnknownBlueprintGraphKey),
 				TEXT("UnknownBodyKey")));
 	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintCoreObjectRegionsTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.CoreObjectRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintCoreObjectRegionsTest::RunTest(const FString&)
+{
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+
+	const FAssetDocumentCapabilityResult MissingParentClassResult =
+		Capability.Validate(Context, MakeBodyWithMissingParentClass());
+	TestFalse(TEXT("ParentClass missing Class rejects"), MissingParentClassResult.bSuccess);
+	TestTrue(
+		TEXT("ParentClass missing Class reports MissingParentClass"),
+		HasDiagnostic(MissingParentClassResult, TEXT("/Body/ParentClass/Class"), TEXT("MissingParentClass")));
+
+	const FAssetDocumentCapabilityResult InvalidParentClassResult =
+		Capability.Validate(Context, MakeBodyWithParentClass(TEXT("/Script/Engine.Actor")));
+	TestFalse(TEXT("ParentClass must be an AnimInstance child"), InvalidParentClassResult.bSuccess);
+	TestTrue(
+		TEXT("ParentClass reports InvalidAnimBlueprintParentClass"),
+		HasDiagnostic(InvalidParentClassResult, TEXT("/Body/ParentClass/Class"), TEXT("InvalidAnimBlueprintParentClass")));
+
+	const FAssetDocumentCapabilityResult InvalidTemplateSkeletonResult =
+		Capability.Validate(Context, MakeBodyWithTemplateAndTargetSkeleton());
+	TestFalse(TEXT("Template AnimBlueprint cannot author TargetSkeleton"), InvalidTemplateSkeletonResult.bSuccess);
+	TestTrue(
+		TEXT("Template skeleton conflict reports InvalidTemplateSkeleton"),
+		HasDiagnostic(InvalidTemplateSkeletonResult, TEXT("/Body/TargetSkeleton"), TEXT("InvalidTemplateSkeleton"))
+			|| HasDiagnostic(InvalidTemplateSkeletonResult, TEXT("/Body/Template/bIsTemplate"), TEXT("InvalidTemplateSkeleton")));
+
+	const FAssetDocumentCapabilityResult InvalidPreviewMethodResult =
+		Capability.Validate(Context, MakeBodyWithPreviewApplicationMethod(TEXT("Bogus")));
+	TestFalse(TEXT("Preview rejects unknown application method"), InvalidPreviewMethodResult.bSuccess);
+	TestTrue(
+		TEXT("Preview method reports InvalidPreviewAnimationBlueprintApplicationMethod"),
+		HasDiagnostic(
+			InvalidPreviewMethodResult,
+			TEXT("/Body/Preview/PreviewAnimationBlueprintApplicationMethod"),
+			TEXT("InvalidPreviewAnimationBlueprintApplicationMethod")));
+
+	const FAssetDocumentCapabilityResult UnknownOptimizationFieldResult =
+		Capability.Validate(Context, MakeBodyWithUnknownOptimizationField());
+	TestFalse(TEXT("Optimization rejects unknown object fields"), UnknownOptimizationFieldResult.bSuccess);
+	TestTrue(
+		TEXT("Optimization unknown field reports schema diagnostic"),
+		HasDiagnostic(UnknownOptimizationFieldResult, TEXT("/Body/Optimization/bUnknownOptimizationFlag"), TEXT("UnknownObjectField")));
+
+	const FAssetDocumentCapabilityResult UnknownBodyKeyResult = Capability.Validate(Context, MakeBodyWithUnknownKey());
+	TestFalse(TEXT("Dispatcher still rejects unknown Body key"), UnknownBodyKeyResult.bSuccess);
+	TestTrue(
+		TEXT("Dispatcher preserves UnknownBodyKey code"),
+		HasDiagnostic(UnknownBodyKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
 
 	return true;
 }

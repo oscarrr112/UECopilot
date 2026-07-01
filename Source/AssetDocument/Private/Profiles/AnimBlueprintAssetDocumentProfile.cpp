@@ -59,6 +59,42 @@ TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 }
 }
 
+FName FAnimBlueprintAssetDocumentProfile::ObjectRegionAdapterName()
+{
+	return TEXT("AnimBlueprintObjectRegionAdapter");
+}
+
+FName FAnimBlueprintAssetDocumentProfile::TargetSkeletonRegionAdapterName()
+{
+	return TEXT("AnimBlueprintTargetSkeletonRegionAdapter");
+}
+
+FName FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName()
+{
+	return TEXT("AnimBlueprintDeferredRegionAdapter");
+}
+
+TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegionBindings()
+{
+	return {
+		{TEXT("ParentClass"), TEXT("Body.ParentClass"), ObjectRegionAdapterName(), 10, false},
+		{TEXT("TargetSkeleton"), TEXT("Body.TargetSkeleton"), TargetSkeletonRegionAdapterName(), 20, false},
+		{TEXT("Template"), TEXT("Body.Template"), ObjectRegionAdapterName(), 30, false},
+		{TEXT("Preview"), TEXT("Body.Preview"), ObjectRegionAdapterName(), 40, false},
+		{TEXT("Optimization"), TEXT("Body.Optimization"), ObjectRegionAdapterName(), 50, false},
+		{TEXT("SyncGroups"), TEXT("Body.SyncGroups"), DeferredRegionAdapterName(), 60, false},
+		{TEXT("ImplementedInterfaces"), TEXT("Body.ImplementedInterfaces"), DeferredRegionAdapterName(), 70, false},
+		{TEXT("Variables"), TEXT("Body.Variables"), DeferredRegionAdapterName(), 80, false},
+		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), DeferredRegionAdapterName(), 90, false},
+		{TEXT("UbergraphPages"), TEXT("Body.UbergraphPages"), DeferredRegionAdapterName(), 100, false},
+		{TEXT("AnimGraph"), TEXT("Body.AnimGraph"), DeferredRegionAdapterName(), 200, false},
+		{TEXT("StateMachines"), TEXT("Body.StateMachines"), DeferredRegionAdapterName(), 210, false},
+		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), DeferredRegionAdapterName(), 220, false},
+		{TEXT("AnimLayers"), TEXT("Body.AnimLayers"), DeferredRegionAdapterName(), 230, false},
+		{TEXT("ParentAssetOverrides"), TEXT("Body.ParentAssetOverrides"), DeferredRegionAdapterName(), 240, false},
+	};
+}
+
 UClass* FAnimBlueprintAssetDocumentProfile::GetExactClass() const
 {
 	return UAnimBlueprint::StaticClass();
