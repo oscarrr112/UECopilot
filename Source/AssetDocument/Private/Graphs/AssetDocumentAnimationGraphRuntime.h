@@ -84,6 +84,13 @@ public:
 		const FAssetDocumentAnimationGraphContext& Context,
 		FAssetDocumentGraphSpec& OutGraph) const;
 
+	static FGuid MakeManagedNodeGuid(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentNodeSpec& NodeSpec);
+
+	static FString MakeManagedNodeObjectName(const FString& NodeId);
+	static bool TryParseManagedNodeObjectName(const FName& ObjectName, FString& OutNodeId);
+
 private:
 	FAssetDocumentCapabilityResult ResolveCandidate(
 		const FAssetDocumentGraphSpec& GraphSpec,

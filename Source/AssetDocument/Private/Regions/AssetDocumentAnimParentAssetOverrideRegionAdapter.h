@@ -19,6 +19,10 @@ public:
 		const FAssetDocumentRegionContext& Context,
 		const TSharedPtr<FJsonValue>& DesiredValue) const override;
 
+	virtual FAssetDocumentCapabilityResult PreflightRegion(
+		FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue) const override;
+
 	virtual FAssetDocumentCapabilityResult ApplyRegion(
 		FAssetDocumentRegionContext& Context,
 		const TSharedPtr<FJsonValue>& DesiredValue,

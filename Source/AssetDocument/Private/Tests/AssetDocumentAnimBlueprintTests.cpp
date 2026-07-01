@@ -3,6 +3,8 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "AssetDocumentService.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
+#include "Graphs/AssetDocumentGraphTypes.h"
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 
 #include "Animation/AnimBlueprint.h"
@@ -10,6 +12,8 @@
 #include "Animation/AnimationAsset.h"
 #include "Animation/Skeleton.h"
 #include "Dom/JsonObject.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
@@ -182,6 +186,30 @@ TSharedRef<FJsonValue> MakeBodyWithAnimGraphSubgraph()
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetObjectField(TEXT("AnimGraph"), Region);
 	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(const TCHAR* NodeId)
+{
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), NodeId);
+	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 120.0);
+	Position->SetNumberField(TEXT("Y"), 40.0);
+	Node->SetObjectField(TEXT("Position"), Position);
+
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
+	return Region;
 }
 
 TSharedPtr<FJsonObject> MakeStateMachineState(const TCHAR* Id)
@@ -394,6 +422,17 @@ TSharedPtr<FJsonObject> MakeParentAssetOverride(const FString& ParentNodeGuid, c
 	return Override;
 }
 
+TSharedPtr<FJsonObject> MakeParentAssetOverrideByNode(const FString& Node, const FString& AssetPath)
+{
+	TSharedPtr<FJsonObject> Override = MakeShared<FJsonObject>();
+	Override->SetStringField(TEXT("Node"), Node);
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), AssetPath);
+	Override->SetObjectField(TEXT("NewAsset"), AssetRef);
+	return Override;
+}
+
 TArray<TSharedPtr<FJsonValue>> MakeParentAssetOverrideArray(std::initializer_list<TSharedPtr<FJsonObject>> Overrides)
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
@@ -409,6 +448,16 @@ TSharedRef<FJsonValue> MakeBodyWithParentAssetOverrides(std::initializer_list<TS
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), MakeParentAssetOverrideArray(Overrides));
 	return MakeShared<FJsonValueObject>(Body);
+}
+
+FGuid MakeExpectedManagedAnimGraphNodeGuid(const FString& NodeId)
+{
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec Node;
+	Node.Id = NodeId;
+	return FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(Graph, Node);
 }
 
 TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredObjectRegion(const TCHAR* RegionName)
@@ -1289,6 +1338,87 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	TestTrue(
 		TEXT("ParentAssetOverrides diff uses guid identity path"),
 		HasDiffPath(DiffEntries, TEXT("/Body/ParentAssetOverrides/11111111-2222-3333-4444-555555555555")));
+
+	const FString AliasTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_OverrideAlias_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString AliasObjectPath = FString::Printf(TEXT("%s.%s"), *AliasTarget, *FPackageName::GetLongPackageAssetName(AliasTarget));
+	TSharedRef<FJsonObject> AliasDocument = MakeAnimBlueprintApplyDocument(AliasTarget);
+	AliasDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer")));
+	AliasDocument->GetObjectField(TEXT("Body"))->SetArrayField(
+		TEXT("ParentAssetOverrides"),
+		MakeParentAssetOverrideArray({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AnimationAssetPath)}));
+
+	FAssetDocumentApplyRequest AliasRequest;
+	AliasRequest.Document = AliasDocument;
+	AliasRequest.bSaveAsset = false;
+	const FAssetDocumentResult AliasApplyResult = Service.Apply(AliasRequest);
+	if (!AliasApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ParentAssetOverrides node alias apply failed: %s"), *AliasApplyResult.Message));
+	}
+	TestTrue(TEXT("ParentAssetOverrides node alias apply succeeds"), AliasApplyResult.IsSuccess());
+
+	UAnimBlueprint* AliasAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *AliasObjectPath);
+	TestNotNull(TEXT("Alias AnimBlueprint loads"), AliasAnimBlueprint);
+	const FGuid ExpectedIdlePlayerGuid = MakeExpectedManagedAnimGraphNodeGuid(TEXT("IdlePlayer"));
+	if (AliasAnimBlueprint && ExpectedAsset)
+	{
+		TestEqual(TEXT("One node alias parent asset override applied"), AliasAnimBlueprint->ParentAssetOverrides.Num(), 1);
+		if (AliasAnimBlueprint->ParentAssetOverrides.Num() == 1)
+		{
+			TestEqual(TEXT("Node alias resolves to managed AnimGraph node guid"), AliasAnimBlueprint->ParentAssetOverrides[0].ParentNodeGuid, ExpectedIdlePlayerGuid);
+			TestEqual(TEXT("Node alias NewAsset is applied"), AliasAnimBlueprint->ParentAssetOverrides[0].NewAsset.Get(), ExpectedAsset);
+		}
+	}
+
+	FAssetDocumentCapabilityContext AliasContext;
+	AliasContext.Asset = AliasAnimBlueprint;
+	AliasContext.AssetClass = UAnimBlueprint::StaticClass();
+	TSharedRef<FJsonObject> AliasExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult AliasExtractResult = Capability.Extract(AliasContext, AliasExtractedBody);
+	TestTrue(TEXT("ParentAssetOverrides alias extract succeeds"), AliasExtractResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* AliasExtractedOverrides = nullptr;
+	if (AliasExtractedBody->TryGetArrayField(TEXT("ParentAssetOverrides"), AliasExtractedOverrides) && AliasExtractedOverrides && AliasExtractedOverrides->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> AliasExtractedOverride = (*AliasExtractedOverrides)[0]->AsObject();
+		TestTrue(TEXT("Alias extracted parent override is object"), AliasExtractedOverride.IsValid());
+		if (AliasExtractedOverride.IsValid())
+		{
+			FString ExtractedNode;
+			TestTrue(TEXT("Extracted parent override Node is present"), AliasExtractedOverride->TryGetStringField(TEXT("Node"), ExtractedNode));
+			TestEqual(TEXT("Extracted parent override Node roundtrips"), ExtractedNode, FString(TEXT("IdlePlayer")));
+			const TSharedPtr<FJsonObject>* Evidence = nullptr;
+			TestTrue(TEXT("Extracted parent override Evidence is present"), AliasExtractedOverride->TryGetObjectField(TEXT("Evidence"), Evidence));
+			if (Evidence && Evidence->IsValid())
+			{
+				FString EvidenceGuid;
+				TestTrue(TEXT("Extracted Evidence.ParentNodeGuid is present"), (*Evidence)->TryGetStringField(TEXT("ParentNodeGuid"), EvidenceGuid));
+				TestEqual(TEXT("Extracted Evidence.ParentNodeGuid is stable"), EvidenceGuid, ExpectedIdlePlayerGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+			}
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> UnknownAliasDiffEntries;
+	const FAssetDocumentCapabilityResult UnknownAliasResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("MissingPlayer"), AnimationAssetPath)}),
+			UnknownAliasDiffEntries);
+	TestFalse(TEXT("ParentAssetOverrides rejects unresolved node alias"), UnknownAliasResult.bSuccess);
+	TestTrue(
+		TEXT("Unresolved node alias diagnostic uses semantic alias path"),
+		HasDiagnostic(UnknownAliasResult, TEXT("/Body/ParentAssetOverrides/MissingPlayer/Node"), TEXT("UnknownParentOverrideNode")));
+
+	TArray<TSharedPtr<FJsonValue>> AliasAssetDiffEntries;
+	const FString AlternateAnimationAssetPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Walk_Fwd.Tutorial_Walk_Fwd");
+	const FAssetDocumentCapabilityResult AliasAssetDiffResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AlternateAnimationAssetPath)}),
+			AliasAssetDiffEntries);
+	TestTrue(TEXT("ParentAssetOverrides alias diff succeeds"), AliasAssetDiffResult.bSuccess);
+	TestTrue(
+		TEXT("ParentAssetOverrides diff uses node identity path for asset changes"),
+		HasDiffPath(AliasAssetDiffEntries, TEXT("/Body/ParentAssetOverrides/IdlePlayer/NewAsset")));
 
 	return true;
 }

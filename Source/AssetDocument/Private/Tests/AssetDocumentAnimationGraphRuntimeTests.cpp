@@ -71,6 +71,7 @@ public:
 	TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
 	int32 QueryCount = 0;
 	int32 SpawnCount = 0;
+	UEdGraphNode* LastSpawnedNode = nullptr;
 
 	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
 		const FAssetDocumentNodeSpec& NodeSpec,
@@ -89,6 +90,7 @@ public:
 	{
 		++const_cast<FFakeAnimationGraphCandidateProvider*>(this)->SpawnCount;
 		OutNode = NewObject<UEdGraphNode>(GetTransientPackage());
+		const_cast<FFakeAnimationGraphCandidateProvider*>(this)->LastSpawnedNode = OutNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
 };
@@ -468,6 +470,41 @@ bool FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest::RunTest(cons
 	TestEqual(TEXT("Structural hook repairs graph once"), Hook.RepairCount, 1);
 	TestEqual(TEXT("Candidate provider preflights and materializes node"), Provider->QueryCount, 2);
 	TestEqual(TEXT("Candidate provider spawns node once"), Provider->SpawnCount, 1);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeManagedNodeIdentityTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ManagedNodeIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeManagedNodeIdentityTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentNodeSpec Node = MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath());
+	FAssetDocumentGraphSpec Graph = MakeRuntimeGraphWithNode(Node);
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("ApplyGraph succeeds"), Result.bSuccess);
+	TestNotNull(TEXT("Runtime exposes the spawned node for identity assertions"), Provider->LastSpawnedNode);
+	if (Provider->LastSpawnedNode)
+	{
+		const FGuid ExpectedGuid = FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(Graph, Node);
+		TestEqual(TEXT("Runtime assigns deterministic managed NodeGuid"), Provider->LastSpawnedNode->NodeGuid, ExpectedGuid);
+
+		FString ParsedNodeId;
+		TestTrue(
+			TEXT("Runtime stores recoverable sidecar node id in the node object name"),
+			FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(Provider->LastSpawnedNode->GetFName(), ParsedNodeId));
+		TestEqual(TEXT("Recovered sidecar node id roundtrips"), ParsedNodeId, FString(TEXT("IdlePlayer")));
+	}
 	return true;
 }
 

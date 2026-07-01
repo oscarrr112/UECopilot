@@ -6,9 +6,13 @@
 #include "AssetDocumentPropertyAdapter.h"
 
 #include "EdGraph/EdGraphNode.h"
+#include "UObject/Object.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace
 {
+constexpr const TCHAR* ManagedNodeNamePrefix = TEXT("ADNode_");
+
 FString JoinPath(const FString& BasePath, const FString& Segment)
 {
 	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
@@ -86,6 +90,87 @@ FAssetDocumentCapabilityResult PropertyApplyFailure(
 		Result.Diagnostics.Add(MoveTemp(Mapped));
 	}
 	return Result;
+}
+
+TCHAR ToHexDigit(uint8 Value)
+{
+	return Value < 10 ? static_cast<TCHAR>(TEXT('0') + Value) : static_cast<TCHAR>(TEXT('A') + (Value - 10));
+}
+
+bool FromHexDigit(TCHAR Digit, uint8& OutValue)
+{
+	if (Digit >= TEXT('0') && Digit <= TEXT('9'))
+	{
+		OutValue = static_cast<uint8>(Digit - TEXT('0'));
+		return true;
+	}
+	if (Digit >= TEXT('A') && Digit <= TEXT('F'))
+	{
+		OutValue = static_cast<uint8>(10 + Digit - TEXT('A'));
+		return true;
+	}
+	if (Digit >= TEXT('a') && Digit <= TEXT('f'))
+	{
+		OutValue = static_cast<uint8>(10 + Digit - TEXT('a'));
+		return true;
+	}
+	return false;
+}
+
+FString MakeManagedNodeGuidKey(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return FString::Printf(
+		TEXT("AssetDocument.AnimationGraph.Node|%s|%s|%s"),
+		*GraphSpec.Kind,
+		*GraphSpec.Id,
+		*NodeSpec.Id);
+}
+
+FAssetDocumentCapabilityResult AssignManagedIdentity(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec,
+	const FAssetDocumentAnimationGraphContext& Context,
+	UEdGraphNode& Node)
+{
+	FGuid DesiredGuid;
+	if (!NodeSpec.NodeGuid.IsEmpty())
+	{
+		if (!FGuid::Parse(NodeSpec.NodeGuid, DesiredGuid))
+		{
+			return RuntimeFailure(
+				JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("NodeGuid")),
+				TEXT("InvalidGraphNodeGuid"),
+				TEXT("Node.NodeGuid must be a GUID string."));
+		}
+	}
+	else
+	{
+		DesiredGuid = FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(GraphSpec, NodeSpec);
+	}
+	Node.NodeGuid = DesiredGuid;
+
+	FString DesiredName = FAssetDocumentAnimationGraphRuntime::MakeManagedNodeObjectName(NodeSpec.Id);
+	if (!DesiredName.IsEmpty() && Node.GetName() != DesiredName)
+	{
+		if (UObject* ExistingObject = FindObject<UObject>(Node.GetOuter(), *DesiredName))
+		{
+			if (ExistingObject != &Node)
+			{
+				DesiredName = MakeUniqueObjectName(Node.GetOuter(), Node.GetClass(), FName(*DesiredName)).ToString();
+			}
+		}
+		if (!Node.Rename(*DesiredName, Node.GetOuter(), REN_DontCreateRedirectors | REN_NonTransactional))
+		{
+			return RuntimeFailure(
+				NodePath(GraphSpec, NodeSpec, Context),
+				TEXT("GraphNodeIdentityRenameFailed"),
+				FString::Printf(TEXT("Graph node '%s' could not be assigned a stable object identity."), *NodeSpec.Id));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 }
@@ -224,6 +309,13 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 					*NodeSpec.Class));
 		}
 
+		const FAssetDocumentCapabilityResult IdentityResult =
+			AssignManagedIdentity(GraphSpec, NodeSpec, Context, *SpawnedNode);
+		if (!IdentityResult.bSuccess)
+		{
+			return IdentityResult;
+		}
+
 		if (NodeSpec.Fields.IsValid() && !NodeSpec.Fields->Values.IsEmpty())
 		{
 			const FString FieldsPath = JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Fields"));
@@ -314,4 +406,69 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph
 	Skipped->SetStringField(TEXT("Message"), TEXT("Animation graph extraction is not materialized in the runtime shell."));
 	OutGraph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped);
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FGuid FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return FGuid::NewDeterministicGuid(MakeManagedNodeGuidKey(GraphSpec, NodeSpec));
+}
+
+FString FAssetDocumentAnimationGraphRuntime::MakeManagedNodeObjectName(const FString& NodeId)
+{
+	FString Encoded;
+	Encoded.Reserve(FCString::Strlen(ManagedNodeNamePrefix) + NodeId.Len() * 2);
+	Encoded += ManagedNodeNamePrefix;
+	for (TCHAR Character : NodeId)
+	{
+		const uint8 Byte = static_cast<uint8>(Character);
+		Encoded.AppendChar(ToHexDigit(Byte >> 4));
+		Encoded.AppendChar(ToHexDigit(Byte & 0x0F));
+	}
+	return Encoded;
+}
+
+bool FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(
+	const FName& ObjectName,
+	FString& OutNodeId)
+{
+	const FString Name = ObjectName.ToString();
+	if (!Name.StartsWith(ManagedNodeNamePrefix))
+	{
+		return false;
+	}
+
+	const FString EncodedWithOptionalSuffix = Name.Mid(FCString::Strlen(ManagedNodeNamePrefix));
+	int32 EncodedLength = 0;
+	while (EncodedLength < EncodedWithOptionalSuffix.Len())
+	{
+		uint8 Ignored = 0;
+		if (!FromHexDigit(EncodedWithOptionalSuffix[EncodedLength], Ignored))
+		{
+			break;
+		}
+		++EncodedLength;
+	}
+	if (EncodedLength <= 0 || EncodedLength % 2 != 0)
+	{
+		return false;
+	}
+	const FString Encoded = EncodedWithOptionalSuffix.Left(EncodedLength);
+
+	FString Decoded;
+	Decoded.Reserve(Encoded.Len() / 2);
+	for (int32 Index = 0; Index < Encoded.Len(); Index += 2)
+	{
+		uint8 High = 0;
+		uint8 Low = 0;
+		if (!FromHexDigit(Encoded[Index], High) || !FromHexDigit(Encoded[Index + 1], Low))
+		{
+			return false;
+		}
+		Decoded.AppendChar(static_cast<TCHAR>((High << 4) | Low));
+	}
+
+	OutNodeId = MoveTemp(Decoded);
+	return !OutNodeId.IsEmpty();
 }

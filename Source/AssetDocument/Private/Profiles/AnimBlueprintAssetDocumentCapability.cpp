@@ -1372,7 +1372,7 @@ TSharedRef<FJsonObject> FAnimBlueprintAssetDocumentCapability::GetSchemaHint() c
 	Schema->SetStringField(TEXT("StateMachines"), TEXT("recursive graph region: {Graphs:[{Id, Kind:'StateMachine', Nodes, Links, Subgraphs}]}"));
 	Schema->SetStringField(TEXT("TransitionGraphs"), TEXT("deprecated empty-only compatibility region; author transition rules as StateMachines subgraphs"));
 	Schema->SetStringField(TEXT("AnimLayers"), TEXT("recursive graph region: {Graphs:[{Id, Name, Kind:'AnimLayer', Nodes, Links, Subgraphs}]}"));
-	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("identity array: array<{ParentNodeGuid, NewAsset}>"));
+	Schema->SetStringField(TEXT("ParentAssetOverrides"), TEXT("identity array: array<{Node?, ParentNodeGuid?, NewAsset, Evidence?}>"));
 	return Schema;
 }
 
