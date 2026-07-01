@@ -169,6 +169,37 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 | tree wrapper | `Body.WidgetTree` 这类 tree/object materialization | 薄 wrapper 组合 tree adapter；runtime 负责 validate/apply/extract/diff 调度 |
 | timeline wrapper | animation、notify、track、timeline 类 region | 先判断是否能抽公共 timeline adapter；只有 UE compile/rebuild/repair 留在 asset-specific hook |
 
+### Timeline-like region 检查门槛
+
+新增或扩展 animation、notify、marker、section、track、timeline 类 `Body.*` region 时，先做 timeline-like checklist。满足以下任一条件，就不能直接在 profile capability 内新增一整套 parser：
+
+- 有 placement array。
+- 有 time/duration/end-time numeric validation。
+- 有 track identity 或 track existence validation。
+- 有 duplicate placement key。
+- 有 apply 后 repair hook。
+- 有 extract/diff path 稳定性要求。
+
+命中 checklist 后，spec 或 implementation plan 必须选择一种路径：
+
+1. 使用 `FAssetDocumentTimelinePlacementRegionAdapter` + `FAssetDocumentTimelinePlacementUtils` + profile-specific hooks。
+2. 只复用 `FAssetDocumentTimelinePlacementUtils`，并说明为什么完整 adapter 暂不适用。
+3. 新写更贴合的 public adapter spec，例如 nested track/segment、graph/tree、source import 或非 timeline lifecycle。
+
+禁止把命中 checklist 的 region 直接写成新的 asset-specific parser，除非文档同时说明：
+
+- 为什么现有 timeline adapter/utility 不能表达。
+- 当前允许保守处理的精确范围。
+- 后续升级触发条件。
+- 升级入口文件/类。
+- 清理成功标准。
+- 需要保留或新增的测试/验证项。
+
+当前已知保守边界：
+
+- `CompositeSections`：第一版可只复用 timeline utility；section linking、section order、`NextSectionName` reference validation 保留在 AnimMontage profile。
+- `SlotAnimTracks` / `AnimSegments`：第一版不进入 timeline placement adapter；后续应单独评估 nested track/segment public adapter。
+
 Profile inspection surface 必须保持稳定：
 
 - `BodySections` 继续来自 profile 的 `GetBodyKeys()`，用于公开 agent-facing body keys。

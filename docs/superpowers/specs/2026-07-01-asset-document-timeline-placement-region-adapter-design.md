@@ -649,6 +649,11 @@ Timeline adapter 的边界是 placement 生命周期，不是整个 animation as
 
 ## 16. 长期维护规则
 
+这条规则不是本 spec 内部建议，而是长期约束。对应约束源必须同步维护：
+
+- `E:\GameDev\PluginsWarehouse\AGENTS.md`
+- `docs/superpowers/guides/asset-document-new-asset-class-extension-guide.md`
+
 新增或扩展 timeline-like region 时，先判断是否满足以下任一条件：
 
 - 有 placement array。
@@ -666,3 +671,11 @@ Timeline adapter 的边界是 placement 生命周期，不是整个 animation as
 
 只有当该 region 的核心语义是 nested track/segment、graph/tree、source import、或非 timeline lifecycle 时，才应另写更贴合的公共 adapter spec。
 
+如果 implementation plan 决定暂不使用完整 timeline adapter，必须明确记录：
+
+- 当前允许保守处理的 region 和范围。
+- 为什么只复用 utility 或暂不复用公共层。
+- 后续升级触发条件。
+- 升级入口文件/类。
+- 清理成功标准。
+- 相关测试/验证要求。
