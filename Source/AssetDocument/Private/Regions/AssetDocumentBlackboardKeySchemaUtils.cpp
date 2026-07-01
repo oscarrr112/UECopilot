@@ -313,7 +313,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ResolveKe
 		}
 
 		return FAssetDocumentJsonRegionUtils::Failure(
-			MakeNamedKeyPath(Spec, TEXT("Type")),
+			MakeNamedKeyPath(Spec, TEXT("KeyTypeClass")),
 			TEXT("InvalidBlackboardKeyType"),
 			TEXT("KeyTypeClass must resolve to a UBlackboardKeyType subclass"));
 	}
@@ -381,6 +381,32 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ValidateK
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated blackboard key"));
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ValidateUniqueLocalKeys(
+	const TArray<FAssetDocumentBlackboardKeySpec>& Specs,
+	const FString& KeysPath)
+{
+	TSet<FName> SeenNames;
+	for (int32 Index = 0; Index < Specs.Num(); ++Index)
+	{
+		const FAssetDocumentBlackboardKeySpec& Spec = Specs[Index];
+		if (Spec.Name.IsNone())
+		{
+			continue;
+		}
+
+		if (SeenNames.Contains(Spec.Name))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				FString::Printf(TEXT("%s/%d/Name"), *KeysPath, Index),
+				TEXT("DuplicateBlackboardKey"),
+				FString::Printf(TEXT("Duplicate blackboard key '%s'"), *Spec.Name.ToString()));
+		}
+		SeenNames.Add(Spec.Name);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated unique blackboard keys"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::BuildLookup(

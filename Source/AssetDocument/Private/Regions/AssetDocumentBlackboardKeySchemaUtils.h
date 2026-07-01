@@ -47,6 +47,10 @@ public:
 		const FAssetDocumentBlackboardKeySpec& Spec,
 		const FString& Path);
 
+	static FAssetDocumentCapabilityResult ValidateUniqueLocalKeys(
+		const TArray<FAssetDocumentBlackboardKeySpec>& Specs,
+		const FString& KeysPath);
+
 	static FAssetDocumentCapabilityResult BuildLookup(
 		const UBlackboardData* Blackboard,
 		TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& OutLookup);

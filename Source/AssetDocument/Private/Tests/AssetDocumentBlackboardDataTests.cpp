@@ -11,6 +11,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Name.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Rotator.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_String.h"
@@ -77,9 +78,11 @@ bool ExpectSingleDiagnostic(
 	return true;
 }
 
-FAssetDocumentCapabilityResult DetectDuplicateLocalKeysForTest(const TArray<TSharedRef<FJsonObject>>& Keys)
+TArray<FAssetDocumentBlackboardKeySpec> ParseKeysForTest(
+	FAutomationTestBase& Test,
+	const TArray<TSharedRef<FJsonObject>>& Keys)
 {
-	TSet<FName> SeenNames;
+	TArray<FAssetDocumentBlackboardKeySpec> Specs;
 	for (int32 Index = 0; Index < Keys.Num(); ++Index)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
@@ -87,21 +90,10 @@ FAssetDocumentCapabilityResult DetectDuplicateLocalKeysForTest(const TArray<TSha
 			Keys[Index],
 			FString::Printf(TEXT("/Body/Keys/%d"), Index),
 			Spec);
-		if (!ParseResult.bSuccess)
-		{
-			return ParseResult;
-		}
-
-		if (SeenNames.Contains(Spec.Name))
-		{
-			return FAssetDocumentCapabilityResult::Failure(
-				FString::Printf(TEXT("Duplicate blackboard key '%s'"), *Spec.Name.ToString()),
-				FString::Printf(TEXT("/Body/Keys/%d/Name"), Index),
-				TEXT("DuplicateBlackboardKey"));
-		}
-		SeenNames.Add(Spec.Name);
+		Test.TestTrue(FString::Printf(TEXT("Key %d parses"), Index), ParseResult.bSuccess);
+		Specs.Add(Spec);
 	}
-	return FAssetDocumentCapabilityResult::Success(TEXT("No duplicate keys"));
+	return Specs;
 }
 }
 
@@ -288,6 +280,46 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 	TestTrue(TEXT("Explicit KeyTypeClass resolves"), ResolveResult.bSuccess);
 	TestEqual(TEXT("Explicit class is Name key type"), ResolvedClass, UBlackboardKeyType_Name::StaticClass());
 	TestEqual(TEXT("Explicit canonical type uses loaded class"), CanonicalType, FString(TEXT("Name")));
+
+	FAssetDocumentBlackboardKeySpec LoadableSpec;
+	const FAssetDocumentCapabilityResult LoadableParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		MakeBlackboardKeyJson(
+			TEXT("ExplicitNativeEnum"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum")),
+		TEXT("/Body/Keys/ExplicitNativeEnum"),
+		LoadableSpec);
+	TestTrue(TEXT("Loadable explicit KeyTypeClass parses"), LoadableParseResult.bSuccess);
+
+	UClass* LoadableResolvedClass = nullptr;
+	FString LoadableCanonicalType;
+	const FAssetDocumentCapabilityResult LoadableResolveResult =
+		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(LoadableSpec, LoadableResolvedClass, LoadableCanonicalType);
+	TestTrue(TEXT("Loadable explicit KeyTypeClass resolves"), LoadableResolveResult.bSuccess);
+	TestEqual(TEXT("Loadable explicit class is NativeEnum key type"), LoadableResolvedClass, UBlackboardKeyType_NativeEnum::StaticClass());
+	TestEqual(TEXT("Loadable explicit canonical type uses loaded class"), LoadableCanonicalType, FString(TEXT("NativeEnum")));
+
+	FAssetDocumentBlackboardKeySpec InvalidSpec;
+	const FAssetDocumentCapabilityResult InvalidParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		MakeBlackboardKeyJson(
+			TEXT("InvalidExplicit"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/Engine.Actor")),
+		TEXT("/Body/Keys/InvalidExplicit"),
+		InvalidSpec);
+	TestTrue(TEXT("Invalid explicit KeyTypeClass parses"), InvalidParseResult.bSuccess);
+
+	UClass* InvalidResolvedClass = nullptr;
+	FString InvalidCanonicalType;
+	ExpectSingleDiagnostic(
+		*this,
+		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(InvalidSpec, InvalidResolvedClass, InvalidCanonicalType),
+		TEXT("InvalidBlackboardKeyType"),
+		TEXT("/Body/Keys/InvalidExplicit/KeyTypeClass"));
 	return true;
 }
 
@@ -302,9 +334,10 @@ bool FAssetDocumentBlackboardKeyDuplicateLocalNamesTest::RunTest(const FString&)
 		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
 		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Int")),
 	};
+	const TArray<FAssetDocumentBlackboardKeySpec> Specs = ParseKeysForTest(*this, Keys);
 	ExpectSingleDiagnostic(
 		*this,
-		DetectDuplicateLocalKeysForTest(Keys),
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateUniqueLocalKeys(Specs, TEXT("/Body/Keys")),
 		TEXT("DuplicateBlackboardKey"),
 		TEXT("/Body/Keys/1/Name"));
 	return true;
