@@ -44,7 +44,7 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 - 复用或抽出小的 common Blueprint hooks，承接 `ParentClass`、`ImplementedInterfaces`、`Variables`、`ClassDefaults`、K2 `UbergraphPages` 这类 `UBlueprint` 通用语义。
 - ABP-specific hook 只负责 `TargetSkeleton`、template flag、preview mesh / preview anim blueprint、optimization flags、sync groups、compile/rebuild/refresh。
 - AnimGraph / state machine / transition / anim layer / parent override 也是完整 ABP AssetDocument 的目标 surface，但必须通过后续公共 graph-family adapter 或 dedicated adapter spec 接入，不能写进 ABP 私有巨型 parser。
-- `Body.AnimGraph` 第一阶段已允许 root-only pilot graph；真实 pose nodes 仍 deferred。其它复杂 region 继续作为 declared deferred regions 暴露，用 exact diagnostic 保护边界；后续阶段逐步解除 deferred。
+- `Body.AnimGraph` 第一阶段已允许 root-only pilot graph；真实 pose nodes 仍 deferred。`Body.StateMachines` 和 `Body.TransitionGraphs` 已进入 public identity adapter milestone；真实 nested UE graph materialization 与 transition rule nodes 仍 deferred。其它复杂 region 继续作为 declared deferred regions 暴露，用 exact diagnostic 保护边界；后续阶段逐步解除 deferred。
 
 设计分层不是：
 
@@ -96,8 +96,8 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 | Blueprint class defaults | `Body.ClassDefaults` | common Blueprint default-diff behavior |
 | Event/K2 graph | `Body.UbergraphPages` | common Blueprint graph wrapper，覆盖 K2-supported subset |
 | Anim graph root and `UAnimGraphNode_*` | `Body.AnimGraph` | root-only pilot 已接入 public adapter；真实 pose nodes 需要 animation graph node adapter |
-| State machines / states / transitions | `Body.StateMachines` | planned managed nested graph/tree region |
-| Transition blend graphs | `Body.TransitionGraphs` | planned managed graph region，归属 transition identity |
+| State machines / states / transitions | `Body.StateMachines` | public identity adapter 已支持 machine/state/transition identity、endpoint validation 和 semantic diff；真实 nested graph materialization 仍 deferred |
+| Transition blend graphs | `Body.TransitionGraphs` | public identity adapter 已支持 `(StateMachine, Transition)` identity 和 root-only rule graph；authored rule nodes 仍 deferred |
 | Anim layer graph/interface authoring | `Body.AnimLayers` | planned managed region；涉及 Anim Layer Interface 与 linked layer compatibility |
 | Parent node asset overrides | `Body.ParentAssetOverrides` | planned managed identity-array region，identity 为 parent node GUID |
 | Default binding class | `Body.DefaultBinding` | object region；如果实现时确认只能作为 editor node creation policy，可阶段性 deferred |
@@ -110,8 +110,8 @@ sidecar + profile + policy + public region runtime + thin asset-specific hook
 | AssetDocument path | Required public abstraction | Stage-1 behavior |
 | --- | --- | --- |
 | `Body.AnimGraph` | `FAssetDocumentAnimGraphRegionAdapter` root-only pilot；真实 pose nodes 仍需 animation graph node adapter + graph wrapper strategy | canonical root-only graph 已支持；非空 Nodes 返回 `UnsupportedAnimGraphNode` |
-| `Body.StateMachines` | nested state-machine adapter，定义 state/transition identity | declared deferred，非空 exact diagnostic |
-| `Body.TransitionGraphs` | transition graph adapter tied to state-machine identity | declared deferred，非空 exact diagnostic |
+| `Body.StateMachines` | `FAssetDocumentAnimStateMachineRegionAdapter`，定义 state/transition identity | identity/schema/diff 已支持；真实 `UAnimationStateMachineGraph` materialization deferred |
+| `Body.TransitionGraphs` | `FAssetDocumentAnimStateMachineRegionAdapter` transition graph slice | root-only transition rule graph 已支持；authored rule nodes deferred |
 | `Body.AnimLayers` | anim layer/interface adapter or separate profile | declared deferred，非空 exact diagnostic |
 | `Body.ParentAssetOverrides` | identity-array helper + parent node GUID resolver | declared deferred until `Body.AnimGraph` identity exists |
 | `Body.FunctionGraphs` / `Body.MacroGraphs` | common Blueprint graph support | follows UBlueprint deferred status |
@@ -181,7 +181,7 @@ Template 建议从完整 ABP schema 起步，但 stage-gated regions 可以是 e
 Notes：
 
 - `TargetSkeleton` 可以是 `null`，但仅当 `Template.bIsTemplate == true`。
-- `Body.AnimGraph` 在阶段 1 支持 canonical root-only graph，也继续接受 empty array/object/null 作为兼容 empty value；真实 pose nodes 仍 deferred。`Body.StateMachines` / `Body.TransitionGraphs` / `Body.AnimLayers` / `Body.ParentAssetOverrides` 在阶段 1 只允许 empty array 或 explicit deferred empty value；完整目标仍是 authored regions。
+- `Body.AnimGraph` 在阶段 1 支持 canonical root-only graph，也继续接受 empty array/object/null 作为兼容 empty value；真实 pose nodes 仍 deferred。`Body.StateMachines` / `Body.TransitionGraphs` 已支持 identity-level non-empty schema，但 nested UE graph materialization / authored rule nodes 仍 deferred。`Body.AnimLayers` / `Body.ParentAssetOverrides` 在阶段 1 只允许 empty array 或 explicit deferred empty value；完整目标仍是 authored regions。
 - `FunctionGraphs` / `MacroGraphs` 可以不出现在 template 中；如果实现选择暴露它们，必须按 deferred policy 处理。
 - `Properties` 只承接未被 Body 管理的 reflected delta，不得包含 `TargetSkeleton`、`PreviewSkeletalMesh`、optimization flags 等已由 Body 管理的字段。
 
@@ -200,8 +200,8 @@ Notes：
 | `Body.ClassDefaults` | object | default diff | generated class CDO vs parent CDO | common Blueprint class-default hook |
 | `Body.UbergraphPages` | graph | managed region | `UbergraphPages` | graph wrapper + `UBlueprintGraph` canonicalizer |
 | `Body.AnimGraph` | graph | public root-only pilot adapter | anim graph editor graphs | root-only pilot; pose nodes deferred until animation graph node adapter |
-| `Body.StateMachines` | graph/tree | stage-gated managed region | state machine graphs | stage 1 deferred; later state-machine adapter |
-| `Body.TransitionGraphs` | graph | stage-gated managed region | transition graphs | stage 1 deferred; later transition graph adapter |
+| `Body.StateMachines` | graph/tree | public state-machine identity adapter | state machine graphs | identity/schema/diff supported; nested UE graph materialization deferred |
+| `Body.TransitionGraphs` | graph | public state-machine identity adapter | transition graphs | root-only rule graph identity supported; authored rule nodes deferred |
 | `Body.AnimLayers` | graph/array | stage-gated managed region | anim layer graphs/interfaces | stage 1 deferred; later layer adapter/profile |
 | `Body.ParentAssetOverrides` | array | stage-gated managed region | `ParentAssetOverrides` | stage 1 deferred; later identity-array hook |
 

@@ -1,4 +1,4 @@
-# AnimationBlueprint AnimGraph Adapter Boundary
+# AnimationBlueprint Graph-Family Adapter Boundary
 
 ## 1. Goal
 
@@ -79,8 +79,65 @@ Still deferred after this pilot:
 
 - SequencePlayer, BlendSpacePlayer, cached poses, slot nodes.
 - StateMachine references.
-- transition graphs.
 - AnimLayers.
 - ParentAssetOverrides.
 
 Adding any of those requires extending this public adapter or writing a sibling public adapter spec first.
+
+## 9. State Machine Adapter Boundary
+
+`Body.StateMachines` and `Body.TransitionGraphs` are owned by `FAssetDocumentAnimStateMachineRegionAdapter`, not by `FAnimBlueprintAssetDocumentCapability` private parsing code.
+
+The first state-machine milestone supports stable authored identities and semantic diff paths:
+
+```json
+[
+  {
+    "Name": "Locomotion",
+    "EntryState": "Idle",
+    "States": [{"Id": "Idle"}, {"Id": "Run"}],
+    "Transitions": [{"Id": "IdleToRun", "From": "Idle", "To": "Run", "Rule": "IdleToRun"}]
+  }
+]
+```
+
+The adapter must validate:
+
+- state-machine identity: `Name`, duplicate check case-insensitive.
+- state identity: `States[].Id`, duplicate check within the owning state machine.
+- transition identity: `Transitions[].Id`, duplicate check within the owning state machine.
+- transition endpoints: `From` and `To` must reference states in the same state machine.
+
+Diff paths must be semantic:
+
+- state machine: `/Body/StateMachines/<Name>`
+- state: `/Body/StateMachines/<Name>/States/<Id>`
+- transition: `/Body/StateMachines/<Name>/Transitions/<Id>`
+
+The current milestone does not yet materialize `UAnimationStateMachineGraph`, `UAnimStateNode`, or `UAnimStateTransitionNode`; it establishes the identity contract that real nested graph materialization must preserve.
+
+## 10. Transition Graph Boundary
+
+`Body.TransitionGraphs` uses stable `(StateMachine, Transition)` identity:
+
+```json
+[
+  {
+    "StateMachine": "Locomotion",
+    "Transition": "IdleToRun",
+    "Nodes": [],
+    "Result": {"Node": null, "Pin": "CanEnterTransition"}
+  }
+]
+```
+
+The first milestone supports only the root-only transition rule graph. Any authored rule node must fail with:
+
+- path: `/Body/TransitionGraphs/<StateMachine>/<Transition>/Nodes/<Index>`
+- code: `UnsupportedTransitionGraphNode`
+
+Diff paths must be semantic:
+
+- transition graph: `/Body/TransitionGraphs/<StateMachine>/<Transition>`
+
+Adding bool literal, time remaining, sync marker, or custom blend graph nodes requires extending this public adapter or adding a sibling public graph adapter spec. The ABP capability may register and compose that adapter, but must not grow a transition graph parser.

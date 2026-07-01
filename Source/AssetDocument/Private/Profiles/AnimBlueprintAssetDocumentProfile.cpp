@@ -84,6 +84,11 @@ FName FAnimBlueprintAssetDocumentProfile::AnimGraphRegionAdapterName()
 	return TEXT("AnimBlueprintAnimGraphRegionAdapter");
 }
 
+FName FAnimBlueprintAssetDocumentProfile::StateMachineRegionAdapterName()
+{
+	return TEXT("AnimBlueprintStateMachineRegionAdapter");
+}
+
 FName FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName()
 {
 	return TEXT("AnimBlueprintDeferredRegionAdapter");
@@ -103,8 +108,8 @@ TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegi
 		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), BlueprintCommonRegionAdapterName(), 90, false},
 		{TEXT("UbergraphPages"), TEXT("Body.UbergraphPages"), BlueprintCommonRegionAdapterName(), 100, false},
 		{TEXT("AnimGraph"), TEXT("Body.AnimGraph"), AnimGraphRegionAdapterName(), 200, false},
-		{TEXT("StateMachines"), TEXT("Body.StateMachines"), DeferredRegionAdapterName(), 210, false},
-		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), DeferredRegionAdapterName(), 220, false},
+		{TEXT("StateMachines"), TEXT("Body.StateMachines"), StateMachineRegionAdapterName(), 210, false},
+		{TEXT("TransitionGraphs"), TEXT("Body.TransitionGraphs"), StateMachineRegionAdapterName(), 220, false},
 		{TEXT("AnimLayers"), TEXT("Body.AnimLayers"), DeferredRegionAdapterName(), 230, false},
 		{TEXT("ParentAssetOverrides"), TEXT("Body.ParentAssetOverrides"), DeferredRegionAdapterName(), 240, false},
 	};
@@ -245,12 +250,10 @@ TArray<FAssetDocumentRegionPolicy> FAnimBlueprintAssetDocumentProfile::GetRegion
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.StateMachines"), EAssetDocumentRegionKind::Graph, {TEXT("StateMachines")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.TransitionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("TransitionGraphs")}, Policy))
 	{
-		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
 	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.AnimLayers"), EAssetDocumentRegionKind::Graph, {TEXT("AnimLayers")}, Policy))

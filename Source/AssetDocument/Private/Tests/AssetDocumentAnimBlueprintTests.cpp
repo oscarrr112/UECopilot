@@ -99,6 +99,121 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedPtr<FJsonObject> MakeStateMachineState(const TCHAR* Id)
+{
+	TSharedPtr<FJsonObject> State = MakeShared<FJsonObject>();
+	State->SetStringField(TEXT("Id"), Id);
+	return State;
+}
+
+TSharedPtr<FJsonObject> MakeStateMachineTransition(const TCHAR* Id, const TCHAR* From, const TCHAR* To)
+{
+	TSharedPtr<FJsonObject> Transition = MakeShared<FJsonObject>();
+	Transition->SetStringField(TEXT("Id"), Id);
+	Transition->SetStringField(TEXT("From"), From);
+	Transition->SetStringField(TEXT("To"), To);
+	Transition->SetStringField(TEXT("Rule"), Id);
+	return Transition;
+}
+
+TSharedPtr<FJsonObject> MakeStateMachine(
+	const TCHAR* Name,
+	std::initializer_list<TSharedPtr<FJsonObject>> States,
+	std::initializer_list<TSharedPtr<FJsonObject>> Transitions)
+{
+	TSharedPtr<FJsonObject> Machine = MakeShared<FJsonObject>();
+	Machine->SetStringField(TEXT("Name"), Name);
+	Machine->SetStringField(TEXT("EntryState"), States.size() > 0 ? (*States.begin())->GetStringField(TEXT("Id")) : FString());
+
+	TArray<TSharedPtr<FJsonValue>> StateValues;
+	for (const TSharedPtr<FJsonObject>& State : States)
+	{
+		StateValues.Add(MakeShared<FJsonValueObject>(State.ToSharedRef()));
+	}
+	Machine->SetArrayField(TEXT("States"), StateValues);
+
+	TArray<TSharedPtr<FJsonValue>> TransitionValues;
+	for (const TSharedPtr<FJsonObject>& Transition : Transitions)
+	{
+		TransitionValues.Add(MakeShared<FJsonValueObject>(Transition.ToSharedRef()));
+	}
+	Machine->SetArrayField(TEXT("Transitions"), TransitionValues);
+	return Machine;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeStateMachineArray(std::initializer_list<TSharedPtr<FJsonObject>> Machines)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedPtr<FJsonObject>& Machine : Machines)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Machine.ToSharedRef()));
+	}
+	return Values;
+}
+
+TSharedPtr<FJsonObject> MakeTransitionGraph(const TCHAR* StateMachine, const TCHAR* Transition, bool bWithUnsupportedNode = false)
+{
+	TSharedPtr<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("StateMachine"), StateMachine);
+	Graph->SetStringField(TEXT("Transition"), Transition);
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	if (bWithUnsupportedNode)
+	{
+		TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+		Node->SetStringField(TEXT("Id"), TEXT("CanEnter"));
+		Node->SetStringField(TEXT("Kind"), TEXT("BoolLiteral"));
+		Nodes.Add(MakeShared<FJsonValueObject>(Node));
+	}
+	Graph->SetArrayField(TEXT("Nodes"), Nodes);
+
+	TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+	Result->SetStringField(TEXT("Pin"), TEXT("CanEnterTransition"));
+	Graph->SetObjectField(TEXT("Result"), Result);
+	return Graph;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeTransitionGraphArray(std::initializer_list<TSharedPtr<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedPtr<FJsonObject>& Graph : Graphs)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Graph.ToSharedRef()));
+	}
+	return Values;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithStateMachines(std::initializer_list<TSharedPtr<FJsonObject>> Machines)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("StateMachines"), MakeStateMachineArray(Machines));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithTransitionGraphs(std::initializer_list<TSharedPtr<FJsonObject>> Graphs)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("TransitionGraphs"), MakeTransitionGraphArray(Graphs));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithStateMachineAndTransitionGraph()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(
+		TEXT("StateMachines"),
+		MakeStateMachineArray({
+			MakeStateMachine(
+				TEXT("Locomotion"),
+				{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("Run"))},
+				{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
+	Body->SetArrayField(
+		TEXT("TransitionGraphs"),
+		MakeTransitionGraphArray({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredObjectRegion(const TCHAR* RegionName)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
@@ -440,11 +555,11 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	}
 	if (StateMachinesPolicy)
 	{
-		TestTrue(TEXT("StateMachines policy is deferred/null-gated"), StateMachinesPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("StateMachines policy is no longer deferred/null-gated"), StateMachinesPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (TransitionGraphsPolicy)
 	{
-		TestTrue(TEXT("TransitionGraphs policy is deferred/null-gated"), TransitionGraphsPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("TransitionGraphs policy is no longer deferred/null-gated"), TransitionGraphsPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (AnimLayersPolicy)
 	{
@@ -464,8 +579,6 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 		TestTrue(TEXT("Empty Body validates"), BodyAdapter->Validate(Context, MakeEmptyBodyValue()).bSuccess);
 
 		for (const TCHAR* DeferredKey : {
-			TEXT("StateMachines"),
-			TEXT("TransitionGraphs"),
 			TEXT("AnimLayers"),
 			TEXT("ParentAssetOverrides"),
 		})
@@ -502,8 +615,6 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
 	for (const TCHAR* DeferredKey : {
-		TEXT("StateMachines"),
-		TEXT("TransitionGraphs"),
 		TEXT("AnimLayers"),
 		TEXT("ParentAssetOverrides"),
 	})
@@ -622,6 +733,92 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 		Capability.Diff(Context, MakeBodyWithCanonicalAnimGraph(), DiffEntries);
 	TestTrue(TEXT("AnimGraph diff succeeds"), DiffResult.bSuccess);
 	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/AnimGraph")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintStateMachinesTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.StateMachines",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
+{
+	FAssetDocumentCapabilityContext Context;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+
+	TestTrue(
+		TEXT("StateMachines accepts stable state and transition identities"),
+		Capability.Validate(
+			Context,
+			MakeBodyWithStateMachines({
+				MakeStateMachine(
+					TEXT("Locomotion"),
+					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("Run"))},
+					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})})).bSuccess);
+
+	const FAssetDocumentCapabilityResult DuplicateStateResult =
+		Capability.Validate(
+			Context,
+			MakeBodyWithStateMachines({
+				MakeStateMachine(
+					TEXT("Locomotion"),
+					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("idle"))},
+					{})}));
+	TestFalse(TEXT("StateMachines rejects duplicate state identities case-insensitively"), DuplicateStateResult.bSuccess);
+	TestTrue(
+		TEXT("Duplicate state diagnostic uses stable machine path"),
+		HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines/Locomotion/States/1/Id"), TEXT("DuplicateStateId")));
+
+	const FAssetDocumentCapabilityResult UnknownEndpointResult =
+		Capability.Validate(
+			Context,
+			MakeBodyWithStateMachines({
+				MakeStateMachine(
+					TEXT("Locomotion"),
+					{MakeStateMachineState(TEXT("Idle"))},
+					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
+	TestFalse(TEXT("StateMachines rejects transitions to unknown states"), UnknownEndpointResult.bSuccess);
+	TestTrue(
+		TEXT("Unknown endpoint diagnostic uses transition identity path"),
+		HasDiagnostic(UnknownEndpointResult, TEXT("/Body/StateMachines/Locomotion/Transitions/IdleToRun/To"), TEXT("UnknownTransitionState")));
+
+	TestTrue(
+		TEXT("TransitionGraphs accepts root-only transition rule graph identity"),
+		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))})).bSuccess);
+
+	const FAssetDocumentCapabilityResult DuplicateTransitionGraphResult =
+		Capability.Validate(
+			Context,
+			MakeBodyWithTransitionGraphs({
+				MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun")),
+				MakeTransitionGraph(TEXT("locomotion"), TEXT("idletorun"))}));
+	TestFalse(TEXT("TransitionGraphs rejects duplicate machine/transition identity"), DuplicateTransitionGraphResult.bSuccess);
+	TestTrue(
+		TEXT("Duplicate transition graph diagnostic uses semantic identity path"),
+		HasDiagnostic(DuplicateTransitionGraphResult, TEXT("/Body/TransitionGraphs/locomotion/idletorun"), TEXT("DuplicateTransitionGraph")));
+
+	const FAssetDocumentCapabilityResult UnsupportedRuleNodeResult =
+		Capability.Validate(
+			Context,
+			MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"), true)}));
+	TestFalse(TEXT("TransitionGraphs rejects authored rule nodes until graph adapter expands"), UnsupportedRuleNodeResult.bSuccess);
+	TestTrue(
+		TEXT("Unsupported transition graph node diagnostic uses semantic path"),
+		HasDiagnostic(
+			UnsupportedRuleNodeResult,
+			TEXT("/Body/TransitionGraphs/Locomotion/IdleToRun/Nodes/0"),
+			TEXT("UnsupportedTransitionGraphNode")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Capability.Diff(Context, MakeBodyWithStateMachineAndTransitionGraph(), DiffEntries);
+	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
+	TestTrue(TEXT("StateMachines diff uses machine identity path"), HasDiffPath(DiffEntries, TEXT("/Body/StateMachines/Locomotion")));
+	TestTrue(
+		TEXT("TransitionGraphs diff uses machine/transition identity path"),
+		HasDiffPath(DiffEntries, TEXT("/Body/TransitionGraphs/Locomotion/IdleToRun")));
 
 	return true;
 }

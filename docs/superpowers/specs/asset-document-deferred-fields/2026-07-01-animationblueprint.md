@@ -4,7 +4,7 @@
 
 ## 当前允许的保守范围
 
-第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines`、`Body.TransitionGraphs`、`Body.AnimLayers` 和 `Body.ParentAssetOverrides` 仍只允许使用空值占位：
+第一阶段允许 `Body.AnimGraph` 使用 root-only pilot graph。`Body.StateMachines` 和 `Body.TransitionGraphs` 已解除 full-region deferred gate，改由 state-machine public adapter 管理稳定 identity/schema/diff path；真实 UE nested graph materialization 和 authored rule nodes 仍作为 adapter 子能力 deferred。`Body.AnimLayers` 和 `Body.ParentAssetOverrides` 仍只允许使用空值占位：
 
 - `null`
 - empty array
@@ -30,6 +30,36 @@
 ```
 
 任何 authored pose node 仍必须返回 `/Body/AnimGraph/AnimGraph/Nodes/<Index>` + `UnsupportedAnimGraphNode`。后续支持 SequencePlayer、BlendSpace、StateMachineRef 或 Slot 等节点前，必须先扩展公共 adapter spec，不得写入 ABP 私有 parser。
+
+`Body.StateMachines` 当前支持稳定 identity/schema：
+
+```json
+[
+  {
+    "Name": "Locomotion",
+    "EntryState": "Idle",
+    "States": [{"Id": "Idle"}, {"Id": "Run"}],
+    "Transitions": [{"Id": "IdleToRun", "From": "Idle", "To": "Run", "Rule": "IdleToRun"}]
+  }
+]
+```
+
+当前 adapter 会校验 duplicate state-machine/state/transition identity、transition endpoint 是否指向同一 state machine 内的 state，并在 diff 中使用 `/Body/StateMachines/<Name>` 语义 path。`States[].Graph` 和真实 `UAnimationStateMachineGraph` 节点 materialization 仍 deferred；不得在 ABP capability 内补私有 parser。
+
+`Body.TransitionGraphs` 当前支持 transition rule graph 的 root-only identity shape：
+
+```json
+[
+  {
+    "StateMachine": "Locomotion",
+    "Transition": "IdleToRun",
+    "Nodes": [],
+    "Result": {"Node": null, "Pin": "CanEnterTransition"}
+  }
+]
+```
+
+当前 adapter 会校验 duplicate `(StateMachine, Transition)` identity，并在 diff 中使用 `/Body/TransitionGraphs/<StateMachine>/<Transition>` 语义 path。任何 authored rule node 仍必须返回 `/Body/TransitionGraphs/<StateMachine>/<Transition>/Nodes/<Index>` + `UnsupportedTransitionGraphNode`。后续支持 bool literal、time remaining、blend events 或自定义 transition graph 前，必须扩展公共 state-machine/transition adapter spec。
 
 `Body.SyncGroups` 已解除 region 级 deferred gate，但第一版只管理稳定 identity 字段 `Name`。`FAnimGroupInfo.Color` 暂不接受 authored value；如果作者提供 `Color`，必须在 `/Body/SyncGroups/<Index>/Color` 返回 `UnsupportedSyncGroupColor`。后续只有在颜色序列化格式和 diff canonicalization 稳定后，才能把 `Color` 加回同一个 named-array adapter。
 
@@ -88,8 +118,8 @@
 | Entry | Current behavior | Deferred reason | Cleanup trigger | Upgrade entrypoint | Minimum verification |
 | --- | --- | --- | --- | --- | --- |
 | `Body.AnimGraph` authored pose nodes | root-only pilot 已支持；`Nodes` 必须为空。非空 node 返回 `/Body/AnimGraph/AnimGraph/Nodes/<Index>` + `UnsupportedAnimGraphNode`。 | 真实 pose node 仍需要 animation graph node adapter、node/pin identity、canonical graph compare 和 compile/rebuild hook。 | `Body.AnimGraph` adapter spec 扩展到具体 node subset，并证明至少一个真实 pose node roundtrip 不依赖 ABP 私有 parser。 | `FAssetDocumentAnimGraphRegionAdapter` 或 sibling public graph-family adapter。 | `AssetFactory.AssetDocument.AnimBlueprint.AnimGraph` 扩展 node case、公共 graph adapter regression、UBT。 |
-| `Body.StateMachines` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/StateMachines` + `UnsupportedAnimBlueprintRegion`。 | 需要 nested state-machine adapter，定义 state identity、transition identity 和 graph ownership。 | state machine identity/diff/apply/extract contract 完成。 | state-machine public adapter + `FAnimBlueprintAssetDocumentCapability` hook。 | focused state-machine automation、transition identity regression、UBT。 |
-| `Body.TransitionGraphs` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/TransitionGraphs` + `UnsupportedAnimBlueprintRegion`。 | transition blend graph 必须绑定到稳定 state-machine transition identity。 | transition graph adapter 能通过 transition identity 定位、materialize、extract 和 diff。 | transition graph public adapter + state-machine adapter integration。 | transition graph focused automation、state-machine regression、UBT。 |
+| `Body.StateMachines` nested UE graph materialization | full-region gate 已解除；adapter 接受稳定 machine/state/transition identity schema，校验 duplicate 和 endpoint，diff 使用 `/Body/StateMachines/<Name>`。 | 真实 `UAnimationStateMachineGraph` / `UAnimStateNode` / `UAnimStateTransitionNode` materialization 需要更完整的 nested graph ownership、layout 和 compile repair contract。 | adapter 能创建/更新/extract 真实 state machine graph，且 extract/diff 不依赖 transient UE node index。 | `FAssetDocumentAnimStateMachineRegionAdapter`。 | `AssetFactory.AssetDocument.AnimBlueprint.StateMachines` 增加 real graph apply/extract roundtrip、GraphCore regression、UBT。 |
+| `Body.TransitionGraphs` authored rule nodes | full-region gate 已解除；adapter 接受 root-only transition graph identity shape，`Nodes` 必须为空，`Result.Node` 必须为 `null`。 | transition rule graph node materialization 必须绑定到 stable `(StateMachine, Transition)` identity，并复用 graph-family node/pin adapter。 | 至少一个 rule node subset 能 validate/apply/extract/diff，unsupported node 仍有 exact diagnostic。 | `FAssetDocumentAnimStateMachineRegionAdapter` 或 sibling transition graph adapter。 | transition graph focused automation、state-machine regression、UBT。 |
 | `Body.AnimLayers` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/AnimLayers` + `UnsupportedAnimBlueprintRegion`。 | Anim Layer Interface 与普通 `UAnimBlueprint` exact-class profile 边界尚未实现。 | 已决定 layer/interface profile 边界，并实现 layer graph validate/apply/extract/diff。 | anim layer adapter 或独立 exact-class profile。 | anim layer focused automation、profile boundary test、UBT。 |
 | `Body.ParentAssetOverrides` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/ParentAssetOverrides` + `UnsupportedAnimBlueprintRegion`。 | parent override identity 依赖 parent node GUID；在 `Body.AnimGraph` identity 稳定前不能可靠匹配。 | parent node GUID identity 已稳定，override region 使用 identity-array helper 或等价公共 adapter。 | `FAssetDocumentIdentityArrayDiffHelper` + AnimGraph identity resolver。 | parent override focused automation、AnimGraph identity regression、UBT。 |
 | `Body.SyncGroups[].Color` | `Body.SyncGroups` 当前通过 named-array adapter 管理 `Name`；如果 element 包含 `Color`，返回 `/Body/SyncGroups/<Index>/Color` + `UnsupportedSyncGroupColor`。 | `FLinearColor` 的 JSON 表达、默认值保留、canonical compare 和 diff 还没有跨 profile 稳定约定；先避免引入 ABP 私有颜色 parser。 | 公共 color/schema utility 或 property adapter convention 明确定义 linear color JSON canonical form，并能 roundtrip `FAnimGroupInfo.Color`。 | `FAssetDocumentNamedArrayRegionAdapter` hooks + shared color schema utility。 | `AssetFactory.AssetDocument.AnimBlueprint.SyncGroups` 增加 Color apply/extract/diff case、color schema regression、UBT。 |
