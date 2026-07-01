@@ -205,11 +205,60 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	return Document;
 }
 
+TArray<TSharedPtr<FJsonValue>> MakeSyncGroupArray(std::initializer_list<const TCHAR*> Names)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TCHAR* Name : Names)
+	{
+		TSharedRef<FJsonObject> Group = MakeShared<FJsonObject>();
+		Group->SetStringField(TEXT("Name"), Name);
+		Values.Add(MakeShared<FJsonValueObject>(Group));
+	}
+	return Values;
+}
+
+void SetSyncGroups(const TSharedRef<FJsonObject>& Document, std::initializer_list<const TCHAR*> Names)
+{
+	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
+	Body->SetArrayField(TEXT("SyncGroups"), MakeSyncGroupArray(Names));
+}
+
+TSharedRef<FJsonValue> MakeBodyWithSyncGroups(std::initializer_list<const TCHAR*> Names)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("SyncGroups"), MakeSyncGroupArray(Names));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
 		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
+bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath)
+{
+	return DiffEntries.ContainsByPredicate([&ExpectedPath](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		return Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath;
+	});
+}
+
+bool HasNumericSyncGroupDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries)
+{
+	return DiffEntries.ContainsByPredicate([](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		return Entry.IsValid()
+			&& Entry->TryGetStringField(TEXT("path"), Path)
+			&& Path.StartsWith(TEXT("/Body/SyncGroups/"))
+			&& Path.Len() > FString(TEXT("/Body/SyncGroups/")).Len()
+			&& FChar::IsDigit(Path[FString(TEXT("/Body/SyncGroups/")).Len()]);
 	});
 }
 
@@ -552,6 +601,76 @@ bool FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest::RunTest(const FString
 		nullptr,
 		*FString::Printf(TEXT("%s.%s"), *BadTarget, *FPackageName::GetLongPackageAssetName(BadTarget)));
 	TestNull(TEXT("Invalid create does not leave a loadable asset"), BadAsset);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimBlueprintSyncGroupsTest,
+	"AssetFactory.AssetDocument.AnimBlueprint.SyncGroups",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimBlueprintSyncGroupsTest::RunTest(const FString&)
+{
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_SyncGroups_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	SetSyncGroups(Document, {TEXT("Locomotion"), TEXT("UpperBody")});
+
+	FAssetDocumentService Service;
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	const FAssetDocumentResult Result = Service.Apply(Request);
+	if (!Result.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("AnimBlueprint SyncGroups apply failed: %s"), *Result.Message));
+	}
+	TestTrue(TEXT("SyncGroups apply succeeds"), Result.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
+	if (AnimBlueprint)
+	{
+		TestEqual(TEXT("Two sync groups applied"), AnimBlueprint->Groups.Num(), 2);
+		if (AnimBlueprint->Groups.Num() == 2)
+		{
+			TestEqual(TEXT("First sync group preserves authored order"), AnimBlueprint->Groups[0].Name, FName(TEXT("Locomotion")));
+			TestEqual(TEXT("Second sync group preserves authored order"), AnimBlueprint->Groups[1].Name, FName(TEXT("UpperBody")));
+		}
+	}
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.AssetClass = UAnimBlueprint::StaticClass();
+	const FAnimBlueprintAssetDocumentCapability Capability;
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
+	TestTrue(TEXT("Extract succeeds"), ExtractResult.bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedGroups = nullptr;
+	TestTrue(TEXT("Extract includes SyncGroups array"), ExtractedBody->TryGetArrayField(TEXT("SyncGroups"), ExtractedGroups));
+	if (ExtractedGroups)
+	{
+		TestEqual(TEXT("Extracted SyncGroups count"), ExtractedGroups->Num(), 2);
+	}
+
+	FAssetDocumentCapabilityContext ValidationContext;
+	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
+	const FAssetDocumentCapabilityResult DuplicateResult =
+		Capability.Validate(ValidationContext, MakeBodyWithSyncGroups({TEXT("Locomotion"), TEXT("locomotion")}));
+	TestFalse(TEXT("Duplicate sync group names reject case-insensitively"), DuplicateResult.bSuccess);
+	TestTrue(
+		TEXT("Duplicate sync group reports exact index diagnostic"),
+		HasDiagnostic(DuplicateResult, TEXT("/Body/SyncGroups/1/Name"), TEXT("DuplicateSyncGroupName")));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult DiffResult =
+		Capability.Diff(Context, MakeBodyWithSyncGroups({TEXT("Locomotion"), TEXT("AimOffset")}), DiffEntries);
+	TestTrue(TEXT("SyncGroups diff succeeds"), DiffResult.bSuccess);
+	TestTrue(TEXT("Diff uses stable added identity path"), HasDiffPath(DiffEntries, TEXT("/Body/SyncGroups/AimOffset")));
+	TestTrue(TEXT("Diff uses stable removed identity path"), HasDiffPath(DiffEntries, TEXT("/Body/SyncGroups/UpperBody")));
+	TestFalse(TEXT("Diff does not use numeric SyncGroups paths"), HasNumericSyncGroupDiffPath(DiffEntries));
+
 	return true;
 }
 

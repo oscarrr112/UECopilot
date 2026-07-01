@@ -17,6 +17,8 @@
 
 未知 `Body` key 必须继续返回 `UnknownBodyKey`。当前阶段不得在 `FAnimBlueprintAssetDocumentCapability` 内新增 ABP 私有 graph parser、state machine parser、transition graph parser、anim layer parser 或 parent override materializer。
 
+`Body.SyncGroups` 已解除 region 级 deferred gate，但第一版只管理稳定 identity 字段 `Name`。`FAnimGroupInfo.Color` 暂不接受 authored value；如果作者提供 `Color`，必须在 `/Body/SyncGroups/<Index>/Color` 返回 `UnsupportedSyncGroupColor`。后续只有在颜色序列化格式和 diff canonicalization 稳定后，才能把 `Color` 加回同一个 named-array adapter。
+
 ## 后续升级触发条件
 
 只有满足对应条件后，才允许解除某个 region 的 deferred gate：
@@ -48,6 +50,7 @@
 - non-empty authored value 不再走 `UnsupportedAnimBlueprintRegion`，而是完成 validate/preflight/apply/extract/diff 生命周期。
 - semantic diff path 不退化成不稳定 array index path；需要 identity 的 region 必须使用稳定 identity。
 - unsupported 内容通过 diagnostic、skipped diff entry 或显式 rejection 暴露。
+- 部分解除的 region 必须记录仍 deferred 的子字段；子字段解除时需要补 focused validation、apply/extract 和 stable diff path。
 - `AssetFactory.AssetDocument.AnimBlueprint.DeferredGraphGates` 已更新，证明该 region 的 gate 被有意解除，并继续覆盖仍 deferred 的 sibling regions。
 - focused automation、UBT 和必要的 editor/AssetDocument smoke verification 有 fresh evidence。
 
@@ -75,5 +78,6 @@
 | `Body.TransitionGraphs` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/TransitionGraphs` + `UnsupportedAnimBlueprintRegion`。 | transition blend graph 必须绑定到稳定 state-machine transition identity。 | transition graph adapter 能通过 transition identity 定位、materialize、extract 和 diff。 | transition graph public adapter + state-machine adapter integration。 | transition graph focused automation、state-machine regression、UBT。 |
 | `Body.AnimLayers` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/AnimLayers` + `UnsupportedAnimBlueprintRegion`。 | Anim Layer Interface 与普通 `UAnimBlueprint` exact-class profile 边界尚未实现。 | 已决定 layer/interface profile 边界，并实现 layer graph validate/apply/extract/diff。 | anim layer adapter 或独立 exact-class profile。 | anim layer focused automation、profile boundary test、UBT。 |
 | `Body.ParentAssetOverrides` | 只接受 `null`、empty array、empty object；非空值返回 `/Body/ParentAssetOverrides` + `UnsupportedAnimBlueprintRegion`。 | parent override identity 依赖 parent node GUID；在 `Body.AnimGraph` identity 稳定前不能可靠匹配。 | parent node GUID identity 已稳定，override region 使用 identity-array helper 或等价公共 adapter。 | `FAssetDocumentIdentityArrayDiffHelper` + AnimGraph identity resolver。 | parent override focused automation、AnimGraph identity regression、UBT。 |
+| `Body.SyncGroups[].Color` | `Body.SyncGroups` 当前通过 named-array adapter 管理 `Name`；如果 element 包含 `Color`，返回 `/Body/SyncGroups/<Index>/Color` + `UnsupportedSyncGroupColor`。 | `FLinearColor` 的 JSON 表达、默认值保留、canonical compare 和 diff 还没有跨 profile 稳定约定；先避免引入 ABP 私有颜色 parser。 | 公共 color/schema utility 或 property adapter convention 明确定义 linear color JSON canonical form，并能 roundtrip `FAnimGroupInfo.Color`。 | `FAssetDocumentNamedArrayRegionAdapter` hooks + shared color schema utility。 | `AssetFactory.AssetDocument.AnimBlueprint.SyncGroups` 增加 Color apply/extract/diff case、color schema regression、UBT。 |
 | `Body.FunctionGraphs` / `Body.MacroGraphs` | 当前 ABP profile 不声明这些 keys；如果作者提供为 `Body` key，按 unknown key 拒绝。 | 其语义应跟随 common Blueprint graph support，而不是 ABP 私有实现。 | common Blueprint graph plan 明确支持后，再决定 ABP 是否继承或声明对应 region。 | common Blueprint graph adapter/profile hook。 | UBlueprint graph regression、ABP unknown/deferred boundary test、UBT。 |
 | `UAnimBlueprintGeneratedClass` / debug / pose watch / property access cache | 不作为 `Body` authored state 暴露。 | 这些数据属于 derived compile output、runtime/debug evidence 或 editor transient/cache。 | 默认保持 excluded；只有新的 spec 明确证明其中某项是 authored semantic state 才能改变。 | ABP design spec + profile inspection/extract code。 | extract 不输出 derived/debug/cache 字段，diff 不报告这些字段，UBT。 |

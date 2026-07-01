@@ -11,6 +11,7 @@ class FAnimBlueprintAssetDocumentProfile final : public IAssetDocumentProfile
 public:
 	static FName ObjectRegionAdapterName();
 	static FName TargetSkeletonRegionAdapterName();
+	static FName SyncGroupsRegionAdapterName();
 	static FName DeferredRegionAdapterName();
 	static TArray<FAssetDocumentRegionBinding> MakeRegionBindings();
 

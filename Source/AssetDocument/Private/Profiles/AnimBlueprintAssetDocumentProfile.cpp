@@ -69,6 +69,11 @@ FName FAnimBlueprintAssetDocumentProfile::TargetSkeletonRegionAdapterName()
 	return TEXT("AnimBlueprintTargetSkeletonRegionAdapter");
 }
 
+FName FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName()
+{
+	return TEXT("AnimBlueprintSyncGroupsNamedArrayRegionAdapter");
+}
+
 FName FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName()
 {
 	return TEXT("AnimBlueprintDeferredRegionAdapter");
@@ -82,7 +87,7 @@ TArray<FAssetDocumentRegionBinding> FAnimBlueprintAssetDocumentProfile::MakeRegi
 		{TEXT("Template"), TEXT("Body.Template"), ObjectRegionAdapterName(), 30, false},
 		{TEXT("Preview"), TEXT("Body.Preview"), ObjectRegionAdapterName(), 40, false},
 		{TEXT("Optimization"), TEXT("Body.Optimization"), ObjectRegionAdapterName(), 50, false},
-		{TEXT("SyncGroups"), TEXT("Body.SyncGroups"), DeferredRegionAdapterName(), 60, false},
+		{TEXT("SyncGroups"), TEXT("Body.SyncGroups"), SyncGroupsRegionAdapterName(), 60, false},
 		{TEXT("ImplementedInterfaces"), TEXT("Body.ImplementedInterfaces"), DeferredRegionAdapterName(), 70, false},
 		{TEXT("Variables"), TEXT("Body.Variables"), DeferredRegionAdapterName(), 80, false},
 		{TEXT("ClassDefaults"), TEXT("Body.ClassDefaults"), DeferredRegionAdapterName(), 90, false},

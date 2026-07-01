@@ -10,10 +10,12 @@
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
+#include "AssetDocumentJsonRegionUtils.h"
 #include "Dom/JsonValue.h"
 #include "Engine/SkeletalMesh.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Regions/AssetDocumentDeferredRegionAdapter.h"
+#include "Regions/AssetDocumentNamedArrayRegionAdapter.h"
 #include "Regions/AssetDocumentObjectFieldSchemaUtils.h"
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 
@@ -281,6 +283,247 @@ void SyncGeneratedClassTargetSkeleton(UAnimBlueprint* AnimBlueprint)
 	{
 		SkeletonClass->TargetSkeleton = AnimBlueprint->TargetSkeleton;
 	}
+}
+
+FString NormalizeSyncGroupIdentity(const FString& Identity)
+{
+	return FName(*Identity).ToString().ToLower();
+}
+
+FString SyncGroupPath(const FString& Name)
+{
+	return FString::Printf(
+		TEXT("/Body/SyncGroups/%s"),
+		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Name));
+}
+
+FAssetDocumentCapabilityResult ValidateSyncGroupElement(
+	const FAssetDocumentRegionContext&,
+	const TSharedRef<FJsonObject>& Element,
+	int32 Index)
+{
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Element->Values)
+	{
+		if (Pair.Key == TEXT("Name"))
+		{
+			continue;
+		}
+		if (Pair.Key == TEXT("Color"))
+		{
+			return BodyFailure(
+				TEXT("Body.SyncGroups Color is deferred until stable color serialization is defined"),
+				FString::Printf(TEXT("/Body/SyncGroups/%d/Color"), Index),
+				TEXT("UnsupportedSyncGroupColor"));
+		}
+
+		return BodyFailure(
+			FString::Printf(TEXT("Unknown SyncGroups field '%s'"), *Pair.Key),
+			FString::Printf(TEXT("/Body/SyncGroups/%d/%s"), Index, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Pair.Key)),
+			TEXT("UnknownSyncGroupField"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint SyncGroup"));
+}
+
+TSharedRef<FJsonObject> MakeSyncGroupObject(const FName& Name)
+{
+	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
+	Object->SetStringField(TEXT("Name"), Name.ToString());
+	return Object;
+}
+
+TMap<FString, FLinearColor> CollectExistingSyncGroupColors(const UAnimBlueprint* AnimBlueprint)
+{
+	TMap<FString, FLinearColor> Colors;
+	if (!AnimBlueprint)
+	{
+		return Colors;
+	}
+
+	for (const FAnimGroupInfo& Group : AnimBlueprint->Groups)
+	{
+		Colors.Add(NormalizeSyncGroupIdentity(Group.Name.ToString()), Group.Color);
+	}
+	return Colors;
+}
+
+FAssetDocumentCapabilityResult ApplySyncGroups(
+	FAssetDocumentRegionContext& Context,
+	const TArray<TSharedRef<FJsonObject>>& Elements,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	if (!AnimBlueprint)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Validated AnimBlueprint SyncGroups"));
+	}
+
+	const TMap<FString, FLinearColor> ExistingColors = CollectExistingSyncGroupColors(AnimBlueprint);
+	TArray<FAnimGroupInfo> DesiredGroups;
+	DesiredGroups.Reserve(Elements.Num());
+	for (const TSharedRef<FJsonObject>& Element : Elements)
+	{
+		FString Name;
+		Element->TryGetStringField(TEXT("Name"), Name);
+
+		FAnimGroupInfo Group;
+		Group.Name = FName(*Name);
+		if (const FLinearColor* ExistingColor = ExistingColors.Find(NormalizeSyncGroupIdentity(Name)))
+		{
+			Group.Color = *ExistingColor;
+		}
+		DesiredGroups.Add(Group);
+	}
+
+	if (AnimBlueprint->Groups.Num() == DesiredGroups.Num())
+	{
+		bool bSame = true;
+		for (int32 Index = 0; Index < DesiredGroups.Num(); ++Index)
+		{
+			if (AnimBlueprint->Groups[Index].Name != DesiredGroups[Index].Name)
+			{
+				bSame = false;
+				break;
+			}
+		}
+		if (bSame)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("AnimBlueprint SyncGroups already match"));
+		}
+	}
+
+	AnimBlueprint->Groups = MoveTemp(DesiredGroups);
+	bOutChanged = true;
+	return FAssetDocumentCapabilityResult::Success(TEXT("Applied AnimBlueprint SyncGroups"));
+}
+
+FAssetDocumentCapabilityResult ExtractSyncGroups(
+	const FAssetDocumentRegionContext& Context,
+	TArray<TSharedRef<FJsonObject>>& OutElements)
+{
+	OutElements.Reset();
+	const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	if (!AnimBlueprint)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted empty AnimBlueprint SyncGroups"));
+	}
+
+	for (const FAnimGroupInfo& Group : AnimBlueprint->Groups)
+	{
+		OutElements.Add(MakeSyncGroupObject(Group.Name));
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimBlueprint SyncGroups"));
+}
+
+FAssetDocumentCapabilityResult DiffSyncGroups(
+	const FAssetDocumentRegionContext& Context,
+	const TArray<TSharedRef<FJsonObject>>& DesiredElements,
+	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+{
+	TArray<TSharedRef<FJsonObject>> CurrentElements;
+	FAssetDocumentCapabilityResult Result = ExtractSyncGroups(Context, CurrentElements);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TMap<FString, TSharedRef<FJsonObject>> CurrentByIdentity;
+	TMap<FString, FString> CurrentNamesByIdentity;
+	for (const TSharedRef<FJsonObject>& Current : CurrentElements)
+	{
+		FString Name;
+		Current->TryGetStringField(TEXT("Name"), Name);
+		const FString Normalized = NormalizeSyncGroupIdentity(Name);
+		CurrentByIdentity.Add(Normalized, Current);
+		CurrentNamesByIdentity.Add(Normalized, Name);
+	}
+
+	TSet<FString> DesiredIdentities;
+	for (const TSharedRef<FJsonObject>& Desired : DesiredElements)
+	{
+		FString Name;
+		Desired->TryGetStringField(TEXT("Name"), Name);
+		const FString Normalized = NormalizeSyncGroupIdentity(Name);
+		DesiredIdentities.Add(Normalized);
+
+		const TSharedRef<FJsonObject>* Current = CurrentByIdentity.Find(Normalized);
+		if (!Current)
+		{
+			FAssetDocumentJsonRegionUtils::AddDiffEntry(
+				OutDiffEntries,
+				SyncGroupPath(Name),
+				TEXT("added"),
+				MakeShared<FJsonValueNull>(),
+				MakeShared<FJsonValueObject>(Desired));
+			continue;
+		}
+
+		const TSharedPtr<FJsonValue> CurrentValue = MakeShared<FJsonValueObject>(*Current);
+		const TSharedPtr<FJsonValue> DesiredValue = MakeShared<FJsonValueObject>(Desired);
+		if (FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue)
+			!= FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue))
+		{
+			FAssetDocumentJsonRegionUtils::AddDiffEntry(
+				OutDiffEntries,
+				SyncGroupPath(Name),
+				TEXT("changed"),
+				CurrentValue,
+				DesiredValue);
+		}
+	}
+
+	for (const TPair<FString, TSharedRef<FJsonObject>>& Pair : CurrentByIdentity)
+	{
+		if (DesiredIdentities.Contains(Pair.Key))
+		{
+			continue;
+		}
+
+		const FString PathName = CurrentNamesByIdentity.FindRef(Pair.Key);
+		FAssetDocumentJsonRegionUtils::AddDiffEntry(
+			OutDiffEntries,
+			SyncGroupPath(PathName),
+			TEXT("removed"),
+			MakeShared<FJsonValueObject>(Pair.Value),
+			MakeShared<FJsonValueNull>());
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimBlueprint SyncGroups"));
+}
+
+FAssetDocumentNamedArrayRegionAdapter MakeSyncGroupsRegionAdapter()
+{
+	FAssetDocumentNamedArrayRegionAdapterConfig Config;
+	Config.Name = FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName();
+	Config.IdentityField = TEXT("Name");
+	Config.DuplicateIdentityCode = TEXT("DuplicateSyncGroupName");
+	Config.NormalizeIdentity = [](const FString& Identity)
+	{
+		return NormalizeSyncGroupIdentity(Identity);
+	};
+	Config.bCanonicalizeByIdentity = false;
+	Config.bPreserveAuthoredApplyOrder = true;
+
+	FAssetDocumentNamedArrayRegionAdapterHooks Hooks;
+	Hooks.ValidateElement = [](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& Element, int32 Index)
+	{
+		return ValidateSyncGroupElement(Context, Element, Index);
+	};
+	Hooks.ApplyElements = [](FAssetDocumentRegionContext& Context, const TArray<TSharedRef<FJsonObject>>& Elements, bool& bOutChanged)
+	{
+		return ApplySyncGroups(Context, Elements, bOutChanged);
+	};
+	Hooks.ExtractElements = [](const FAssetDocumentRegionContext& Context, TArray<TSharedRef<FJsonObject>>& OutElements)
+	{
+		return ExtractSyncGroups(Context, OutElements);
+	};
+	Hooks.DiffElements = [](const FAssetDocumentRegionContext& Context, const TArray<TSharedRef<FJsonObject>>& DesiredElements, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		return DiffSyncGroups(Context, DesiredElements, OutDiffEntries);
+	};
+
+	return FAssetDocumentNamedArrayRegionAdapter(MoveTemp(Config), MoveTemp(Hooks));
 }
 
 FAssetDocumentObjectFieldSchema MakeTemplateSchema()
@@ -808,6 +1051,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 {
 	FAssetDocumentObjectRegionAdapter ObjectAdapter = MakeCoreObjectRegionAdapter();
 	FAnimBlueprintTargetSkeletonRegionAdapter TargetSkeletonAdapter;
+	FAssetDocumentNamedArrayRegionAdapter SyncGroupsAdapter = MakeSyncGroupsRegionAdapter();
 	FAssetDocumentDeferredRegionAdapter DeferredAdapter(
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 		TEXT("UnsupportedAnimBlueprintRegion"),
@@ -816,6 +1060,7 @@ FAssetDocumentCapabilityResult DispatchWithDispatcher(
 	TMap<FName, IAssetDocumentRegionAdapter*> Adapters;
 	Adapters.Add(ObjectAdapter.GetName(), &ObjectAdapter);
 	Adapters.Add(TargetSkeletonAdapter.GetName(), &TargetSkeletonAdapter);
+	Adapters.Add(SyncGroupsAdapter.GetName(), &SyncGroupsAdapter);
 	Adapters.Add(DeferredAdapter.GetName(), &DeferredAdapter);
 
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
@@ -908,6 +1153,7 @@ TArray<FName> FAnimBlueprintAssetDocumentCapability::GetInternalAdapterNames() c
 		GetName(),
 		FAnimBlueprintAssetDocumentProfile::ObjectRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::TargetSkeletonRegionAdapterName(),
+		FAnimBlueprintAssetDocumentProfile::SyncGroupsRegionAdapterName(),
 		FAnimBlueprintAssetDocumentProfile::DeferredRegionAdapterName(),
 	};
 }
