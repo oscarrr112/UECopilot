@@ -93,6 +93,17 @@ bool TryRequireBoolField(
 	return true;
 }
 
+bool IsKnownKeyField(const FString& FieldName)
+{
+	return FieldName == TEXT("Name") ||
+		FieldName == TEXT("Type") ||
+		FieldName == TEXT("KeyTypeClass") ||
+		FieldName == TEXT("BaseClass") ||
+		FieldName == TEXT("Enum") ||
+		FieldName == TEXT("Description") ||
+		FieldName == TEXT("bInstanceSynced");
+}
+
 UClass* ResolveClassReference(const FString& ClassRef, UClass* BaseClass)
 {
 	const FString TrimmedRef = ClassRef.TrimStartAndEnd();
@@ -233,6 +244,26 @@ FString CanonicalTypeFromClass(const UClass* KeyTypeClass)
 	return ClassName;
 }
 
+bool TryGetAliasTypeForClass(const UClass* KeyTypeClass, FString& OutType)
+{
+	OutType.Empty();
+	if (!KeyTypeClass)
+	{
+		return false;
+	}
+
+	const FString CandidateType = CanonicalTypeFromClass(KeyTypeClass);
+	UClass* AliasClass = nullptr;
+	FString AliasType;
+	if (ResolveAlias(CandidateType, AliasClass, AliasType) && AliasClass == KeyTypeClass)
+	{
+		OutType = AliasType;
+		return true;
+	}
+
+	return false;
+}
+
 FAssetDocumentBlackboardKeyLookupEntry MakeLookupEntry(const FBlackboardEntry& Entry, bool bInherited)
 {
 	FAssetDocumentBlackboardKeyLookupEntry LookupEntry;
@@ -272,6 +303,16 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	OutSpec = FAssetDocumentBlackboardKeySpec();
 
 	FAssetDocumentCapabilityResult FieldFailure = FAssetDocumentCapabilityResult::Success(TEXT(""));
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Json->Values)
+	{
+		if (!IsKnownKeyField(Field.Key))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				MakeChildPath(Path, Field.Key),
+				TEXT("UnknownBlackboardKeyField"),
+				FString::Printf(TEXT("Unknown blackboard key field '%s'"), *Field.Key));
+		}
+	}
 
 	FString Name;
 	const TSharedPtr<FJsonValue> NameField = Json->TryGetField(TEXT("Name"));
@@ -608,13 +649,14 @@ TSharedRef<FJsonObject> FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(const
 
 	if (Entry.KeyType)
 	{
-		if (Entry.KeyType->GetClass()->IsChildOf(UBlackboardKeyType_NativeEnum::StaticClass()))
+		FString AliasType;
+		if (TryGetAliasTypeForClass(Entry.KeyType->GetClass(), AliasType))
 		{
-			Json->SetStringField(TEXT("KeyTypeClass"), Entry.KeyType->GetClass()->GetPathName());
+			Json->SetStringField(TEXT("Type"), AliasType);
 		}
 		else
 		{
-			Json->SetStringField(TEXT("Type"), CanonicalTypeFromClass(Entry.KeyType->GetClass()));
+			Json->SetStringField(TEXT("KeyTypeClass"), Entry.KeyType->GetClass()->GetPathName());
 		}
 
 		if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))

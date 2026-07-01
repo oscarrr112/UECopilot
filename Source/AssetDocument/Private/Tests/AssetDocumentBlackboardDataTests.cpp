@@ -14,6 +14,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Rotator.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Struct.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_String.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/BlackboardData.h"
@@ -301,6 +302,17 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidEnumJson, TEXT("/Body/Keys/BadEnum"), Spec),
 			TEXT("InvalidBlackboardKeyEnum"),
 			TEXT("/Body/Keys/BadEnum/Enum"));
+	}
+
+	{
+		TSharedRef<FJsonObject> UnknownFieldJson = MakeBlackboardKeyJson(TEXT("Typo"), TEXT("Bool"));
+		UnknownFieldJson->SetStringField(TEXT("Typo/Field"), TEXT("Oops"));
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(UnknownFieldJson, TEXT("/Body/Keys/Typo"), Spec),
+			TEXT("UnknownBlackboardKeyField"),
+			TEXT("/Body/Keys/Typo/Typo~1Field"));
 	}
 
 	{
@@ -621,6 +633,26 @@ bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("Extracted NativeEnum validates"),
 		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(ExtractedNativeEnumSpec, TEXT("/Body/Keys/NativeMode")).bSuccess);
+
+	FBlackboardEntry StructEntry;
+	StructEntry.EntryName = TEXT("Payload");
+	StructEntry.KeyType = NewObject<UBlackboardKeyType_Struct>(GetTransientPackage());
+	const TSharedRef<FJsonObject> ExtractedStruct = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(StructEntry);
+	TestFalse(TEXT("Extracted Struct does not use alias Type"), ExtractedStruct->HasField(TEXT("Type")));
+	TestEqual(
+		TEXT("Extracted Struct key type class"),
+		ExtractedStruct->GetStringField(TEXT("KeyTypeClass")),
+		FString(TEXT("/Script/AIModule.BlackboardKeyType_Struct")));
+
+	FAssetDocumentBlackboardKeySpec ExtractedStructSpec;
+	const FAssetDocumentCapabilityResult ExtractedStructParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		ExtractedStruct,
+		TEXT("/Body/Keys/Payload"),
+		ExtractedStructSpec);
+	TestTrue(TEXT("Extracted Struct parses"), ExtractedStructParseResult.bSuccess);
+	TestTrue(
+		TEXT("Extracted Struct validates"),
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(ExtractedStructSpec, TEXT("/Body/Keys/Payload")).bSuccess);
 
 	return true;
 }
