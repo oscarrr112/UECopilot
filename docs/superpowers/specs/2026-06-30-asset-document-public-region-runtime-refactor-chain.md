@@ -365,6 +365,12 @@ flowchart TD
 - 不先写没有真实使用者的大测试框架。
 - 不替代 profile-level automation tests。
 
+实现状态（2026-07-01）：
+
+- 已新增 `Source/AssetDocument/Private/Tests/AssetDocumentRegionRuntimeTestFixture.h`，覆盖 JSON value builder、region context builder、policy/binding helper、dispatcher construction、diagnostic assertion 和 diff entry lookup。
+- `AssetDocumentRegionRuntimeTests.cpp` 的 deferred/object/named-array/dispatcher/preview-apply-diff/timeline placement 代表性用例已迁移到 fixture，保留 exact diagnostic path/code 断言。
+- Fixture 仅服务 public region runtime tests，不替代 profile-level automation，也不隐藏 adapter utility 的关键语义断言。
+
 完成标准：
 
 - 新 adapter 测试不再重复 context/bootstrap 样板。
@@ -386,7 +392,7 @@ flowchart TD
 
 第三批执行顺序：
 
-1. `Region Runtime Test Fixture`
+1. Region Runtime Test Fixture（已完成，后续新增 adapter tests 必须优先复用）
 2. 回扫 guide、AGENTS、deferred-fields 长期维护文档
 3. 选择下一个新资产 profile，只允许 thin hook 接入，不再新增整套私有 lifecycle
 

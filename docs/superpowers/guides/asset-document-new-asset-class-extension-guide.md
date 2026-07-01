@@ -197,6 +197,17 @@ inventory 产物应写成中文 spec 或 research 文档，至少包含：
 | tree wrapper | `Body.WidgetTree` 这类 tree/object materialization | 薄 wrapper 组合 tree adapter；runtime 负责 validate/apply/extract/diff 调度 |
 | timeline wrapper | animation、notify、track、timeline 类 region | 先判断是否能抽公共 timeline adapter；只有 UE compile/rebuild/repair 留在 asset-specific hook |
 
+### Public adapter test fixture 检查门槛
+
+新增或扩展 public region adapter tests 时，优先复用 `Source/AssetDocument/Private/Tests/AssetDocumentRegionRuntimeTestFixture.h`：
+
+- 用 fixture 创建 `FAssetDocumentRegionContext`、policy、binding、dispatcher 和基础 JSON value。
+- 用 fixture 的 diagnostic helper 断言 exact path/code，不允许只断言 `bSuccess == false`。
+- adapter utility 的核心语义仍应在测试体中显式表达，例如 identity key、canonical order、timeline duplicate 顺序和 track resolver 行为。
+- profile-level automation 仍负责 UE materialization、compile/rebuild/cache repair、asset save/load、MCP/apply-file smoke；fixture 不能替代这些验证。
+
+如果新增测试选择不使用 fixture，implementation plan 必须说明原因，例如该测试不在 public region runtime 层，或者需要 profile/UE editor lifecycle。
+
 ### Timeline-like region 检查门槛
 
 新增或扩展 animation、notify、marker、section、track、timeline 类 `Body.*` region 时，先做 timeline-like checklist。满足以下任一条件，就不能直接在 profile capability 内新增一整套 parser：
