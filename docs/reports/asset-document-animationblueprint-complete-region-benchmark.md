@@ -44,10 +44,10 @@ Automation RunTests AssetFactory.AssetDocument.AnimBlueprint
 Report:
 
 ```text
-C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AnimBlueprintReviewFix2/index.json
+C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AnimBlueprintImportantFix/index.json
 ```
 
-Result after review fixes: `succeeded=9`, `succeededWithWarnings=0`, `failed=0`, `notRun=0`.
+Result after important fixes: `9 succeeded / 0 warnings / 0 failed / 0 notRun`.
 
 AssetDocument full automation:
 
@@ -58,10 +58,10 @@ Automation RunTests AssetFactory.AssetDocument
 Report:
 
 ```text
-C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AssetDocumentReviewFix/index.json
+C:/Users/HP/.config/superpowers/validation-hosts/anim-blueprint-task1/Saved/AutomationReports/AssetDocumentFinalAfterImportantFix/index.json
 ```
 
-Result after review fixes: `succeeded=303`, `failed=0`, `notRun=0`.
+Result after important fixes: `succeeded=303`, `failed=0`, `notRun=0`.
 
 MCP tests:
 
@@ -101,6 +101,7 @@ Current run result: blocked by the validation host HTTP listener, not by ABP Ass
 - `290d9da feat: manage animation blueprint state machines`
 - `10e44f8 feat: manage animation blueprint layers and parent overrides`
 - review fix: reject non-empty `StateMachines` / `TransitionGraphs` until apply/extract roundtrip exists, add core object diff, create skeleton gate, preview skeleton mismatch validation, and parent override extract-shape assertions.
+- `a815587 fix: close animation blueprint review gaps` - fixes the Service.Apply create path `TargetSkeleton` gate, sparse diff authored-field compare, and update-only `Preview` skeleton mismatch fallback.
 
 ## Follow-up Gates
 
