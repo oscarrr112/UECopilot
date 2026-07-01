@@ -60,6 +60,33 @@ bool SpawnerMatches(
 	}
 	return AssetDocumentGraphJson::AreJsonObjectsEqual(DesiredSpawner, CandidateSpawner);
 }
+
+FAssetDocumentCapabilityResult ApplyGraphAfterPreflight(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	FAssetDocumentAnimationGraphContext& Context,
+	IAssetDocumentAnimationGraphStructuralHook& Hook)
+{
+	const FAssetDocumentCapabilityResult LocateResult = Hook.LocateOrCreateGraph(GraphSpec, Context);
+	if (!LocateResult.bSuccess)
+	{
+		return LocateResult;
+	}
+
+	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
+	{
+		FAssetDocumentAnimationGraphContext SubgraphContext = Context;
+		SubgraphContext.GraphPath = JoinPath(JoinPath(GraphPath(GraphSpec, Context), TEXT("Subgraphs")), Subgraph.Id);
+		SubgraphContext.GraphKind = Subgraph.Kind;
+		const FAssetDocumentCapabilityResult SubgraphResult =
+			ApplyGraphAfterPreflight(Subgraph, SubgraphContext, Hook);
+		if (!SubgraphResult.bSuccess)
+		{
+			return SubgraphResult;
+		}
+	}
+
+	return Hook.RepairAfterApply(GraphSpec, Context);
+}
 }
 
 FAssetDocumentAnimationGraphRuntime::FAssetDocumentAnimationGraphRuntime(
@@ -163,19 +190,13 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ApplyGraph(
 	FAssetDocumentAnimationGraphContext& Context,
 	IAssetDocumentAnimationGraphStructuralHook& Hook) const
 {
-	const FAssetDocumentCapabilityResult LocateResult = Hook.LocateOrCreateGraph(GraphSpec, Context);
-	if (!LocateResult.bSuccess)
-	{
-		return LocateResult;
-	}
-
 	const FAssetDocumentCapabilityResult ValidateResult = ValidateGraph(GraphSpec, Context);
 	if (!ValidateResult.bSuccess)
 	{
 		return ValidateResult;
 	}
 
-	return Hook.RepairAfterApply(GraphSpec, Context);
+	return ApplyGraphAfterPreflight(GraphSpec, Context, Hook);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph(
@@ -184,7 +205,9 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph
 {
 	OutGraph.Id = Context.GraphKind.IsEmpty() ? TEXT("AnimGraph") : Context.GraphKind;
 	OutGraph.Kind = Context.GraphKind;
-	OutGraph.Evidence = MakeShared<FJsonObject>();
-	OutGraph.Evidence->SetStringField(TEXT("_Skipped"), TEXT("Animation graph extraction is not materialized in the runtime shell."));
+	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetStringField(TEXT("Reason"), TEXT("AnimationGraphExtractionNotMaterialized"));
+	Skipped->SetStringField(TEXT("Message"), TEXT("Animation graph extraction is not materialized in the runtime shell."));
+	OutGraph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped);
 	return FAssetDocumentCapabilityResult::Success();
 }

@@ -402,6 +402,30 @@ bool FAssetDocumentAnimationGraphRuntimeUnspawnableClassTest::RunTest(const FStr
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeApplyPreflightBeforeHookTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ApplyPreflightBeforeHook",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeApplyPreflightBeforeHookTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly"), FString(), false));
+
+	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	const FAssetDocumentGraphSpec Graph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("DebugOnly"), TEXT("/Script/AnimGraph.AnimGraphNode_DebugOnly")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestFalse(TEXT("ApplyGraph rejects unspawnable node"), Result.bSuccess);
+	TestEqual(TEXT("Failed preflight does not locate graph"), Hook.LocateCount, 0);
+	TestEqual(TEXT("Failed preflight does not repair graph"), Hook.RepairCount, 0);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest,
 	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.StructuralHookBoundary",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -427,6 +451,38 @@ bool FAssetDocumentAnimationGraphRuntimeStructuralHookBoundaryTest::RunTest(cons
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.StructuralHookCoversSubgraphs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+
+	FAssetDocumentGraphSpec Graph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("IdlePlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Graph.Id = TEXT("AnimGraph");
+	FAssetDocumentGraphSpec Subgraph =
+		MakeRuntimeGraphWithNode(MakeRuntimeNode(TEXT("NestedPlayer"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer")));
+	Subgraph.Id = TEXT("AnimGraph.Nested");
+	Subgraph.Kind = TEXT("PoseSubgraph");
+	Graph.Subgraphs.Add(Subgraph);
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("ApplyGraph succeeds with a subgraph"), Result.bSuccess);
+	TestEqual(TEXT("Structural hook locates root and subgraph"), Hook.LocateCount, 2);
+	TestEqual(TEXT("Structural hook repairs root and subgraph"), Hook.RepairCount, 2);
+	TestEqual(TEXT("Candidate provider validates root and subgraph nodes"), Provider->QueryCount, 2);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest,
 	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractSkippedEvidence",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -441,8 +497,8 @@ bool FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest::RunTest(cons
 	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
 
 	TestTrue(TEXT("Runtime shell extract succeeds"), Result.bSuccess);
-	TestTrue(TEXT("Runtime shell emits extract-only evidence"), ExtractedGraph.Evidence.IsValid());
-	TestTrue(TEXT("Runtime shell evidence surfaces skipped extraction"), ExtractedGraph.Evidence->HasField(TEXT("_Skipped")));
+	TestFalse(TEXT("Runtime shell does not put skipped data in authored Evidence"), ExtractedGraph.Evidence.IsValid());
+	TestTrue(TEXT("Runtime shell emits extract-only graph _Skipped"), ExtractedGraph.UnderscoreSkipped.IsValid());
 	return true;
 }
 
