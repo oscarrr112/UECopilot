@@ -31,6 +31,14 @@ struct FAssetDocumentBlackboardKeyLookupEntry
 	bool bInherited = false;
 };
 
+struct FAssetDocumentBlackboardResolvedKeyMetadata
+{
+	UClass* KeyTypeClass = nullptr;
+	FString CanonicalType;
+	UClass* BaseClass = nullptr;
+	UObject* EnumObject = nullptr;
+};
+
 class FAssetDocumentBlackboardKeySchemaUtils
 {
 public:
@@ -39,6 +47,7 @@ public:
 		const FString& Path,
 		FAssetDocumentBlackboardKeySpec& OutSpec);
 
+	// Backward-compatible default-path resolver; new callers should pass Path or use ResolveKeyMetadata.
 	static FAssetDocumentCapabilityResult ResolveKeyTypeClass(
 		const FAssetDocumentBlackboardKeySpec& Spec,
 		UClass*& OutClass,
@@ -49,6 +58,11 @@ public:
 		const FString& Path,
 		UClass*& OutClass,
 		FString& OutCanonicalType);
+
+	static FAssetDocumentCapabilityResult ResolveKeyMetadata(
+		const FAssetDocumentBlackboardKeySpec& Spec,
+		const FString& Path,
+		FAssetDocumentBlackboardResolvedKeyMetadata& OutMetadata);
 
 	static FAssetDocumentCapabilityResult ValidateKeySpec(
 		const FAssetDocumentBlackboardKeySpec& Spec,

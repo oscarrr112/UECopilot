@@ -18,6 +18,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "Engine/EngineTypes.h"
+#include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -181,7 +182,11 @@ bool FAssetDocumentBlackboardKeyAliasResolutionTest::RunTest(const FString&)
 		UClass* ResolvedClass = nullptr;
 		FString CanonicalType;
 		const FAssetDocumentCapabilityResult ResolveResult =
-			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, ResolvedClass, CanonicalType);
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(
+				Spec,
+				FString::Printf(TEXT("/Body/Keys/%sKey"), *Expectation.Alias),
+				ResolvedClass,
+				CanonicalType);
 		TestTrue(FString::Printf(TEXT("%s resolves"), *Expectation.Alias), ResolveResult.bSuccess);
 		TestEqual(FString::Printf(TEXT("%s class"), *Expectation.Alias), ResolvedClass, Expectation.ExpectedClass);
 		TestEqual(FString::Printf(TEXT("%s canonical type"), *Expectation.Alias), CanonicalType, Expectation.ExpectedCanonicalType);
@@ -197,6 +202,107 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 {
+	{
+		TSharedRef<FJsonObject> MissingNameJson = MakeShared<FJsonObject>();
+		MissingNameJson->SetStringField(TEXT("Type"), TEXT("Bool"));
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(MissingNameJson, TEXT("/Body/Keys/0"), Spec),
+			TEXT("MissingBlackboardKeyName"),
+			TEXT("/Body/Keys/0/Name"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidNameJson = MakeShared<FJsonObject>();
+		InvalidNameJson->SetNumberField(TEXT("Name"), 42.0);
+		InvalidNameJson->SetStringField(TEXT("Type"), TEXT("Bool"));
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidNameJson, TEXT("/Body/Keys/1"), Spec),
+			TEXT("InvalidBlackboardKeyName"),
+			TEXT("/Body/Keys/1/Name"));
+	}
+
+	{
+		TSharedRef<FJsonObject> EmptyNameJson = MakeBlackboardKeyJson(TEXT(""), TEXT("Bool"));
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(EmptyNameJson, TEXT("/Body/Keys/2"), Spec),
+			TEXT("InvalidBlackboardKeyName"),
+			TEXT("/Body/Keys/2/Name"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidDescriptionJson = MakeBlackboardKeyJson(TEXT("BadDescription"), TEXT("Bool"));
+		InvalidDescriptionJson->SetNumberField(TEXT("Description"), 42.0);
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidDescriptionJson, TEXT("/Body/Keys/BadDescription"), Spec),
+			TEXT("InvalidBlackboardKeyDescription"),
+			TEXT("/Body/Keys/BadDescription/Description"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidInstanceSyncedJson = MakeBlackboardKeyJson(TEXT("BadSync"), TEXT("Bool"));
+		InvalidInstanceSyncedJson->SetStringField(TEXT("bInstanceSynced"), TEXT("true"));
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidInstanceSyncedJson, TEXT("/Body/Keys/BadSync"), Spec),
+			TEXT("InvalidBlackboardKeyInstanceSynced"),
+			TEXT("/Body/Keys/BadSync/bInstanceSynced"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidBaseClassJson = MakeBlackboardKeyJson(TEXT("BadBaseClass"), TEXT("Object"));
+		InvalidBaseClassJson->SetBoolField(TEXT("BaseClass"), true);
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidBaseClassJson, TEXT("/Body/Keys/BadBaseClass"), Spec),
+			TEXT("InvalidBlackboardKeyBaseClass"),
+			TEXT("/Body/Keys/BadBaseClass/BaseClass"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidTypeJson = MakeShared<FJsonObject>();
+		InvalidTypeJson->SetStringField(TEXT("Name"), TEXT("BadType"));
+		InvalidTypeJson->SetNumberField(TEXT("Type"), 42.0);
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidTypeJson, TEXT("/Body/Keys/BadType"), Spec),
+			TEXT("InvalidBlackboardKeyType"),
+			TEXT("/Body/Keys/BadType/Type"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidKeyTypeClassJson = MakeShared<FJsonObject>();
+		InvalidKeyTypeClassJson->SetStringField(TEXT("Name"), TEXT("BadKeyTypeClass"));
+		InvalidKeyTypeClassJson->SetBoolField(TEXT("KeyTypeClass"), true);
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidKeyTypeClassJson, TEXT("/Body/Keys/BadKeyTypeClass"), Spec),
+			TEXT("InvalidBlackboardKeyType"),
+			TEXT("/Body/Keys/BadKeyTypeClass/KeyTypeClass"));
+	}
+
+	{
+		TSharedRef<FJsonObject> InvalidEnumJson = MakeBlackboardKeyJson(TEXT("BadEnum"), TEXT("Enum"));
+		InvalidEnumJson->SetNumberField(TEXT("Enum"), 42.0);
+		FAssetDocumentBlackboardKeySpec Spec;
+		ExpectSingleDiagnostic(
+			*this,
+			FAssetDocumentBlackboardKeySchemaUtils::ParseKey(InvalidEnumJson, TEXT("/Body/Keys/BadEnum"), Spec),
+			TEXT("InvalidBlackboardKeyEnum"),
+			TEXT("/Body/Keys/BadEnum/Enum"));
+	}
+
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
@@ -270,7 +376,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 		FString CanonicalType;
 		ExpectSingleDiagnostic(
 			*this,
-			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, ResolvedClass, CanonicalType),
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, TEXT("/Body/Keys/Broken"), ResolvedClass, CanonicalType),
 			TEXT("InvalidBlackboardKeyType"),
 			TEXT("/Body/Keys/Broken/Type"));
 	}
@@ -315,7 +421,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 	UClass* ResolvedClass = nullptr;
 	FString CanonicalType;
 	const FAssetDocumentCapabilityResult ResolveResult =
-		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, ResolvedClass, CanonicalType);
+		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(Spec, TEXT("/Body/Keys/ExplicitName"), ResolvedClass, CanonicalType);
 	TestTrue(TEXT("Explicit KeyTypeClass resolves"), ResolveResult.bSuccess);
 	TestEqual(TEXT("Explicit class is Name key type"), ResolvedClass, UBlackboardKeyType_Name::StaticClass());
 	TestEqual(TEXT("Explicit canonical type uses loaded class"), CanonicalType, FString(TEXT("Name")));
@@ -335,7 +441,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 	UClass* LoadableResolvedClass = nullptr;
 	FString LoadableCanonicalType;
 	const FAssetDocumentCapabilityResult LoadableResolveResult =
-		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(LoadableSpec, LoadableResolvedClass, LoadableCanonicalType);
+		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(LoadableSpec, TEXT("/Body/Keys/ExplicitNativeEnum"), LoadableResolvedClass, LoadableCanonicalType);
 	TestTrue(TEXT("Loadable explicit KeyTypeClass resolves"), LoadableResolveResult.bSuccess);
 	TestEqual(TEXT("Loadable explicit class is NativeEnum key type"), LoadableResolvedClass, UBlackboardKeyType_NativeEnum::StaticClass());
 	TestEqual(TEXT("Loadable explicit canonical type uses loaded class"), LoadableCanonicalType, FString(TEXT("NativeEnum")));
@@ -356,7 +462,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 	FString InvalidCanonicalType;
 	ExpectSingleDiagnostic(
 		*this,
-		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(InvalidSpec, InvalidResolvedClass, InvalidCanonicalType),
+		FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyTypeClass(InvalidSpec, TEXT("/Body/Keys/InvalidExplicit"), InvalidResolvedClass, InvalidCanonicalType),
 		TEXT("InvalidBlackboardKeyType"),
 		TEXT("/Body/Keys/InvalidExplicit/KeyTypeClass"));
 
@@ -365,6 +471,94 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(InvalidSpec, TEXT("/Custom/Keys/InvalidExplicit")),
 		TEXT("InvalidBlackboardKeyType"),
 		TEXT("/Custom/Keys/InvalidExplicit/KeyTypeClass"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardKeyResolvedMetadataTest,
+	"AssetFactory.AssetDocument.BlackboardData.Keys.ResolvedMetadata",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
+{
+	const FString ActorClassPath = AActor::StaticClass()->GetPathName();
+	const FString EnumPath = StaticEnum<EBasicKeyOperation::Type>()->GetPathName();
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(TEXT("Target"), TEXT("Object"), ActorClassPath),
+			TEXT("/Body/Keys/Target"),
+			Spec);
+		TestTrue(TEXT("Object metadata key parses"), ParseResult.bSuccess);
+
+		FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
+		const FAssetDocumentCapabilityResult MetadataResult =
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Spec, TEXT("/Body/Keys/Target"), Metadata);
+		TestTrue(TEXT("Object metadata resolves"), MetadataResult.bSuccess);
+		TestEqual(TEXT("Object metadata key class"), Metadata.KeyTypeClass, UBlackboardKeyType_Object::StaticClass());
+		TestEqual(TEXT("Object metadata canonical type"), Metadata.CanonicalType, FString(TEXT("Object")));
+		TestEqual(TEXT("Object metadata base class"), Metadata.BaseClass, AActor::StaticClass());
+		TestNull(TEXT("Object metadata enum object"), Metadata.EnumObject);
+	}
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(TEXT("ChosenClass"), TEXT("Class"), ActorClassPath),
+			TEXT("/Body/Keys/ChosenClass"),
+			Spec);
+		TestTrue(TEXT("Class metadata key parses"), ParseResult.bSuccess);
+
+		FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
+		const FAssetDocumentCapabilityResult MetadataResult =
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Spec, TEXT("/Body/Keys/ChosenClass"), Metadata);
+		TestTrue(TEXT("Class metadata resolves"), MetadataResult.bSuccess);
+		TestEqual(TEXT("Class metadata key class"), Metadata.KeyTypeClass, UBlackboardKeyType_Class::StaticClass());
+		TestEqual(TEXT("Class metadata base class"), Metadata.BaseClass, AActor::StaticClass());
+	}
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(TEXT("Mode"), TEXT("Enum"), TEXT(""), EnumPath),
+			TEXT("/Body/Keys/Mode"),
+			Spec);
+		TestTrue(TEXT("Enum metadata key parses"), ParseResult.bSuccess);
+
+		FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
+		const FAssetDocumentCapabilityResult MetadataResult =
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Spec, TEXT("/Body/Keys/Mode"), Metadata);
+		TestTrue(TEXT("Enum metadata resolves"), MetadataResult.bSuccess);
+		TestEqual(TEXT("Enum metadata key class"), Metadata.KeyTypeClass, UBlackboardKeyType_Enum::StaticClass());
+		TestEqual(TEXT("Enum metadata enum object"), Metadata.EnumObject, static_cast<UObject*>(StaticEnum<EBasicKeyOperation::Type>()));
+	}
+
+	{
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			MakeBlackboardKeyJson(
+				TEXT("NativeMode"),
+				TEXT(""),
+				TEXT(""),
+				EnumPath,
+				TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum")),
+			TEXT("/Body/Keys/NativeMode"),
+			Spec);
+		TestTrue(TEXT("NativeEnum metadata key parses"), ParseResult.bSuccess);
+		TestTrue(
+			TEXT("NativeEnum explicit key validates with Enum"),
+			FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(Spec, TEXT("/Body/Keys/NativeMode")).bSuccess);
+
+		FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
+		const FAssetDocumentCapabilityResult MetadataResult =
+			FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Spec, TEXT("/Body/Keys/NativeMode"), Metadata);
+		TestTrue(TEXT("NativeEnum metadata resolves"), MetadataResult.bSuccess);
+		TestEqual(TEXT("NativeEnum metadata key class"), Metadata.KeyTypeClass, UBlackboardKeyType_NativeEnum::StaticClass());
+		TestEqual(TEXT("NativeEnum metadata canonical type"), Metadata.CanonicalType, FString(TEXT("NativeEnum")));
+		TestEqual(TEXT("NativeEnum metadata enum object"), Metadata.EnumObject, static_cast<UObject*>(StaticEnum<EBasicKeyOperation::Type>()));
+	}
+
 	return true;
 }
 
@@ -415,8 +609,18 @@ bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
 	NativeEnumEntry.EntryName = TEXT("NativeMode");
 	NativeEnumEntry.KeyType = NativeEnumKey;
 	const TSharedRef<FJsonObject> ExtractedNativeEnum = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(NativeEnumEntry);
-	TestEqual(TEXT("Extracted NativeEnum type"), ExtractedNativeEnum->GetStringField(TEXT("Type")), FString(TEXT("NativeEnum")));
+	TestEqual(TEXT("Extracted NativeEnum key type class"), ExtractedNativeEnum->GetStringField(TEXT("KeyTypeClass")), FString(TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum")));
 	TestEqual(TEXT("Extracted NativeEnum preserves Enum"), ExtractedNativeEnum->GetStringField(TEXT("Enum")), NativeEnumKey->EnumName);
+
+	FAssetDocumentBlackboardKeySpec ExtractedNativeEnumSpec;
+	const FAssetDocumentCapabilityResult ExtractedNativeEnumParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+		ExtractedNativeEnum,
+		TEXT("/Body/Keys/NativeMode"),
+		ExtractedNativeEnumSpec);
+	TestTrue(TEXT("Extracted NativeEnum parses"), ExtractedNativeEnumParseResult.bSuccess);
+	TestTrue(
+		TEXT("Extracted NativeEnum validates"),
+		FAssetDocumentBlackboardKeySchemaUtils::ValidateKeySpec(ExtractedNativeEnumSpec, TEXT("/Body/Keys/NativeMode")).bSuccess);
 
 	return true;
 }
