@@ -3337,6 +3337,33 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
 	}, TEXT("/Body/NotifyStates[0]/Duration"), TEXT("InvalidNotifyStateDuration"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify string time keeps path style"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		TSharedPtr<FJsonObject> Notify = MakeNotifyPlacement(
+			0.10,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+		Notify->SetStringField(TEXT("Time"), TEXT("bad"));
+		Notifies.Add(MakeShared<FJsonValueObject>(Notify));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/Time"), TEXT("InvalidNumericField"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify overflow time keeps numeric diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> Notifies;
+		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
+			1.0e40,
+			MakeEmbeddedObjectRef(TestConcreteNotifyClassPath))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
+	}, TEXT("/Body/Notifies[0]/Time"), TEXT("InvalidNumericField"));
+	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("NotifyState overflow duration keeps numeric diagnostic"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
+	{
+		TArray<TSharedPtr<FJsonValue>> NotifyStates;
+		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
+			0.12,
+			1.0e40,
+			MakeEmbeddedObjectRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState"), MakeShared<FJsonObject>()))));
+		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
+	}, TEXT("/Body/NotifyStates[0]/Duration"), TEXT("InvalidNumericField"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify wrong base class"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
 	{
 		TArray<TSharedPtr<FJsonValue>> Notifies;
