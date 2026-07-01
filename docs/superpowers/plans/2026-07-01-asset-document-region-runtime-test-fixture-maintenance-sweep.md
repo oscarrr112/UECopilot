@@ -344,10 +344,10 @@ struct FTestRegionAdapter;
 For the deferred non-empty array test, replace this assertion shape:
 
 ```cpp
-TestEqual(
-	TEXT("Non-empty array diagnostic code"),
-	Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
-	FString(TEXT("DeferredRegionMustBeEmpty")));
+	TestEqual(
+		TEXT("Non-empty array diagnostic code"),
+		Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(),
+		FString(TEXT("UnsupportedRegion")));
 TestEqual(
 	TEXT("Non-empty array diagnostic path"),
 	Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(),
@@ -357,14 +357,16 @@ TestEqual(
 with:
 
 ```cpp
-TestDiagnostic(this, TEXT("Non-empty array"), Result, TEXT("/Body/FunctionGraphs"), TEXT("DeferredRegionMustBeEmpty"));
+TestDiagnostic(this, TEXT("Non-empty array"), Result, TEXT("/Body/FunctionGraphs"), TEXT("UnsupportedRegion"));
 ```
 
 For the deferred non-empty object test, replace the equivalent path/code assertions with:
 
 ```cpp
-TestDiagnostic(this, TEXT("Non-empty object"), Result, TEXT("/Body/Preview"), TEXT("DeferredRegionMustBeEmpty"));
+TestDiagnostic(this, TEXT("Non-empty object"), Result, TEXT("/Body/Preview"), TEXT("UnsupportedRegion"));
 ```
+
+This fixture migration must preserve the existing deferred-region diagnostic code; it does not rename the code.
 
 - [ ] **Step 6: Run focused deferred region automation**
 
