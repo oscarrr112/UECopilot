@@ -25,6 +25,7 @@ struct FAssetDocumentBlackboardKeySpec
 struct FAssetDocumentBlackboardKeyLookupEntry
 {
 	FName Name;
+	const UBlackboardKeyType* KeyType = nullptr;
 	UClass* KeyTypeClass = nullptr;
 	UClass* BaseClass = nullptr;
 	UObject* EnumObject = nullptr;

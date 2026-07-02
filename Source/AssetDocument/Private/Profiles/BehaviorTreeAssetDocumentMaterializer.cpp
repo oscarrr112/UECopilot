@@ -14,8 +14,6 @@
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "BehaviorTree/BlackboardData.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Class.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
@@ -1060,42 +1058,28 @@ bool IsBehaviorTreeAssetReferenceProperty(const FProperty* Property)
 	return false;
 }
 
-UClass* AllowedObjectBaseClass(const UBlackboardKeyType* KeyType)
-{
-	if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(KeyType))
-	{
-		return ObjectKey->BaseClass;
-	}
-	if (const UBlackboardKeyType_Class* ClassKey = Cast<UBlackboardKeyType_Class>(KeyType))
-	{
-		return ClassKey->BaseClass;
-	}
-	return nullptr;
-}
-
 bool IsLookupEntryCompatibleWithAllowedType(
 	const FAssetDocumentBlackboardKeyLookupEntry& LookupEntry,
-	const UBlackboardKeyType* AllowedType)
+	UBlackboardKeyType* AllowedType)
 {
-	if (!LookupEntry.KeyTypeClass || !AllowedType)
+	return LookupEntry.KeyType && AllowedType && LookupEntry.KeyType->IsAllowedByFilter(AllowedType);
+}
+
+bool IsBlackboardCompatibleWith(const UBlackboardData* CurrentBlackboard, const UBlackboardData* TestAsset)
+{
+	if (!TestAsset)
 	{
-		return false;
+		return true;
 	}
 
-	const UClass* AllowedKeyTypeClass = AllowedType->GetClass();
-	if (!LookupEntry.KeyTypeClass->IsChildOf(AllowedKeyTypeClass))
+	for (const UBlackboardData* It = CurrentBlackboard; It; It = It->Parent)
 	{
-		return false;
-	}
-
-	if (UClass* AllowedBaseClass = AllowedObjectBaseClass(AllowedType))
-	{
-		if (AllowedBaseClass != UObject::StaticClass())
+		if (It == TestAsset || It->Keys == TestAsset->Keys)
 		{
-			return LookupEntry.BaseClass && LookupEntry.BaseClass->IsChildOf(AllowedBaseClass);
+			return true;
 		}
 	}
-	return true;
+	return false;
 }
 
 FAssetDocumentCapabilityResult ResolveCrossRegionBlackboard(
@@ -1221,7 +1205,7 @@ FAssetDocumentCapabilityResult ValidateSubtreeBlackboardCompatibility(
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
-	if (!Subtree->BlackboardAsset->IsRelatedTo(*ParentBlackboard))
+	if (!IsBlackboardCompatibleWith(ParentBlackboard, Subtree->BlackboardAsset))
 	{
 		return Failure(
 			Path,

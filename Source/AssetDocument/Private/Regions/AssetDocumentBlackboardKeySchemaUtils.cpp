@@ -272,20 +272,27 @@ FAssetDocumentBlackboardKeyLookupEntry MakeLookupEntry(const FBlackboardEntry& E
 
 	if (Entry.KeyType)
 	{
-		LookupEntry.KeyTypeClass = Entry.KeyType->GetClass();
-		if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))
+		UBlackboardKeyType* EffectiveKeyType = Entry.KeyType->UpdateDeprecatedKey();
+		if (!EffectiveKeyType)
+		{
+			EffectiveKeyType = Entry.KeyType;
+		}
+
+		LookupEntry.KeyType = EffectiveKeyType;
+		LookupEntry.KeyTypeClass = EffectiveKeyType->GetClass();
+		if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(EffectiveKeyType))
 		{
 			LookupEntry.BaseClass = ObjectKey->BaseClass;
 		}
-		else if (const UBlackboardKeyType_Class* ClassKey = Cast<UBlackboardKeyType_Class>(Entry.KeyType))
+		else if (const UBlackboardKeyType_Class* ClassKey = Cast<UBlackboardKeyType_Class>(EffectiveKeyType))
 		{
 			LookupEntry.BaseClass = ClassKey->BaseClass;
 		}
-		else if (const UBlackboardKeyType_Enum* EnumKey = Cast<UBlackboardKeyType_Enum>(Entry.KeyType))
+		else if (const UBlackboardKeyType_Enum* EnumKey = Cast<UBlackboardKeyType_Enum>(EffectiveKeyType))
 		{
 			LookupEntry.EnumObject = EnumKey->EnumType;
 		}
-		else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(Entry.KeyType))
+		else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(EffectiveKeyType))
 		{
 			LookupEntry.EnumObject = NativeEnumKey->EnumType;
 		}

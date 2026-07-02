@@ -14,6 +14,7 @@
 #include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
@@ -102,6 +103,37 @@ void AddObjectBlackboardKey(UBlackboardData* Blackboard, FName Name, UClass* Bas
 	Entry.EntryName = Name;
 	UBlackboardKeyType_Object* KeyType = NewObject<UBlackboardKeyType_Object>(Blackboard);
 	KeyType->BaseClass = BaseClass;
+	Entry.KeyType = KeyType;
+	Blackboard->Keys.Add(Entry);
+}
+
+void AddEnumBlackboardKey(UBlackboardData* Blackboard, FName Name, UEnum* EnumType)
+{
+	if (!Blackboard)
+	{
+		return;
+	}
+
+	FBlackboardEntry Entry;
+	Entry.EntryName = Name;
+	UBlackboardKeyType_Enum* KeyType = NewObject<UBlackboardKeyType_Enum>(Blackboard);
+	KeyType->EnumType = EnumType;
+	Entry.KeyType = KeyType;
+	Blackboard->Keys.Add(Entry);
+}
+
+void AddNativeEnumBlackboardKey(UBlackboardData* Blackboard, FName Name, UEnum* EnumType)
+{
+	if (!Blackboard)
+	{
+		return;
+	}
+
+	FBlackboardEntry Entry;
+	Entry.EntryName = Name;
+	UBlackboardKeyType_NativeEnum* KeyType = NewObject<UBlackboardKeyType_NativeEnum>(Blackboard);
+	KeyType->EnumType = EnumType;
+	KeyType->EnumName = EnumType ? EnumType->GetName() : FString();
 	Entry.KeyType = KeyType;
 	Blackboard->Keys.Add(Entry);
 }
@@ -292,11 +324,29 @@ TSharedPtr<FJsonObject> MakeAllowedKeyType(const FString& ClassPath)
 	return AllowedType;
 }
 
+TSharedPtr<FJsonObject> MakeAllowedEnumKeyType(UEnum* EnumType)
+{
+	TSharedPtr<FJsonObject> AllowedType = MakeAllowedKeyType(UBlackboardKeyType_Enum::StaticClass()->GetPathName());
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetObjectField(TEXT("EnumType"), MakeAssetRef(EnumType ? EnumType->GetPathName() : FString()));
+	AllowedType->SetObjectField(TEXT("Properties"), Properties);
+	return AllowedType;
+}
+
 TSharedPtr<FJsonObject> MakeSelectorPropertyWithAllowedType(const FString& KeyName, const FString& AllowedKeyTypeClass)
 {
 	TSharedPtr<FJsonObject> Selector = MakeSelectorProperty(KeyName);
 	TArray<TSharedPtr<FJsonValue>> AllowedTypes;
 	AllowedTypes.Add(MakeObjectValue(MakeAllowedKeyType(AllowedKeyTypeClass)));
+	Selector->SetArrayField(TEXT("AllowedTypes"), AllowedTypes);
+	return Selector;
+}
+
+TSharedPtr<FJsonObject> MakeSelectorPropertyWithAllowedKeyType(const FString& KeyName, TSharedPtr<FJsonObject> AllowedKeyType)
+{
+	TSharedPtr<FJsonObject> Selector = MakeSelectorProperty(KeyName);
+	TArray<TSharedPtr<FJsonValue>> AllowedTypes;
+	AllowedTypes.Add(MakeObjectValue(AllowedKeyType));
 	Selector->SetArrayField(TEXT("AllowedTypes"), AllowedTypes);
 	return Selector;
 }
@@ -368,6 +418,25 @@ TSharedPtr<FJsonObject> MakeRunBehaviorTree(const FString& SubtreeTarget)
 
 	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
 	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+	return Tree;
+}
+
+TSharedPtr<FJsonObject> MakeMoveToTreeWithSelector(TSharedPtr<FJsonObject> Selector)
+{
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetObjectField(TEXT("BlackboardKey"), Selector);
+	TSharedPtr<FJsonObject> MoveToNode = MakeBtNode(TEXT("MoveToTarget"), TEXT("/Script/AIModule.BTTask_MoveTo"), Properties);
+
+	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), MoveToNode);
+
+	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Children"), {MakeObjectValue(Edge)});
 
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
@@ -1721,51 +1790,95 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task8_SubtreeCompatibility");
 	const FString ParentBlackboardTarget = Target + TEXT("_ParentBB");
-	const FString CompatibleBlackboardTarget = Target + TEXT("_CompatibleBB");
+	const FString ChildBlackboardTarget = Target + TEXT("_ChildBB");
 	const FString IncompatibleBlackboardTarget = Target + TEXT("_IncompatibleBB");
-	const FString CompatibleSubtreeTarget = Target + TEXT("_CompatibleSubtree");
+	const FString ParentSubtreeTarget = Target + TEXT("_ParentSubtree");
+	const FString SameSubtreeTarget = Target + TEXT("_SameSubtree");
+	const FString ChildSubtreeTarget = Target + TEXT("_ChildSubtree");
 	const FString IncompatibleSubtreeTarget = Target + TEXT("_IncompatibleSubtree");
 
 	UBlackboardData* ParentBlackboard = MakeExistingBlackboardAsset(ParentBlackboardTarget);
-	UBlackboardData* CompatibleBlackboard = MakeExistingBlackboardAsset(CompatibleBlackboardTarget);
+	UBlackboardData* ChildBlackboard = MakeExistingBlackboardAsset(ChildBlackboardTarget);
 	UBlackboardData* IncompatibleBlackboard = MakeExistingBlackboardAsset(IncompatibleBlackboardTarget);
 	TestNotNull(TEXT("parent blackboard exists"), ParentBlackboard);
-	TestNotNull(TEXT("compatible child blackboard exists"), CompatibleBlackboard);
+	TestNotNull(TEXT("child blackboard exists"), ChildBlackboard);
 	TestNotNull(TEXT("incompatible blackboard exists"), IncompatibleBlackboard);
-	if (!ParentBlackboard || !CompatibleBlackboard || !IncompatibleBlackboard)
+	if (!ParentBlackboard || !ChildBlackboard || !IncompatibleBlackboard)
 	{
 		return false;
 	}
 
 	AddObjectBlackboardKey(ParentBlackboard, TEXT("TargetActor"));
-	AddBlackboardKey<UBlackboardKeyType_Vector>(CompatibleBlackboard, TEXT("MoveLocation"));
+	AddBlackboardKey<UBlackboardKeyType_Vector>(ChildBlackboard, TEXT("MoveLocation"));
 	AddBlackboardKey<UBlackboardKeyType_Bool>(IncompatibleBlackboard, TEXT("HasTarget"));
-	CompatibleBlackboard->Parent = ParentBlackboard;
+	ChildBlackboard->Parent = ParentBlackboard;
 
-	UBehaviorTree* CompatibleSubtree = MakeExistingBehaviorTreeAsset(CompatibleSubtreeTarget);
+	UBehaviorTree* ParentSubtree = MakeExistingBehaviorTreeAsset(ParentSubtreeTarget);
+	UBehaviorTree* SameSubtree = MakeExistingBehaviorTreeAsset(SameSubtreeTarget);
+	UBehaviorTree* ChildSubtree = MakeExistingBehaviorTreeAsset(ChildSubtreeTarget);
 	UBehaviorTree* IncompatibleSubtree = MakeExistingBehaviorTreeAsset(IncompatibleSubtreeTarget);
-	TestNotNull(TEXT("compatible subtree exists"), CompatibleSubtree);
+	TestNotNull(TEXT("parent subtree exists"), ParentSubtree);
+	TestNotNull(TEXT("same subtree exists"), SameSubtree);
+	TestNotNull(TEXT("child subtree exists"), ChildSubtree);
 	TestNotNull(TEXT("incompatible subtree exists"), IncompatibleSubtree);
-	if (!CompatibleSubtree || !IncompatibleSubtree)
+	if (!ParentSubtree || !SameSubtree || !ChildSubtree || !IncompatibleSubtree)
 	{
 		return false;
 	}
-	CompatibleSubtree->BlackboardAsset = CompatibleBlackboard;
+	ParentSubtree->BlackboardAsset = ParentBlackboard;
+	SameSubtree->BlackboardAsset = ParentBlackboard;
+	ChildSubtree->BlackboardAsset = ChildBlackboard;
 	IncompatibleSubtree->BlackboardAsset = IncompatibleBlackboard;
 
 	FAssetDocumentService Service;
-	TSharedPtr<FJsonObject> CompatibleBody = MakeBehaviorTreeBody(
+	TSharedPtr<FJsonObject> ParentUsesSameSubtreeBody = MakeBehaviorTreeBody(
 		MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)),
-		MakeRunBehaviorTree(CompatibleSubtreeTarget),
+		MakeRunBehaviorTree(SameSubtreeTarget),
 		MakeShared<FJsonObject>());
-	FAssetDocumentValidateRequest CompatibleRequest;
-	CompatibleRequest.Document = MakeBehaviorTreeDocument(Target, CompatibleBody);
-	const FAssetDocumentResult CompatibleResult = Service.Validate(CompatibleRequest);
-	TestTrue(TEXT("subtree with related blackboard validates"), CompatibleResult.IsSuccess());
-	if (!CompatibleResult.IsSuccess())
+	FAssetDocumentValidateRequest ParentUsesSameSubtreeRequest;
+	ParentUsesSameSubtreeRequest.Document = MakeBehaviorTreeDocument(Target, ParentUsesSameSubtreeBody);
+	const FAssetDocumentResult ParentUsesSameSubtreeResult = Service.Validate(ParentUsesSameSubtreeRequest);
+	TestTrue(TEXT("parent blackboard can run same-blackboard subtree"), ParentUsesSameSubtreeResult.IsSuccess());
+	if (!ParentUsesSameSubtreeResult.IsSuccess())
 	{
-		AddError(CompatibleResult.Message);
+		AddError(ParentUsesSameSubtreeResult.Message);
 	}
+
+	TSharedPtr<FJsonObject> ChildUsesParentSubtreeBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(ChildBlackboardTarget)),
+		MakeRunBehaviorTree(ParentSubtreeTarget),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest ChildUsesParentSubtreeRequest;
+	ChildUsesParentSubtreeRequest.Document = MakeBehaviorTreeDocument(Target, ChildUsesParentSubtreeBody);
+	const FAssetDocumentResult ChildUsesParentSubtreeResult = Service.Validate(ChildUsesParentSubtreeRequest);
+	TestTrue(TEXT("child blackboard can run parent-blackboard subtree"), ChildUsesParentSubtreeResult.IsSuccess());
+	if (!ChildUsesParentSubtreeResult.IsSuccess())
+	{
+		AddError(ChildUsesParentSubtreeResult.Message);
+	}
+
+	TSharedPtr<FJsonObject> ChildUsesSameSubtreeBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(ChildBlackboardTarget)),
+		MakeRunBehaviorTree(ChildSubtreeTarget),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest ChildUsesSameSubtreeRequest;
+	ChildUsesSameSubtreeRequest.Document = MakeBehaviorTreeDocument(Target, ChildUsesSameSubtreeBody);
+	const FAssetDocumentResult ChildUsesSameSubtreeResult = Service.Validate(ChildUsesSameSubtreeRequest);
+	TestTrue(TEXT("child blackboard can run same child-blackboard subtree"), ChildUsesSameSubtreeResult.IsSuccess());
+	if (!ChildUsesSameSubtreeResult.IsSuccess())
+	{
+		AddError(ChildUsesSameSubtreeResult.Message);
+	}
+
+	TSharedPtr<FJsonObject> ParentUsesChildSubtreeBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)),
+		MakeRunBehaviorTree(ChildSubtreeTarget),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest ParentUsesChildSubtreeRequest;
+	ParentUsesChildSubtreeRequest.Document = MakeBehaviorTreeDocument(Target, ParentUsesChildSubtreeBody);
+	const FAssetDocumentResult ParentUsesChildSubtreeResult = Service.Validate(ParentUsesChildSubtreeRequest);
+	TestFalse(TEXT("parent blackboard cannot run child-blackboard subtree"), ParentUsesChildSubtreeResult.IsSuccess());
+	TestTrue(TEXT("child subtree mismatch diagnostic is exact"), ResultHasDiagnostic(ParentUsesChildSubtreeResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/RunSubtree/Properties/BehaviorAsset")));
 
 	TSharedPtr<FJsonObject> IncompatibleBody = MakeBehaviorTreeBody(
 		MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)),
@@ -1777,7 +1890,7 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 	TestFalse(TEXT("subtree with unrelated blackboard is rejected"), IncompatibleResult.IsSuccess());
 	TestTrue(TEXT("subtree mismatch diagnostic is exact"), ResultHasDiagnostic(IncompatibleResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/RunSubtree/Properties/BehaviorAsset")));
 
-	const FAssetDocumentResult ApplyCompatible = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, CompatibleBody)));
+	const FAssetDocumentResult ApplyCompatible = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, ParentUsesSameSubtreeBody)));
 	TestTrue(TEXT("compatible subtree fixture apply succeeds"), ApplyCompatible.IsSuccess());
 	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
 	UBTCompositeNode* OriginalRoot = BehaviorTree ? BehaviorTree->RootNode : nullptr;
@@ -1786,7 +1899,7 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 
 	TSharedPtr<FJsonObject> MissingBlackboardBody = MakeBehaviorTreeBody(
 		nullptr,
-		MakeRunBehaviorTree(CompatibleSubtreeTarget),
+		MakeRunBehaviorTree(SameSubtreeTarget),
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult MissingBlackboardApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, MissingBlackboardBody)));
 	TestFalse(TEXT("missing Body.Blackboard for subtree validation is rejected"), MissingBlackboardApply.IsSuccess());
@@ -1841,32 +1954,87 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 		return false;
 	}
 	AddBlackboardKey<UBlackboardKeyType_Bool>(Blackboard, TEXT("HasTarget"));
+	UEnum* CollisionChannelEnum = StaticEnum<ECollisionChannel>();
+	UEnum* CollisionResponseEnum = StaticEnum<ECollisionResponse>();
+	TestNotNull(TEXT("same enum exists"), CollisionChannelEnum);
+	TestNotNull(TEXT("different enum exists"), CollisionResponseEnum);
+	if (!CollisionChannelEnum || !CollisionResponseEnum)
+	{
+		return false;
+	}
+	AddEnumBlackboardKey(Blackboard, TEXT("AlertState"), CollisionChannelEnum);
+	AddNativeEnumBlackboardKey(Blackboard, TEXT("NativeAlertState"), CollisionChannelEnum);
 
 	TSharedPtr<FJsonObject> Selector = MakeSelectorPropertyWithAllowedType(
 		TEXT("HasTarget"),
 		UBlackboardKeyType_Vector::StaticClass()->GetPathName());
-	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
-	Properties->SetObjectField(TEXT("BlackboardKey"), Selector);
-
-	TSharedPtr<FJsonObject> MoveToNode = MakeBtNode(TEXT("MoveToTarget"), TEXT("/Script/AIModule.BTTask_MoveTo"), Properties);
-	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
-	Edge->SetObjectField(TEXT("Child"), MoveToNode);
-	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
-	Root->SetArrayField(TEXT("Children"), {MakeObjectValue(Edge)});
-	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
-	Tree->SetObjectField(TEXT("Root"), Root);
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
-
 	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
 		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
-		Tree,
+		MakeMoveToTreeWithSelector(Selector),
 		MakeShared<FJsonObject>());
 	FAssetDocumentValidateRequest Request;
 	Request.Document = MakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("selector key type mismatch is rejected"), Result.IsSuccess());
 	TestTrue(TEXT("key type mismatch diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+
+	TSharedPtr<FJsonObject> SameEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
+		TEXT("AlertState"),
+		MakeAllowedEnumKeyType(CollisionChannelEnum));
+	TSharedPtr<FJsonObject> SameEnumBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithSelector(SameEnumSelector),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest SameEnumRequest;
+	SameEnumRequest.Document = MakeBehaviorTreeDocument(Target, SameEnumBody);
+	const FAssetDocumentResult SameEnumResult = FAssetDocumentService().Validate(SameEnumRequest);
+	TestTrue(TEXT("selector enum filter accepts the same enum"), SameEnumResult.IsSuccess());
+	if (!SameEnumResult.IsSuccess())
+	{
+		AddError(SameEnumResult.Message);
+	}
+
+	TSharedPtr<FJsonObject> DifferentEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
+		TEXT("AlertState"),
+		MakeAllowedEnumKeyType(CollisionResponseEnum));
+	TSharedPtr<FJsonObject> DifferentEnumBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithSelector(DifferentEnumSelector),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest DifferentEnumRequest;
+	DifferentEnumRequest.Document = MakeBehaviorTreeDocument(Target, DifferentEnumBody);
+	const FAssetDocumentResult DifferentEnumResult = FAssetDocumentService().Validate(DifferentEnumRequest);
+	TestFalse(TEXT("selector enum filter rejects a different enum"), DifferentEnumResult.IsSuccess());
+	TestTrue(TEXT("enum mismatch diagnostic is exact"), ResultHasDiagnostic(DifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+
+	TSharedPtr<FJsonObject> NativeSameEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
+		TEXT("NativeAlertState"),
+		MakeAllowedEnumKeyType(CollisionChannelEnum));
+	TSharedPtr<FJsonObject> NativeSameEnumBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithSelector(NativeSameEnumSelector),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest NativeSameEnumRequest;
+	NativeSameEnumRequest.Document = MakeBehaviorTreeDocument(Target, NativeSameEnumBody);
+	const FAssetDocumentResult NativeSameEnumResult = FAssetDocumentService().Validate(NativeSameEnumRequest);
+	TestTrue(TEXT("selector enum filter accepts deprecated native enum with the same enum"), NativeSameEnumResult.IsSuccess());
+	if (!NativeSameEnumResult.IsSuccess())
+	{
+		AddError(NativeSameEnumResult.Message);
+	}
+
+	TSharedPtr<FJsonObject> NativeDifferentEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
+		TEXT("NativeAlertState"),
+		MakeAllowedEnumKeyType(CollisionResponseEnum));
+	TSharedPtr<FJsonObject> NativeDifferentEnumBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithSelector(NativeDifferentEnumSelector),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest NativeDifferentEnumRequest;
+	NativeDifferentEnumRequest.Document = MakeBehaviorTreeDocument(Target, NativeDifferentEnumBody);
+	const FAssetDocumentResult NativeDifferentEnumResult = FAssetDocumentService().Validate(NativeDifferentEnumRequest);
+	TestFalse(TEXT("selector enum filter rejects deprecated native enum with a different enum"), NativeDifferentEnumResult.IsSuccess());
+	TestTrue(TEXT("native enum mismatch diagnostic is exact"), ResultHasDiagnostic(NativeDifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
 	return true;
 }
 
