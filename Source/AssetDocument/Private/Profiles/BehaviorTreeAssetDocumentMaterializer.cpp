@@ -10,7 +10,6 @@
 
 #include "BehaviorTreeGraph.h"
 #include "BehaviorTreeGraphNode.h"
-#include "BehaviorTreeGraphNode_Root.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraphSchema_BehaviorTree.h"
@@ -22,6 +21,7 @@
 #include "BehaviorTree/BehaviorTreeTypes.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "Dom/JsonValue.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
 
@@ -1552,40 +1552,6 @@ void CollectSpecIds(const FBehaviorTreeSpec& Spec, TSet<FString>& OutIds)
 	CollectNodeIds(Spec.Root, OutIds);
 }
 
-bool GraphHasRootNode(const UBehaviorTreeGraph* Graph)
-{
-	if (!Graph)
-	{
-		return false;
-	}
-	for (const UEdGraphNode* Node : Graph->Nodes)
-	{
-		if (Cast<UBehaviorTreeGraphNode_Root>(Node))
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
-void CreateDefaultBehaviorTreeGraphNodes(UBehaviorTreeGraph* Graph)
-{
-	if (!Graph)
-	{
-		return;
-	}
-
-	const UEdGraphSchema* Schema = Graph->GetSchema();
-	if (!Schema)
-	{
-		Schema = GetDefault<UEdGraphSchema_BehaviorTree>();
-	}
-	if (Schema)
-	{
-		Schema->CreateDefaultNodesForGraph(*Graph);
-	}
-}
-
 FAssetDocumentCapabilityResult RebuildBehaviorTreeEditorGraph(
 	UBehaviorTree* BehaviorTree,
 	bool bForceRebuild,
@@ -1598,14 +1564,29 @@ FAssetDocumentCapabilityResult RebuildBehaviorTreeEditorGraph(
 	}
 
 #if WITH_EDITOR
-	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
-	if (!Graph)
+	UBehaviorTreeGraph* PreviousGraph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	UBehaviorTreeGraph* Graph = PreviousGraph;
+	UBlackboardData* DesiredBlackboard = BehaviorTree->BlackboardAsset;
+	const bool bCreateGraph = bForceRebuild || !Graph;
+	if (bCreateGraph)
 	{
-		BehaviorTree->BTGraph = NewObject<UBehaviorTreeGraph>(
+		const FName TemporaryGraphName = MakeUniqueObjectName(
 			BehaviorTree,
-			TEXT("BehaviorTree"),
-			RF_Transactional);
-		Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+			UBehaviorTreeGraph::StaticClass(),
+			bForceRebuild ? TEXT("Behavior Tree Rebuild") : TEXT("Behavior Tree"));
+		UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+			BehaviorTree,
+			TemporaryGraphName,
+			UBehaviorTreeGraph::StaticClass(),
+			UEdGraphSchema_BehaviorTree::StaticClass());
+		Graph = Cast<UBehaviorTreeGraph>(NewGraph);
+		if (!Graph)
+		{
+			BehaviorTree->BTGraph = PreviousGraph;
+			BehaviorTree->BlackboardAsset = DesiredBlackboard;
+			return Failure(TEXT("/Body/EditorLayout"), TEXT("MissingBehaviorTreeEditorGraph"), TEXT("Failed to create UBehaviorTreeGraph"));
+		}
+		BehaviorTree->BTGraph = Graph;
 		bOutChanged = true;
 	}
 
@@ -1616,29 +1597,38 @@ FAssetDocumentCapabilityResult RebuildBehaviorTreeEditorGraph(
 
 	Graph->Modify();
 	Graph->LockUpdates();
-	if (bForceRebuild)
+	if (const UEdGraphSchema* Schema = Graph->GetSchema())
 	{
-		Graph->Nodes.Reset();
-		CreateDefaultBehaviorTreeGraphNodes(Graph);
-		bOutChanged = true;
+		Schema->CreateDefaultNodesForGraph(*Graph);
 	}
-	else if (!GraphHasRootNode(Graph))
+	if (bCreateGraph)
 	{
-		CreateDefaultBehaviorTreeGraphNodes(Graph);
-		bOutChanged = true;
+		Graph->OnCreated();
 	}
 
-	if (GraphHasRootNode(Graph))
-	{
-		Graph->SpawnMissingNodes();
-		Graph->UpdatePinConnectionTypes();
-		Graph->Initialize();
-	}
+	Graph->SpawnMissingNodes();
+	Graph->UpdatePinConnectionTypes();
+	Graph->Initialize();
 	Graph->UnlockUpdates();
 
-	if (bOutChanged)
+	BehaviorTree->BlackboardAsset = DesiredBlackboard;
+	Graph->UpdateClassData();
+	BehaviorTree->BlackboardAsset = DesiredBlackboard;
+	Graph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
+	BehaviorTree->BlackboardAsset = DesiredBlackboard;
+
+	if (bCreateGraph && PreviousGraph && PreviousGraph != Graph)
 	{
-		Graph->MarkPackageDirty();
+		PreviousGraph->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		Graph->Rename(TEXT("Behavior Tree"), BehaviorTree, REN_DontCreateRedirectors | REN_NonTransactional);
+		BehaviorTree->BTGraph = Graph;
+	}
+
+	Graph->NotifyGraphChanged();
+	Graph->MarkPackageDirty();
+	if (!bOutChanged)
+	{
+		bOutChanged = true;
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Rebuilt BehaviorTree editor graph"));
@@ -1849,7 +1839,7 @@ void AddGraphNodeMapping(
 		const FString Id = IdForNode(NodeInstance, ExtractContext);
 		if (!Id.IsEmpty())
 		{
-			OutNodesById.FindOrAdd(Id, GraphNode);
+			OutNodesById.Add(Id, GraphNode);
 		}
 	}
 
@@ -1942,6 +1932,50 @@ void RestoreGraphNodeInstances(
 			}
 		}
 	}
+}
+
+bool RemoveDuplicateTopLevelGraphNodesById(UBehaviorTreeGraph* Graph, const UBehaviorTree* BehaviorTree)
+{
+	if (!Graph || !BehaviorTree)
+	{
+		return false;
+	}
+
+	bool bChanged = false;
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
+	TMap<FString, UBehaviorTreeGraphNode*> LastNodeById;
+	TSet<UBehaviorTreeGraphNode*> NodesToRemove;
+	for (UEdGraphNode* GraphNode : Graph->Nodes)
+	{
+		UBehaviorTreeGraphNode* BTGraphNode = Cast<UBehaviorTreeGraphNode>(GraphNode);
+		const UBTNode* NodeInstance = BTGraphNode ? Cast<UBTNode>(BTGraphNode->NodeInstance) : nullptr;
+		if (!NodeInstance)
+		{
+			continue;
+		}
+
+		const FString Id = IdForNode(NodeInstance, ExtractContext);
+		if (Id.IsEmpty())
+		{
+			continue;
+		}
+
+		if (UBehaviorTreeGraphNode* const* Existing = LastNodeById.Find(Id))
+		{
+			NodesToRemove.Add(*Existing);
+			bChanged = true;
+		}
+		LastNodeById.Add(Id, BTGraphNode);
+	}
+
+	for (UBehaviorTreeGraphNode* Node : NodesToRemove)
+	{
+		if (Node)
+		{
+			Graph->RemoveNode(Node);
+		}
+	}
+	return bChanged;
 }
 
 FAssetDocumentCapabilityResult ExtractAttachment(
@@ -2492,6 +2526,10 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 		TMap<FString, UBTNode*> SemanticNodesById;
 		CollectSemanticNodesById(BehaviorTree, SemanticNodesById);
 		RestoreGraphNodeInstances(GraphNodeIds, SemanticNodesById);
+		if (RemoveDuplicateTopLevelGraphNodesById(Graph, BehaviorTree))
+		{
+			Graph->MarkPackageDirty();
+		}
 	}
 	bOutChanged = bOutChanged || bGraphChanged;
 	BehaviorTree->MarkPackageDirty();
@@ -2619,6 +2657,11 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::RebuildEd
 	TMap<FString, UBTNode*> SemanticNodesById;
 	CollectSemanticNodesById(BehaviorTree, SemanticNodesById);
 	RestoreGraphNodeInstances(GraphNodeIds, SemanticNodesById);
+	if (RemoveDuplicateTopLevelGraphNodesById(Graph, BehaviorTree))
+	{
+		bOutChanged = true;
+		Graph->MarkPackageDirty();
+	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Rebuilt BehaviorTree editor graph without changing semantic tree"));
 }
 
