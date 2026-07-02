@@ -243,6 +243,16 @@ UAnimationGraph* CreateTransientAnimGraph(UAnimBlueprint*& OutAnimBlueprint)
 	return Cast<UAnimationGraph>(NewGraph);
 }
 
+UEdGraph* CreateSchemaBackedGraph(TSubclassOf<UEdGraphSchema> SchemaClass)
+{
+	UEdGraph* Graph = NewObject<UEdGraph>(GetTransientPackage());
+	if (Graph)
+	{
+		Graph->Schema = SchemaClass;
+	}
+	return Graph;
+}
+
 UEdGraphPin* FindFakePin(
 	const TSharedRef<FFakeAnimationGraphCandidateProvider>& Provider,
 	const FString& NodeId,
@@ -250,6 +260,39 @@ UEdGraphPin* FindFakePin(
 {
 	UEdGraphNode** Node = Provider->SpawnedNodesById.Find(NodeId);
 	return Node && *Node ? (*Node)->FindPin(FName(*PinName)) : nullptr;
+}
+
+UEdGraphNode* AddUnmanagedNode(
+	UEdGraph* Graph,
+	const FString& PinName,
+	EEdGraphPinDirection PinDirection,
+	int32 X = 0,
+	int32 Y = 0)
+{
+	UEdGraphNode* Node = Graph ? NewObject<UEdGraphNode>(Graph) : nullptr;
+	if (!Node)
+	{
+		return nullptr;
+	}
+	Graph->AddNode(Node, false, false);
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	Node->CreatePin(PinDirection, TEXT("Wildcard"), FName(*PinName));
+	return Node;
+}
+
+const TArray<TSharedPtr<FJsonValue>>* GetSkippedArray(
+	const FAssetDocumentGraphSpec& Graph,
+	const FString& FieldName)
+{
+	if (!Graph.UnderscoreSkipped.IsValid() || Graph.UnderscoreSkipped->Type != EJson::Object)
+	{
+		return nullptr;
+	}
+
+	const TSharedPtr<FJsonObject> SkippedObject = Graph.UnderscoreSkipped->AsObject();
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	return SkippedObject.IsValid() && SkippedObject->TryGetArrayField(FieldName, Values) ? Values : nullptr;
 }
 }
 
@@ -805,6 +848,13 @@ bool FAssetDocumentAnimationGraphRuntimeFailedLinkApplyPreservesExistingLinksTes
 	UEdGraphPin* OutPin = FindFakePin(Provider, TEXT("Source"), TEXT("Out"));
 	UEdGraphPin* InPin = FindFakePin(Provider, TEXT("Target"), TEXT("In"));
 	TestTrue(TEXT("Base link exists before bad apply"), OutPin && InPin && OutPin->LinkedTo.Contains(InPin));
+	UEdGraphNode* UnmanagedNode = AddUnmanagedNode(Hook.CreatedGraph, TEXT("FrameworkIn"), EGPD_Input);
+	UEdGraphPin* FrameworkIn = UnmanagedNode ? UnmanagedNode->FindPin(TEXT("FrameworkIn")) : nullptr;
+	if (OutPin && FrameworkIn)
+	{
+		OutPin->MakeLinkTo(FrameworkIn);
+	}
+	TestTrue(TEXT("Managed-to-unmanaged link exists before bad apply"), OutPin && FrameworkIn && OutPin->LinkedTo.Contains(FrameworkIn));
 
 	FAssetDocumentGraphSpec BadGraph = BaseGraph;
 	BadGraph.Links.Reset();
@@ -814,6 +864,184 @@ bool FAssetDocumentAnimationGraphRuntimeFailedLinkApplyPreservesExistingLinksTes
 	TestEqual(TEXT("Bad apply fails on unresolved endpoint"), FirstDiagnosticCode(BadResult), FString(TEXT("UnresolvedGraphLinkEndpoint")));
 	TestTrue(TEXT("Failed link apply preserves existing output link"), OutPin && InPin && OutPin->LinkedTo.Contains(InPin));
 	TestTrue(TEXT("Failed link apply preserves existing input link"), OutPin && InPin && InPin->LinkedTo.Contains(OutPin));
+	TestTrue(TEXT("Failed link apply preserves managed-to-unmanaged output link"), OutPin && FrameworkIn && OutPin->LinkedTo.Contains(FrameworkIn));
+	TestTrue(TEXT("Failed link apply preserves managed-to-unmanaged input link"), OutPin && FrameworkIn && FrameworkIn->LinkedTo.Contains(OutPin));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeApplyPreservesManagedToUnmanagedLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ApplyPreservesManagedToUnmanagedLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeApplyPreservesManagedToUnmanagedLinksTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+
+	const FAssetDocumentCapabilityResult BaseResult = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("Base apply creates managed nodes"), BaseResult.bSuccess);
+
+	UEdGraphPin* SourceOut = FindFakePin(Provider, TEXT("Source"), TEXT("Out"));
+	UEdGraphNode* UnmanagedNode = AddUnmanagedNode(Hook.CreatedGraph, TEXT("FrameworkIn"), EGPD_Input);
+	UEdGraphPin* FrameworkIn = UnmanagedNode ? UnmanagedNode->FindPin(TEXT("FrameworkIn")) : nullptr;
+	if (SourceOut && FrameworkIn)
+	{
+		SourceOut->MakeLinkTo(FrameworkIn);
+	}
+	TestTrue(TEXT("Managed-to-unmanaged link exists before managed apply"), SourceOut && FrameworkIn && SourceOut->LinkedTo.Contains(FrameworkIn));
+
+	Graph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("In")));
+	const FAssetDocumentCapabilityResult ApplyResult = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("Managed-managed apply succeeds"), ApplyResult.bSuccess);
+	TestTrue(TEXT("Managed-to-unmanaged output link is preserved"), SourceOut && FrameworkIn && SourceOut->LinkedTo.Contains(FrameworkIn));
+	TestTrue(TEXT("Managed-to-unmanaged input link is preserved"), SourceOut && FrameworkIn && FrameworkIn->LinkedTo.Contains(SourceOut));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractSkipsManagedToUnmanagedLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractSkipsManagedToUnmanagedLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractSkipsManagedToUnmanagedLinksTest::RunTest(const FString&)
+{
+	FAssetDocumentAnimationGraphRuntime Runtime;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	Context.Graph = NewObject<UEdGraph>(GetTransientPackage());
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec SourceSpec = MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath());
+	UEdGraphNode* SourceNode = AddManagedEditorNode(Context.Graph, SourceGraph, SourceSpec, 0, 0);
+	UEdGraphPin* SourceOut = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out")) : nullptr;
+	UEdGraphNode* UnmanagedNode = AddUnmanagedNode(Context.Graph, TEXT("FrameworkIn"), EGPD_Input, 200, 0);
+	UEdGraphPin* FrameworkIn = UnmanagedNode ? UnmanagedNode->FindPin(TEXT("FrameworkIn")) : nullptr;
+	if (SourceOut && FrameworkIn)
+	{
+		SourceOut->MakeLinkTo(FrameworkIn);
+	}
+
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
+	TestTrue(TEXT("Extract succeeds with managed-to-unmanaged link"), Result.bSuccess);
+	TestEqual(TEXT("Managed-to-unmanaged link is not emitted as authored link"), ExtractedGraph.Links.Num(), 0);
+	const TArray<TSharedPtr<FJsonValue>>* SkippedLinks = GetSkippedArray(ExtractedGraph, TEXT("Links"));
+	TestNotNull(TEXT("Managed-to-unmanaged link emits _Skipped.Links"), SkippedLinks);
+	if (SkippedLinks && SkippedLinks->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> SkippedLink = (*SkippedLinks)[0]->AsObject();
+		TestEqual(TEXT("Skipped link reason is explicit"), SkippedLink->GetStringField(TEXT("Reason")), FString(TEXT("UnmanagedGraphLinkEndpoint")));
+		TestEqual(TEXT("Skipped link records managed node"), SkippedLink->GetStringField(TEXT("ManagedNode")), FString(TEXT("Source")));
+		TestEqual(TEXT("Skipped link records unmanaged pin"), SkippedLink->GetStringField(TEXT("UnmanagedPin")), FString(TEXT("FrameworkIn")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractSkipsAmbiguousManagedPinLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractSkipsAmbiguousManagedPinLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractSkipsAmbiguousManagedPinLinksTest::RunTest(const FString&)
+{
+	FAssetDocumentAnimationGraphRuntime Runtime;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	Context.Graph = NewObject<UEdGraph>(GetTransientPackage());
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec SourceSpec = MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath());
+	FAssetDocumentNodeSpec TargetSpec = MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath());
+	UEdGraphNode* SourceNode = AddManagedEditorNode(Context.Graph, SourceGraph, SourceSpec, 0, 0);
+	UEdGraphNode* TargetNode = AddManagedEditorNode(Context.Graph, SourceGraph, TargetSpec, 200, 0);
+	UEdGraphPin* AmbiguousOut = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out")) : nullptr;
+	if (SourceNode)
+	{
+		SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out"));
+	}
+	UEdGraphPin* TargetIn = TargetNode ? TargetNode->CreatePin(EGPD_Input, TEXT("Wildcard"), TEXT("In")) : nullptr;
+	if (AmbiguousOut && TargetIn)
+	{
+		AmbiguousOut->MakeLinkTo(TargetIn);
+	}
+
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
+	TestTrue(TEXT("Extract succeeds with ambiguous managed pin"), Result.bSuccess);
+	TestEqual(TEXT("Ambiguous managed pin link is not emitted as authored link"), ExtractedGraph.Links.Num(), 0);
+	const TArray<TSharedPtr<FJsonValue>>* SkippedLinks = GetSkippedArray(ExtractedGraph, TEXT("Links"));
+	TestNotNull(TEXT("Ambiguous managed pin link emits _Skipped.Links"), SkippedLinks);
+	if (SkippedLinks && SkippedLinks->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> SkippedLink = (*SkippedLinks)[0]->AsObject();
+		TestEqual(TEXT("Skipped ambiguous pin reason is explicit"), SkippedLink->GetStringField(TEXT("Reason")), FString(TEXT("AmbiguousManagedGraphPin")));
+		TestEqual(TEXT("Skipped ambiguous pin records node"), SkippedLink->GetStringField(TEXT("ManagedNode")), FString(TEXT("Source")));
+		TestEqual(TEXT("Skipped ambiguous pin records pin"), SkippedLink->GetStringField(TEXT("ManagedPin")), FString(TEXT("Out")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeSchemaBackedGraphRejectRollbackPreservesLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.SchemaBackedGraphRejectRollbackPreservesLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeSchemaBackedGraphRejectRollbackPreservesLinksTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	UEdGraph* GraphObject = CreateSchemaBackedGraph(UEdGraphSchema::StaticClass());
+	TestNotNull(TEXT("Schema-backed graph is created"), GraphObject);
+	TestNotNull(TEXT("Schema-backed graph resolves schema"), GraphObject ? GraphObject->GetSchema() : nullptr);
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.Graph = GraphObject;
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+
+	const FAssetDocumentCapabilityResult BaseResult = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("Schema-backed base apply succeeds"), BaseResult.bSuccess);
+	UEdGraphPin* SourceOut = FindFakePin(Provider, TEXT("Source"), TEXT("Out"));
+	UEdGraphPin* TargetIn = FindFakePin(Provider, TEXT("Target"), TEXT("In"));
+	if (SourceOut && TargetIn)
+	{
+		SourceOut->MakeLinkTo(TargetIn);
+	}
+	TestTrue(TEXT("Existing schema-backed managed link is present before reapply"), SourceOut && TargetIn && SourceOut->LinkedTo.Contains(TargetIn));
+
+	FAssetDocumentGraphSpec ReapplyGraph = Graph;
+	ReapplyGraph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("In")));
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(ReapplyGraph, Context, Hook);
+	TestFalse(TEXT("Schema-backed authored link is rejected by schema"), Result.bSuccess);
+	TestEqual(TEXT("Schema-backed rejection reports invalid link type"), FirstDiagnosticCode(Result), FString(TEXT("InvalidGraphLinkType")));
+	TestTrue(TEXT("Schema-backed rollback preserves output link"), SourceOut && TargetIn && SourceOut->LinkedTo.Contains(TargetIn));
+	TestTrue(TEXT("Schema-backed rollback preserves input link"), SourceOut && TargetIn && TargetIn->LinkedTo.Contains(SourceOut));
 	return true;
 }
 

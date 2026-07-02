@@ -130,7 +130,32 @@ TSharedRef<FJsonObject> MakeSkippedNodeObject(const UEdGraphNode* Node)
 
 bool IsPinNameRepresentable(const UEdGraphPin* Pin)
 {
-	return Pin && !Pin->PinName.IsNone() && !Pin->PinName.ToString().IsEmpty();
+	if (!Pin || Pin->PinName.IsNone())
+	{
+		return false;
+	}
+
+	const FString PinName = Pin->PinName.ToString();
+	if (PinName.IsEmpty())
+	{
+		return false;
+	}
+
+	const TCHAR First = PinName[0];
+	if (!FChar::IsAlpha(First) && First != TEXT('_'))
+	{
+		return false;
+	}
+
+	for (int32 Index = 1; Index < PinName.Len(); ++Index)
+	{
+		const TCHAR Character = PinName[Index];
+		if (!FChar::IsAlnum(Character) && Character != TEXT('_') && Character != TEXT('-'))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 UEdGraphNode* FindManagedNodeById(const FString& NodeId, const FAssetDocumentAnimationGraphContext& Context)
@@ -211,24 +236,6 @@ UEdGraphPin* FindUniquePinByName(
 	return Matches[0];
 }
 
-void BreakAllManagedNodeLinks(const TMap<FString, UEdGraphNode*>& NodesById)
-{
-	for (const TPair<FString, UEdGraphNode*>& Pair : NodesById)
-	{
-		if (!Pair.Value)
-		{
-			continue;
-		}
-		for (UEdGraphPin* Pin : Pair.Value->Pins)
-		{
-			if (Pin)
-			{
-				Pin->BreakAllPinLinks();
-			}
-		}
-	}
-}
-
 struct FResolvedAnimationGraphLink
 {
 	FAssetDocumentLinkSpec Link;
@@ -236,23 +243,266 @@ struct FResolvedAnimationGraphLink
 	UEdGraphPin* ToPin = nullptr;
 };
 
-void AddExtractedManagedLinks(
-	const TArray<UEdGraphNode*>& GraphNodes,
-	const TMap<const UEdGraphNode*, FString>& NodeIds,
-	FAssetDocumentGraphSpec& OutGraph)
+struct FManagedGraphLinkSnapshotEntry
 {
-	TSet<FString> LinkKeys;
-	for (UEdGraphNode* Node : GraphNodes)
+	UEdGraphPin* FromPin = nullptr;
+	UEdGraphPin* ToPin = nullptr;
+};
+
+TSet<UEdGraphNode*> MakeManagedNodeSet(const TMap<FString, UEdGraphNode*>& NodesById)
+{
+	TSet<UEdGraphNode*> ManagedNodes;
+	for (const TPair<FString, UEdGraphNode*>& Pair : NodesById)
 	{
-		const FString* FromNodeId = NodeIds.Find(Node);
-		if (!FromNodeId)
+		if (Pair.Value)
+		{
+			ManagedNodes.Add(Pair.Value);
+		}
+	}
+	return ManagedNodes;
+}
+
+TArray<FManagedGraphLinkSnapshotEntry> SnapshotManagedManagedLinks(const TMap<FString, UEdGraphNode*>& NodesById)
+{
+	TArray<FManagedGraphLinkSnapshotEntry> Snapshot;
+	TSet<FString> LinkKeys;
+	const TSet<UEdGraphNode*> ManagedNodes = MakeManagedNodeSet(NodesById);
+	for (UEdGraphNode* Node : ManagedNodes)
+	{
+		if (!Node)
 		{
 			continue;
 		}
 
 		for (UEdGraphPin* Pin : Node->Pins)
 		{
-			if (!Pin || Pin->Direction != EGPD_Output || !IsPinNameRepresentable(Pin))
+			if (!Pin || Pin->Direction != EGPD_Output)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (!LinkedPin || !ManagedNodes.Contains(LinkedPin->GetOwningNode()))
+				{
+					continue;
+				}
+
+				const FString LinkKey = FString::Printf(
+					TEXT("%p->%p"),
+					static_cast<void*>(Pin),
+					static_cast<void*>(LinkedPin));
+				if (LinkKeys.Contains(LinkKey))
+				{
+					continue;
+				}
+				LinkKeys.Add(LinkKey);
+
+				FManagedGraphLinkSnapshotEntry Entry;
+				Entry.FromPin = Pin;
+				Entry.ToPin = LinkedPin;
+				Snapshot.Add(Entry);
+			}
+		}
+	}
+	return Snapshot;
+}
+
+void BreakManagedManagedLinks(const TMap<FString, UEdGraphNode*>& NodesById)
+{
+	TArray<FManagedGraphLinkSnapshotEntry> LinksToBreak = SnapshotManagedManagedLinks(NodesById);
+	for (const FManagedGraphLinkSnapshotEntry& Link : LinksToBreak)
+	{
+		if (Link.FromPin && Link.ToPin)
+		{
+			Link.FromPin->BreakLinkTo(Link.ToPin);
+		}
+	}
+}
+
+void RestoreManagedManagedLinks(
+	const TMap<FString, UEdGraphNode*>& NodesById,
+	const TArray<FManagedGraphLinkSnapshotEntry>& Snapshot)
+{
+	BreakManagedManagedLinks(NodesById);
+	for (const FManagedGraphLinkSnapshotEntry& Link : Snapshot)
+	{
+		if (Link.FromPin && Link.ToPin && !Link.FromPin->LinkedTo.Contains(Link.ToPin))
+		{
+			Link.FromPin->MakeLinkTo(Link.ToPin);
+		}
+	}
+}
+
+struct FManagedPinNameCounts
+{
+	TMap<FString, int32> InputCounts;
+	TMap<FString, int32> OutputCounts;
+};
+
+void IncrementPinCount(TMap<FString, int32>& Counts, const FString& PinName)
+{
+	int32& Count = Counts.FindOrAdd(PinName);
+	++Count;
+}
+
+TMap<const UEdGraphNode*, FManagedPinNameCounts> BuildManagedPinNameCounts(const TMap<const UEdGraphNode*, FString>& NodeIds)
+{
+	TMap<const UEdGraphNode*, FManagedPinNameCounts> CountsByNode;
+	for (const TPair<const UEdGraphNode*, FString>& Pair : NodeIds)
+	{
+		const UEdGraphNode* Node = Pair.Key;
+		if (!Node)
+		{
+			continue;
+		}
+
+		FManagedPinNameCounts& Counts = CountsByNode.FindOrAdd(Node);
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->PinName.IsNone())
+			{
+				continue;
+			}
+			const FString PinName = Pin->PinName.ToString();
+			if (Pin->Direction == EGPD_Input)
+			{
+				IncrementPinCount(Counts.InputCounts, PinName);
+			}
+			else if (Pin->Direction == EGPD_Output)
+			{
+				IncrementPinCount(Counts.OutputCounts, PinName);
+			}
+		}
+	}
+	return CountsByNode;
+}
+
+bool IsUniqueRepresentableManagedPin(
+	const UEdGraphPin* Pin,
+	const TMap<const UEdGraphNode*, FManagedPinNameCounts>& CountsByNode)
+{
+	if (!IsPinNameRepresentable(Pin))
+	{
+		return false;
+	}
+
+	const UEdGraphNode* Node = Pin->GetOwningNode();
+	const FManagedPinNameCounts* Counts = CountsByNode.Find(Node);
+	if (!Counts)
+	{
+		return false;
+	}
+
+	const FString PinName = Pin->PinName.ToString();
+	const TMap<FString, int32>& DirectionCounts =
+		Pin->Direction == EGPD_Input ? Counts->InputCounts : Counts->OutputCounts;
+	const int32* Count = DirectionCounts.Find(PinName);
+	return Count && *Count == 1;
+}
+
+FString PinDirectionString(const UEdGraphPin* Pin)
+{
+	if (!Pin)
+	{
+		return FString();
+	}
+	return Pin->Direction == EGPD_Input ? TEXT("Input") : Pin->Direction == EGPD_Output ? TEXT("Output") : TEXT("Unknown");
+}
+
+void AddUnmanagedEndpointFields(TSharedRef<FJsonObject> Object, const FString& Prefix, const UEdGraphPin* Pin)
+{
+	const UEdGraphNode* Node = Pin ? Pin->GetOwningNode() : nullptr;
+	Object->SetStringField(Prefix + TEXT("Class"), Node && Node->GetClass() ? Node->GetClass()->GetPathName() : FString());
+	Object->SetStringField(Prefix + TEXT("Title"), Node ? Node->GetNodeTitle(ENodeTitleType::ListView).ToString() : FString());
+	Object->SetStringField(Prefix + TEXT("NodeGuid"), Node ? Node->NodeGuid.ToString(EGuidFormats::Digits) : FString());
+	Object->SetStringField(Prefix + TEXT("Pin"), Pin ? Pin->PinName.ToString() : FString());
+	Object->SetStringField(Prefix + TEXT("PinDirection"), PinDirectionString(Pin));
+}
+
+TSharedRef<FJsonObject> MakeUnmanagedLinkSkippedObject(
+	const FString& ManagedNodeId,
+	const UEdGraphPin* ManagedPin,
+	const UEdGraphPin* UnmanagedPin)
+{
+	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetStringField(TEXT("Reason"), TEXT("UnmanagedGraphLinkEndpoint"));
+	Skipped->SetStringField(TEXT("ManagedNode"), ManagedNodeId);
+	Skipped->SetStringField(TEXT("ManagedPin"), ManagedPin ? ManagedPin->PinName.ToString() : FString());
+	Skipped->SetStringField(TEXT("ManagedPinDirection"), PinDirectionString(ManagedPin));
+	AddUnmanagedEndpointFields(Skipped, TEXT("Unmanaged"), UnmanagedPin);
+	return Skipped;
+}
+
+TSharedRef<FJsonObject> MakeManagedPinSkippedObject(
+	const FString& Reason,
+	const FString& ManagedNodeId,
+	const UEdGraphPin* ManagedPin)
+{
+	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetStringField(TEXT("Reason"), Reason);
+	Skipped->SetStringField(TEXT("ManagedNode"), ManagedNodeId);
+	Skipped->SetStringField(TEXT("ManagedPin"), ManagedPin ? ManagedPin->PinName.ToString() : FString());
+	Skipped->SetStringField(TEXT("ManagedPinDirection"), PinDirectionString(ManagedPin));
+	return Skipped;
+}
+
+FString ManagedPinSkipReason(
+	const UEdGraphPin* Pin,
+	const TMap<const UEdGraphNode*, FManagedPinNameCounts>& CountsByNode)
+{
+	if (!IsPinNameRepresentable(Pin))
+	{
+		return TEXT("UnrepresentableManagedGraphPin");
+	}
+
+	const UEdGraphNode* Node = Pin ? Pin->GetOwningNode() : nullptr;
+	const FManagedPinNameCounts* Counts = CountsByNode.Find(Node);
+	const FString PinName = Pin ? Pin->PinName.ToString() : FString();
+	const TMap<FString, int32>* DirectionCounts = nullptr;
+	if (Counts && Pin)
+	{
+		DirectionCounts = Pin->Direction == EGPD_Input ? &Counts->InputCounts : &Counts->OutputCounts;
+	}
+	const int32* Count = DirectionCounts ? DirectionCounts->Find(PinName) : nullptr;
+	return Count && *Count > 1 ? TEXT("AmbiguousManagedGraphPin") : TEXT("UnrepresentableManagedGraphPin");
+}
+
+void AddManagedPinSkippedLink(
+	TArray<TSharedPtr<FJsonValue>>& SkippedLinks,
+	const FString& ManagedNodeId,
+	const UEdGraphPin* ManagedPin,
+	const TMap<const UEdGraphNode*, FManagedPinNameCounts>& CountsByNode)
+{
+	SkippedLinks.Add(MakeShared<FJsonValueObject>(
+		MakeManagedPinSkippedObject(ManagedPinSkipReason(ManagedPin, CountsByNode), ManagedNodeId, ManagedPin)));
+}
+
+void AddManagedUnmanagedSkippedLink(
+	TArray<TSharedPtr<FJsonValue>>& SkippedLinks,
+	const FString& ManagedNodeId,
+	const UEdGraphPin* ManagedPin,
+	const UEdGraphPin* UnmanagedPin)
+{
+	SkippedLinks.Add(MakeShared<FJsonValueObject>(
+		MakeUnmanagedLinkSkippedObject(ManagedNodeId, ManagedPin, UnmanagedPin)));
+}
+
+void AddExtractedManagedLinks(
+	const TArray<UEdGraphNode*>& GraphNodes,
+	const TMap<const UEdGraphNode*, FString>& NodeIds,
+	FAssetDocumentGraphSpec& OutGraph,
+	TArray<TSharedPtr<FJsonValue>>& SkippedLinks)
+{
+	const TMap<const UEdGraphNode*, FManagedPinNameCounts> CountsByNode = BuildManagedPinNameCounts(NodeIds);
+	TSet<FString> LinkKeys;
+	for (UEdGraphNode* Node : GraphNodes)
+	{
+		const FString* FromNodeId = NodeIds.Find(Node);
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output)
 			{
 				continue;
 			}
@@ -261,8 +511,28 @@ void AddExtractedManagedLinks(
 			{
 				const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
 				const FString* ToNodeId = NodeIds.Find(LinkedNode);
-				if (!ToNodeId || !IsPinNameRepresentable(LinkedPin))
+				if (!FromNodeId && !ToNodeId)
 				{
+					continue;
+				}
+				if (!FromNodeId)
+				{
+					AddManagedUnmanagedSkippedLink(SkippedLinks, *ToNodeId, LinkedPin, Pin);
+					continue;
+				}
+				if (!ToNodeId)
+				{
+					AddManagedUnmanagedSkippedLink(SkippedLinks, *FromNodeId, Pin, LinkedPin);
+					continue;
+				}
+				if (!IsUniqueRepresentableManagedPin(Pin, CountsByNode))
+				{
+					AddManagedPinSkippedLink(SkippedLinks, *FromNodeId, Pin, CountsByNode);
+					continue;
+				}
+				if (!IsUniqueRepresentableManagedPin(LinkedPin, CountsByNode))
+				{
+					AddManagedPinSkippedLink(SkippedLinks, *ToNodeId, LinkedPin, CountsByNode);
 					continue;
 				}
 
@@ -615,7 +885,8 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 		ResolvedLinks.Add(MoveTemp(ResolvedLink));
 	}
 
-	BreakAllManagedNodeLinks(NodesById);
+	const TArray<FManagedGraphLinkSnapshotEntry> LinkSnapshot = SnapshotManagedManagedLinks(NodesById);
+	BreakManagedManagedLinks(NodesById);
 
 	for (const FResolvedAnimationGraphLink& ResolvedLink : ResolvedLinks)
 	{
@@ -623,6 +894,7 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 		{
 			if (!Schema->TryCreateConnection(ResolvedLink.FromPin, ResolvedLink.ToPin))
 			{
+				RestoreManagedManagedLinks(NodesById, LinkSnapshot);
 				return RuntimeFailure(
 					LinkPath(GraphSpec, ResolvedLink.Link, Context),
 					TEXT("InvalidGraphLinkType"),
@@ -732,12 +1004,20 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph
 		OutGraph.Nodes.Add(MoveTemp(NodeSpec));
 	}
 
-	AddExtractedManagedLinks(Context.Graph->Nodes, NodeIds, OutGraph);
+	TArray<TSharedPtr<FJsonValue>> SkippedLinks;
+	AddExtractedManagedLinks(Context.Graph->Nodes, NodeIds, OutGraph, SkippedLinks);
 
-	if (!SkippedNodes.IsEmpty())
+	if (!SkippedNodes.IsEmpty() || !SkippedLinks.IsEmpty())
 	{
 		TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
-		Skipped->SetArrayField(TEXT("Nodes"), MoveTemp(SkippedNodes));
+		if (!SkippedNodes.IsEmpty())
+		{
+			Skipped->SetArrayField(TEXT("Nodes"), MoveTemp(SkippedNodes));
+		}
+		if (!SkippedLinks.IsEmpty())
+		{
+			Skipped->SetArrayField(TEXT("Links"), MoveTemp(SkippedLinks));
+		}
 		OutGraph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped);
 	}
 	return FAssetDocumentCapabilityResult::Success();
