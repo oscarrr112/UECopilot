@@ -790,6 +790,76 @@ void StripFrameworkResultSkippedNodes(FAssetDocumentGraphSpec& Graph)
 	}
 }
 
+TSharedPtr<FJsonObject> GetOrCreateSkippedObject(FAssetDocumentGraphSpec& Graph)
+{
+	TSharedPtr<FJsonObject> Skipped =
+		Graph.UnderscoreSkipped.IsValid() && Graph.UnderscoreSkipped->Type == EJson::Object
+			? Graph.UnderscoreSkipped->AsObject()
+			: nullptr;
+	if (!Skipped.IsValid())
+	{
+		Skipped = MakeShared<FJsonObject>();
+		Graph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped.ToSharedRef());
+	}
+	return Skipped;
+}
+
+void AddSkippedResult(FAssetDocumentGraphSpec& Graph, const FString& Reason)
+{
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	TSharedPtr<FJsonObject> Skipped = GetOrCreateSkippedObject(Graph);
+	const TArray<TSharedPtr<FJsonValue>>* ExistingEntries = nullptr;
+	if (Skipped->TryGetArrayField(TEXT("Result"), ExistingEntries) && ExistingEntries)
+	{
+		Entries = *ExistingEntries;
+	}
+
+	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("Reason"), Reason);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+	Skipped->SetArrayField(TEXT("Result"), MoveTemp(Entries));
+}
+
+UAnimGraphNode_StateResult* FindStateResultNode(UAnimationStateGraph* StateGraph)
+{
+	if (!StateGraph)
+	{
+		return nullptr;
+	}
+	if (StateGraph->GetResultNode() && StateGraph->Nodes.Contains(StateGraph->GetResultNode()))
+	{
+		return StateGraph->GetResultNode();
+	}
+	for (UEdGraphNode* Node : StateGraph->Nodes)
+	{
+		if (UAnimGraphNode_StateResult* ResultNode = Cast<UAnimGraphNode_StateResult>(Node))
+		{
+			return ResultNode;
+		}
+	}
+	return nullptr;
+}
+
+UAnimGraphNode_TransitionResult* FindTransitionResultNode(UAnimationTransitionGraph* TransitionGraph)
+{
+	if (!TransitionGraph)
+	{
+		return nullptr;
+	}
+	if (TransitionGraph->GetResultNode() && TransitionGraph->Nodes.Contains(TransitionGraph->GetResultNode()))
+	{
+		return TransitionGraph->GetResultNode();
+	}
+	for (UEdGraphNode* Node : TransitionGraph->Nodes)
+	{
+		if (UAnimGraphNode_TransitionResult* ResultNode = Cast<UAnimGraphNode_TransitionResult>(Node))
+		{
+			return ResultNode;
+		}
+	}
+	return nullptr;
+}
+
 FAssetDocumentCapabilityResult ApplyFields(
 	UEdGraphNode* Node,
 	const FAssetDocumentGraphSpec& GraphSpec,
@@ -979,7 +1049,8 @@ FAssetDocumentCapabilityResult MaterializeStateMachineNodes(
 FAssetDocumentCapabilityResult MaterializeStateMachineLinks(
 	UAnimationStateMachineGraph* StateMachineGraph,
 	const FAssetDocumentGraphSpec& GraphSpec,
-	const TMap<FString, UAnimStateNodeBase*>& Nodes)
+	const TMap<FString, UAnimStateNodeBase*>& Nodes,
+	bool& bOutChanged)
 {
 	TMap<UAnimStateTransitionNode*, UAnimStateNodeBase*> PreviousByTransition;
 	TMap<UAnimStateTransitionNode*, UAnimStateNodeBase*> NextByTransition;
@@ -1034,7 +1105,11 @@ FAssetDocumentCapabilityResult MaterializeStateMachineLinks(
 				TEXT("IncompleteStateMachineTransition"),
 				FString::Printf(TEXT("Transition '%s' is missing a target state link."), *Transition->GetName()));
 		}
-		Transition->CreateConnections(Previous, Next);
+		if (Transition->GetPreviousState() != Previous || Transition->GetNextState() != Next)
+		{
+			Transition->CreateConnections(Previous, Next);
+			bOutChanged = true;
+		}
 	}
 
 	if (const TSharedPtr<FJsonObject> Metadata = GraphSpec.Metadata.IsValid() && GraphSpec.Metadata->Type == EJson::Object
@@ -1054,8 +1129,16 @@ FAssetDocumentCapabilityResult MaterializeStateMachineLinks(
 			}
 			if (StateMachineGraph && StateMachineGraph->EntryNode && StateMachineGraph->EntryNode->GetOutputPin() && EntryNode->GetInputPin())
 			{
-				StateMachineGraph->EntryNode->GetOutputPin()->BreakAllPinLinks(true);
-				StateMachineGraph->EntryNode->GetOutputPin()->MakeLinkTo(EntryNode->GetInputPin());
+				UEdGraphPin* EntryOutput = StateMachineGraph->EntryNode->GetOutputPin();
+				UEdGraphPin* EntryInput = EntryNode->GetInputPin();
+				const bool bEntryAlreadyLinked =
+					EntryOutput->LinkedTo.Num() == 1 && EntryOutput->LinkedTo[0] == EntryInput;
+				if (!bEntryAlreadyLinked)
+				{
+					EntryOutput->BreakAllPinLinks(true);
+					EntryOutput->MakeLinkTo(EntryInput);
+					bOutChanged = true;
+				}
 			}
 		}
 	}
@@ -1069,8 +1152,9 @@ FAssetDocumentCapabilityResult EnsureStateResultNode(UAnimationStateGraph* State
 	{
 		return Failure(Path, TEXT("MissingStatePoseGraph"), TEXT("StatePose owner does not have an animation state graph."));
 	}
-	if (StateGraph->GetResultNode())
+	if (UAnimGraphNode_StateResult* ExistingResultNode = FindStateResultNode(StateGraph))
 	{
+		StateGraph->MyResultNode = ExistingResultNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
@@ -1089,8 +1173,9 @@ FAssetDocumentCapabilityResult EnsureTransitionResultNode(UAnimationTransitionGr
 	{
 		return Failure(Path, TEXT("MissingTransitionRuleGraph"), TEXT("TransitionRule owner does not have an animation transition graph."));
 	}
-	if (TransitionGraph->GetResultNode())
+	if (UAnimGraphNode_TransitionResult* ExistingResultNode = FindTransitionResultNode(TransitionGraph))
 	{
+		TransitionGraph->MyResultNode = ExistingResultNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
@@ -1188,6 +1273,151 @@ private:
 	const FAssetDocumentGraphSpec& StateMachineGraph;
 	const TMap<FString, UAnimStateNodeBase*>& Nodes;
 };
+
+FString OwnedSubgraphPath(const FAssetDocumentGraphSpec& StateMachineGraph, const FAssetDocumentGraphSpec& Subgraph)
+{
+	return GraphPath(StateMachineGraph) / TEXT("Subgraphs") / Escape(Subgraph.Id);
+}
+
+FString RuntimeGraphNodePath(const FString& RuntimeGraphPath, const FAssetDocumentNodeSpec& NodeSpec)
+{
+	return RuntimeGraphPath / TEXT("Nodes") / Escape(NodeSpec.Id);
+}
+
+FAssetDocumentCapabilityResult PropertyPreflightFailure(
+	const FString& FieldsPath,
+	const FAssetDocumentPropertyApplyResult& ApplyResult)
+{
+	FAssetDocumentCapabilityResult Result;
+	Result.bSuccess = false;
+	Result.Message = ApplyResult.Message;
+	if (ApplyResult.Diagnostics.IsEmpty())
+	{
+		Result.Diagnostics.Add({FieldsPath, TEXT("GraphNodeFieldApplyFailed"), ApplyResult.Message});
+		return Result;
+	}
+
+	for (const FAssetDocumentDiagnostic& Diagnostic : ApplyResult.Diagnostics)
+	{
+		FAssetDocumentDiagnostic Mapped = Diagnostic;
+		Mapped.Path = Diagnostic.Path.IsEmpty() ? FieldsPath : FieldsPath / Diagnostic.Path;
+		Mapped.Code = Diagnostic.Code.IsEmpty() ? TEXT("GraphNodeFieldApplyFailed") : Diagnostic.Code;
+		Result.Diagnostics.Add(MoveTemp(Mapped));
+	}
+	return Result;
+}
+
+FAssetDocumentCapabilityResult PreflightSubgraphFields(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FString& RuntimeGraphPath)
+{
+	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+	{
+		if (!NodeSpec.Fields.IsValid() || NodeSpec.Fields->Values.IsEmpty() || NodeSpec.Class.IsEmpty())
+		{
+			continue;
+		}
+
+		UClass* NodeClass = LoadClass<UEdGraphNode>(nullptr, *NodeSpec.Class);
+		if (!NodeClass)
+		{
+			continue;
+		}
+
+		const FAssetDocumentPropertyApplyResult FieldResult =
+			FAssetDocumentPropertyAdapter::PreflightProperties(NodeClass, NodeSpec.Fields);
+		if (!FieldResult.bSuccess)
+		{
+			return PropertyPreflightFailure(
+				RuntimeGraphNodePath(RuntimeGraphPath, NodeSpec) / TEXT("Fields"),
+				FieldResult);
+		}
+	}
+
+	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
+	{
+		const FAssetDocumentCapabilityResult SubgraphResult =
+			PreflightSubgraphFields(Subgraph, RuntimeGraphPath / TEXT("Subgraphs") / Escape(Subgraph.Id));
+		if (!SubgraphResult.bSuccess)
+		{
+			return SubgraphResult;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightStateMachineSubgraphs(
+	UAnimBlueprint* AnimBlueprint,
+	const FAssetDocumentGraphSpec& GraphSpec)
+{
+	TMap<FString, FString> NodeKinds;
+	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+	{
+		NodeKinds.Add(NodeSpec.Id, IsTransitionNodeSpec(NodeSpec) ? TEXT("Transition") : TEXT("State"));
+	}
+
+	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
+	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
+	{
+		const FString SubgraphPath = OwnedSubgraphPath(GraphSpec, Subgraph);
+		FString OwnerId;
+		if (Subgraph.Kind == TEXT("StatePose"))
+		{
+			if (!TryReadOwnerField(Subgraph, TEXT("State"), OwnerId))
+			{
+				return Failure(SubgraphPath / TEXT("Owner/State"), TEXT("MissingStatePoseOwner"), TEXT("StatePose subgraph requires Owner.State."));
+			}
+			if (NodeKinds.FindRef(OwnerId) != TEXT("State"))
+			{
+				return Failure(
+					SubgraphPath / TEXT("Owner/State"),
+					TEXT("UnknownStatePoseOwner"),
+					FString::Printf(TEXT("StatePose owner state '%s' is not declared in the state machine."), *OwnerId));
+			}
+		}
+		else if (Subgraph.Kind == TEXT("TransitionRule"))
+		{
+			if (!TryReadOwnerField(Subgraph, TEXT("Transition"), OwnerId))
+			{
+				return Failure(SubgraphPath / TEXT("Owner/Transition"), TEXT("MissingTransitionRuleOwner"), TEXT("TransitionRule subgraph requires Owner.Transition."));
+			}
+			if (NodeKinds.FindRef(OwnerId) != TEXT("Transition"))
+			{
+				return Failure(
+					SubgraphPath / TEXT("Owner/Transition"),
+					TEXT("UnknownTransitionRuleOwner"),
+					FString::Printf(TEXT("TransitionRule owner transition '%s' is not declared in the state machine."), *OwnerId));
+			}
+		}
+		else
+		{
+			return Failure(
+				SubgraphPath / TEXT("Kind"),
+				TEXT("UnsupportedStateMachineSubgraphKind"),
+				FString::Printf(TEXT("Unsupported StateMachine subgraph kind '%s'."), *Subgraph.Kind));
+		}
+
+		FAssetDocumentAnimationGraphContext RuntimeContext;
+		RuntimeContext.Asset = AnimBlueprint;
+		RuntimeContext.Blueprint = AnimBlueprint;
+		RuntimeContext.GraphPath = SubgraphPath;
+		RuntimeContext.GraphKind = Subgraph.Kind;
+		const FAssetDocumentCapabilityResult ValidateResult = Runtime.ValidateGraph(Subgraph, RuntimeContext);
+		if (!ValidateResult.bSuccess)
+		{
+			return ValidateResult;
+		}
+
+		const FAssetDocumentCapabilityResult FieldResult = PreflightSubgraphFields(Subgraph, SubgraphPath);
+		if (!FieldResult.bSuccess)
+		{
+			return FieldResult;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
 
 FAssetDocumentCapabilityResult ApplyStateMachineSubgraphs(
 	UAnimBlueprint* AnimBlueprint,
@@ -1331,7 +1561,7 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 				continue;
 			}
 
-			EnsureTransitionResultNode(TransitionGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(SubgraphId));
+			const bool bHasResultNode = FindTransitionResultNode(TransitionGraph) != nullptr;
 			FAssetDocumentAnimationGraphContext RuntimeContext;
 			RuntimeContext.Asset = OwnerBlueprint;
 			RuntimeContext.Blueprint = OwnerBlueprint;
@@ -1342,13 +1572,20 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 			RuleGraph.Id = SubgraphId;
 			RuleGraph.Kind = TEXT("TransitionRule");
 			RuleGraph.Owner = MakeOwnerObject(TEXT("Transition"), OwnerId);
-			TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-			Result->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-			Result->SetStringField(TEXT("Pin"), TransitionResultPin);
-			TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
-			Metadata->SetObjectField(TEXT("Result"), Result);
-			RuleGraph.Metadata = MakeShared<FJsonValueObject>(Metadata);
 			StripFrameworkResultSkippedNodes(RuleGraph);
+			if (bHasResultNode)
+			{
+				TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+				Result->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+				Result->SetStringField(TEXT("Pin"), TransitionResultPin);
+				TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+				Metadata->SetObjectField(TEXT("Result"), Result);
+				RuleGraph.Metadata = MakeShared<FJsonValueObject>(Metadata);
+			}
+			else
+			{
+				AddSkippedResult(RuleGraph, TEXT("MissingTransitionResultNode"));
+			}
 			Graph.Subgraphs.Add(MoveTemp(RuleGraph));
 		}
 		else if (UAnimStateNode* StateNode = Cast<UAnimStateNode>(StateMachineNodeBase))
@@ -1366,7 +1603,7 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 				continue;
 			}
 
-			EnsureStateResultNode(StateGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(SubgraphId));
+			const bool bHasResultNode = FindStateResultNode(StateGraph) != nullptr;
 			FAssetDocumentAnimationGraphContext RuntimeContext;
 			RuntimeContext.Asset = OwnerBlueprint;
 			RuntimeContext.Blueprint = OwnerBlueprint;
@@ -1378,6 +1615,10 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 			PoseGraph.Kind = TEXT("StatePose");
 			PoseGraph.Owner = MakeOwnerObject(TEXT("State"), OwnerId);
 			StripFrameworkResultSkippedNodes(PoseGraph);
+			if (!bHasResultNode)
+			{
+				AddSkippedResult(PoseGraph, TEXT("MissingStateResultNode"));
+			}
 			Graph.Subgraphs.Add(MoveTemp(PoseGraph));
 		}
 	}
@@ -1398,6 +1639,16 @@ FAssetDocumentCapabilityResult ApplyStateMachines(
 			TEXT("/Body/StateMachines"),
 			TEXT("MissingAnimGraph"),
 			TEXT("Body.StateMachines requires an Animation Blueprint with an AnimGraph."));
+	}
+
+	for (const FAssetDocumentGraphSpec& GraphSpec : Graphs)
+	{
+		const FAssetDocumentCapabilityResult SubgraphPreflightResult =
+			PreflightStateMachineSubgraphs(AnimBlueprint, GraphSpec);
+		if (!SubgraphPreflightResult.bSuccess)
+		{
+			return SubgraphPreflightResult;
+		}
 	}
 
 	for (const FAssetDocumentGraphSpec& GraphSpec : Graphs)
@@ -1423,7 +1674,7 @@ FAssetDocumentCapabilityResult ApplyStateMachines(
 		}
 
 		const FAssetDocumentCapabilityResult LinkResult =
-			MaterializeStateMachineLinks(StateMachineGraph, GraphSpec, Nodes);
+			MaterializeStateMachineLinks(StateMachineGraph, GraphSpec, Nodes, bOutChanged);
 		if (!LinkResult.bSuccess)
 		{
 			return LinkResult;
