@@ -6,7 +6,7 @@
 - Worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-behaviortree-blackboard-impl`
 - Task 10 base: `ccf3b07dee95d021ee9c58001f9a2978ac20e49d`
 - Full spec base: `c563b6bd5077c90897ab28cb118b9afb39e5fc8b`
-- Full verification checkpoint range: `c563b6bd5077c90897ab28cb118b9afb39e5fc8b..94e408706ca57658791e6f99e0a9600b666df811`.
+- Full verification checkpoint range: `c563b6bd5077c90897ab28cb118b9afb39e5fc8b..4f3dd5d4df045a4bb32c7605bc594d4bfa022449`.
 - This report records the stable code/test verification checkpoint range above. The following report-only commit contains no code or test behavior changes.
 - Spec: `docs/superpowers/specs/2026-07-02-behaviortree-blackboard-asset-document-design.md`
 - Plan: `docs/superpowers/plans/2026-07-02-behaviortree-blackboard-asset-document-implementation.md`
@@ -45,27 +45,27 @@
 
 - UBT against validation host:
   - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -NoHotReload`
-  - Result after FINAL SPEC REVIEW fix: exit `0`, `Result: Succeeded`, total execution time `3.12` seconds.
+  - Result after FINAL QUALITY fix: exit `0`, `Result: Succeeded`, total execution time `4.25` seconds.
 - Focused automation:
-  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused_Fix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument.BehaviorTree; Automation RunTests AssetFactory.AssetDocument.BlackboardData; Quit" -TestExit="Automation Test Queue Empty"`
-  - Result after FINAL SPEC REVIEW fix: exit `0`.
-  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused_Fix/index.json`
-  - Summary: `succeeded=26`, `succeededWithWarnings=5`, `failed=0`, `notRun=0`, duration `0.40967670083046`.
-  - Affected test evidence: `AssetFactory.AssetDocument.BehaviorTree.ApplyFileCanonicalWriteback`, `AssetFactory.AssetDocument.BehaviorTree.DuplicateNodeIdDiagnostic`, and `AssetFactory.AssetDocument.BlackboardData.Keys.PublicObjectRefs` all ran in this focused pass with no failures.
+  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBQuality_Fix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument.BehaviorTree; Automation RunTests AssetFactory.AssetDocument.BlackboardData; Quit" -TestExit="Automation Test Queue Empty"`
+  - Result after FINAL QUALITY fix: exit `0`.
+  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBQuality_Fix/index.json`
+  - Summary: `succeeded=28`, `succeededWithWarnings=5`, `failed=0`, `notRun=0`, duration `0.432934552431107`.
+  - Affected test evidence: `AssetFactory.AssetDocument.BehaviorTree.CrossRegionValidationUsesTransientOuter` and `AssetFactory.AssetDocument.BehaviorTree.GraphFailureRollsBackSemanticTree` ran in this focused pass with no failures.
 - Full AssetDocument automation:
-  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_Fix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument; Quit" -TestExit="Automation Test Queue Empty"`
-  - Result after FINAL SPEC REVIEW fix: exit `0`.
-  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_Fix/index.json`
-  - Summary: `succeeded=338`, `succeededWithWarnings=28`, `failed=0`, `notRun=0`, duration `24.8460178375244`.
-  - Affected test evidence: full `AssetFactory.AssetDocument` pass includes the focused public schema regression tests and had no failures.
+  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_QualityFix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument; Quit" -TestExit="Automation Test Queue Empty"`
+  - Result after FINAL QUALITY fix: exit `0`.
+  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_QualityFix/index.json`
+  - Summary: `succeeded=339`, `succeededWithWarnings=29`, `failed=0`, `notRun=0`, duration `24.7562046051025`.
+  - Affected test evidence: full `AssetFactory.AssetDocument` pass includes the focused atomicity/preview-outer regression tests and had no failures.
 - MCP tests:
   - Initial `npm --prefix MCP test` failed because `tsc` was not installed in `MCP/node_modules`.
   - Ran `npm --prefix MCP install`; this installed local test dependencies only. Generated `MCP/dist` and lockfile changes were restored before commit.
-  - Final command after FINAL SPEC REVIEW fix: `npm --prefix MCP test`
-  - Result: exit `0`, `# pass 39`, `# fail 0`, duration `2546.2388ms`.
+  - Final command after FINAL QUALITY fix: `npm --prefix MCP test`
+  - Result: exit `0`, `# pass 39`, `# fail 0`, duration `2432.0621ms`.
   - Note: `npm install` reported existing dependency audit findings: `3` moderate and `5` high vulnerabilities. No dependency upgrade was made in this task.
 - Diff and status evidence:
-  - Command: `git diff --check c563b6bd5077c90897ab28cb118b9afb39e5fc8b..94e408706ca57658791e6f99e0a9600b666df811`
+  - Command: `git diff --check c563b6bd5077c90897ab28cb118b9afb39e5fc8b..4f3dd5d4df045a4bb32c7605bc594d4bfa022449`
   - Result: exit `0`, no output.
   - Command: `git status --short`
   - Result: exit `0`, no output; worktree clean at the full verification checkpoint.
@@ -91,6 +91,10 @@
   - Blackboard key metadata now accepts legacy string refs and public object refs for `BaseClass`, `Enum`, and `KeyTypeClass`; canonical extract/writeback emits `ClassRef` or `AssetRef` objects.
   - Duplicate BehaviorTree node ids are configured through the tree adapter profile config to return `DuplicateBehaviorTreeNodeId` at semantic `/Body/Tree/<Id>` paths without changing other tree users.
   - Added focused regression coverage: `AssetFactory.AssetDocument.BehaviorTree.DuplicateNodeIdDiagnostic`, public selector `Key` apply/extract/legacy compatibility assertions, public object-ref metadata assertions, and canonical writeback checks for `BaseClass` object refs.
+- Final QUALITY fixes:
+  - Cross-region BehaviorTree validation now creates preview nodes under a transient `UBehaviorTree`, never under the real `Context.Asset`; regression coverage verifies validation and failed apply preflight leave no extra `UBTNode` children under the real asset.
+  - `ApplyTree` now snapshots semantic root/decorators/root logic/blackboard/editor graph plus existing owned objects before real mutation, restores those pointers on post-mutation graph/editor failure, and moves newly-created replacement BT nodes/graphs to the transient package.
+  - Added focused regression coverage: `AssetFactory.AssetDocument.BehaviorTree.CrossRegionValidationUsesTransientOuter` and `AssetFactory.AssetDocument.BehaviorTree.GraphFailureRollsBackSemanticTree`. The latter uses a `WITH_DEV_AUTOMATION_TESTS` one-shot graph rebuild failure hook to exercise the post-mutation rollback path deterministically.
 
 ## Final Status
 
