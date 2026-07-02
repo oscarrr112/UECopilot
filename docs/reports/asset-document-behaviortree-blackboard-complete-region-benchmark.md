@@ -4,9 +4,10 @@
 
 - Branch: `feature/asset-document-behaviortree-blackboard-impl`
 - Worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-behaviortree-blackboard-impl`
-- Task base: `ccf3b07dee95d021ee9c58001f9a2978ac20e49d`
-- Full verification checkpoint range: `ccf3b07dee95d021ee9c58001f9a2978ac20e49d..645cf6bb997b966a9b8a8f4080a11433ab065404`.
-- This report-only follow-up commit records the stable verification range and evidence; it contains no code or test behavior changes.
+- Task 10 base: `ccf3b07dee95d021ee9c58001f9a2978ac20e49d`
+- Full spec base: `c563b6bd5077c90897ab28cb118b9afb39e5fc8b`
+- Full verification checkpoint range: `c563b6bd5077c90897ab28cb118b9afb39e5fc8b..94e408706ca57658791e6f99e0a9600b666df811`.
+- This report records the stable code/test verification checkpoint range above. The following report-only commit contains no code or test behavior changes.
 - Spec: `docs/superpowers/specs/2026-07-02-behaviortree-blackboard-asset-document-design.md`
 - Plan: `docs/superpowers/plans/2026-07-02-behaviortree-blackboard-asset-document-implementation.md`
 
@@ -14,10 +15,10 @@
 
 - `UBlackboardData`
   - `Body.Parent`: optional parent `AssetRef<UBlackboardData>`.
-  - `Body.Keys`: local authored keys, stable key identity by name, key type class, description, instance sync flag, and supported key type properties such as object base class and enum references.
+  - `Body.Keys`: local authored keys, stable key identity by name, key type class, description, instance sync flag, and supported key type properties such as object `BaseClass` `ClassRef`, enum `AssetRef`, and explicit `KeyTypeClass` `ClassRef`.
 - `UBehaviorTree`
   - `Body.Blackboard`: behavior tree blackboard `AssetRef`.
-  - `Body.Tree`: semantic tree root composite, root decorators, `RootDecoratorLogic`, composite services, edge decorators, edge `DecoratorLogic`, tasks with reflected authored properties, `FBlackboardKeySelector`, and subtree `AssetRef`.
+  - `Body.Tree`: semantic tree root composite, root decorators, `RootDecoratorLogic`, composite services, edge decorators, edge `DecoratorLogic`, tasks with reflected authored properties, public `FBlackboardKeySelector` `Key` alias, `AllowedTypes`, and subtree `AssetRef`.
   - `Body.EditorLayout`: editor-authored graph node positions and comment boxes keyed by semantic node/comment ids.
 - Integrated Task 10 roundtrip fixture covers Blackboard parent plus local keys, BehaviorTree blackboard reference, root composite, root decorator logic, service, edge decorator logic, selector task, subtree reference, and editor layout in one document.
 
@@ -44,30 +45,30 @@
 
 - UBT against validation host:
   - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -NoHotReload`
-  - Result after SPEC REVIEW fix: exit `0`, `Result: Succeeded`, total execution time `5.72` seconds.
+  - Result after FINAL SPEC REVIEW fix: exit `0`, `Result: Succeeded`, total execution time `3.12` seconds.
 - Focused automation:
-  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument.BehaviorTree; Automation RunTests AssetFactory.AssetDocument.BlackboardData; Quit" -TestExit="Automation Test Queue Empty"`
-  - Result after SPEC REVIEW fix: exit `0`.
-  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused/index.json`
-  - Summary: `succeeded=25`, `succeededWithWarnings=5`, `failed=0`, `notRun=0`, duration `0.439883708953857`.
-  - Affected test evidence: `AssetFactory.AssetDocument.BehaviorTree.ApplyFileCanonicalWriteback` state `Success`, duration `0.0634196996688843`.
+  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused_Fix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument.BehaviorTree; Automation RunTests AssetFactory.AssetDocument.BlackboardData; Quit" -TestExit="Automation Test Queue Empty"`
+  - Result after FINAL SPEC REVIEW fix: exit `0`.
+  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/BTBBFocused_Fix/index.json`
+  - Summary: `succeeded=26`, `succeededWithWarnings=5`, `failed=0`, `notRun=0`, duration `0.40967670083046`.
+  - Affected test evidence: `AssetFactory.AssetDocument.BehaviorTree.ApplyFileCanonicalWriteback`, `AssetFactory.AssetDocument.BehaviorTree.DuplicateNodeIdDiagnostic`, and `AssetFactory.AssetDocument.BlackboardData.Keys.PublicObjectRefs` all ran in this focused pass with no failures.
 - Full AssetDocument automation:
-  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument; Quit" -TestExit="Automation Test Queue Empty"`
-  - Result after SPEC REVIEW fix: exit `0`.
-  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull/index.json`
-  - Summary: `succeeded=337`, `succeededWithWarnings=27`, `failed=0`, `notRun=0`, duration `25.3909530639648`.
-  - Affected test evidence: `AssetFactory.AssetDocument.BehaviorTree.ApplyFileCanonicalWriteback` state `Success`, duration `0.0713520050048828`.
+  - Command: `& "E:/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/AVH1.uproject" -Unattended -NullRHI -NoSplash -NoSound -NoSourceControl "-ReportExportPath=C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_Fix" "-ExecCmds=Automation RunTests AssetFactory.AssetDocument; Quit" -TestExit="Automation Test Queue Empty"`
+  - Result after FINAL SPEC REVIEW fix: exit `0`.
+  - Report: `C:/Users/HP/.config/superpowers/validation-hosts/bt-bb-task1/Saved/AutomationReports/AssetDocumentFull_Fix/index.json`
+  - Summary: `succeeded=338`, `succeededWithWarnings=28`, `failed=0`, `notRun=0`, duration `24.8460178375244`.
+  - Affected test evidence: full `AssetFactory.AssetDocument` pass includes the focused public schema regression tests and had no failures.
 - MCP tests:
   - Initial `npm --prefix MCP test` failed because `tsc` was not installed in `MCP/node_modules`.
   - Ran `npm --prefix MCP install`; this installed local test dependencies only. Generated `MCP/dist` and lockfile changes were restored before commit.
-  - Final command after SPEC REVIEW fix: `npm --prefix MCP test`
-  - Result: exit `0`, `# pass 39`, `# fail 0`, duration `2659.3167ms`.
+  - Final command after FINAL SPEC REVIEW fix: `npm --prefix MCP test`
+  - Result: exit `0`, `# pass 39`, `# fail 0`, duration `2546.2388ms`.
   - Note: `npm install` reported existing dependency audit findings: `3` moderate and `5` high vulnerabilities. No dependency upgrade was made in this task.
 - Diff and status evidence:
-  - Command: `git diff --check ccf3b07dee95d021ee9c58001f9a2978ac20e49d..645cf6bb997b966a9b8a8f4080a11433ab065404`
+  - Command: `git diff --check c563b6bd5077c90897ab28cb118b9afb39e5fc8b..94e408706ca57658791e6f99e0a9600b666df811`
   - Result: exit `0`, no output.
   - Command: `git status --short`
-  - Result: no output; worktree clean at the full verification checkpoint.
+  - Result: exit `0`, no output; worktree clean at the full verification checkpoint.
 
 ## Reviewer Findings And Fixes
 
@@ -85,6 +86,11 @@
   - Narrowed `BehaviorTreePostApply` to generated empty structural array normalization only; it no longer removes `Properties`, `NodeName`, `BlackboardKey`, `AllowedTypes`, or reflected default values.
   - Updated the integrated Task 10 BehaviorTree authored fixture to build node `Properties` through the same reflected `ApplyProperties`/`ExtractAuthoredProperties` path used by the profile, so `ApplyFile` writeback is stable without hiding reflected authored properties.
   - Added `ApplyFileCanonicalWriteback` regression assertions that `MoveToTarget` selector `AllowedTypes` differences and `FocusService` `BlackboardKey` differences are reported by diff rather than swallowed by canonicalization.
+- Final SPEC REVIEW fixes:
+  - `FBlackboardKeySelector` authored shape now accepts public `Key`, applies it to UE `SelectedKeyName`, extracts canonical public `Key`, preserves legacy `SelectedKeyName` input compatibility, and reports selector key validation diagnostics under `/Key`.
+  - Blackboard key metadata now accepts legacy string refs and public object refs for `BaseClass`, `Enum`, and `KeyTypeClass`; canonical extract/writeback emits `ClassRef` or `AssetRef` objects.
+  - Duplicate BehaviorTree node ids are configured through the tree adapter profile config to return `DuplicateBehaviorTreeNodeId` at semantic `/Body/Tree/<Id>` paths without changing other tree users.
+  - Added focused regression coverage: `AssetFactory.AssetDocument.BehaviorTree.DuplicateNodeIdDiagnostic`, public selector `Key` apply/extract/legacy compatibility assertions, public object-ref metadata assertions, and canonical writeback checks for `BaseClass` object refs.
 
 ## Final Status
 
