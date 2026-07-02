@@ -350,7 +350,7 @@ TSharedPtr<FJsonObject> MakeMinimalSelectorBehaviorTree()
 TSharedPtr<FJsonObject> MakeTreeWithKeySelectorLikeProperty()
 {
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
-	Selector->SetStringField(TEXT("SelectedKeyName"), TEXT("TargetActor"));
+	Selector->SetStringField(TEXT("Key"), TEXT("TargetActor"));
 	Selector->SetBoolField(TEXT("bNoneIsAllowedValue"), false);
 
 	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
@@ -384,7 +384,7 @@ TSharedPtr<FJsonObject> MakeDecoratorLogicOp(const FString& Operation, int32 Num
 TSharedPtr<FJsonObject> MakeSelectorProperty(const FString& KeyName)
 {
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
-	Selector->SetStringField(TEXT("SelectedKeyName"), KeyName);
+	Selector->SetStringField(TEXT("Key"), KeyName);
 	Selector->SetBoolField(TEXT("bNoneIsAllowedValue"), false);
 	return Selector;
 }
@@ -1533,7 +1533,7 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 	if (SelectorProperty)
 	{
 		TSharedRef<FJsonObject> SelectorJson = MakeObject();
-		SelectorJson->SetStringField(TEXT("SelectedKeyName"), TEXT("TargetActor"));
+		SelectorJson->SetStringField(TEXT("Key"), TEXT("TargetActor"));
 		SelectorJson->SetBoolField(TEXT("bNoneIsAllowedValue"), true);
 		void* SelectorPtr = SelectorProperty->ContainerPtrToValuePtr<void>(SelectorTask);
 		TestTrue(TEXT("blackboard selector apply succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, SelectorJson, TEXT("/Properties/BlackboardKey")).bSuccess);
@@ -1543,10 +1543,19 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 		TestTrue(TEXT("blackboard selector extracts object"), ExtractedSelector.IsValid());
 		if (ExtractedSelector.IsValid())
 		{
-			TestEqual(TEXT("blackboard selector key name"), ExtractedSelector->GetStringField(TEXT("SelectedKeyName")), FString(TEXT("TargetActor")));
+			TestEqual(TEXT("blackboard selector key name"), ExtractedSelector->GetStringField(TEXT("Key")), FString(TEXT("TargetActor")));
+			TestFalse(TEXT("blackboard selector does not extract legacy SelectedKeyName"), ExtractedSelector->HasField(TEXT("SelectedKeyName")));
 			TestTrue(TEXT("blackboard selector none allowed"), ExtractedSelector->GetBoolField(TEXT("bNoneIsAllowedValue")));
 			TestFalse(TEXT("blackboard selector skips transient SelectedKeyID"), ExtractedSelector->HasField(TEXT("SelectedKeyID")));
 		}
+
+		TSharedRef<FJsonObject> LegacySelectorJson = MakeObject();
+		LegacySelectorJson->SetStringField(TEXT("SelectedKeyName"), TEXT("OtherTargetActor"));
+		TestTrue(TEXT("legacy blackboard selector apply still succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, LegacySelectorJson, TEXT("/Properties/BlackboardKey")).bSuccess);
+		TSharedPtr<FJsonValue> ExtractedLegacySelectorValue;
+		TestTrue(TEXT("legacy blackboard selector extracts canonically"), FAssetDocumentReflectedPropertyUtils::ExtractBlackboardKeySelector(SelectorProperty, SelectorPtr, ExtractedLegacySelectorValue, TEXT("/Properties/BlackboardKey")).bSuccess);
+		TSharedPtr<FJsonObject> ExtractedLegacySelector = GetObjectFromValue(ExtractedLegacySelectorValue);
+		TestTrue(TEXT("legacy selector canonical extract uses Key"), ExtractedLegacySelector.IsValid() && ExtractedLegacySelector->GetStringField(TEXT("Key")) == TEXT("OtherTargetActor"));
 
 		FBlackboardKeySelector* Selector = static_cast<FBlackboardKeySelector*>(SelectorPtr);
 		UBlackboardKeyType_Object* ObjectFilter = NewObject<UBlackboardKeyType_Object>(SelectorTask);
@@ -2015,7 +2024,7 @@ bool FAssetDocumentBehaviorTreeSemanticDiffPathsTest::RunTest(const FString&)
 			TSharedPtr<FJsonObject> BlackboardKey = GetObjectField(Properties, TEXT("BlackboardKey"));
 			if (BlackboardKey.IsValid())
 			{
-				BlackboardKey->SetStringField(TEXT("SelectedKeyName"), TEXT("OtherTargetActor"));
+				BlackboardKey->SetStringField(TEXT("Key"), TEXT("OtherTargetActor"));
 			}
 		}
 	}
@@ -2829,7 +2838,40 @@ bool FAssetDocumentBehaviorTreeUnknownBlackboardKeyRejectsTest::RunTest(const FS
 	Request.Document = MakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("unknown blackboard selector key is rejected"), Result.IsSuccess());
-	TestTrue(TEXT("unknown key diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("UnknownBlackboardKey"), TEXT("/Body/Tree/MoveTo_MissingTarget/Properties/BlackboardKey/SelectedKeyName")));
+	TestTrue(TEXT("unknown key diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("UnknownBlackboardKey"), TEXT("/Body/Tree/MoveTo_MissingTarget/Properties/BlackboardKey/Key")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeDuplicateNodeIdDiagnosticTest,
+	"AssetFactory.AssetDocument.BehaviorTree.DuplicateNodeIdDiagnostic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeDuplicateNodeIdDiagnosticTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_DuplicateNodeIdDiagnostic");
+	TSharedPtr<FJsonObject> Child = MakeBtNode(
+		TEXT("Root"),
+		TEXT("/Script/AIModule.BTTask_WaitBlackboardTime"),
+		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), Child);
+
+	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("Root"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Children"), {MakeObjectValue(Edge)});
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(
+		Target,
+		MakeBehaviorTreeBody(nullptr, Tree, MakeShared<FJsonObject>()));
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestFalse(TEXT("duplicate behavior tree node id is rejected"), Result.IsSuccess());
+	TestTrue(TEXT("duplicate behavior tree node id diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("DuplicateBehaviorTreeNodeId"), TEXT("/Body/Tree/Root")));
 	return true;
 }
 
@@ -2871,7 +2913,7 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	Request.Document = MakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("selector key type mismatch is rejected"), Result.IsSuccess());
-	TestTrue(TEXT("key type mismatch diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+	TestTrue(TEXT("key type mismatch diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/Key")));
 
 	TSharedPtr<FJsonObject> SameEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
 		TEXT("AlertState"),
@@ -2900,7 +2942,7 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	DifferentEnumRequest.Document = MakeBehaviorTreeDocument(Target, DifferentEnumBody);
 	const FAssetDocumentResult DifferentEnumResult = FAssetDocumentService().Validate(DifferentEnumRequest);
 	TestFalse(TEXT("selector enum filter rejects a different enum"), DifferentEnumResult.IsSuccess());
-	TestTrue(TEXT("enum mismatch diagnostic is exact"), ResultHasDiagnostic(DifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+	TestTrue(TEXT("enum mismatch diagnostic is exact"), ResultHasDiagnostic(DifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/Key")));
 
 	TSharedPtr<FJsonObject> NativeSameEnumSelector = MakeSelectorPropertyWithAllowedKeyType(
 		TEXT("NativeAlertState"),
@@ -2929,7 +2971,7 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	NativeDifferentEnumRequest.Document = MakeBehaviorTreeDocument(Target, NativeDifferentEnumBody);
 	const FAssetDocumentResult NativeDifferentEnumResult = FAssetDocumentService().Validate(NativeDifferentEnumRequest);
 	TestFalse(TEXT("selector enum filter rejects deprecated native enum with a different enum"), NativeDifferentEnumResult.IsSuccess());
-	TestTrue(TEXT("native enum mismatch diagnostic is exact"), ResultHasDiagnostic(NativeDifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+	TestTrue(TEXT("native enum mismatch diagnostic is exact"), ResultHasDiagnostic(NativeDifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/Key")));
 	return true;
 }
 

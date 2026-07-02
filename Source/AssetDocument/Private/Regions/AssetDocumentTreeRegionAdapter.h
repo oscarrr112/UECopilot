@@ -21,6 +21,8 @@ struct FAssetDocumentTreeRegionAdapterConfig
 	FString ServicesField = TEXT("Services");
 	FString PropertiesField = TEXT("Properties");
 	FString DecoratorLogicNumberField = TEXT("Number");
+	FString DuplicateNodeIdCode = TEXT("DuplicateTreeNodeId");
+	bool bDuplicateNodeIdUsesSemanticPath = false;
 };
 
 struct FAssetDocumentTreeRegionAdapterHooks

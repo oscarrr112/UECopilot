@@ -124,6 +124,14 @@ TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
 	return Fragment;
 }
 
+TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
+{
+	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
+	Fragment->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	Fragment->SetStringField(TEXT("Path"), Path);
+	return Fragment;
+}
+
 TSharedPtr<FJsonObject> MakeBlackboardDataDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
 {
 	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
@@ -877,6 +885,80 @@ bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardKeyPublicObjectRefsTest,
+	"AssetFactory.AssetDocument.BlackboardData.Keys.PublicObjectRefs",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardKeyPublicObjectRefsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_PublicObjectRefs");
+	const FString EnumPath = StaticEnum<EBasicKeyOperation::Type>()->GetPathName();
+
+	TSharedRef<FJsonObject> ObjectKey = MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"));
+	ObjectKey->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+
+	TSharedRef<FJsonObject> NativeEnumKey = MakeBlackboardKeyJson(TEXT("NativeMode"), TEXT(""));
+	NativeEnumKey->SetObjectField(TEXT("KeyTypeClass"), MakeClassRef(UBlackboardKeyType_NativeEnum::StaticClass()->GetPathName()));
+	NativeEnumKey->SetObjectField(TEXT("Enum"), MakeAssetRef(EnumPath));
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+		Target,
+		MakeBlackboardDataBody(nullptr, {ObjectKey, NativeEnumKey}));
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+	TestTrue(TEXT("public object-form blackboard apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBlackboardData* Blackboard = LoadBlackboardForTarget(Target);
+	TestNotNull(TEXT("public object-form blackboard loads"), Blackboard);
+	if (Blackboard && Blackboard->Keys.Num() == 2)
+	{
+		const UBlackboardKeyType_Object* ObjectType = Cast<UBlackboardKeyType_Object>(Blackboard->Keys[0].KeyType);
+		TestTrue(TEXT("public BaseClass object ref applies"), ObjectType && ObjectType->BaseClass.Get() == AActor::StaticClass());
+		const UBlackboardKeyType_NativeEnum* NativeEnumType = Cast<UBlackboardKeyType_NativeEnum>(Blackboard->Keys[1].KeyType);
+		TestTrue(TEXT("public KeyTypeClass object ref applies"), NativeEnumType && NativeEnumType->EnumType == StaticEnum<EBasicKeyOperation::Type>());
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("public object-form blackboard extract succeeds"), ExtractResult.IsSuccess());
+	TSharedPtr<FJsonObject> ExtractedBody = GetExtractedBody(ExtractResult);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedKeys = nullptr;
+	TestTrue(TEXT("public object-form extract includes Keys"), ExtractedBody.IsValid() && ExtractedBody->TryGetArrayField(TEXT("Keys"), ExtractedKeys));
+	if (ExtractedKeys && ExtractedKeys->Num() == 2)
+	{
+		TSharedPtr<FJsonObject> ExtractedObjectKey = (*ExtractedKeys)[0]->AsObject();
+		TSharedPtr<FJsonObject> ExtractedBaseClass = ExtractedObjectKey.IsValid() ? ExtractedObjectKey->GetObjectField(TEXT("BaseClass")) : nullptr;
+		TestTrue(TEXT("extract uses BaseClass ClassRef"), ExtractedBaseClass.IsValid()
+			&& ExtractedBaseClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
+			&& ExtractedBaseClass->GetStringField(TEXT("Path")) == AActor::StaticClass()->GetPathName());
+
+		TSharedPtr<FJsonObject> ExtractedNativeEnumKey = (*ExtractedKeys)[1]->AsObject();
+		TSharedPtr<FJsonObject> ExtractedKeyTypeClass = ExtractedNativeEnumKey.IsValid() ? ExtractedNativeEnumKey->GetObjectField(TEXT("KeyTypeClass")) : nullptr;
+		TSharedPtr<FJsonObject> ExtractedEnum = ExtractedNativeEnumKey.IsValid() ? ExtractedNativeEnumKey->GetObjectField(TEXT("Enum")) : nullptr;
+		TestTrue(TEXT("extract uses KeyTypeClass ClassRef"), ExtractedKeyTypeClass.IsValid()
+			&& ExtractedKeyTypeClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
+			&& ExtractedKeyTypeClass->GetStringField(TEXT("Path")) == UBlackboardKeyType_NativeEnum::StaticClass()->GetPathName());
+		TestTrue(TEXT("extract uses Enum AssetRef"), ExtractedEnum.IsValid()
+			&& ExtractedEnum->GetStringField(TEXT("Kind")) == TEXT("AssetRef")
+			&& ExtractedEnum->GetStringField(TEXT("Path")) == EnumPath);
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("public object-form blackboard diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("public object-form blackboard diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentBlackboardKeyMetadataTest,
 	"AssetFactory.AssetDocument.BlackboardData.Keys.Metadata",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -923,8 +1005,14 @@ bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
 	NativeEnumEntry.EntryName = TEXT("NativeMode");
 	NativeEnumEntry.KeyType = NativeEnumKey;
 	const TSharedRef<FJsonObject> ExtractedNativeEnum = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(NativeEnumEntry);
-	TestEqual(TEXT("Extracted NativeEnum key type class"), ExtractedNativeEnum->GetStringField(TEXT("KeyTypeClass")), FString(TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum")));
-	TestEqual(TEXT("Extracted NativeEnum preserves Enum"), ExtractedNativeEnum->GetStringField(TEXT("Enum")), NativeEnumKey->EnumName);
+	TSharedPtr<FJsonObject> ExtractedNativeEnumKeyTypeClass = ExtractedNativeEnum->GetObjectField(TEXT("KeyTypeClass"));
+	TSharedPtr<FJsonObject> ExtractedNativeEnumRef = ExtractedNativeEnum->GetObjectField(TEXT("Enum"));
+	TestTrue(TEXT("Extracted NativeEnum key type class is ClassRef"), ExtractedNativeEnumKeyTypeClass.IsValid()
+		&& ExtractedNativeEnumKeyTypeClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
+		&& ExtractedNativeEnumKeyTypeClass->GetStringField(TEXT("Path")) == TEXT("/Script/AIModule.BlackboardKeyType_NativeEnum"));
+	TestTrue(TEXT("Extracted NativeEnum preserves Enum as AssetRef"), ExtractedNativeEnumRef.IsValid()
+		&& ExtractedNativeEnumRef->GetStringField(TEXT("Kind")) == TEXT("AssetRef")
+		&& ExtractedNativeEnumRef->GetStringField(TEXT("Path")) == NativeEnumKey->EnumName);
 
 	FAssetDocumentBlackboardKeySpec ExtractedNativeEnumSpec;
 	const FAssetDocumentCapabilityResult ExtractedNativeEnumParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
@@ -941,10 +1029,10 @@ bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
 	StructEntry.KeyType = NewObject<UBlackboardKeyType_Struct>(GetTransientPackage());
 	const TSharedRef<FJsonObject> ExtractedStruct = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(StructEntry);
 	TestFalse(TEXT("Extracted Struct does not use alias Type"), ExtractedStruct->HasField(TEXT("Type")));
-	TestEqual(
-		TEXT("Extracted Struct key type class"),
-		ExtractedStruct->GetStringField(TEXT("KeyTypeClass")),
-		FString(TEXT("/Script/AIModule.BlackboardKeyType_Struct")));
+	TSharedPtr<FJsonObject> ExtractedStructKeyTypeClass = ExtractedStruct->GetObjectField(TEXT("KeyTypeClass"));
+	TestTrue(TEXT("Extracted Struct key type class is ClassRef"), ExtractedStructKeyTypeClass.IsValid()
+		&& ExtractedStructKeyTypeClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
+		&& ExtractedStructKeyTypeClass->GetStringField(TEXT("Path")) == TEXT("/Script/AIModule.BlackboardKeyType_Struct"));
 
 	FAssetDocumentBlackboardKeySpec ExtractedStructSpec;
 	const FAssetDocumentCapabilityResult ExtractedStructParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
@@ -1516,7 +1604,12 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	const FAssetDocumentResult ParentApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
 		ParentTarget,
 		MakeBlackboardDataBody(nullptr, {
-			MakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Object"), AActor::StaticClass()->GetPathName()),
+			[&]()
+			{
+				TSharedRef<FJsonObject> Key = MakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Object"));
+				Key->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+				return Key;
+			}(),
 			MakeBlackboardKeyJson(TEXT("InheritedGate"), TEXT("Bool"),
 				TEXT(""),
 				TEXT(""),
@@ -1531,7 +1624,12 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	}
 
 	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(MakeAssetRef(MakeObjectPathFromTarget(ParentTarget)), {
-		MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), AActor::StaticClass()->GetPathName(), TEXT(""), TEXT(""), TEXT("Local target")),
+		[&]()
+		{
+			TSharedRef<FJsonObject> Key = MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), TEXT(""), TEXT(""), TEXT(""), TEXT("Local target"));
+			Key->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+			return Key;
+		}(),
 		MakeBlackboardKeyJson(TEXT("MoveLocation"), TEXT("Vector")),
 		MakeBlackboardKeyJson(TEXT("AlertName"), TEXT("Name")),
 	});
@@ -1586,6 +1684,18 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	if (!LoadSidecarJson(this, SidecarPath, ReloadedSidecar))
 	{
 		return false;
+	}
+	const TSharedPtr<FJsonObject>* ReloadedBodyPtr = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* ReloadedKeys = nullptr;
+	TestTrue(TEXT("ApplyFile sidecar retains Body"), ReloadedSidecar.IsValid() && ReloadedSidecar->TryGetObjectField(TEXT("Body"), ReloadedBodyPtr));
+	TestTrue(TEXT("ApplyFile sidecar retains Keys"), ReloadedBodyPtr && ReloadedBodyPtr->IsValid() && (*ReloadedBodyPtr)->TryGetArrayField(TEXT("Keys"), ReloadedKeys));
+	if (ReloadedKeys && ReloadedKeys->Num() > 0)
+	{
+		TSharedPtr<FJsonObject> ReloadedTargetKey = (*ReloadedKeys)[0]->AsObject();
+		TSharedPtr<FJsonObject> ReloadedBaseClass = ReloadedTargetKey.IsValid() ? ReloadedTargetKey->GetObjectField(TEXT("BaseClass")) : nullptr;
+		TestTrue(TEXT("ApplyFile sidecar uses BaseClass ClassRef"), ReloadedBaseClass.IsValid()
+			&& ReloadedBaseClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
+			&& ReloadedBaseClass->GetStringField(TEXT("Path")) == AActor::StaticClass()->GetPathName());
 	}
 	ExpectSyncRegions(this, ReloadedSidecar, {
 		TEXT("Body.Parent"),

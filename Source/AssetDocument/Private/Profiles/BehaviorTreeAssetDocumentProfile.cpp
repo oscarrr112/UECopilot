@@ -366,6 +366,8 @@ FAssetDocumentTreeRegionAdapter MakeBehaviorTreeSemanticTreeAdapter(FName Name)
 {
 	FAssetDocumentTreeRegionAdapterConfig TreeConfig;
 	TreeConfig.Name = Name;
+	TreeConfig.DuplicateNodeIdCode = TEXT("DuplicateBehaviorTreeNodeId");
+	TreeConfig.bDuplicateNodeIdUsesSemanticPath = true;
 	FAssetDocumentTreeRegionAdapterHooks TreeHooks;
 	TreeHooks.ValidateTree = &FBehaviorTreeAssetDocumentMaterializer::ValidateTree;
 	TreeHooks.ApplyTree = &FBehaviorTreeAssetDocumentMaterializer::ApplyTree;

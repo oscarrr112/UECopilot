@@ -491,6 +491,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 {
 	static const TSet<FString> SupportedFields =
 	{
+		TEXT("Key"),
 		TEXT("SelectedKeyName"),
 		TEXT("bNoneIsAllowedValue"),
 		TEXT("AllowedTypes")
@@ -504,12 +505,12 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 			return Failure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown BlackboardKeySelector field '%s'"), *Pair.Key));
 		}
 
-		if (Pair.Key == TEXT("SelectedKeyName"))
+		if (Pair.Key == TEXT("Key") || Pair.Key == TEXT("SelectedKeyName"))
 		{
 			FString Unused;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetString(Unused))
 			{
-				return Failure(FieldPath, TEXT("InvalidPropertyValue"), TEXT("SelectedKeyName must be a string"));
+				return Failure(FieldPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("%s must be a string"), *Pair.Key));
 			}
 		}
 		else if (Pair.Key == TEXT("bNoneIsAllowedValue"))
@@ -542,6 +543,13 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 				}
 			}
 		}
+	}
+
+	FString PublicKey;
+	FString LegacyKey;
+	if (Json->TryGetStringField(TEXT("Key"), PublicKey) && Json->TryGetStringField(TEXT("SelectedKeyName"), LegacyKey) && PublicKey != LegacyKey)
+	{
+		return Failure(JoinPath(Path, TEXT("Key")), TEXT("InvalidPropertyValue"), TEXT("Key and SelectedKeyName must match when both are authored"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -1177,10 +1185,9 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 	}
 
 	FBlackboardKeySelector* Selector = static_cast<FBlackboardKeySelector*>(ValuePtr);
-	if (Json->HasField(TEXT("SelectedKeyName")))
+	FString SelectedKeyName;
+	if (Json->TryGetStringField(TEXT("Key"), SelectedKeyName) || Json->TryGetStringField(TEXT("SelectedKeyName"), SelectedKeyName))
 	{
-		FString SelectedKeyName;
-		Json->TryGetStringField(TEXT("SelectedKeyName"), SelectedKeyName);
 		Selector->SelectedKeyName = FName(*SelectedKeyName);
 		Selector->InvalidateResolvedKey();
 	}
@@ -1221,7 +1228,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractBlac
 
 	const FBlackboardKeySelector* Selector = static_cast<const FBlackboardKeySelector*>(ValuePtr);
 	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
-	Json->SetStringField(TEXT("SelectedKeyName"), Selector->SelectedKeyName.ToString());
+	Json->SetStringField(TEXT("Key"), Selector->SelectedKeyName.ToString());
 
 	if (FBoolProperty* NoneAllowedProperty = FindFProperty<FBoolProperty>(FBlackboardKeySelector::StaticStruct(), TEXT("bNoneIsAllowedValue")))
 	{

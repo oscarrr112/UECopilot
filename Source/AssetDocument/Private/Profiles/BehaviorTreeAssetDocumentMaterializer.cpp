@@ -1120,16 +1120,16 @@ bool TryReadSelectorKeyName(
 	OutKeyPath.Reset();
 
 	FString KeyName;
-	if (SelectorJson->TryGetStringField(TEXT("SelectedKeyName"), KeyName))
-	{
-		OutKeyName = FName(*KeyName);
-		OutKeyPath = JoinPath(SelectorPath, TEXT("SelectedKeyName"));
-		return true;
-	}
 	if (SelectorJson->TryGetStringField(TEXT("Key"), KeyName))
 	{
 		OutKeyName = FName(*KeyName);
 		OutKeyPath = JoinPath(SelectorPath, TEXT("Key"));
+		return true;
+	}
+	if (SelectorJson->TryGetStringField(TEXT("SelectedKeyName"), KeyName))
+	{
+		OutKeyName = FName(*KeyName);
+		OutKeyPath = JoinPath(SelectorPath, TEXT("SelectedKeyName"));
 		return true;
 	}
 	return false;

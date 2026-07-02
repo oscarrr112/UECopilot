@@ -65,6 +65,109 @@ bool TryRequireStringField(
 	return true;
 }
 
+TSharedRef<FJsonObject> MakeReferenceObject(const FString& Kind, const FString& Path)
+{
+	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+	Json->SetStringField(TEXT("Kind"), Kind);
+	Json->SetStringField(TEXT("Path"), Path);
+	return Json;
+}
+
+bool TryRequireReferencePathField(
+	const TSharedRef<FJsonObject>& Json,
+	const FString& Path,
+	const FString& FieldName,
+	const FString& InvalidCode,
+	const FString& ExpectedKind,
+	FString& OutValue,
+	FAssetDocumentCapabilityResult& OutFailure)
+{
+	OutValue.Empty();
+	OutFailure = FAssetDocumentCapabilityResult::Success(TEXT(""));
+	const TSharedPtr<FJsonValue> Field = Json->TryGetField(FieldName);
+	if (!Field.IsValid())
+	{
+		return false;
+	}
+
+	if (Field->Type == EJson::String)
+	{
+		OutValue = Field->AsString().TrimStartAndEnd();
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject>* RefObjectPtr = nullptr;
+	if (!Field->TryGetObject(RefObjectPtr) || !RefObjectPtr || !RefObjectPtr->IsValid())
+	{
+		OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+			MakeChildPath(Path, FieldName),
+			InvalidCode,
+			FString::Printf(TEXT("Blackboard key %s must be a string or %s object"), *FieldName, *ExpectedKind));
+		return false;
+	}
+
+	const TSharedRef<FJsonObject> RefObject = (*RefObjectPtr).ToSharedRef();
+	const FString RefPath = MakeChildPath(Path, FieldName);
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : RefObject->Values)
+	{
+		if (Pair.Key != TEXT("Kind") && Pair.Key != TEXT("Path"))
+		{
+			OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+				MakeChildPath(RefPath, Pair.Key),
+				InvalidCode,
+				FString::Printf(TEXT("Unknown %s reference field '%s'"), *FieldName, *Pair.Key));
+			return false;
+		}
+	}
+
+	FString Kind;
+	if (!TryRequireStringField(RefObject, RefPath, TEXT("Kind"), InvalidCode, Kind, OutFailure))
+	{
+		if (!OutFailure.bSuccess)
+		{
+			return false;
+		}
+		OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+			MakeChildPath(RefPath, TEXT("Kind")),
+			InvalidCode,
+			FString::Printf(TEXT("Blackboard key %s reference requires Kind"), *FieldName));
+		return false;
+	}
+	if (Kind != ExpectedKind)
+	{
+		OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+			MakeChildPath(RefPath, TEXT("Kind")),
+			InvalidCode,
+			FString::Printf(TEXT("Blackboard key %s reference Kind must be %s"), *FieldName, *ExpectedKind));
+		return false;
+	}
+
+	FString ReferencePath;
+	if (!TryRequireStringField(RefObject, RefPath, TEXT("Path"), InvalidCode, ReferencePath, OutFailure))
+	{
+		if (!OutFailure.bSuccess)
+		{
+			return false;
+		}
+		OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+			MakeChildPath(RefPath, TEXT("Path")),
+			InvalidCode,
+			FString::Printf(TEXT("Blackboard key %s reference requires Path"), *FieldName));
+		return false;
+	}
+	if (ReferencePath.IsEmpty())
+	{
+		OutFailure = FAssetDocumentJsonRegionUtils::Failure(
+			MakeChildPath(RefPath, TEXT("Path")),
+			InvalidCode,
+			FString::Printf(TEXT("Blackboard key %s reference Path must be non-empty"), *FieldName));
+		return false;
+	}
+
+	OutValue = ReferencePath;
+	return true;
+}
+
 bool TryRequireBoolField(
 	const TSharedRef<FJsonObject>& Json,
 	const FString& Path,
@@ -351,7 +454,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	}
 
 	FString KeyTypeClass;
-	if (!TryRequireStringField(Json, Path, TEXT("KeyTypeClass"), TEXT("InvalidBlackboardKeyType"), KeyTypeClass, FieldFailure) &&
+	if (!TryRequireReferencePathField(Json, Path, TEXT("KeyTypeClass"), TEXT("InvalidBlackboardKeyType"), TEXT("ClassRef"), KeyTypeClass, FieldFailure) &&
 		!FieldFailure.bSuccess)
 	{
 		return FieldFailure;
@@ -371,7 +474,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	}
 
 	FString BaseClass;
-	if (!TryRequireStringField(Json, Path, TEXT("BaseClass"), TEXT("InvalidBlackboardKeyBaseClass"), BaseClass, FieldFailure) &&
+	if (!TryRequireReferencePathField(Json, Path, TEXT("BaseClass"), TEXT("InvalidBlackboardKeyBaseClass"), TEXT("ClassRef"), BaseClass, FieldFailure) &&
 		!FieldFailure.bSuccess)
 	{
 		return FieldFailure;
@@ -382,7 +485,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	}
 
 	FString EnumRef;
-	if (!TryRequireStringField(Json, Path, TEXT("Enum"), TEXT("InvalidBlackboardKeyEnum"), EnumRef, FieldFailure) &&
+	if (!TryRequireReferencePathField(Json, Path, TEXT("Enum"), TEXT("InvalidBlackboardKeyEnum"), TEXT("AssetRef"), EnumRef, FieldFailure) &&
 		!FieldFailure.bSuccess)
 	{
 		return FieldFailure;
@@ -422,15 +525,15 @@ FAssetDocumentCapabilityResult FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
 	}
 	if (!KeyTypeClass.IsEmpty())
 	{
-		OutSpec.CanonicalJson->SetStringField(TEXT("KeyTypeClass"), KeyTypeClass);
+		OutSpec.CanonicalJson->SetObjectField(TEXT("KeyTypeClass"), MakeReferenceObject(TEXT("ClassRef"), KeyTypeClass));
 	}
 	if (!BaseClass.IsEmpty())
 	{
-		OutSpec.CanonicalJson->SetStringField(TEXT("BaseClass"), BaseClass);
+		OutSpec.CanonicalJson->SetObjectField(TEXT("BaseClass"), MakeReferenceObject(TEXT("ClassRef"), BaseClass));
 	}
 	if (!EnumRef.IsEmpty())
 	{
-		OutSpec.CanonicalJson->SetStringField(TEXT("Enum"), EnumRef);
+		OutSpec.CanonicalJson->SetObjectField(TEXT("Enum"), MakeReferenceObject(TEXT("AssetRef"), EnumRef));
 	}
 	if (!OutSpec.Description.IsEmpty())
 	{
@@ -688,43 +791,43 @@ TSharedRef<FJsonObject> FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(const
 		}
 		else
 		{
-			Json->SetStringField(TEXT("KeyTypeClass"), Entry.KeyType->GetClass()->GetPathName());
+			Json->SetObjectField(TEXT("KeyTypeClass"), MakeReferenceObject(TEXT("ClassRef"), Entry.KeyType->GetClass()->GetPathName()));
 		}
 
 		if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType))
 		{
 			if (ObjectKey->BaseClass)
 			{
-				Json->SetStringField(TEXT("BaseClass"), ObjectKey->BaseClass->GetPathName());
+				Json->SetObjectField(TEXT("BaseClass"), MakeReferenceObject(TEXT("ClassRef"), ObjectKey->BaseClass->GetPathName()));
 			}
 		}
 		else if (const UBlackboardKeyType_Class* ClassKey = Cast<UBlackboardKeyType_Class>(Entry.KeyType))
 		{
 			if (ClassKey->BaseClass)
 			{
-				Json->SetStringField(TEXT("BaseClass"), ClassKey->BaseClass->GetPathName());
+				Json->SetObjectField(TEXT("BaseClass"), MakeReferenceObject(TEXT("ClassRef"), ClassKey->BaseClass->GetPathName()));
 			}
 		}
 		else if (const UBlackboardKeyType_Enum* EnumKey = Cast<UBlackboardKeyType_Enum>(Entry.KeyType))
 		{
 			if (EnumKey->EnumType)
 			{
-				Json->SetStringField(TEXT("Enum"), EnumKey->EnumType->GetPathName());
+				Json->SetObjectField(TEXT("Enum"), MakeReferenceObject(TEXT("AssetRef"), EnumKey->EnumType->GetPathName()));
 			}
 			else if (!EnumKey->EnumName.IsEmpty())
 			{
-				Json->SetStringField(TEXT("Enum"), EnumKey->EnumName);
+				Json->SetObjectField(TEXT("Enum"), MakeReferenceObject(TEXT("AssetRef"), EnumKey->EnumName));
 			}
 		}
 		else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(Entry.KeyType))
 		{
 			if (NativeEnumKey->EnumType)
 			{
-				Json->SetStringField(TEXT("Enum"), NativeEnumKey->EnumType->GetPathName());
+				Json->SetObjectField(TEXT("Enum"), MakeReferenceObject(TEXT("AssetRef"), NativeEnumKey->EnumType->GetPathName()));
 			}
 			else if (!NativeEnumKey->EnumName.IsEmpty())
 			{
-				Json->SetStringField(TEXT("Enum"), NativeEnumKey->EnumName);
+				Json->SetObjectField(TEXT("Enum"), MakeReferenceObject(TEXT("AssetRef"), NativeEnumKey->EnumName));
 			}
 		}
 	}

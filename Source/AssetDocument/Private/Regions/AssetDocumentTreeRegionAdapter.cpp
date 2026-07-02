@@ -193,6 +193,7 @@ FAssetDocumentCapabilityResult ReadIdentity(
 }
 
 FAssetDocumentCapabilityResult AddIdentity(
+	const FAssetDocumentTreeRegionAdapterConfig& Config,
 	const FString& Id,
 	const FString& SemanticPath,
 	const FString& DuplicateDiagnosticPath,
@@ -200,9 +201,10 @@ FAssetDocumentCapabilityResult AddIdentity(
 {
 	if (OutSemanticPaths.Contains(Id))
 	{
+		const FString DiagnosticPath = Config.bDuplicateNodeIdUsesSemanticPath ? SemanticPath : DuplicateDiagnosticPath;
 		return Failure(
-			DuplicateDiagnosticPath,
-			TEXT("DuplicateTreeNodeId"),
+			DiagnosticPath,
+			Config.DuplicateNodeIdCode,
 			FString::Printf(TEXT("Duplicate tree node id %s"), *Id));
 	}
 
@@ -369,6 +371,7 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 		}
 
 		Result = AddIdentity(
+			Config,
 			EntryId,
 			MakeSemanticPath(EntryId),
 			AppendPath(EntryPath, Config.IdField),
@@ -427,6 +430,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 	}
 
 	Result = AddIdentity(
+		Config,
 		OutNodeId,
 		NodeSemanticPath,
 		AppendPath(NodeJsonPath, Config.IdField),
