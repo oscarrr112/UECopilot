@@ -50,19 +50,19 @@ public:
 
 	static FName DefaultAdapterName();
 	static FString MakeNodePath(const FAssetDocumentRegionContext& Context, const FString& NodeId);
-	static FString MakeChildEdgePath(
+	FString MakeChildEdgePath(
 		const FAssetDocumentRegionContext& Context,
 		const FString& ParentId,
-		const FString& ChildId);
-	static FString MakeDecoratorPath(
+		const FString& ChildId) const;
+	FString MakeDecoratorPath(
 		const FAssetDocumentRegionContext& Context,
 		const FString& ParentId,
 		const FString& ChildId,
-		const FString& DecoratorId);
-	static FString MakeServicePath(
+		const FString& DecoratorId) const;
+	FString MakeServicePath(
 		const FAssetDocumentRegionContext& Context,
 		const FString& OwnerId,
-		const FString& ServiceId);
+		const FString& ServiceId) const;
 
 	virtual FName GetName() const override;
 	virtual bool SupportsRegion(const FAssetDocumentRegionContext& Context) const override;

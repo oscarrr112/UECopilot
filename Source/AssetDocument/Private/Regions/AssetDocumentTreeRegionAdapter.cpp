@@ -85,6 +85,32 @@ FAssetDocumentCapabilityResult ValidateOptionalStringField(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ValidateKnownFields(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& ObjectPath,
+	const TArray<FString>& AllowedFields)
+{
+	TSet<FString> AllowedFieldSet;
+	AllowedFieldSet.Reserve(AllowedFields.Num());
+	for (const FString& FieldName : AllowedFields)
+	{
+		AllowedFieldSet.Add(FieldName);
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Object->Values)
+	{
+		if (!AllowedFieldSet.Contains(Field.Key))
+		{
+			return Failure(
+				AppendPath(ObjectPath, Field.Key),
+				TEXT("UnknownField"),
+				FString::Printf(TEXT("Unknown tree field %s"), *Field.Key));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult RequireArrayField(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& FieldName,
@@ -214,6 +240,12 @@ FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 			return Failure(EntryPath, TEXT("InvalidTreeDecoratorLogic"), TEXT("Decorator logic entries must be objects"));
 		}
 
+		Result = ValidateKnownFields(LogicObject.ToSharedRef(), EntryPath, {TreeOperationField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
 		FString Operation;
 		Result = FAssetDocumentJsonRegionUtils::RequireStringField(
 			LogicObject,
@@ -266,6 +298,12 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 			return Failure(EntryPath, InvalidArrayCode, FString::Printf(TEXT("%s entries must be objects"), *FieldName));
 		}
 
+		Result = ValidateKnownFields(EntryObject.ToSharedRef(), EntryPath, {Config.IdField, Config.ClassField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
 		FString EntryId;
 		Result = ReadIdentity(Config, EntryObject.ToSharedRef(), EntryPath, EntryId);
 		if (!Result.bSuccess)
@@ -302,6 +340,22 @@ FAssetDocumentCapabilityResult ValidateNode(
 	FString& OutNodeId)
 {
 	FAssetDocumentCapabilityResult Result = ReadIdentity(Config, NodeObject, NodeJsonPath, OutNodeId);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateKnownFields(
+		NodeObject,
+		NodeJsonPath,
+		{
+			Config.IdField,
+			Config.ClassField,
+			Config.ChildrenField,
+			Config.ServicesField,
+			Config.DecoratorsField,
+			Config.DecoratorLogicField,
+		});
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -384,6 +438,15 @@ FAssetDocumentCapabilityResult ValidateNode(
 		if (!Result.bSuccess)
 		{
 			return Failure(EdgePathBeforeChildId, TEXT("InvalidTreeChildEdge"), TEXT("Tree child edge entries must be objects"));
+		}
+
+		Result = ValidateKnownFields(
+			EdgeObject.ToSharedRef(),
+			EdgePathBeforeChildId,
+			{Config.ChildField, Config.DecoratorsField, Config.DecoratorLogicField});
+		if (!Result.bSuccess)
+		{
+			return Result;
 		}
 
 		TSharedPtr<FJsonObject> ChildObject;
@@ -504,30 +567,26 @@ FString FAssetDocumentTreeRegionAdapter::MakeNodePath(
 FString FAssetDocumentTreeRegionAdapter::MakeChildEdgePath(
 	const FAssetDocumentRegionContext& Context,
 	const FString& ParentId,
-	const FString& ChildId)
+	const FString& ChildId) const
 {
-	return AppendPath(AppendPath(MakeNodePath(Context, ParentId), TEXT("Children")), ChildId);
+	return MakeConfiguredChildEdgePath(Config, Context, ParentId, ChildId);
 }
 
 FString FAssetDocumentTreeRegionAdapter::MakeDecoratorPath(
 	const FAssetDocumentRegionContext& Context,
 	const FString& ParentId,
 	const FString& ChildId,
-	const FString& DecoratorId)
+	const FString& DecoratorId) const
 {
-	const FString EdgePath = FString::Printf(
-		TEXT("%s/Children/%s"),
-		*MakeNodePath(Context, ParentId),
-		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(ChildId));
-	return AppendPath(AppendPath(EdgePath, TEXT("Decorators")), DecoratorId);
+	return MakeConfiguredDecoratorPath(Config, Context, ParentId, ChildId, DecoratorId);
 }
 
 FString FAssetDocumentTreeRegionAdapter::MakeServicePath(
 	const FAssetDocumentRegionContext& Context,
 	const FString& OwnerId,
-	const FString& ServiceId)
+	const FString& ServiceId) const
 {
-	return AppendPath(AppendPath(MakeNodePath(Context, OwnerId), TEXT("Services")), ServiceId);
+	return MakeConfiguredServicePath(Config, Context, OwnerId, ServiceId);
 }
 
 FName FAssetDocumentTreeRegionAdapter::GetName() const
@@ -700,6 +759,12 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		AppendPath(RegionPath(Context), Config.RootField),
 		TEXT("MissingTreeRoot"),
 		RootObject);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateKnownFields(Tree, RegionPath(Context), {Config.RootField});
 	if (!Result.bSuccess)
 	{
 		return Result;
