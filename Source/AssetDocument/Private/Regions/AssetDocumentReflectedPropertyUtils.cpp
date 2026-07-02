@@ -141,6 +141,61 @@ bool TryGetReferencePath(const TSharedPtr<FJsonValue>& Value, const FString& Exp
 	return false;
 }
 
+bool TryGetJsonObject(const TSharedPtr<FJsonValue>& Value, TSharedPtr<FJsonObject>& OutObject);
+bool IsBlackboardKeySelectorProperty(FStructProperty* Property);
+
+FAssetDocumentCapabilityResult ValidateReferenceValue(const TSharedPtr<FJsonValue>& Value, const FString& ExpectedKind, const FString& Path)
+{
+	if (!Value.IsValid())
+	{
+		return Failure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value is required"));
+	}
+	if (Value->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FString UnusedString;
+	if (Value->TryGetString(UnusedString))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TSharedPtr<FJsonObject> Object;
+	if (!TryGetJsonObject(Value, Object))
+	{
+		return Failure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value must be a string, null, or reference object"));
+	}
+
+	static const TSet<FString> SupportedFields =
+	{
+		TEXT("Kind"),
+		TEXT("Path")
+	};
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
+	{
+		if (!SupportedFields.Contains(Pair.Key))
+		{
+			return Failure(JoinPath(Path, Pair.Key), TEXT("UnknownField"), FString::Printf(TEXT("Unknown reference field '%s'"), *Pair.Key));
+		}
+	}
+
+	FString Kind;
+	if (!Object->TryGetStringField(TEXT("Kind"), Kind) || Kind != ExpectedKind)
+	{
+		return Failure(JoinPath(Path, TEXT("Kind")), TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Reference Kind must be '%s'"), *ExpectedKind));
+	}
+
+	FString ReferencePath;
+	if (!Object->TryGetStringField(TEXT("Path"), ReferencePath))
+	{
+		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidPropertyValue"), TEXT("Reference Path must be a string"));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 TSharedPtr<FJsonValue> NormalizeInputValueForSetter(FProperty* Property, const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid())
@@ -168,6 +223,93 @@ TSharedPtr<FJsonValue> NormalizeInputValueForSetter(FProperty* Property, const T
 				? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>())
 				: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueString>(AssetPath));
 		}
+	}
+
+	return Value;
+}
+
+TSharedPtr<FJsonValue> NormalizeAuthoredValueForSetter(FProperty* Property, const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Property || !Value.IsValid())
+	{
+		return Value;
+	}
+
+	if (IsClassReferenceProperty(Property) || IsObjectReferenceProperty(Property))
+	{
+		return NormalizeInputValueForSetter(Property, Value);
+	}
+
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (IsBlackboardKeySelectorProperty(StructProperty))
+		{
+			return Value;
+		}
+
+		const TSharedPtr<FJsonObject>* StructObject = nullptr;
+		if (!Value->TryGetObject(StructObject) || !StructObject || !StructObject->IsValid())
+		{
+			return Value;
+		}
+
+		TSharedPtr<FJsonObject> NormalizedStruct = MakeShared<FJsonObject>();
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
+		{
+			FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
+			NormalizedStruct->SetField(Pair.Key, FieldProperty ? NormalizeAuthoredValueForSetter(FieldProperty, Pair.Value) : Pair.Value);
+		}
+		return MakeShared<FJsonValueObject>(NormalizedStruct);
+	}
+
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+		if (!Value->TryGetArray(ArrayValues))
+		{
+			return Value;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> NormalizedArray;
+		NormalizedArray.Reserve(ArrayValues->Num());
+		for (const TSharedPtr<FJsonValue>& ArrayValue : *ArrayValues)
+		{
+			NormalizedArray.Add(NormalizeAuthoredValueForSetter(ArrayProperty->Inner, ArrayValue));
+		}
+		return MakeShared<FJsonValueArray>(NormalizedArray);
+	}
+
+	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		const TSharedPtr<FJsonObject>* MapObject = nullptr;
+		if (!Value->TryGetObject(MapObject) || !MapObject || !MapObject->IsValid())
+		{
+			return Value;
+		}
+
+		TSharedPtr<FJsonObject> NormalizedMap = MakeShared<FJsonObject>();
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*MapObject)->Values)
+		{
+			NormalizedMap->SetField(Pair.Key, NormalizeAuthoredValueForSetter(MapProperty->ValueProp, Pair.Value));
+		}
+		return MakeShared<FJsonValueObject>(NormalizedMap);
+	}
+
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+		if (!Value->TryGetArray(SetValues))
+		{
+			return Value;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> NormalizedSet;
+		NormalizedSet.Reserve(SetValues->Num());
+		for (const TSharedPtr<FJsonValue>& SetValue : *SetValues)
+		{
+			NormalizedSet.Add(NormalizeAuthoredValueForSetter(SetProperty->ElementProp, SetValue));
+		}
+		return MakeShared<FJsonValueArray>(NormalizedSet);
 	}
 
 	return Value;
@@ -388,6 +530,8 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path);
+
 bool IsPropertyRuntimeSupported(FProperty* Property)
 {
 	return Property
@@ -420,7 +564,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 
 	if (IsClassReferenceProperty(Property) || IsObjectReferenceProperty(Property))
 	{
-		return FAssetDocumentCapabilityResult::Success();
+		return ValidateReferenceValue(Value, IsClassReferenceProperty(Property) ? TEXT("ClassRef") : TEXT("AssetRef"), Path);
 	}
 
 	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
@@ -523,16 +667,177 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ExtractSingleProperty(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+FAssetDocumentCapabilityResult ExtractStructAuthoredProperties(FStructProperty* StructProperty, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+{
+	if (!StructProperty || !ValuePtr)
+	{
+		return Failure(Path, TEXT("InvalidProperty"), TEXT("Struct property and value are required"));
+	}
+
+	TSharedPtr<FJsonObject> StructJson = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
+	{
+		FProperty* FieldProperty = *It;
+		if (!IsAuthoredEditableProperty(FieldProperty))
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonValue> FieldValue;
+		const FString FieldPath = JoinPath(Path, FieldProperty->GetName());
+		const FAssetDocumentCapabilityResult FieldResult =
+			ExtractAuthoredPropertyValue(FieldProperty, FieldProperty->ContainerPtrToValuePtr<void>(ValuePtr), FieldValue, FieldPath);
+		if (!FieldResult.bSuccess)
+		{
+			return FieldResult;
+		}
+		if (FieldValue.IsValid())
+		{
+			StructJson->SetField(FieldProperty->GetName(), FieldValue);
+		}
+	}
+
+	OutValue = MakeShared<FJsonValueObject>(StructJson);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractArrayAuthoredValues(FArrayProperty* ArrayProperty, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+{
+	if (!ArrayProperty || !ValuePtr)
+	{
+		return Failure(Path, TEXT("InvalidProperty"), TEXT("Array property and value are required"));
+	}
+
+	FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+	TArray<TSharedPtr<FJsonValue>> ArrayJson;
+	ArrayJson.Reserve(ArrayHelper.Num());
+	for (int32 Index = 0; Index < ArrayHelper.Num(); ++Index)
+	{
+		TSharedPtr<FJsonValue> ElementValue;
+		const FAssetDocumentCapabilityResult ElementResult =
+			ExtractAuthoredPropertyValue(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), ElementValue, JoinPath(Path, FString::FromInt(Index)));
+		if (!ElementResult.bSuccess)
+		{
+			return ElementResult;
+		}
+		if (ElementValue.IsValid())
+		{
+			ArrayJson.Add(ElementValue);
+		}
+	}
+
+	OutValue = MakeShared<FJsonValueArray>(ArrayJson);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FString ExtractMapKeyToString(FProperty* KeyProperty, const void* KeyPtr, int32 FallbackIndex)
+{
+	if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(KeyProperty))
+	{
+		return EnumProperty->GetEnum()->GetNameStringByValue(EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(KeyPtr));
+	}
+	if (FByteProperty* ByteProperty = CastField<FByteProperty>(KeyProperty))
+	{
+		return ByteProperty->Enum
+			? ByteProperty->Enum->GetNameStringByValue(ByteProperty->GetPropertyValue(KeyPtr))
+			: FString::FromInt(ByteProperty->GetPropertyValue(KeyPtr));
+	}
+	if (FStrProperty* StringProperty = CastField<FStrProperty>(KeyProperty))
+	{
+		return StringProperty->GetPropertyValue(KeyPtr);
+	}
+	if (FNameProperty* NameProperty = CastField<FNameProperty>(KeyProperty))
+	{
+		return NameProperty->GetPropertyValue(KeyPtr).ToString();
+	}
+	if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(KeyProperty))
+	{
+		return NumericProperty->IsFloatingPoint()
+			? FString::SanitizeFloat(NumericProperty->GetFloatingPointPropertyValue(KeyPtr))
+			: FString::FromInt(static_cast<int32>(NumericProperty->GetSignedIntPropertyValue(KeyPtr)));
+	}
+	return FString::FromInt(FallbackIndex);
+}
+
+FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapProperty, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+{
+	if (!MapProperty || !ValuePtr)
+	{
+		return Failure(Path, TEXT("InvalidProperty"), TEXT("Map property and value are required"));
+	}
+
+	FScriptMapHelper MapHelper(MapProperty, ValuePtr);
+	TSharedPtr<FJsonObject> MapJson = MakeShared<FJsonObject>();
+	for (int32 Index = 0; Index < MapHelper.Num(); ++Index)
+	{
+		if (!MapHelper.IsValidIndex(Index))
+		{
+			continue;
+		}
+
+		const FString KeyString = ExtractMapKeyToString(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index), Index);
+		TSharedPtr<FJsonValue> ValueJson;
+		const FAssetDocumentCapabilityResult ValueResult =
+			ExtractAuthoredPropertyValue(MapProperty->ValueProp, MapHelper.GetValuePtr(Index), ValueJson, JoinPath(Path, KeyString));
+		if (!ValueResult.bSuccess)
+		{
+			return ValueResult;
+		}
+		if (ValueJson.IsValid())
+		{
+			MapJson->SetField(KeyString, ValueJson);
+		}
+	}
+
+	OutValue = MakeShared<FJsonValueObject>(MapJson);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractSetAuthoredValues(FSetProperty* SetProperty, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+{
+	if (!SetProperty || !ValuePtr)
+	{
+		return Failure(Path, TEXT("InvalidProperty"), TEXT("Set property and value are required"));
+	}
+
+	FScriptSetHelper SetHelper(SetProperty, ValuePtr);
+	TArray<TSharedPtr<FJsonValue>> SetJson;
+	for (int32 Index = 0; Index < SetHelper.Num(); ++Index)
+	{
+		if (!SetHelper.IsValidIndex(Index))
+		{
+			continue;
+		}
+
+		TSharedPtr<FJsonValue> ElementJson;
+		const FAssetDocumentCapabilityResult ElementResult =
+			ExtractAuthoredPropertyValue(SetProperty->ElementProp, SetHelper.GetElementPtr(Index), ElementJson, JoinPath(Path, FString::FromInt(Index)));
+		if (!ElementResult.bSuccess)
+		{
+			return ElementResult;
+		}
+		if (ElementJson.IsValid())
+		{
+			SetJson.Add(ElementJson);
+		}
+	}
+
+	OutValue = MakeShared<FJsonValueArray>(SetJson);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
 {
 	if (!Property || !ValuePtr)
 	{
 		return Failure(Path, TEXT("InvalidProperty"), TEXT("Property and value are required"));
 	}
 
-	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property); IsBlackboardKeySelectorProperty(StructProperty))
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 	{
-		return FAssetDocumentReflectedPropertyUtils::ExtractBlackboardKeySelector(StructProperty, ValuePtr, OutValue, Path);
+		return IsBlackboardKeySelectorProperty(StructProperty)
+			? FAssetDocumentReflectedPropertyUtils::ExtractBlackboardKeySelector(StructProperty, ValuePtr, OutValue, Path)
+			: ExtractStructAuthoredProperties(StructProperty, ValuePtr, OutValue, Path);
 	}
 
 	if (IsClassReferenceProperty(Property) || IsObjectReferenceProperty(Property))
@@ -543,10 +848,30 @@ FAssetDocumentCapabilityResult ExtractSingleProperty(FProperty* Property, const 
 			: Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' could not be extracted"), *Property->GetName()));
 	}
 
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		return ExtractArrayAuthoredValues(ArrayProperty, ValuePtr, OutValue, Path);
+	}
+
+	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		return ExtractMapAuthoredValues(MapProperty, ValuePtr, OutValue, Path);
+	}
+
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		return ExtractSetAuthoredValues(SetProperty, ValuePtr, OutValue, Path);
+	}
+
 	OutValue = FPropertySetterUtils::ExtractPropertyToJson(Property, ValuePtr);
 	return OutValue.IsValid()
 		? FAssetDocumentCapabilityResult::Success()
 		: Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
+}
+
+FAssetDocumentCapabilityResult ExtractSingleProperty(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
+{
+	return ExtractAuthoredPropertyValue(Property, ValuePtr, OutValue, Path);
 }
 
 FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedRef<FJsonObject>& Properties, const FString& Path, bool bApply)
@@ -575,16 +900,10 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 			return Failure(PropertyPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Property '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(Property)));
 		}
 
-		const TSharedPtr<FJsonValue> ValueToApply = NormalizeInputValueForSetter(Property, Pair.Value);
-		if (!ValueToApply.IsValid())
-		{
-			return Failure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Property '%s' value is invalid"), *Pair.Key));
-		}
-
 		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property); IsBlackboardKeySelectorProperty(StructProperty))
 		{
 			const TSharedPtr<FJsonObject>* SelectorObject = nullptr;
-			if (!ValueToApply->TryGetObject(SelectorObject) || !SelectorObject || !SelectorObject->IsValid())
+			if (!Pair.Value.IsValid() || !Pair.Value->TryGetObject(SelectorObject) || !SelectorObject || !SelectorObject->IsValid())
 			{
 				return Failure(PropertyPath, TEXT("InvalidPropertyValue"), TEXT("BlackboardKeySelector must be an object"));
 			}
@@ -603,6 +922,12 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 		if (!SupportedResult.bSuccess)
 		{
 			return SupportedResult;
+		}
+
+		const TSharedPtr<FJsonValue> ValueToApply = NormalizeAuthoredValueForSetter(Property, Pair.Value);
+		if (!ValueToApply.IsValid())
+		{
+			return Failure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Property '%s' value is invalid"), *Pair.Key));
 		}
 
 		UObject* TargetObject = Object;
