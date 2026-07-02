@@ -398,6 +398,10 @@ TSharedRef<FJsonObject> MakeStateMachineGraph(
 	Graph->SetStringField(TEXT("Id"), Id);
 	Graph->SetStringField(TEXT("Kind"), TEXT("StateMachine"));
 	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	TSharedRef<FJsonObject> GraphPosition = MakeShared<FJsonObject>();
+	GraphPosition->SetNumberField(TEXT("X"), 0.0);
+	GraphPosition->SetNumberField(TEXT("Y"), 0.0);
+	Graph->SetObjectField(TEXT("Position"), GraphPosition);
 
 	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
 	Metadata->SetStringField(TEXT("EntryState"), TEXT("Idle"));
@@ -447,10 +451,26 @@ TSharedRef<FJsonObject> MakeStateMachineGraph(
 	TSharedRef<FJsonObject> Owner = MakeShared<FJsonObject>();
 	Owner->SetStringField(TEXT("Transition"), TEXT("IdleToRun"));
 	RuleGraph->SetObjectField(TEXT("Owner"), Owner);
+	TSharedRef<FJsonObject> RuleResult = MakeShared<FJsonObject>();
+	RuleResult->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+	RuleResult->SetStringField(TEXT("Pin"), TEXT("CanEnterTransition"));
+	TSharedRef<FJsonObject> RuleMetadata = MakeShared<FJsonObject>();
+	RuleMetadata->SetObjectField(TEXT("Result"), RuleResult);
+	RuleGraph->SetObjectField(TEXT("Metadata"), RuleMetadata);
 	RuleGraph->SetArrayField(TEXT("Nodes"), {});
 	RuleGraph->SetArrayField(TEXT("Links"), {});
 	RuleGraph->SetArrayField(TEXT("Subgraphs"), {});
-	Graph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(RuleGraph)});
+	TSharedRef<FJsonObject> StatePoseGraph = MakeShared<FJsonObject>();
+	StatePoseGraph->SetStringField(TEXT("Id"), TEXT("IdlePose"));
+	StatePoseGraph->SetStringField(TEXT("Kind"), TEXT("StatePose"));
+	TSharedRef<FJsonObject> StatePoseOwner = MakeShared<FJsonObject>();
+	StatePoseOwner->SetStringField(TEXT("State"), TEXT("Idle"));
+	StatePoseGraph->SetObjectField(TEXT("Owner"), StatePoseOwner);
+	StatePoseGraph->SetArrayField(TEXT("Nodes"), {});
+	StatePoseGraph->SetArrayField(TEXT("Links"), {});
+	StatePoseGraph->SetArrayField(TEXT("Subgraphs"), {});
+
+	Graph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(StatePoseGraph), MakeShared<FJsonValueObject>(RuleGraph)});
 	return Graph;
 }
 
@@ -868,6 +888,16 @@ bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FStrin
 	});
 }
 
+bool HasDiffStatus(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedStatus)
+{
+	return DiffEntries.ContainsByPredicate([&ExpectedStatus](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Status;
+		return Entry.IsValid() && Entry->TryGetStringField(TEXT("status"), Status) && Status == ExpectedStatus;
+	});
+}
+
 bool HasDiffNullField(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath, const FString& FieldName)
 {
 	return DiffEntries.ContainsByPredicate([&ExpectedPath, &FieldName](const TSharedPtr<FJsonValue>& EntryValue)
@@ -1069,6 +1099,121 @@ bool HasAnimGraphSkippedOutputPose(const TSharedPtr<FJsonObject>& Body)
 		&& (*Skipped)->TryGetArrayField(TEXT("OutputPose"), OutputPose)
 		&& OutputPose
 		&& OutputPose->Num() > 0;
+}
+
+TSharedPtr<FJsonObject> GetExtractedStateMachineGraph(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedGraphId)
+{
+	const TSharedPtr<FJsonObject>* StateMachines = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("StateMachines"), StateMachines) || !StateMachines || !StateMachines->IsValid())
+	{
+		return nullptr;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*StateMachines)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		FString Id;
+		if (Graph.IsValid() && Graph->TryGetStringField(TEXT("Id"), Id) && Id == ExpectedGraphId)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+bool HasStateMachineEntryState(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedGraphId, const FString& ExpectedEntryState)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TSharedPtr<FJsonObject>* Metadata = nullptr;
+	FString EntryState;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("Metadata"), Metadata)
+		&& Metadata
+		&& (*Metadata)->TryGetStringField(TEXT("EntryState"), EntryState)
+		&& EntryState == ExpectedEntryState;
+}
+
+bool HasStateMachineNodePosition(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedNodeId,
+	double ExpectedX,
+	double ExpectedY)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Position = nullptr;
+		FString NodeId;
+		double X = 0.0;
+		double Y = 0.0;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId
+			&& Node->TryGetObjectField(TEXT("Position"), Position)
+			&& Position
+			&& (*Position)->TryGetNumberField(TEXT("X"), X)
+			&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+			&& FMath::IsNearlyEqual(X, ExpectedX)
+			&& FMath::IsNearlyEqual(Y, ExpectedY))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool HasStateMachineSubgraph(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedSubgraphId,
+	const FString& ExpectedKind,
+	const FString& OwnerField,
+	const FString& ExpectedOwner)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Subgraphs"), Subgraphs) || !Subgraphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& SubgraphValue : *Subgraphs)
+	{
+		const TSharedPtr<FJsonObject> Subgraph = SubgraphValue.IsValid() ? SubgraphValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Owner = nullptr;
+		FString Id;
+		FString Kind;
+		FString OwnerValue;
+		if (Subgraph.IsValid()
+			&& Subgraph->TryGetStringField(TEXT("Id"), Id)
+			&& Subgraph->TryGetStringField(TEXT("Kind"), Kind)
+			&& Id == ExpectedSubgraphId
+			&& Kind == ExpectedKind
+			&& Subgraph->TryGetObjectField(TEXT("Owner"), Owner)
+			&& Owner
+			&& (*Owner)->TryGetStringField(OwnerField, OwnerValue)
+			&& OwnerValue == ExpectedOwner)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 UEdGraph* FindAnimBlueprintAnimGraph(UAnimBlueprint* AnimBlueprint)
@@ -1862,6 +2007,38 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 		ExtractedBody->TryGetObjectField(TEXT("StateMachines"), ExtractedStateMachines)
 			&& ExtractedStateMachines
 			&& (*ExtractedStateMachines)->HasTypedField<EJson::Array>(TEXT("Graphs")));
+	TestTrue(
+		TEXT("StateMachines extract preserves EntryState metadata"),
+		HasStateMachineEntryState(ExtractedBody, TEXT("Locomotion"), TEXT("Idle")));
+	TestTrue(
+		TEXT("StateMachines extract preserves state position"),
+		HasStateMachineNodePosition(ExtractedBody, TEXT("Locomotion"), TEXT("Idle"), 0.0, 0.0));
+	TestTrue(
+		TEXT("StateMachines extract preserves transition position"),
+		HasStateMachineNodePosition(ExtractedBody, TEXT("Locomotion"), TEXT("IdleToRun"), 120.0, 0.0));
+	TestTrue(
+		TEXT("StateMachines extract includes state-owned StatePose subgraph"),
+		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+	TestTrue(
+		TEXT("StateMachines extract includes transition-owned TransitionRule subgraph"),
+		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("IdleToRunRule"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+
+	const FString MissingTargetTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_MissingTarget_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	TSharedRef<FJsonObject> MissingTargetDocument = MakeAnimBlueprintApplyDocument(MissingTargetTarget);
+	MissingTargetDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraph(TEXT("Locomotion"), false, true)}));
+	FAssetDocumentApplyRequest MissingTargetRequest;
+	MissingTargetRequest.Document = MissingTargetDocument;
+	MissingTargetRequest.bSaveAsset = false;
+	const FAssetDocumentResult MissingTargetResult = Service.Apply(MissingTargetRequest);
+	TestFalse(TEXT("StateMachines apply rejects missing transition target"), MissingTargetResult.IsSuccess());
+	TestTrue(
+		TEXT("Missing transition target reports exact link endpoint path"),
+		HasDiagnostic(
+			MissingTargetResult,
+			TEXT("/Body/StateMachines/Graphs/Locomotion/Links/IdleToRun.Out->Missing.In/To/Node"),
+			TEXT("UnknownStateMachineLinkEndpoint")));
 
 	TestTrue(
 		TEXT("TransitionGraphs accepts empty compatibility value"),
@@ -1901,6 +2078,9 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	const FAssetDocumentCapabilityResult DiffResult =
 		Capability.Diff(AssetContext, MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))}), DiffEntries);
 	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
+	TestFalse(TEXT("StateMachines diff does not report changed entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("changed")));
+	TestFalse(TEXT("StateMachines diff does not report extra entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("extra")));
+	TestFalse(TEXT("StateMachines diff does not report missing entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("missing")));
 
 	return true;
 }
