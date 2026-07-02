@@ -464,6 +464,39 @@ void RestorePinLinks(const TArray<FPinLinkSnapshotEntry>& Snapshot)
 	}
 }
 
+TArray<UEdGraphPin*> GetLinksToPreserveOnOutputPin(UEdGraphPin* OutputPin, UEdGraphPin* ResultPin)
+{
+	TArray<UEdGraphPin*> PreservedLinks;
+	if (!OutputPin)
+	{
+		return PreservedLinks;
+	}
+	for (UEdGraphPin* LinkedPin : OutputPin->LinkedTo)
+	{
+		if (LinkedPin && LinkedPin != ResultPin)
+		{
+			PreservedLinks.AddUnique(LinkedPin);
+		}
+	}
+	return PreservedLinks;
+}
+
+bool AreOutputLinksPreserved(UEdGraphPin* OutputPin, const TArray<UEdGraphPin*>& PreservedLinks)
+{
+	if (!OutputPin)
+	{
+		return PreservedLinks.IsEmpty();
+	}
+	for (UEdGraphPin* PreservedLink : PreservedLinks)
+	{
+		if (PreservedLink && (!OutputPin->LinkedTo.Contains(PreservedLink) || !PreservedLink->LinkedTo.Contains(OutputPin)))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 	const FAssetDocumentGraphSpec& GraphSpec,
 	const FAssetDocumentAnimationGraphContext& Context,
@@ -516,6 +549,7 @@ FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 
 	const bool bAlreadyLinked = OutputPin && ResultPin && OutputPin->LinkedTo.Contains(ResultPin);
 	const TArray<FPinLinkSnapshotEntry> LinkSnapshot = SnapshotPinLinks(ResultPin, OutputPin);
+	const TArray<UEdGraphPin*> PreservedOutputLinks = GetLinksToPreserveOnOutputPin(OutputPin, ResultPin);
 	bool bLinkTopologyChanged = false;
 	if (const UEdGraphSchema* Schema = Context.Graph ? Context.Graph->GetSchema() : nullptr)
 	{
@@ -536,6 +570,14 @@ FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 				TEXT("InvalidAnimGraphOutputPoseLink"),
 				TEXT("AnimGraph result pose rejected OutputPose link."));
 		}
+		if (!AreOutputLinksPreserved(OutputPin, PreservedOutputLinks))
+		{
+			RestorePinLinks(LinkSnapshot);
+			return Failure(
+				CanonicalGraphPath,
+				TEXT("InvalidAnimGraphOutputPoseLink"),
+				TEXT("AnimGraph result pose would break existing OutputPose output links."));
+		}
 		if (!OutputPin->LinkedTo.Contains(ResultPin) || !ResultPin->LinkedTo.Contains(OutputPin))
 		{
 			RestorePinLinks(LinkSnapshot);
@@ -549,6 +591,14 @@ FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 	{
 		bLinkTopologyChanged |= BreakExistingLinks(ResultPin, OutputPin);
 		OutputPin->MakeLinkTo(ResultPin);
+		if (!AreOutputLinksPreserved(OutputPin, PreservedOutputLinks))
+		{
+			RestorePinLinks(LinkSnapshot);
+			return Failure(
+				CanonicalGraphPath,
+				TEXT("InvalidAnimGraphOutputPoseLink"),
+				TEXT("AnimGraph result pose would break existing OutputPose output links."));
+		}
 	}
 	else
 	{

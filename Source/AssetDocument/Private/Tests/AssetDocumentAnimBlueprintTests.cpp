@@ -1121,6 +1121,22 @@ UEdGraphPin* FindNamedPin(UEdGraphNode* Node, const TCHAR* PinName, EEdGraphPinD
 	return nullptr;
 }
 
+UEdGraphPin* FindFirstPin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == Direction)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
 UEdGraphPin* FindResultPosePin(UAnimBlueprint* AnimBlueprint)
 {
 	UEdGraph* Graph = FindAnimBlueprintAnimGraph(AnimBlueprint);
@@ -1137,6 +1153,18 @@ UEdGraphPin* FindResultPosePin(UAnimBlueprint* AnimBlueprint)
 		}
 	}
 	return nullptr;
+}
+
+UEdGraphPin* FindManagedPoseOutputPin(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	return FindNamedPin(FindManagedAnimGraphNode(AnimBlueprint, NodeId), TEXT("Pose"), EGPD_Output);
+}
+
+bool IsResultLinkedToManagedNode(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	UEdGraphPin* ResultPin = FindResultPosePin(AnimBlueprint);
+	return OutputPin && ResultPin && OutputPin->LinkedTo.Contains(ResultPin) && ResultPin->LinkedTo.Contains(OutputPin);
 }
 
 int32 CountResultManagedOutputLinks(UAnimBlueprint* AnimBlueprint)
@@ -1175,6 +1203,47 @@ bool AddDirectResultPoseLink(UAnimBlueprint* AnimBlueprint, const FString& NodeI
 		OutputPin->MakeLinkTo(ResultPin);
 	}
 	return OutputPin->LinkedTo.Contains(ResultPin);
+}
+
+bool AddSyntheticPoseInputLink(UAnimBlueprint* AnimBlueprint, const FString& NodeId, UEdGraphPin*& OutInputPin)
+{
+	OutInputPin = nullptr;
+	UEdGraph* Graph = FindAnimBlueprintAnimGraph(AnimBlueprint);
+	UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	UClass* ConsumerClass = LoadClass<UEdGraphNode>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_SaveCachedPose"));
+	if (!Graph || !OutputPin || !ConsumerClass)
+	{
+		return false;
+	}
+
+	UEdGraphNode* SyntheticNode = NewObject<UEdGraphNode>(Graph, ConsumerClass, NAME_None, RF_Transactional);
+	if (!SyntheticNode)
+	{
+		return false;
+	}
+	SyntheticNode->CreateNewGuid();
+	Graph->AddNode(SyntheticNode, false, false);
+	SyntheticNode->AllocateDefaultPins();
+	OutInputPin = FindNamedPin(SyntheticNode, TEXT("Pose"), EGPD_Input);
+	if (!OutInputPin)
+	{
+		OutInputPin = FindFirstPin(SyntheticNode, EGPD_Input);
+	}
+	if (!OutInputPin)
+	{
+		return false;
+	}
+	if (!OutputPin->LinkedTo.Contains(OutInputPin))
+	{
+		OutputPin->MakeLinkTo(OutInputPin);
+	}
+	return OutputPin->LinkedTo.Contains(OutInputPin) && OutInputPin->LinkedTo.Contains(OutputPin);
+}
+
+bool HasPoseOutputLink(UAnimBlueprint* AnimBlueprint, const FString& NodeId, const UEdGraphPin* ExpectedLinkedPin)
+{
+	const UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	return OutputPin && ExpectedLinkedPin && OutputPin->LinkedTo.Contains(ExpectedLinkedPin);
 }
 
 bool AllDiffEntriesUnchanged(const TArray<TSharedPtr<FJsonValue>>& DiffEntries)
@@ -1634,6 +1703,63 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("Replacement OutputPose is extracted from the new managed node"),
 		HasAnimGraphOutputPose(ReplacementExtractedBody, TEXT("WalkPlayer"), TEXT("Pose")));
+
+	const FString RollbackMutationTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_RollbackMutation_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString RollbackMutationObjectPath = FString::Printf(TEXT("%s.%s"), *RollbackMutationTarget, *FPackageName::GetLongPackageAssetName(RollbackMutationTarget));
+	TSharedRef<FJsonObject> RollbackMutationDocument = MakeAnimBlueprintApplyDocument(
+		RollbackMutationTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	RollbackMutationDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithTwoSequencePlayers(TEXT("IdlePlayer"), TEXT("WalkPlayer"), TEXT("WalkPlayer"), TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest RollbackMutationRequest;
+	RollbackMutationRequest.Document = RollbackMutationDocument;
+	RollbackMutationRequest.bSaveAsset = false;
+	const FAssetDocumentResult RollbackMutationApplyResult = Service.Apply(RollbackMutationRequest);
+	if (!RollbackMutationApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Rollback mutation setup apply failed: %s"), *RollbackMutationApplyResult.Message));
+	}
+	TestTrue(TEXT("Rollback mutation setup apply succeeds"), RollbackMutationApplyResult.IsSuccess());
+	UAnimBlueprint* RollbackMutationAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *RollbackMutationObjectPath);
+	TestNotNull(TEXT("Rollback mutation AnimBlueprint loads"), RollbackMutationAnimBlueprint);
+	TestTrue(
+		TEXT("Rollback mutation starts with old result link"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("WalkPlayer")));
+	UEdGraphPin* ExtraInputPin = nullptr;
+	TestTrue(
+		TEXT("Rollback mutation setup creates extra authored output link"),
+		AddSyntheticPoseInputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
+	TestTrue(
+		TEXT("Rollback mutation setup keeps extra authored output link"),
+		HasPoseOutputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
+
+	TSharedRef<FJsonObject> RollbackMutationSwitchDocument = MakeAnimBlueprintApplyDocument(
+		RollbackMutationTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	RollbackMutationSwitchDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithTwoSequencePlayers(TEXT("IdlePlayer"), TEXT("WalkPlayer"), TEXT("IdlePlayer"), TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest RollbackMutationSwitchRequest;
+	RollbackMutationSwitchRequest.Document = RollbackMutationSwitchDocument;
+	RollbackMutationSwitchRequest.bSaveAsset = false;
+	const FAssetDocumentResult RollbackMutationSwitchResult = Service.Apply(RollbackMutationSwitchRequest);
+	TestFalse(
+		TEXT("OutputPose repair rejects schema side effect on output links"),
+		RollbackMutationSwitchResult.IsSuccess());
+	TestTrue(
+		TEXT("OutputPose repair rollback preserves old result link after mutation failure"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("WalkPlayer")));
+	TestFalse(
+		TEXT("OutputPose repair rollback does not keep requested failed result link"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("IdlePlayer")));
+	TestTrue(
+		TEXT("OutputPose repair rollback preserves extra authored output link"),
+		HasPoseOutputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
 
 	const FString MultiLinkTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_MultiLink_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString MultiLinkObjectPath = FString::Printf(TEXT("%s.%s"), *MultiLinkTarget, *FPackageName::GetLongPackageAssetName(MultiLinkTarget));
