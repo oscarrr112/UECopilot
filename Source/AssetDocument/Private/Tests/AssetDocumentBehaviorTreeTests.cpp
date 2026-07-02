@@ -14,6 +14,7 @@
 #include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
 #include "BehaviorTree/Tasks/BTTask_WaitBlackboardTime.h"
 #include "Animation/NodeMappingContainer.h"
+#include "BlueprintEditorSettings.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "Sections/MovieSceneCVarSection.h"
@@ -253,6 +254,20 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 	UBTTask_SetKeyValueObject* NestedObjectRefRoundtripTask = NewObject<UBTTask_SetKeyValueObject>(GetTransientPackage());
 	TestTrue(TEXT("nested struct AssetRef object roundtrip apply succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(NestedObjectRefRoundtripTask, ExtractedNestedObjectRef, TEXT("/Properties")).bSuccess);
 
+	UBTTask_SetKeyValueStruct* StructValueTask = NewObject<UBTTask_SetKeyValueStruct>(GetTransientPackage());
+	TSharedRef<FJsonObject> ExtractedStructValueTask = MakeObject();
+	FAssetDocumentCapabilityResult InstancedStructExtractResult = FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(StructValueTask, ExtractedStructValueTask, TEXT("/Properties"));
+	TestFalse(TEXT("FInstancedStruct extraction is explicitly rejected"), InstancedStructExtractResult.bSuccess);
+	TestTrue(TEXT("FInstancedStruct extraction path/code is exact"), HasDiagnostic(InstancedStructExtractResult, TEXT("/Properties/Value/DefaultValue"), TEXT("UnsupportedProperty")));
+
+	TSharedRef<FJsonObject> InstancedStructProperties = MakeObject();
+	TSharedPtr<FJsonObject> InstancedStructValue = MakeShared<FJsonObject>();
+	InstancedStructValue->SetObjectField(TEXT("DefaultValue"), MakeShared<FJsonObject>());
+	InstancedStructProperties->SetObjectField(TEXT("Value"), InstancedStructValue);
+	FAssetDocumentCapabilityResult InstancedStructValidateResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(StructValueTask, InstancedStructProperties, TEXT("/Properties"));
+	TestFalse(TEXT("FInstancedStruct authored input is explicitly rejected"), InstancedStructValidateResult.bSuccess);
+	TestTrue(TEXT("FInstancedStruct validation path/code is exact"), HasDiagnostic(InstancedStructValidateResult, TEXT("/Properties/Value/DefaultValue"), TEXT("UnsupportedProperty")));
+
 	UBTTask_WaitBlackboardTime* SelectorTask = NewObject<UBTTask_WaitBlackboardTime>(GetTransientPackage());
 	FStructProperty* SelectorProperty = FindFProperty<FStructProperty>(SelectorTask->GetClass(), TEXT("BlackboardKey"));
 	TestNotNull(TEXT("BlackboardKey selector property exists"), SelectorProperty);
@@ -357,6 +372,50 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 	TSharedRef<FJsonObject> ExtractedMap = MakeObject();
 	TestTrue(TEXT("map property extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(MapObject, ExtractedMap, TEXT("/Properties")).bSuccess);
 	TestTrue(TEXT("map property extracted"), GetObjectField(ExtractedMap, TEXT("SourceToTarget")).IsValid());
+
+	UClass* PropertyEditorTestClass = LoadClass<UObject>(nullptr, TEXT("/Script/UnrealEd.PropertyEditorTestObject"));
+	TestNotNull(TEXT("PropertyEditorTestObject class exists"), PropertyEditorTestClass);
+	if (PropertyEditorTestClass)
+	{
+		UObject* UnsupportedMapKeyObject = NewObject<UObject>(GetTransientPackage(), PropertyEditorTestClass);
+		TSharedRef<FJsonObject> UnsupportedMapKeyProperties = MakeObject();
+		TSharedPtr<FJsonObject> UnsupportedMapKeyValue = MakeShared<FJsonObject>();
+		UnsupportedMapKeyValue->SetStringField(TEXT("NotAStableKey"), TEXT("Value"));
+		UnsupportedMapKeyProperties->SetObjectField(TEXT("LinearColorToStringMap"), UnsupportedMapKeyValue);
+		FAssetDocumentCapabilityResult UnsupportedMapKeyResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(UnsupportedMapKeyObject, UnsupportedMapKeyProperties, TEXT("/Properties"));
+		TestFalse(TEXT("unsupported map key type rejected"), UnsupportedMapKeyResult.bSuccess);
+		TestTrue(TEXT("unsupported map key type path/code is exact"), HasDiagnostic(UnsupportedMapKeyResult, TEXT("/Properties/LinearColorToStringMap"), TEXT("UnsupportedProperty")));
+	}
+
+	UBlueprintEditorSettings* SetSettings = NewObject<UBlueprintEditorSettings>(GetTransientPackage());
+	TSharedRef<FJsonObject> SetProperties = MakeObject();
+	TArray<TSharedPtr<FJsonValue>> SetValues;
+	SetValues.Add(MakeShared<FJsonValueString>(TEXT("Zulu")));
+	SetValues.Add(MakeShared<FJsonValueString>(TEXT("Alpha")));
+	SetProperties->SetArrayField(TEXT("TypePromotionPinDenyList"), SetValues);
+	TestTrue(TEXT("set property apply succeeds through shared setter"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(SetSettings, SetProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedSetProperties = MakeObject();
+	TestTrue(TEXT("set property extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(SetSettings, ExtractedSetProperties, TEXT("/Properties")).bSuccess);
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedSetValues = nullptr;
+	TestTrue(TEXT("set property extracts stable array"), ExtractedSetProperties->TryGetArrayField(TEXT("TypePromotionPinDenyList"), ExtractedSetValues) && ExtractedSetValues && ExtractedSetValues->Num() == 2);
+	if (ExtractedSetValues && ExtractedSetValues->Num() == 2)
+	{
+		FString FirstSetValue;
+		FString SecondSetValue;
+		(*ExtractedSetValues)[0]->TryGetString(FirstSetValue);
+		(*ExtractedSetValues)[1]->TryGetString(SecondSetValue);
+		TestEqual(TEXT("set extraction is canonically sorted first"), FirstSetValue, FString(TEXT("Alpha")));
+		TestEqual(TEXT("set extraction is canonically sorted second"), SecondSetValue, FString(TEXT("Zulu")));
+	}
+
+	TSharedRef<FJsonObject> SameSetDifferentOrder = MakeObject();
+	TArray<TSharedPtr<FJsonValue>> ReorderedSetValues;
+	ReorderedSetValues.Add(MakeShared<FJsonValueString>(TEXT("Alpha")));
+	ReorderedSetValues.Add(MakeShared<FJsonValueString>(TEXT("Zulu")));
+	SameSetDifferentOrder->SetArrayField(TEXT("TypePromotionPinDenyList"), ReorderedSetValues);
+	TArray<TSharedPtr<FJsonValue>> SetDiffEntries;
+	TestTrue(TEXT("set diff succeeds"), FAssetDocumentReflectedPropertyUtils::DiffProperties(SetSettings, SameSetDifferentOrder, TEXT("/Properties"), SetDiffEntries).bSuccess);
+	TestEqual(TEXT("set diff ignores element order"), SetDiffEntries.Num(), 0);
 
 	TSharedRef<FJsonObject> UnknownProperties = MakeObject();
 	UnknownProperties->SetStringField(TEXT("DoesNotExist"), TEXT("value"));

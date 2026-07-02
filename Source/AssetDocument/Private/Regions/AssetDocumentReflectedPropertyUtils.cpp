@@ -143,6 +143,8 @@ bool TryGetReferencePath(const TSharedPtr<FJsonValue>& Value, const FString& Exp
 
 bool TryGetJsonObject(const TSharedPtr<FJsonValue>& Value, TSharedPtr<FJsonObject>& OutObject);
 bool IsBlackboardKeySelectorProperty(FStructProperty* Property);
+bool IsInstancedStructProperty(FStructProperty* Property);
+bool IsSupportedMapKeyProperty(FProperty* KeyProperty);
 
 FAssetDocumentCapabilityResult ValidateReferenceValue(const TSharedPtr<FJsonValue>& Value, const FString& ExpectedKind, const FString& Path)
 {
@@ -366,6 +368,21 @@ bool IsBlackboardKeySelectorProperty(FStructProperty* Property)
 	return Property && Property->Struct == FBlackboardKeySelector::StaticStruct();
 }
 
+bool IsInstancedStructProperty(FStructProperty* Property)
+{
+	return Property
+		&& Property->Struct
+		&& Property->Struct->GetFName() == TEXT("InstancedStruct");
+}
+
+bool IsSupportedMapKeyProperty(FProperty* KeyProperty)
+{
+	return CastField<FEnumProperty>(KeyProperty)
+		|| CastField<FByteProperty>(KeyProperty)
+		|| CastField<FStrProperty>(KeyProperty)
+		|| CastField<FNameProperty>(KeyProperty);
+}
+
 bool TryGetJsonObject(const TSharedPtr<FJsonValue>& Value, TSharedPtr<FJsonObject>& OutObject)
 {
 	const TSharedPtr<FJsonObject>* Object = nullptr;
@@ -577,6 +594,11 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 				: FAssetDocumentCapabilityResult::Success();
 		}
 
+		if (IsInstancedStructProperty(StructProperty))
+		{
+			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *Property->GetName()));
+		}
+
 		const TSharedPtr<FJsonObject>* StructObject = nullptr;
 		if (!Value.IsValid() || !Value->TryGetObject(StructObject) || !StructObject || !StructObject->IsValid())
 		{
@@ -627,6 +649,12 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 
 	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
 	{
+		if (!IsSupportedMapKeyProperty(MapProperty->KeyProp))
+		{
+			const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
+			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *Property->GetName(), *KeyTypeName));
+		}
+
 		const TSharedPtr<FJsonObject>* MapObject = nullptr;
 		if (!Value.IsValid() || !Value->TryGetObject(MapObject) || !MapObject || !MapObject->IsValid())
 		{
@@ -672,6 +700,10 @@ FAssetDocumentCapabilityResult ExtractStructAuthoredProperties(FStructProperty* 
 	if (!StructProperty || !ValuePtr)
 	{
 		return Failure(Path, TEXT("InvalidProperty"), TEXT("Struct property and value are required"));
+	}
+	if (IsInstancedStructProperty(StructProperty))
+	{
+		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *StructProperty->GetName()));
 	}
 
 	TSharedPtr<FJsonObject> StructJson = MakeShared<FJsonObject>();
@@ -730,33 +762,31 @@ FAssetDocumentCapabilityResult ExtractArrayAuthoredValues(FArrayProperty* ArrayP
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FString ExtractMapKeyToString(FProperty* KeyProperty, const void* KeyPtr, int32 FallbackIndex)
+bool TryExtractMapKeyToString(FProperty* KeyProperty, const void* KeyPtr, FString& OutKey)
 {
 	if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(KeyProperty))
 	{
-		return EnumProperty->GetEnum()->GetNameStringByValue(EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(KeyPtr));
+		OutKey = EnumProperty->GetEnum()->GetNameStringByValue(EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(KeyPtr));
+		return true;
 	}
 	if (FByteProperty* ByteProperty = CastField<FByteProperty>(KeyProperty))
 	{
-		return ByteProperty->Enum
+		OutKey = ByteProperty->Enum
 			? ByteProperty->Enum->GetNameStringByValue(ByteProperty->GetPropertyValue(KeyPtr))
 			: FString::FromInt(ByteProperty->GetPropertyValue(KeyPtr));
+		return true;
 	}
 	if (FStrProperty* StringProperty = CastField<FStrProperty>(KeyProperty))
 	{
-		return StringProperty->GetPropertyValue(KeyPtr);
+		OutKey = StringProperty->GetPropertyValue(KeyPtr);
+		return true;
 	}
 	if (FNameProperty* NameProperty = CastField<FNameProperty>(KeyProperty))
 	{
-		return NameProperty->GetPropertyValue(KeyPtr).ToString();
+		OutKey = NameProperty->GetPropertyValue(KeyPtr).ToString();
+		return true;
 	}
-	if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(KeyProperty))
-	{
-		return NumericProperty->IsFloatingPoint()
-			? FString::SanitizeFloat(NumericProperty->GetFloatingPointPropertyValue(KeyPtr))
-			: FString::FromInt(static_cast<int32>(NumericProperty->GetSignedIntPropertyValue(KeyPtr)));
-	}
-	return FString::FromInt(FallbackIndex);
+	return false;
 }
 
 FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapProperty, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
@@ -764,6 +794,11 @@ FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapPropert
 	if (!MapProperty || !ValuePtr)
 	{
 		return Failure(Path, TEXT("InvalidProperty"), TEXT("Map property and value are required"));
+	}
+	if (!IsSupportedMapKeyProperty(MapProperty->KeyProp))
+	{
+		const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
+		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
 	}
 
 	FScriptMapHelper MapHelper(MapProperty, ValuePtr);
@@ -775,7 +810,13 @@ FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapPropert
 			continue;
 		}
 
-		const FString KeyString = ExtractMapKeyToString(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index), Index);
+		FString KeyString;
+		if (!TryExtractMapKeyToString(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index), KeyString))
+		{
+			const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
+			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
+		}
+
 		TSharedPtr<FJsonValue> ValueJson;
 		const FAssetDocumentCapabilityResult ValueResult =
 			ExtractAuthoredPropertyValue(MapProperty->ValueProp, MapHelper.GetValuePtr(Index), ValueJson, JoinPath(Path, KeyString));
@@ -821,6 +862,11 @@ FAssetDocumentCapabilityResult ExtractSetAuthoredValues(FSetProperty* SetPropert
 			SetJson.Add(ElementJson);
 		}
 	}
+
+	SetJson.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return FAssetDocumentCanonicalJson::WriteCanonicalJson(Left) < FAssetDocumentCanonicalJson::WriteCanonicalJson(Right);
+	});
 
 	OutValue = MakeShared<FJsonValueArray>(SetJson);
 	return FAssetDocumentCapabilityResult::Success();
