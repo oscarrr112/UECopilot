@@ -16,6 +16,7 @@
 #include "Animation/NodeMappingContainer.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
+#include "Sections/MovieSceneCVarSection.h"
 #include "TestActorBase.h"
 #include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
@@ -318,6 +319,17 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 	FAssetDocumentCapabilityResult RuntimeResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(Decorator, RuntimeProperties, TEXT("/Properties"));
 	TestFalse(TEXT("non-authored property rejected"), RuntimeResult.bSuccess);
 	TestTrue(TEXT("non-authored property path/code is exact"), HasDiagnostic(RuntimeResult, TEXT("/Properties/ParentNode"), TEXT("NonAuthoredProperty")));
+
+	UMovieSceneCVarSection* UnsupportedObject = NewObject<UMovieSceneCVarSection>(GetTransientPackage());
+	TSharedRef<FJsonObject> UnsupportedProperties = MakeObject();
+	TArray<TSharedPtr<FJsonValue>> ConsoleVariableCollections;
+	TSharedPtr<FJsonObject> UnsupportedCollection = MakeShared<FJsonObject>();
+	UnsupportedCollection->SetField(TEXT("Interface"), MakeShared<FJsonValueNull>());
+	ConsoleVariableCollections.Add(MakeShared<FJsonValueObject>(UnsupportedCollection));
+	UnsupportedProperties->SetArrayField(TEXT("ConsoleVariableCollections"), ConsoleVariableCollections);
+	FAssetDocumentCapabilityResult UnsupportedResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(UnsupportedObject, UnsupportedProperties, TEXT("/Properties"));
+	TestFalse(TEXT("unsupported authored property rejected"), UnsupportedResult.bSuccess);
+	TestTrue(TEXT("unsupported authored property path/code is exact"), HasDiagnostic(UnsupportedResult, TEXT("/Properties/ConsoleVariableCollections/0/Interface"), TEXT("UnsupportedProperty")));
 
 	UBehaviorTree* TreeObject = NewObject<UBehaviorTree>(GetTransientPackage());
 	TSharedRef<FJsonObject> TreeOwnedProperties = MakeObject();

@@ -388,6 +388,141 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+bool IsPropertyRuntimeSupported(FProperty* Property)
+{
+	return Property
+		&& (IsClassReferenceProperty(Property)
+			|| IsObjectReferenceProperty(Property)
+			|| CastField<FEnumProperty>(Property)
+			|| CastField<FByteProperty>(Property)
+			|| CastField<FNumericProperty>(Property)
+			|| CastField<FBoolProperty>(Property)
+			|| CastField<FStrProperty>(Property)
+			|| CastField<FNameProperty>(Property)
+			|| CastField<FTextProperty>(Property)
+			|| CastField<FStructProperty>(Property)
+			|| CastField<FArrayProperty>(Property)
+			|| CastField<FMapProperty>(Property)
+			|| CastField<FSetProperty>(Property));
+}
+
+FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property, const TSharedPtr<FJsonValue>& Value, const FString& Path)
+{
+	if (!Property)
+	{
+		return Failure(Path, TEXT("InvalidProperty"), TEXT("Property is required"));
+	}
+
+	if (!IsPropertyRuntimeSupported(Property))
+	{
+		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
+	}
+
+	if (IsClassReferenceProperty(Property) || IsObjectReferenceProperty(Property))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (IsBlackboardKeySelectorProperty(StructProperty))
+		{
+			const TSharedPtr<FJsonObject>* SelectorObject = nullptr;
+			return Value.IsValid() && Value->TryGetObject(SelectorObject) && SelectorObject && SelectorObject->IsValid()
+				? ValidateBlackboardKeySelectorJson((*SelectorObject).ToSharedRef(), Path)
+				: FAssetDocumentCapabilityResult::Success();
+		}
+
+		const TSharedPtr<FJsonObject>* StructObject = nullptr;
+		if (!Value.IsValid() || !Value->TryGetObject(StructObject) || !StructObject || !StructObject->IsValid())
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
+		{
+			const FString FieldPath = JoinPath(Path, Pair.Key);
+			FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
+			if (!FieldProperty)
+			{
+				return Failure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Struct field '%s' does not exist"), *Pair.Key));
+			}
+			if (!IsAuthoredEditableProperty(FieldProperty))
+			{
+				return Failure(FieldPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Struct field '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(FieldProperty)));
+			}
+
+			const FAssetDocumentCapabilityResult FieldResult = ValidateAuthoredPropertyValue(FieldProperty, Pair.Value, FieldPath);
+			if (!FieldResult.bSuccess)
+			{
+				return FieldResult;
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+		if (!Value.IsValid() || !Value->TryGetArray(ArrayValues))
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+
+		for (int32 Index = 0; Index < ArrayValues->Num(); ++Index)
+		{
+			const FAssetDocumentCapabilityResult ElementResult =
+				ValidateAuthoredPropertyValue(ArrayProperty->Inner, (*ArrayValues)[Index], JoinPath(Path, FString::FromInt(Index)));
+			if (!ElementResult.bSuccess)
+			{
+				return ElementResult;
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		const TSharedPtr<FJsonObject>* MapObject = nullptr;
+		if (!Value.IsValid() || !Value->TryGetObject(MapObject) || !MapObject || !MapObject->IsValid())
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*MapObject)->Values)
+		{
+			const FAssetDocumentCapabilityResult ValueResult =
+				ValidateAuthoredPropertyValue(MapProperty->ValueProp, Pair.Value, JoinPath(Path, Pair.Key));
+			if (!ValueResult.bSuccess)
+			{
+				return ValueResult;
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+		if (!Value.IsValid() || !Value->TryGetArray(SetValues))
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+
+		for (int32 Index = 0; Index < SetValues->Num(); ++Index)
+		{
+			const FAssetDocumentCapabilityResult ElementResult =
+				ValidateAuthoredPropertyValue(SetProperty->ElementProp, (*SetValues)[Index], JoinPath(Path, FString::FromInt(Index)));
+			if (!ElementResult.bSuccess)
+			{
+				return ElementResult;
+			}
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ExtractSingleProperty(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
 {
 	if (!Property || !ValuePtr)
@@ -462,6 +597,12 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 				return SelectorResult;
 			}
 			continue;
+		}
+
+		const FAssetDocumentCapabilityResult SupportedResult = ValidateAuthoredPropertyValue(Property, Pair.Value, PropertyPath);
+		if (!SupportedResult.bSuccess)
+		{
+			return SupportedResult;
 		}
 
 		UObject* TargetObject = Object;
@@ -734,7 +875,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractBlac
 					TSharedPtr<FJsonObject> AllowedTypeJson = MakeReferenceObject(TEXT("ClassRef"), AllowedType->GetClass()->GetPathName());
 					TSharedRef<FJsonObject> AllowedTypeProperties = MakeShared<FJsonObject>();
 					const FAssetDocumentCapabilityResult PropertiesResult =
-						ExtractAuthoredProperties(AllowedType, AllowedTypeProperties, JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index)));
+						ExtractAuthoredProperties(AllowedType, AllowedTypeProperties, JoinPath(JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index)), TEXT("Properties")));
 					if (!PropertiesResult.bSuccess)
 					{
 						return PropertiesResult;
