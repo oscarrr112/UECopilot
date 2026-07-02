@@ -213,8 +213,8 @@ function New-SmokeSidecar {
           Kind = "AnimGraph"
           Owner = $null
           Nodes = @(
-            New-GraphNode -Id "IdlePlayer" -Kind "SequencePlayer" -Class "/Script/AnimGraph.AnimGraphNode_SequencePlayer" -X 120 -Y 40,
-            New-GraphNode -Id "CachedIdlePose" -Kind "CachedPose" -Class "/Script/AnimGraph.AnimGraphNode_SaveCachedPose" -X 420 -Y 40
+            $(New-GraphNode -Id "IdlePlayer" -Kind "SequencePlayer" -Class "/Script/AnimGraph.AnimGraphNode_SequencePlayer" -X 120 -Y 40),
+            $(New-GraphNode -Id "CachedIdlePose" -Kind "CachedPose" -Class "/Script/AnimGraph.AnimGraphNode_SaveCachedPose" -X 420 -Y 40)
           )
           Links = @()
           Subgraphs = @()
@@ -229,9 +229,9 @@ function New-SmokeSidecar {
             EntryState = "Idle"
           }
           Nodes = @(
-            New-GraphNode -Id "Idle" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 0 -Y 0,
-            New-GraphNode -Id "Run" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 260 -Y 0,
-            New-GraphNode -Id "IdleToRun" -Kind "Transition" -Class "/Script/AnimGraph.AnimStateTransitionNode" -X 130 -Y 0
+            $(New-GraphNode -Id "Idle" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 0 -Y 0),
+            $(New-GraphNode -Id "Run" -Kind "State" -Class "/Script/AnimGraph.AnimStateNode" -X 260 -Y 0),
+            $(New-GraphNode -Id "IdleToRun" -Kind "Transition" -Class "/Script/AnimGraph.AnimStateTransitionNode" -X 130 -Y 0)
           )
           Links = @(
             [ordered]@{
@@ -309,29 +309,30 @@ try {
     diff_only = $false
     include_all_writable = $true
   }) -Label "extract"
+  $ExtractDocument = $ExtractPayload.payload
 
   if ($ExtractPayload.Target -ne $Target) {
     throw "extract returned wrong Target: $($ExtractPayload.Target)"
   }
-  if ($ExtractPayload.Class -ne "/Script/Engine.AnimBlueprint") {
-    throw "extract returned wrong Class: $($ExtractPayload.Class)"
+  if ($ExtractDocument.Class -ne "/Script/Engine.AnimBlueprint") {
+    throw "extract returned wrong Class: $($ExtractDocument.Class)"
   }
-  if ($null -eq $ExtractPayload.Body) {
+  if ($null -eq $ExtractDocument.Body) {
     throw "extract payload does not include Body"
   }
   foreach ($Region in $ExpectedBodyRegions) {
-    if (-not ($ExtractPayload.Body.PSObject.Properties.Name -contains $Region)) {
+    if (-not ($ExtractDocument.Body.PSObject.Properties.Name -contains $Region)) {
       throw "extract Body missing expected region: $Region"
     }
   }
-  if (@($ExtractPayload.Body.SyncGroups).Count -lt 2) {
+  if (@($ExtractDocument.Body.SyncGroups).Count -lt 2) {
     throw "extract Body.SyncGroups is missing smoke groups"
   }
-  if (@($ExtractPayload.Body.ParentAssetOverrides).Count -lt 1) {
+  if (@($ExtractDocument.Body.ParentAssetOverrides).Count -lt 1) {
     throw "extract Body.ParentAssetOverrides is missing smoke override"
   }
-  if ($ExtractPayload.Body.ParentAssetOverrides[0].Node -ne "IdlePlayer") {
-    throw "extract Body.ParentAssetOverrides did not preserve node alias: $($ExtractPayload.Body.ParentAssetOverrides[0] | ConvertTo-Json -Depth 20)"
+  if ($ExtractDocument.Body.ParentAssetOverrides[0].Node -ne "IdlePlayer") {
+    throw "extract Body.ParentAssetOverrides did not preserve node alias: $($ExtractDocument.Body.ParentAssetOverrides[0] | ConvertTo-Json -Depth 20)"
   }
 
   $DiffPayload = Assert-Success -Response (Invoke-AssetFactoryJson -Method "POST" -Path "/assetfactory/assetdocument/diff" -Body @{

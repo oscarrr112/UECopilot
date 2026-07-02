@@ -7,7 +7,8 @@
 - branch: `feature/asset-document-abp-complete-graph-impl`
 - worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/abp-complete-graph-impl`
 - base branch: `feature/asset-document-abp-complete-graph-plan`
-- validation host: `C:/Users/HP/.config/superpowers/validation-hosts/abp-complete-graph-impl-worker-a/ABPGraphWorkerA.uproject`
+- automation validation host: `C:/Users/HP/.config/superpowers/validation-hosts/abp-complete-graph-impl-worker-a/ABPGraphWorkerA.uproject`
+- external smoke validation host: `C:/AVH1/AVH1.uproject`
 
 ## 已实现范围
 
@@ -41,6 +42,7 @@
 - `b1a66f7 feat(assetdoc): support anim layer and blueprint graph regions`
 - `b1761ed feat(assetdoc): resolve parent overrides by graph node identity`
 - `dddc3b6 docs(assetdoc): close animation blueprint graph deferred gates`
+- `2cc5e04 docs(assetdoc): report animation blueprint graph smoke status`
 
 ## Verification
 
@@ -102,6 +104,20 @@ Smoke script parser：
 
 结果：PowerShell parser 通过。
 
+AVH1 UBT：
+
+```powershell
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload -DisableUnity
+```
+
+验证前确认 `C:/AVH1/Plugins/AssetFactory` junction 已指向当前 worktree：
+
+```text
+E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/abp-complete-graph-impl
+```
+
+结果：通过，`Result: Succeeded`。本次不是 up-to-date，UBT 实际重新编译了当前分支的 `AssetDocumentAnimGraphRegionAdapter`、`AssetDocumentAnimationGraphRuntime`、`AssetDocumentAnimBlueprintTests` 等文件。
+
 ## External HTTP Smoke Status
 
 `docs/superpowers/verification/run_asset_document_animationblueprint_smoke.ps1` 已迁移到新的 recursive graph schema：
@@ -111,12 +127,31 @@ Smoke script parser：
 - `Body.AnimLayers` 使用 graph region
 - `Body.ParentAssetOverrides` 使用 `Node = "IdlePlayer"`
 
-当前外部 HTTP smoke 未闭环：脚本启动普通 `UnrealEditor` 后，`http://127.0.0.1:8559/assetfactory/health` 在等待窗口内没有变为 reachable。对应 UE log 没有出现 AssetFactory HTTP server 初始化行，因此本次失败点是 validation host 的普通 Editor HTTP 服务未起来；不是 apply/extract/diff 逻辑已经失败。
+AVH1 外部 HTTP smoke 未闭环，但失败点已经从临时 host 的 health 问题推进到真实 ABP 语义问题：
 
-还有一个需要明确保留的缺口：脚本目前对 diff 中 `/Body/AnimGraph`、`/Body/StateMachines`、`/Body/AnimLayers` 的 changed entries 做了 allowlist。这表示外部 smoke 即使跑到 diff 阶段，也还不能证明 authored graph node 内容已经完整 extract/diff roundtrip；它只能证明非 graph 区域和 parent override alias 没有异常 diff。自动化测试已覆盖 schema、apply/materialize、diagnostic 和 profile gates，但外部端到端 roundtrip 还需要继续补 graph extraction fidelity。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File docs/superpowers/verification/run_asset_document_animationblueprint_smoke.ps1 -Project C:/AVH1/AVH1.uproject -KeepSidecar
+```
+
+结果：失败，`/assetfactory/health` 已可用，`apply-file` 返回：
+
+```text
+success=false
+code=AnimBlueprintCompileFailed
+message=Failed to compile AnimBlueprint after applying Body regions
+path=/Body
+target=/Game/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke
+```
+
+为了排除脚本语法和 HTTP transport 问题，做过一次临时窄化验证：只保留 `AnimGraph` 的 `IdlePlayer` node、空 `StateMachines` / `AnimLayers` 和 `ParentAssetOverrides.Node = "IdlePlayer"`。该窄化输入可以通过 `apply-file` 和 `extract`，但 extract payload 显示：
+
+- `payload.Body.AnimGraph.Graphs[0].Nodes = []`
+- `payload.Body.ParentAssetOverrides = []`
+
+这和代码现状吻合：`FAssetDocumentAnimGraphRegionAdapter::ExtractRegion` 当前固定返回 canonical empty graph，尚不能抽取 authored graph nodes。因此脚本目前对 diff 中 `/Body/AnimGraph`、`/Body/StateMachines`、`/Body/AnimLayers` 的 changed entries 仍有 allowlist；这不是最终完成态，只是把当前 graph extract/diff fidelity 缺口显式暴露出来。
 
 ## 当前结论
 
 代码侧的 recursive graph schema、动态 NodeSpawner/materialization、公共字段规则、state machine subgraph、anim layer/function/macro graph region、parent override node alias 已完成并通过 focused automation。
 
-尚不能把这条分支标记为“外部端到端完全闭环”：`UnrealEditor` HTTP smoke 未跑通 health，且 authored graph extract/diff fidelity 仍需补齐后再取消 smoke 脚本中的 graph changed allowlist。
+尚不能把这条分支标记为“外部端到端完全闭环”：AVH1 已证明 HTTP server 可用，但 full graph apply 会触发 `AnimBlueprintCompileFailed`，窄化输入又证明 authored graph node / parent override alias 不能被 extract roundtrip。后续需要补齐 real graph extraction fidelity、parent override persisted extraction，以及 full graph apply 后的 ABP compile repair，再取消 smoke 脚本中的 graph changed allowlist。
