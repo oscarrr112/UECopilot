@@ -7,12 +7,15 @@
 
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BTDecorator.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
 #include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
 #include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
 #include "BehaviorTree/Tasks/BTTask_WaitBlackboardTime.h"
 #include "Animation/NodeMappingContainer.h"
 #include "Engine/EngineTypes.h"
+#include "GameFramework/Actor.h"
 #include "TestActorBase.h"
 #include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
@@ -63,6 +66,12 @@ TSharedPtr<FJsonObject> GetObjectField(const TSharedPtr<FJsonObject>& Object, co
 {
 	const TSharedPtr<FJsonObject>* FieldObject = nullptr;
 	return Object.IsValid() && Object->TryGetObjectField(FieldName, FieldObject) && FieldObject ? *FieldObject : nullptr;
+}
+
+TSharedPtr<FJsonObject> GetObjectFromValue(const TSharedPtr<FJsonValue>& Value)
+{
+	const TSharedPtr<FJsonObject>* Object = nullptr;
+	return Value.IsValid() && Value->TryGetObject(Object) && Object ? *Object : nullptr;
 }
 }
 
@@ -213,6 +222,64 @@ bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
 			TestTrue(TEXT("blackboard selector none allowed"), ExtractedSelector->GetBoolField(TEXT("bNoneIsAllowedValue")));
 			TestFalse(TEXT("blackboard selector skips transient SelectedKeyID"), ExtractedSelector->HasField(TEXT("SelectedKeyID")));
 		}
+
+		FBlackboardKeySelector* Selector = static_cast<FBlackboardKeySelector*>(SelectorPtr);
+		UBlackboardKeyType_Object* ObjectFilter = NewObject<UBlackboardKeyType_Object>(SelectorTask);
+		ObjectFilter->BaseClass = AActor::StaticClass();
+		Selector->AllowedTypes = { ObjectFilter };
+
+		TSharedPtr<FJsonValue> ExtractedFilterSelectorValue;
+		TestTrue(TEXT("blackboard selector filter extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractBlackboardKeySelector(SelectorProperty, SelectorPtr, ExtractedFilterSelectorValue, TEXT("/Properties/BlackboardKey")).bSuccess);
+		TSharedPtr<FJsonObject> ExtractedFilterSelector = GetObjectFromValue(ExtractedFilterSelectorValue);
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedAllowedTypes = nullptr;
+		TestTrue(TEXT("blackboard selector extracts allowed type filters"), ExtractedFilterSelector.IsValid() && ExtractedFilterSelector->TryGetArrayField(TEXT("AllowedTypes"), ExtractedAllowedTypes) && ExtractedAllowedTypes && ExtractedAllowedTypes->Num() == 1);
+		if (ExtractedAllowedTypes && ExtractedAllowedTypes->Num() == 1)
+		{
+			TSharedPtr<FJsonObject> ExtractedAllowedType = GetObjectFromValue((*ExtractedAllowedTypes)[0]);
+			TSharedPtr<FJsonObject> ExtractedAllowedTypeProperties = GetObjectField(ExtractedAllowedType, TEXT("Properties"));
+			TSharedPtr<FJsonObject> ExtractedFilterBaseClass = GetObjectField(ExtractedAllowedTypeProperties, TEXT("BaseClass"));
+			TestTrue(TEXT("blackboard selector allowed type extracts ClassRef"), ExtractedAllowedType.IsValid() && ExtractedAllowedType->GetStringField(TEXT("Kind")) == TEXT("ClassRef"));
+			TestTrue(TEXT("blackboard selector allowed type preserves BaseClass"), ExtractedFilterBaseClass.IsValid() && ExtractedFilterBaseClass->GetStringField(TEXT("Path")) == AActor::StaticClass()->GetPathName());
+
+			UBTTask_WaitBlackboardTime* RoundtripSelectorTask = NewObject<UBTTask_WaitBlackboardTime>(GetTransientPackage());
+			void* RoundtripSelectorPtr = SelectorProperty->ContainerPtrToValuePtr<void>(RoundtripSelectorTask);
+			TestTrue(TEXT("blackboard selector filter apply roundtrip succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, RoundtripSelectorPtr, ExtractedFilterSelector.ToSharedRef(), TEXT("/Properties/BlackboardKey")).bSuccess);
+			FBlackboardKeySelector* RoundtripSelector = static_cast<FBlackboardKeySelector*>(RoundtripSelectorPtr);
+			UBlackboardKeyType_Object* RoundtripObjectFilter = RoundtripSelector->AllowedTypes.Num() == 1 ? Cast<UBlackboardKeyType_Object>(RoundtripSelector->AllowedTypes[0]) : nullptr;
+			TestTrue(TEXT("blackboard selector filter roundtrip restores BaseClass"), RoundtripObjectFilter && RoundtripObjectFilter->BaseClass == AActor::StaticClass());
+		}
+
+		TSharedRef<FJsonObject> InvalidFilterSelector = MakeObject();
+		TArray<TSharedPtr<FJsonValue>> InvalidFilters;
+		InvalidFilters.Add(MakeShared<FJsonValueObject>(MakeClassRef(TEXT("/Script/Engine.Actor"))));
+		InvalidFilterSelector->SetArrayField(TEXT("AllowedTypes"), InvalidFilters);
+		FAssetDocumentCapabilityResult InvalidFilterResult = FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, InvalidFilterSelector, TEXT("/Properties/BlackboardKey"));
+		TestFalse(TEXT("invalid blackboard filter class rejected"), InvalidFilterResult.bSuccess);
+		TestTrue(TEXT("invalid blackboard filter class path/code is exact"), HasDiagnostic(InvalidFilterResult, TEXT("/Properties/BlackboardKey/AllowedTypes/0/Path"), TEXT("InvalidClassRef")));
+
+		TSharedRef<FJsonObject> UnknownNestedFilterSelector = MakeObject();
+		TSharedPtr<FJsonObject> UnknownFilter = MakeClassRef(UBlackboardKeyType_Object::StaticClass()->GetPathName());
+		TSharedPtr<FJsonObject> UnknownFilterProperties = MakeShared<FJsonObject>();
+		UnknownFilterProperties->SetStringField(TEXT("NotAKeyTypeProperty"), TEXT("bad"));
+		UnknownFilter->SetObjectField(TEXT("Properties"), UnknownFilterProperties);
+		TArray<TSharedPtr<FJsonValue>> UnknownFilters;
+		UnknownFilters.Add(MakeShared<FJsonValueObject>(UnknownFilter));
+		UnknownNestedFilterSelector->SetArrayField(TEXT("AllowedTypes"), UnknownFilters);
+		FAssetDocumentCapabilityResult UnknownNestedFilterResult = FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, UnknownNestedFilterSelector, TEXT("/Properties/BlackboardKey"));
+		TestFalse(TEXT("unknown blackboard filter property rejected"), UnknownNestedFilterResult.bSuccess);
+		TestTrue(TEXT("unknown blackboard filter property path/code is exact"), HasDiagnostic(UnknownNestedFilterResult, TEXT("/Properties/BlackboardKey/AllowedTypes/0/Properties/NotAKeyTypeProperty"), TEXT("UnknownProperty")));
+
+		TSharedRef<FJsonObject> NonAuthoredNestedFilterSelector = MakeObject();
+		TSharedPtr<FJsonObject> NonAuthoredFilter = MakeClassRef(UBlackboardKeyType_Enum::StaticClass()->GetPathName());
+		TSharedPtr<FJsonObject> NonAuthoredFilterProperties = MakeShared<FJsonObject>();
+		NonAuthoredFilterProperties->SetBoolField(TEXT("bIsEnumNameValid"), true);
+		NonAuthoredFilter->SetObjectField(TEXT("Properties"), NonAuthoredFilterProperties);
+		TArray<TSharedPtr<FJsonValue>> NonAuthoredFilters;
+		NonAuthoredFilters.Add(MakeShared<FJsonValueObject>(NonAuthoredFilter));
+		NonAuthoredNestedFilterSelector->SetArrayField(TEXT("AllowedTypes"), NonAuthoredFilters);
+		FAssetDocumentCapabilityResult NonAuthoredNestedFilterResult = FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, NonAuthoredNestedFilterSelector, TEXT("/Properties/BlackboardKey"));
+		TestFalse(TEXT("non-authored blackboard filter property rejected"), NonAuthoredNestedFilterResult.bSuccess);
+		TestTrue(TEXT("non-authored blackboard filter property path/code is exact"), HasDiagnostic(NonAuthoredNestedFilterResult, TEXT("/Properties/BlackboardKey/AllowedTypes/0/Properties/bIsEnumNameValid"), TEXT("NonAuthoredProperty")));
 	}
 
 	ATestActorBase* ContainerObject = NewObject<ATestActorBase>(GetTransientPackage());

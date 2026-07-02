@@ -80,7 +80,15 @@ FString GetNonAuthoredReason(const FProperty* Property)
 
 bool IsClassReferenceProperty(const FProperty* Property)
 {
-	return CastField<FClassProperty>(Property) || CastField<FSoftClassProperty>(Property);
+	if (CastField<FClassProperty>(Property) || CastField<FSoftClassProperty>(Property))
+	{
+		return true;
+	}
+
+	const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
+	return ObjectProperty
+		&& ObjectProperty->PropertyClass
+		&& ObjectProperty->PropertyClass->IsChildOf(UClass::StaticClass());
 }
 
 bool IsObjectReferenceProperty(const FProperty* Property)
@@ -183,6 +191,15 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 
+	if (FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property);
+		ObjectProperty && ObjectProperty->PropertyClass && ObjectProperty->PropertyClass->IsChildOf(UClass::StaticClass()))
+	{
+		UClass* ClassValue = Cast<UClass>(ObjectProperty->GetObjectPropertyValue(ValuePtr));
+		return ClassValue
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("ClassRef"), ClassValue->GetPathName())))
+			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
+	}
+
 	if (FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
 	{
 		const FSoftObjectPtr* SoftPtr = static_cast<const FSoftObjectPtr*>(ValuePtr);
@@ -205,6 +222,110 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 bool IsBlackboardKeySelectorProperty(FStructProperty* Property)
 {
 	return Property && Property->Struct == FBlackboardKeySelector::StaticStruct();
+}
+
+bool TryGetJsonObject(const TSharedPtr<FJsonValue>& Value, TSharedPtr<FJsonObject>& OutObject)
+{
+	const TSharedPtr<FJsonObject>* Object = nullptr;
+	if (!Value.IsValid() || !Value->TryGetObject(Object) || !Object || !Object->IsValid())
+	{
+		return false;
+	}
+
+	OutObject = *Object;
+	return true;
+}
+
+UClass* LoadBlackboardKeyTypeClass(const FString& ClassPath)
+{
+	UClass* LoadedClass = LoadClass<UBlackboardKeyType>(nullptr, *ClassPath);
+	if (!LoadedClass)
+	{
+		LoadedClass = Cast<UClass>(StaticLoadObject(UClass::StaticClass(), nullptr, *ClassPath));
+	}
+
+	return LoadedClass && LoadedClass->IsChildOf(UBlackboardKeyType::StaticClass())
+		? LoadedClass
+		: nullptr;
+}
+
+FAssetDocumentCapabilityResult ValidateBlackboardAllowedTypeEntry(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path,
+	UClass*& OutKeyTypeClass,
+	TSharedPtr<FJsonObject>& OutProperties)
+{
+	static const TSet<FString> SupportedFields =
+	{
+		TEXT("Kind"),
+		TEXT("Path"),
+		TEXT("Properties")
+	};
+
+	OutKeyTypeClass = nullptr;
+	OutProperties.Reset();
+
+	TSharedPtr<FJsonObject> EntryObject;
+	if (!TryGetJsonObject(Value, EntryObject))
+	{
+		return Failure(Path, TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must be ClassRef objects"));
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : EntryObject->Values)
+	{
+		if (!SupportedFields.Contains(Pair.Key))
+		{
+			return Failure(JoinPath(Path, Pair.Key), TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown AllowedTypes entry field '%s'"), *Pair.Key));
+		}
+	}
+
+	FString Kind;
+	if (!EntryObject->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
+	{
+		return Failure(JoinPath(Path, TEXT("Kind")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must use Kind 'ClassRef'"));
+	}
+
+	FString ClassPath;
+	if (!EntryObject->TryGetStringField(TEXT("Path"), ClassPath))
+	{
+		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a class Path"));
+	}
+	ClassPath.TrimStartAndEndInline();
+	if (ClassPath.IsEmpty())
+	{
+		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a non-empty class Path"));
+	}
+
+	OutKeyTypeClass = LoadBlackboardKeyTypeClass(ClassPath);
+	if (!OutKeyTypeClass)
+	{
+		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), FString::Printf(TEXT("AllowedTypes class '%s' is not a UBlackboardKeyType"), *ClassPath));
+	}
+
+	if (EntryObject->HasField(TEXT("Properties")))
+	{
+		const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;
+		if (!EntryObject->TryGetObjectField(TEXT("Properties"), PropertiesObject) || !PropertiesObject || !PropertiesObject->IsValid())
+		{
+			return Failure(JoinPath(Path, TEXT("Properties")), TEXT("InvalidPropertyValue"), TEXT("AllowedTypes Properties must be an object"));
+		}
+
+		OutProperties = *PropertiesObject;
+		UBlackboardKeyType* ValidationKeyType = NewObject<UBlackboardKeyType>(GetTransientPackage(), OutKeyTypeClass);
+		if (!ValidationKeyType)
+		{
+			return Failure(Path, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *ClassPath));
+		}
+
+		const FAssetDocumentCapabilityResult PropertiesResult =
+			FAssetDocumentReflectedPropertyUtils::ValidateProperties(ValidationKeyType, OutProperties.ToSharedRef(), JoinPath(Path, TEXT("Properties")));
+		if (!PropertiesResult.bSuccess)
+		{
+			return PropertiesResult;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRef<FJsonObject>& Json, const FString& Path)
@@ -249,10 +370,16 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 			}
 			for (int32 Index = 0; Index < Array->Num(); ++Index)
 			{
-				FString ClassPath;
-				if (!TryGetReferencePath((*Array)[Index], TEXT("ClassRef"), ClassPath))
+				UClass* KeyTypeClass = nullptr;
+				TSharedPtr<FJsonObject> KeyTypeProperties;
+				const FAssetDocumentCapabilityResult EntryResult = ValidateBlackboardAllowedTypeEntry(
+					(*Array)[Index],
+					JoinPath(FieldPath, FString::FromInt(Index)),
+					KeyTypeClass,
+					KeyTypeProperties);
+				if (!EntryResult.bSuccess)
 				{
-					return Failure(JoinPath(FieldPath, FString::FromInt(Index)), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must be ClassRef values"));
+					return EntryResult;
 				}
 			}
 		}
@@ -485,6 +612,58 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 		return ValidateResult;
 	}
 
+	FArrayProperty* AllowedTypesProperty = nullptr;
+	FObjectPropertyBase* InnerObjectProperty = nullptr;
+	TArray<UBlackboardKeyType*> PreparedAllowedTypes;
+	const bool bApplyAllowedTypes = Json->HasField(TEXT("AllowedTypes"));
+	if (bApplyAllowedTypes)
+	{
+		AllowedTypesProperty = FindFProperty<FArrayProperty>(FBlackboardKeySelector::StaticStruct(), TEXT("AllowedTypes"));
+		InnerObjectProperty = AllowedTypesProperty ? CastField<FObjectPropertyBase>(AllowedTypesProperty->Inner) : nullptr;
+		if (!AllowedTypesProperty)
+		{
+			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes property is unavailable"));
+		}
+		if (!InnerObjectProperty)
+		{
+			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes inner property is unavailable"));
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* AllowedTypeRefs = nullptr;
+		Json->TryGetArrayField(TEXT("AllowedTypes"), AllowedTypeRefs);
+		PreparedAllowedTypes.Reserve(AllowedTypeRefs ? AllowedTypeRefs->Num() : 0);
+		for (int32 Index = 0; AllowedTypeRefs && Index < AllowedTypeRefs->Num(); ++Index)
+		{
+			UClass* KeyTypeClass = nullptr;
+			TSharedPtr<FJsonObject> KeyTypeProperties;
+			const FString EntryPath = JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index));
+			const FAssetDocumentCapabilityResult EntryResult =
+				ValidateBlackboardAllowedTypeEntry((*AllowedTypeRefs)[Index], EntryPath, KeyTypeClass, KeyTypeProperties);
+			if (!EntryResult.bSuccess)
+			{
+				return EntryResult;
+			}
+
+			UBlackboardKeyType* KeyType = NewObject<UBlackboardKeyType>(GetTransientPackage(), KeyTypeClass);
+			if (!KeyType)
+			{
+				return Failure(EntryPath, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *KeyTypeClass->GetPathName()));
+			}
+
+			if (KeyTypeProperties.IsValid())
+			{
+				const FAssetDocumentCapabilityResult PropertiesResult =
+					FAssetDocumentReflectedPropertyUtils::ApplyProperties(KeyType, KeyTypeProperties.ToSharedRef(), JoinPath(EntryPath, TEXT("Properties")));
+				if (!PropertiesResult.bSuccess)
+				{
+					return PropertiesResult;
+				}
+			}
+
+			PreparedAllowedTypes.Add(KeyType);
+		}
+	}
+
 	FBlackboardKeySelector* Selector = static_cast<FBlackboardKeySelector*>(ValuePtr);
 	if (Json->HasField(TEXT("SelectedKeyName")))
 	{
@@ -501,36 +680,16 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 		Selector->AllowNoneAsValue(bNoneIsAllowed);
 	}
 
-	if (Json->HasField(TEXT("AllowedTypes")))
+	if (bApplyAllowedTypes)
 	{
-		FArrayProperty* AllowedTypesProperty = FindFProperty<FArrayProperty>(FBlackboardKeySelector::StaticStruct(), TEXT("AllowedTypes"));
-		FObjectPropertyBase* InnerObjectProperty = AllowedTypesProperty ? CastField<FObjectPropertyBase>(AllowedTypesProperty->Inner) : nullptr;
-		if (!AllowedTypesProperty)
-		{
-			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes property is unavailable"));
-		}
-		if (!InnerObjectProperty)
-		{
-			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes inner property is unavailable"));
-		}
-
-		const TArray<TSharedPtr<FJsonValue>>* AllowedTypeRefs = nullptr;
-		Json->TryGetArrayField(TEXT("AllowedTypes"), AllowedTypeRefs);
 		void* AllowedTypesPtr = AllowedTypesProperty->ContainerPtrToValuePtr<void>(ValuePtr);
 		FScriptArrayHelper ArrayHelper(AllowedTypesProperty, AllowedTypesPtr);
 		ArrayHelper.EmptyValues();
-		for (const TSharedPtr<FJsonValue>& AllowedTypeRef : *AllowedTypeRefs)
+		for (UBlackboardKeyType* PreparedAllowedType : PreparedAllowedTypes)
 		{
-			FString ClassPath;
-			TryGetReferencePath(AllowedTypeRef, TEXT("ClassRef"), ClassPath);
-			UClass* KeyTypeClass = LoadClass<UBlackboardKeyType>(nullptr, *ClassPath);
-			if (!KeyTypeClass || !KeyTypeClass->IsChildOf(UBlackboardKeyType::StaticClass()))
-			{
-				return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidClassRef"), FString::Printf(TEXT("AllowedTypes class '%s' is not a UBlackboardKeyType"), *ClassPath));
-			}
 			const int32 Index = ArrayHelper.AddValue();
 			void* ElementPtr = ArrayHelper.GetRawPtr(Index);
-			InnerObjectProperty->SetObjectPropertyValue(ElementPtr, NewObject<UBlackboardKeyType>(GetTransientPackage(), KeyTypeClass));
+			InnerObjectProperty->SetObjectPropertyValue(ElementPtr, PreparedAllowedType);
 		}
 	}
 
@@ -572,7 +731,19 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractBlac
 				UObject* AllowedType = InnerObjectProperty ? InnerObjectProperty->GetObjectPropertyValue(ElementPtr) : nullptr;
 				if (AllowedType)
 				{
-					AllowedTypeRefs.Add(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("ClassRef"), AllowedType->GetClass()->GetPathName())));
+					TSharedPtr<FJsonObject> AllowedTypeJson = MakeReferenceObject(TEXT("ClassRef"), AllowedType->GetClass()->GetPathName());
+					TSharedRef<FJsonObject> AllowedTypeProperties = MakeShared<FJsonObject>();
+					const FAssetDocumentCapabilityResult PropertiesResult =
+						ExtractAuthoredProperties(AllowedType, AllowedTypeProperties, JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index)));
+					if (!PropertiesResult.bSuccess)
+					{
+						return PropertiesResult;
+					}
+					if (AllowedTypeProperties->Values.Num() > 0)
+					{
+						AllowedTypeJson->SetObjectField(TEXT("Properties"), AllowedTypeProperties);
+					}
+					AllowedTypeRefs.Add(MakeShared<FJsonValueObject>(AllowedTypeJson));
 				}
 			}
 			if (!AllowedTypeRefs.IsEmpty())
