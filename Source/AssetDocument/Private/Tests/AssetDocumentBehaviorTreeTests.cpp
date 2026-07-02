@@ -3,9 +3,20 @@
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
 #include "Profiles/BehaviorTreeAssetDocumentProfile.h"
+#include "Regions/AssetDocumentReflectedPropertyUtils.h"
 
 #include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BTDecorator.h"
+#include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
+#include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
+#include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
+#include "BehaviorTree/Tasks/BTTask_WaitBlackboardTime.h"
+#include "Animation/NodeMappingContainer.h"
+#include "Engine/EngineTypes.h"
+#include "TestActorBase.h"
+#include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/UnrealType.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -17,6 +28,41 @@ const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocume
 	{
 		return Policy.RegionId == RegionId;
 	});
+}
+
+TSharedRef<FJsonObject> MakeObject()
+{
+	return MakeShared<FJsonObject>();
+}
+
+TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
+{
+	TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+	Ref->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	Ref->SetStringField(TEXT("Path"), Path);
+	return Ref;
+}
+
+TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
+{
+	TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
+	Ref->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	Ref->SetStringField(TEXT("Path"), Path);
+	return Ref;
+}
+
+bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
+TSharedPtr<FJsonObject> GetObjectField(const TSharedPtr<FJsonObject>& Object, const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject>* FieldObject = nullptr;
+	return Object.IsValid() && Object->TryGetObjectField(FieldName, FieldObject) && FieldObject ? *FieldObject : nullptr;
 }
 }
 
@@ -76,6 +122,149 @@ bool FAssetDocumentBehaviorTreeProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Policy includes Body.Blackboard"), FindPolicyByRegionId(Policies, TEXT("Body.Blackboard")));
 	TestNotNull(TEXT("Policy includes Body.Tree"), FindPolicyByRegionId(Policies, TEXT("Body.Tree")));
 	TestNotNull(TEXT("Policy includes Body.EditorLayout"), FindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeReflectedPropertiesTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ReflectedProperties",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeReflectedPropertiesTest::RunTest(const FString&)
+{
+	UTestDataAsset* ScalarObject = NewObject<UTestDataAsset>(GetTransientPackage());
+	TSharedRef<FJsonObject> ScalarProperties = MakeObject();
+	ScalarProperties->SetStringField(TEXT("TestString"), TEXT("Scout"));
+	ScalarProperties->SetNumberField(TEXT("TestInt"), 7);
+	ScalarProperties->SetNumberField(TEXT("TestFloat"), 2.5);
+	ScalarProperties->SetBoolField(TEXT("bTestBool"), true);
+	ScalarProperties->SetStringField(TEXT("TestName"), TEXT("PatrolKey"));
+	ScalarProperties->SetStringField(TEXT("TestText"), TEXT("Visible text"));
+
+	FAssetDocumentCapabilityResult ScalarApply = FAssetDocumentReflectedPropertyUtils::ApplyProperties(ScalarObject, ScalarProperties, TEXT("/Properties"));
+	TestTrue(TEXT("scalar reflected apply succeeds"), ScalarApply.bSuccess);
+	TestEqual(TEXT("string applied"), ScalarObject->TestString, FString(TEXT("Scout")));
+	TestEqual(TEXT("int applied"), ScalarObject->TestInt, 7);
+	TestTrue(TEXT("float applied"), FMath::IsNearlyEqual(ScalarObject->TestFloat, 2.5f));
+	TestTrue(TEXT("bool applied"), ScalarObject->bTestBool);
+	TestEqual(TEXT("name applied"), ScalarObject->TestName, FName(TEXT("PatrolKey")));
+	TestEqual(TEXT("text applied"), ScalarObject->TestText.ToString(), FString(TEXT("Visible text")));
+
+	TSharedRef<FJsonObject> ExtractedScalars = MakeObject();
+	FAssetDocumentCapabilityResult ScalarExtract = FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(ScalarObject, ExtractedScalars, TEXT("/Properties"));
+	TestTrue(TEXT("scalar reflected extract succeeds"), ScalarExtract.bSuccess);
+	TestEqual(TEXT("string extracted"), ExtractedScalars->GetStringField(TEXT("TestString")), FString(TEXT("Scout")));
+	TestEqual(TEXT("name extracted"), ExtractedScalars->GetStringField(TEXT("TestName")), FString(TEXT("PatrolKey")));
+	TestEqual(TEXT("text extracted"), ExtractedScalars->GetStringField(TEXT("TestText")), FString(TEXT("Visible text")));
+
+	UBTDecorator_Blackboard* Decorator = NewObject<UBTDecorator_Blackboard>(GetTransientPackage());
+	TSharedRef<FJsonObject> EnumProperties = MakeObject();
+	EnumProperties->SetStringField(TEXT("FlowAbortMode"), TEXT("Both"));
+	FAssetDocumentCapabilityResult EnumApply = FAssetDocumentReflectedPropertyUtils::ApplyProperties(Decorator, EnumProperties, TEXT("/Properties"));
+	TestTrue(TEXT("enum reflected apply succeeds"), EnumApply.bSuccess);
+	TSharedRef<FJsonObject> ExtractedEnum = MakeObject();
+	TestTrue(TEXT("enum reflected extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(Decorator, ExtractedEnum, TEXT("/Properties")).bSuccess);
+	TestEqual(TEXT("enum extracted"), ExtractedEnum->GetStringField(TEXT("FlowAbortMode")), FString(TEXT("Both")));
+
+	UBehaviorTree* ReferencedTree = NewObject<UBehaviorTree>(GetTransientPackage(), TEXT("BT_ReflectedPropertyReference"));
+	UBTTask_RunBehavior* ObjectRefTask = NewObject<UBTTask_RunBehavior>(GetTransientPackage());
+	TSharedRef<FJsonObject> ObjectRefProperties = MakeObject();
+	ObjectRefProperties->SetObjectField(TEXT("BehaviorAsset"), MakeAssetRef(ReferencedTree->GetPathName()));
+	TestTrue(TEXT("AssetRef object apply succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(ObjectRefTask, ObjectRefProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedObjectRef = MakeObject();
+	TestTrue(TEXT("AssetRef object extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(ObjectRefTask, ExtractedObjectRef, TEXT("/Properties")).bSuccess);
+	TSharedPtr<FJsonObject> ExtractedBehaviorAsset = GetObjectField(ExtractedObjectRef, TEXT("BehaviorAsset"));
+	TestTrue(TEXT("object reference extracts as AssetRef"), ExtractedBehaviorAsset.IsValid() && ExtractedBehaviorAsset->GetStringField(TEXT("Kind")) == TEXT("AssetRef"));
+
+	UBTTask_RunBehavior* RawObjectRefTask = NewObject<UBTTask_RunBehavior>(GetTransientPackage());
+	TSharedRef<FJsonObject> RawObjectRefProperties = MakeObject();
+	RawObjectRefProperties->SetStringField(TEXT("BehaviorAsset"), ReferencedTree->GetPathName());
+	TestTrue(TEXT("raw object path apply succeeds through shared setter"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(RawObjectRefTask, RawObjectRefProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedRawObjectRef = MakeObject();
+	TestTrue(TEXT("raw object path extracts canonically"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(RawObjectRefTask, ExtractedRawObjectRef, TEXT("/Properties")).bSuccess);
+	TestTrue(TEXT("raw object path canonicalizes to AssetRef"), GetObjectField(ExtractedRawObjectRef, TEXT("BehaviorAsset")).IsValid());
+
+	UBTTask_SetKeyValueClass* ClassRefTask = NewObject<UBTTask_SetKeyValueClass>(GetTransientPackage());
+	TSharedRef<FJsonObject> ClassRefProperties = MakeObject();
+	ClassRefProperties->SetObjectField(TEXT("BaseClass"), MakeClassRef(TEXT("/Script/Engine.Actor")));
+	TestTrue(TEXT("ClassRef apply succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(ClassRefTask, ClassRefProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedClassRef = MakeObject();
+	TestTrue(TEXT("ClassRef extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(ClassRefTask, ExtractedClassRef, TEXT("/Properties")).bSuccess);
+	TSharedPtr<FJsonObject> ExtractedBaseClass = GetObjectField(ExtractedClassRef, TEXT("BaseClass"));
+	TestTrue(TEXT("class reference extracts as ClassRef"), ExtractedBaseClass.IsValid() && ExtractedBaseClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef"));
+
+	UBTTask_WaitBlackboardTime* SelectorTask = NewObject<UBTTask_WaitBlackboardTime>(GetTransientPackage());
+	FStructProperty* SelectorProperty = FindFProperty<FStructProperty>(SelectorTask->GetClass(), TEXT("BlackboardKey"));
+	TestNotNull(TEXT("BlackboardKey selector property exists"), SelectorProperty);
+	if (SelectorProperty)
+	{
+		TSharedRef<FJsonObject> SelectorJson = MakeObject();
+		SelectorJson->SetStringField(TEXT("SelectedKeyName"), TEXT("TargetActor"));
+		SelectorJson->SetBoolField(TEXT("bNoneIsAllowedValue"), true);
+		void* SelectorPtr = SelectorProperty->ContainerPtrToValuePtr<void>(SelectorTask);
+		TestTrue(TEXT("blackboard selector apply succeeds"), FAssetDocumentReflectedPropertyUtils::ApplyBlackboardKeySelector(SelectorProperty, SelectorPtr, SelectorJson, TEXT("/Properties/BlackboardKey")).bSuccess);
+		TSharedPtr<FJsonValue> ExtractedSelectorValue;
+		TestTrue(TEXT("blackboard selector extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractBlackboardKeySelector(SelectorProperty, SelectorPtr, ExtractedSelectorValue, TEXT("/Properties/BlackboardKey")).bSuccess);
+		TSharedPtr<FJsonObject> ExtractedSelector = ExtractedSelectorValue.IsValid() ? ExtractedSelectorValue->AsObject() : nullptr;
+		TestTrue(TEXT("blackboard selector extracts object"), ExtractedSelector.IsValid());
+		if (ExtractedSelector.IsValid())
+		{
+			TestEqual(TEXT("blackboard selector key name"), ExtractedSelector->GetStringField(TEXT("SelectedKeyName")), FString(TEXT("TargetActor")));
+			TestTrue(TEXT("blackboard selector none allowed"), ExtractedSelector->GetBoolField(TEXT("bNoneIsAllowedValue")));
+			TestFalse(TEXT("blackboard selector skips transient SelectedKeyID"), ExtractedSelector->HasField(TEXT("SelectedKeyID")));
+		}
+	}
+
+	ATestActorBase* ContainerObject = NewObject<ATestActorBase>(GetTransientPackage());
+	TSharedRef<FJsonObject> ContainerProperties = MakeObject();
+	TSharedPtr<FJsonObject> ConfigJson = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+	Entry->SetStringField(TEXT("Name"), TEXT("Damage"));
+	Entry->SetNumberField(TEXT("Value"), 12.0);
+	Entries.Add(MakeShared<FJsonValueObject>(Entry));
+	ConfigJson->SetArrayField(TEXT("Entries"), Entries);
+	ContainerProperties->SetObjectField(TEXT("Config"), ConfigJson);
+	TestTrue(TEXT("array property apply succeeds through shared setter"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(ContainerObject, ContainerProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedContainer = MakeObject();
+	TestTrue(TEXT("array property extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(ContainerObject, ExtractedContainer, TEXT("/Properties")).bSuccess);
+	TestTrue(TEXT("array property extracted"), GetObjectField(ExtractedContainer, TEXT("Config")).IsValid());
+
+	UNodeMappingContainer* MapObject = NewObject<UNodeMappingContainer>(GetTransientPackage());
+	TSharedRef<FJsonObject> MapProperties = MakeObject();
+	TSharedPtr<FJsonObject> SourceToTarget = MakeShared<FJsonObject>();
+	SourceToTarget->SetStringField(TEXT("SourceBone"), TEXT("TargetBone"));
+	MapProperties->SetObjectField(TEXT("SourceToTarget"), SourceToTarget);
+	TestTrue(TEXT("map property apply succeeds through shared setter"), FAssetDocumentReflectedPropertyUtils::ApplyProperties(MapObject, MapProperties, TEXT("/Properties")).bSuccess);
+	TSharedRef<FJsonObject> ExtractedMap = MakeObject();
+	TestTrue(TEXT("map property extract succeeds"), FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(MapObject, ExtractedMap, TEXT("/Properties")).bSuccess);
+	TestTrue(TEXT("map property extracted"), GetObjectField(ExtractedMap, TEXT("SourceToTarget")).IsValid());
+
+	TSharedRef<FJsonObject> UnknownProperties = MakeObject();
+	UnknownProperties->SetStringField(TEXT("DoesNotExist"), TEXT("value"));
+	FAssetDocumentCapabilityResult UnknownResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(ScalarObject, UnknownProperties, TEXT("/Properties"));
+	TestFalse(TEXT("unknown property rejected"), UnknownResult.bSuccess);
+	TestTrue(TEXT("unknown property path/code is exact"), HasDiagnostic(UnknownResult, TEXT("/Properties/DoesNotExist"), TEXT("UnknownProperty")));
+
+	TSharedRef<FJsonObject> RuntimeProperties = MakeObject();
+	RuntimeProperties->SetStringField(TEXT("ParentNode"), TEXT("invalid"));
+	FAssetDocumentCapabilityResult RuntimeResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(Decorator, RuntimeProperties, TEXT("/Properties"));
+	TestFalse(TEXT("non-authored property rejected"), RuntimeResult.bSuccess);
+	TestTrue(TEXT("non-authored property path/code is exact"), HasDiagnostic(RuntimeResult, TEXT("/Properties/ParentNode"), TEXT("NonAuthoredProperty")));
+
+	UBehaviorTree* TreeObject = NewObject<UBehaviorTree>(GetTransientPackage());
+	TSharedRef<FJsonObject> TreeOwnedProperties = MakeObject();
+	TreeOwnedProperties->SetField(TEXT("RootNode"), MakeShared<FJsonValueNull>());
+	FAssetDocumentCapabilityResult TreeOwnedResult = FAssetDocumentReflectedPropertyUtils::ValidateProperties(TreeObject, TreeOwnedProperties, TEXT("/Properties"));
+	TestFalse(TEXT("Body.Tree-owned property rejected"), TreeOwnedResult.bSuccess);
+	TestTrue(TEXT("Body.Tree-owned property path/code is exact"), HasDiagnostic(TreeOwnedResult, TEXT("/Properties/RootNode"), TEXT("BodyTreeProperty")));
+
+	TSharedRef<FJsonObject> DiffProperties = MakeObject();
+	DiffProperties->SetStringField(TEXT("TestString"), TEXT("Changed"));
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	TestTrue(TEXT("reflected diff succeeds"), FAssetDocumentReflectedPropertyUtils::DiffProperties(ScalarObject, DiffProperties, TEXT("/Properties"), DiffEntries).bSuccess);
+	TestTrue(TEXT("reflected diff reports changed entry"), DiffEntries.Num() == 1);
+
 	return true;
 }
 
