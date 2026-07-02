@@ -481,6 +481,16 @@ TSharedRef<FJsonObject> MakeStateMachineGraph(
 	return Graph;
 }
 
+TSharedRef<FJsonObject> MakeStateMachineGraphAtPosition(const TCHAR* Id, double X, double Y)
+{
+	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id);
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), X);
+	Position->SetNumberField(TEXT("Y"), Y);
+	Graph->SetObjectField(TEXT("Position"), Position);
+	return Graph;
+}
+
 TSharedRef<FJsonObject> MakeStateMachineGraphWithBrokenStatePoseField(const TCHAR* Id)
 {
 	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id);
@@ -1214,6 +1224,25 @@ bool HasStateMachineEntryState(const TSharedPtr<FJsonObject>& Body, const FStrin
 		&& Metadata
 		&& (*Metadata)->TryGetStringField(TEXT("EntryState"), EntryState)
 		&& EntryState == ExpectedEntryState;
+}
+
+bool HasStateMachineGraphPosition(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	double ExpectedX,
+	double ExpectedY)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TSharedPtr<FJsonObject>* Position = nullptr;
+	double X = 0.0;
+	double Y = 0.0;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("Position"), Position)
+		&& Position
+		&& (*Position)->TryGetNumberField(TEXT("X"), X)
+		&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+		&& FMath::IsNearlyEqual(X, ExpectedX)
+		&& FMath::IsNearlyEqual(Y, ExpectedY);
 }
 
 bool HasStateMachineNodePosition(
@@ -2415,9 +2444,31 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 			TEXT("/Body/TransitionGraphs"),
 			TEXT("UnsupportedAnimBlueprintRegion")));
 
+	TSharedRef<FJsonObject> RepositionedGraph = MakeStateMachineGraphAtPosition(TEXT("Locomotion"), 320.0, 80.0);
+	TSharedRef<FJsonObject> RepositionDocument = MakeAnimBlueprintApplyDocument(Target);
+	RepositionDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({RepositionedGraph}));
+	FAssetDocumentApplyRequest RepositionRequest;
+	RepositionRequest.Document = RepositionDocument;
+	RepositionRequest.bSaveAsset = false;
+	const FAssetDocumentResult RepositionResult = Service.Apply(RepositionRequest);
+	if (!RepositionResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("StateMachines root position reapply failed: %s"), *RepositionResult.Message));
+	}
+	TestTrue(TEXT("StateMachines root position reapply succeeds"), RepositionResult.IsSuccess());
+	TSharedRef<FJsonObject> RepositionExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult RepositionExtractResult =
+		Capability.Extract(AssetContext, RepositionExtractedBody);
+	TestTrue(TEXT("StateMachines root position reapply extract succeeds"), RepositionExtractResult.bSuccess);
+	TestTrue(
+		TEXT("StateMachines root position reapply roundtrips graph position"),
+		HasStateMachineGraphPosition(RepositionExtractedBody, TEXT("Locomotion"), 320.0, 80.0));
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
-		Capability.Diff(AssetContext, MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))}), DiffEntries);
+		Capability.Diff(AssetContext, MakeBodyWithStateMachineGraphs({RepositionedGraph}), DiffEntries);
 	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
 	TestFalse(TEXT("StateMachines diff does not report changed entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("changed")));
 	TestFalse(TEXT("StateMachines diff does not report extra entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("extra")));

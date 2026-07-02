@@ -925,6 +925,15 @@ UAnimGraphNode_StateMachineBase* FindOrCreateStateMachineNode(
 {
 	if (UAnimGraphNode_StateMachineBase* Existing = FindStateMachineNode(RootAnimGraph, GraphSpec))
 	{
+		const FVector2f Location = ReadGraphPosition(GraphSpec.Position, Existing->NodePosX, Existing->NodePosY);
+		const int32 DesiredX = static_cast<int32>(Location.X);
+		const int32 DesiredY = static_cast<int32>(Location.Y);
+		if (Existing->NodePosX != DesiredX || Existing->NodePosY != DesiredY)
+		{
+			Existing->NodePosX = DesiredX;
+			Existing->NodePosY = DesiredY;
+			bOutChanged = true;
+		}
 		return Existing;
 	}
 
