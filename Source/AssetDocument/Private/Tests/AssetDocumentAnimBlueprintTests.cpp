@@ -146,10 +146,17 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
 	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_DoesNotExist"));
 
+	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
+	OutputPose->SetStringField(TEXT("Node"), TEXT("IdlePlayer"));
+	OutputPose->SetStringField(TEXT("Pin"), TEXT("Pose"));
+	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+	Metadata->SetObjectField(TEXT("OutputPose"), OutputPose);
+
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
 	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
 	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
 	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Graph->SetObjectField(TEXT("Metadata"), Metadata);
 	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
 	Graph->SetArrayField(TEXT("Links"), {});
 	Graph->SetArrayField(TEXT("Subgraphs"), {});
@@ -188,12 +195,23 @@ TSharedRef<FJsonValue> MakeBodyWithAnimGraphSubgraph()
 	return MakeShared<FJsonValueObject>(Body);
 }
 
-TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(const TCHAR* NodeId)
+TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(
+	const TCHAR* NodeId,
+	bool bIncludeOutputPose = true,
+	const FString& SequenceAssetPath = FString())
 {
 	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetStringField(TEXT("Id"), NodeId);
 	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
 	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	if (!SequenceAssetPath.IsEmpty())
+	{
+		TSharedRef<FJsonObject> AnimNodeFields = MakeShared<FJsonObject>();
+		AnimNodeFields->SetStringField(TEXT("Sequence"), SequenceAssetPath);
+		TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+		Fields->SetObjectField(TEXT("Node"), AnimNodeFields);
+		Node->SetObjectField(TEXT("Fields"), Fields);
+	}
 	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
 	Position->SetNumberField(TEXT("X"), 120.0);
 	Position->SetNumberField(TEXT("Y"), 40.0);
@@ -203,6 +221,15 @@ TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(const TCHAR* NodeId)
 	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
 	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
 	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	if (bIncludeOutputPose)
+	{
+		TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
+		OutputPose->SetStringField(TEXT("Node"), NodeId);
+		OutputPose->SetStringField(TEXT("Pin"), TEXT("Pose"));
+		TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+		Metadata->SetObjectField(TEXT("OutputPose"), OutputPose);
+		Graph->SetObjectField(TEXT("Metadata"), Metadata);
+	}
 	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
 	Graph->SetArrayField(TEXT("Links"), {});
 	Graph->SetArrayField(TEXT("Subgraphs"), {});
@@ -210,6 +237,13 @@ TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(const TCHAR* NodeId)
 	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
 	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
 	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithAnimGraphSequencePlayerMissingOutputPose()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), false));
+	return MakeShared<FJsonValueObject>(Body);
 }
 
 TSharedPtr<FJsonObject> MakeStateMachineState(const TCHAR* Id)
@@ -881,6 +915,73 @@ bool HasAnimGraphNode(const TSharedPtr<FJsonObject>& Body, const FString& Expect
 	return false;
 }
 
+bool HasAnimGraphNodePosition(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId, double ExpectedX, double ExpectedY)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+		{
+			const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject>* Position = nullptr;
+			FString NodeId;
+			double X = 0.0;
+			double Y = 0.0;
+			if (Node.IsValid()
+				&& Node->TryGetStringField(TEXT("Id"), NodeId)
+				&& NodeId == ExpectedNodeId
+				&& Node->TryGetObjectField(TEXT("Position"), Position)
+				&& Position
+				&& (*Position)->TryGetNumberField(TEXT("X"), X)
+				&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+				&& FMath::IsNearlyEqual(X, ExpectedX)
+				&& FMath::IsNearlyEqual(Y, ExpectedY))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool AllDiffEntriesUnchanged(const TArray<TSharedPtr<FJsonValue>>& DiffEntries)
+{
+	if (DiffEntries.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& EntryValue : DiffEntries)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Status;
+		if (!Entry.IsValid() || !Entry->TryGetStringField(TEXT("status"), Status) || Status != TEXT("unchanged"))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
 {
 	return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
@@ -1095,6 +1196,16 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Nodes/IdlePlayer/Class"),
 			TEXT("UnspawnableGraphNodeClass")));
 
+	const FAssetDocumentCapabilityResult MissingOutputPoseResult =
+		Capability.Validate(ValidationContext, MakeBodyWithAnimGraphSequencePlayerMissingOutputPose());
+	TestFalse(TEXT("Managed AnimGraph node requires explicit output pose"), MissingOutputPoseResult.bSuccess);
+	TestTrue(
+		TEXT("Missing output pose diagnostic uses root graph path"),
+		HasDiagnostic(
+			MissingOutputPoseResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph"),
+			TEXT("MissingAnimGraphOutputPose")));
+
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 	FAssetDocumentService Service;
@@ -1157,10 +1268,19 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 		TEXT("AnimGraph subgraph missing current is serialized as null"),
 		HasDiffNullField(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose"), TEXT("current")));
 
+	const FString TutorialSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+	const FString TutorialPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+	const FString TutorialIdleAnimationPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
 	const FString ManagedNodeTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraphNode_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString ManagedNodeObjectPath = FString::Printf(TEXT("%s.%s"), *ManagedNodeTarget, *FPackageName::GetLongPackageAssetName(ManagedNodeTarget));
-	TSharedRef<FJsonObject> ManagedNodeDocument = MakeAnimBlueprintApplyDocument(ManagedNodeTarget);
-	ManagedNodeDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer")));
+	TSharedRef<FJsonObject> ManagedNodeDocument = MakeAnimBlueprintApplyDocument(
+		ManagedNodeTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	ManagedNodeDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath));
 
 	FAssetDocumentApplyRequest ManagedNodeRequest;
 	ManagedNodeRequest.Document = ManagedNodeDocument;
@@ -1182,6 +1302,26 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	const FAssetDocumentCapabilityResult ManagedNodeExtractResult = Capability.Extract(ManagedNodeContext, ManagedNodeExtractedBody);
 	TestTrue(TEXT("Managed AnimGraph node extract succeeds"), ManagedNodeExtractResult.bSuccess);
 	TestTrue(TEXT("Managed AnimGraph node extracts by authored identity"), HasAnimGraphNode(ManagedNodeExtractedBody, TEXT("IdlePlayer")));
+	TestTrue(
+		TEXT("Managed AnimGraph node extracts authored position"),
+		HasAnimGraphNodePosition(ManagedNodeExtractedBody, TEXT("IdlePlayer"), 120.0, 40.0));
+
+	TArray<TSharedPtr<FJsonValue>> ManagedNodeDiffEntries;
+	TSharedRef<FJsonObject> ManagedNodeDiffBody = MakeShared<FJsonObject>();
+	ManagedNodeDiffBody->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath));
+	const FAssetDocumentCapabilityResult ManagedNodeDiffResult =
+		Capability.Diff(
+			ManagedNodeContext,
+			MakeShared<FJsonValueObject>(ManagedNodeDiffBody),
+			ManagedNodeDiffEntries);
+	if (!ManagedNodeDiffResult.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("Managed AnimGraph node diff failed: %s"), *ManagedNodeDiffResult.Message));
+	}
+	TestTrue(TEXT("Managed AnimGraph node diff succeeds"), ManagedNodeDiffResult.bSuccess);
+	TestTrue(TEXT("Managed AnimGraph node diff is unchanged after apply/extract"), AllDiffEntriesUnchanged(ManagedNodeDiffEntries));
 
 	return true;
 }
