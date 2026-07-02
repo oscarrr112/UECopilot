@@ -78,6 +78,18 @@ struct FFakeAnimationGraphPinSpec
 	EEdGraphPinDirection Direction = EGPD_Input;
 };
 
+FAssetDocumentAnimationGraphNodeSpawnCandidate MakeCandidate(
+	const FString& ClassPath,
+	const FString& ActionKey,
+	bool bSpawnable);
+UEdGraphNode* AddUnmanagedPoseNode(
+	UEdGraph* Graph,
+	const FString& PinName,
+	EEdGraphPinDirection PinDirection,
+	int32 X = 0,
+	int32 Y = 0);
+UEdGraphPin* FindPosePin(UEdGraphNode* Node, EEdGraphPinDirection Direction);
+
 class FFakeAnimationGraphCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
 {
 public:
@@ -122,6 +134,70 @@ public:
 		const_cast<FFakeAnimationGraphCandidateProvider*>(this)->LastSpawnedNode = OutNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
+};
+
+class FRealAnimGraphSideEffectCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
+{
+public:
+	explicit FRealAnimGraphSideEffectCandidateProvider(UClass* InNodeClass)
+		: NodeClass(InNodeClass)
+	{
+	}
+
+	mutable TMap<FString, UEdGraphNode*> SpawnedNodesById;
+	mutable UEdGraphPin* ManagedSourcePin = nullptr;
+	mutable UEdGraphPin* FrameworkPin = nullptr;
+
+	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context) const override
+	{
+		TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
+		if (NodeClass && NodeSpec.Class == NodeClass->GetPathName())
+		{
+			Candidates.Add(MakeCandidate(NodeClass->GetPathName(), FString(), true));
+		}
+		return Candidates;
+	}
+
+	virtual FAssetDocumentCapabilityResult SpawnNode(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentNodeSpec& NodeSpec,
+		const FAssetDocumentAnimationGraphContext& Context,
+		const FAssetDocumentAnimationGraphNodeSpawnCandidate& Candidate,
+		UEdGraphNode*& OutNode) const override
+	{
+		UObject* Outer = Context.Graph ? static_cast<UObject*>(Context.Graph) : GetTransientPackage();
+		OutNode = NodeClass ? NewObject<UEdGraphNode>(Outer, NodeClass) : nullptr;
+		if (!OutNode)
+		{
+			return FAssetDocumentCapabilityResult::Failure(
+				TEXT("Test provider could not spawn a real animation graph node."),
+				TEXT("/Test"),
+				TEXT("TestAnimGraphNodeSpawnFailed"));
+		}
+		if (Context.Graph)
+		{
+			Context.Graph->AddNode(OutNode, false, false);
+		}
+		SpawnedNodesById.Add(NodeSpec.Id, OutNode);
+
+		if (NodeSpec.Id == TEXT("Target") && Context.Graph)
+		{
+			UEdGraphNode* const* SourceNode = SpawnedNodesById.Find(TEXT("Source"));
+			ManagedSourcePin = SourceNode ? FindPosePin(*SourceNode, EGPD_Output) : nullptr;
+			UEdGraphNode* FrameworkNode = AddUnmanagedPoseNode(Context.Graph, TEXT("FrameworkIn"), EGPD_Input, 800, 0);
+			FrameworkPin = FrameworkNode ? FrameworkNode->FindPin(TEXT("FrameworkIn")) : nullptr;
+			if (ManagedSourcePin && FrameworkPin)
+			{
+				ManagedSourcePin->MakeLinkTo(FrameworkPin);
+			}
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+private:
+	UClass* NodeClass = nullptr;
 };
 
 class FFakeAnimationGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
@@ -279,6 +355,41 @@ UEdGraphNode* AddUnmanagedNode(
 	Node->NodePosY = Y;
 	Node->CreatePin(PinDirection, TEXT("Wildcard"), FName(*PinName));
 	return Node;
+}
+
+UEdGraphNode* AddUnmanagedPoseNode(
+	UEdGraph* Graph,
+	const FString& PinName,
+	EEdGraphPinDirection PinDirection,
+	int32 X,
+	int32 Y)
+{
+	UEdGraphNode* Node = Graph ? NewObject<UEdGraphNode>(Graph) : nullptr;
+	if (!Node)
+	{
+		return nullptr;
+	}
+	Graph->AddNode(Node, false, false);
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	Node->CreatePin(PinDirection, UAnimationGraphSchema::MakeLocalSpacePosePin(), FName(*PinName));
+	return Node;
+}
+
+UEdGraphPin* FindPosePin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == Direction && UAnimationGraphSchema::IsPosePin(Pin->PinType))
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
 }
 
 const TArray<TSharedPtr<FJsonValue>>* GetSkippedArray(
@@ -1042,6 +1153,120 @@ bool FAssetDocumentAnimationGraphRuntimeSchemaBackedGraphRejectRollbackPreserves
 	TestEqual(TEXT("Schema-backed rejection reports invalid link type"), FirstDiagnosticCode(Result), FString(TEXT("InvalidGraphLinkType")));
 	TestTrue(TEXT("Schema-backed rollback preserves output link"), SourceOut && TargetIn && SourceOut->LinkedTo.Contains(TargetIn));
 	TestTrue(TEXT("Schema-backed rollback preserves input link"), SourceOut && TargetIn && TargetIn->LinkedTo.Contains(SourceOut));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeAnimSchemaRejectsLinksThatWouldBreakUnmanagedEndpointTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.AnimSchemaRejectsLinksThatWouldBreakUnmanagedEndpoint",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeAnimSchemaRejectsLinksThatWouldBreakUnmanagedEndpointTest::RunTest(const FString&)
+{
+	UAnimBlueprint* AnimBlueprint = nullptr;
+	UAnimationGraph* AnimGraph = CreateTransientAnimGraph(AnimBlueprint);
+	TestNotNull(TEXT("Transient AnimBlueprint is created"), AnimBlueprint);
+	TestNotNull(TEXT("Real animation editor graph is created"), AnimGraph);
+	TestNotNull(TEXT("Animation graph resolves real schema"), AnimGraph ? AnimGraph->GetSchema() : nullptr);
+
+	UClass* AnimGraphNodeClass = StaticLoadClass(
+		UEdGraphNode::StaticClass(),
+		nullptr,
+		TEXT("/Script/AnimGraph.AnimGraphNode_BlendListByBool"));
+	TestNotNull(TEXT("Real AnimGraphNode class loads dynamically"), AnimGraphNodeClass);
+	if (!AnimBlueprint || !AnimGraph || !AnimGraphNodeClass)
+	{
+		return false;
+	}
+
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec SourceSpec = MakeRuntimeNode(TEXT("Source"), AnimGraphNodeClass->GetPathName());
+	FAssetDocumentNodeSpec TargetSpec = MakeRuntimeNode(TEXT("Target"), AnimGraphNodeClass->GetPathName());
+	Graph.Nodes.Add(SourceSpec);
+	Graph.Nodes.Add(TargetSpec);
+
+	UAnimBlueprint* TemplateBlueprint = nullptr;
+	UAnimationGraph* TemplateGraph = CreateTransientAnimGraph(TemplateBlueprint);
+	TestNotNull(TEXT("Template animation editor graph is created"), TemplateGraph);
+	if (!TemplateGraph)
+	{
+		return false;
+	}
+	UEdGraphNode* SourceTemplate = NewObject<UEdGraphNode>(TemplateGraph, AnimGraphNodeClass);
+	UEdGraphNode* TargetTemplate = NewObject<UEdGraphNode>(TemplateGraph, AnimGraphNodeClass);
+	TestNotNull(TEXT("Source template real anim node is created"), SourceTemplate);
+	TestNotNull(TEXT("Target template real anim node is created"), TargetTemplate);
+	if (SourceTemplate)
+	{
+		TemplateGraph->AddNode(SourceTemplate, false, false);
+		SourceTemplate->AllocateDefaultPins();
+	}
+	if (TargetTemplate)
+	{
+		TemplateGraph->AddNode(TargetTemplate, false, false);
+		TargetTemplate->AllocateDefaultPins();
+	}
+	UEdGraphPin* SourceTemplateOut = FindPosePin(SourceTemplate, EGPD_Output);
+	UEdGraphPin* TargetTemplateIn = FindPosePin(TargetTemplate, EGPD_Input);
+	TestNotNull(TEXT("Source template has pose output"), SourceTemplateOut);
+	TestNotNull(TEXT("Target template has pose input"), TargetTemplateIn);
+	if (!SourceTemplateOut || !TargetTemplateIn)
+	{
+		return false;
+	}
+	Graph.Links.Add(MakeRuntimeLink(
+		TEXT("Source"),
+		SourceTemplateOut->PinName.ToString(),
+		TEXT("Target"),
+		TargetTemplateIn->PinName.ToString()));
+
+	TSharedRef<FRealAnimGraphSideEffectCandidateProvider> Provider =
+		MakeShared<FRealAnimGraphSideEffectCandidateProvider>(AnimGraphNodeClass);
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.Blueprint = AnimBlueprint;
+	Context.Graph = AnimGraph;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	UEdGraphNode* const* SpawnedTargetNode = Provider->SpawnedNodesById.Find(TEXT("Target"));
+	UEdGraphPin* SourceOut = Provider->ManagedSourcePin;
+	UEdGraphPin* TargetIn = SpawnedTargetNode ? FindPosePin(*SpawnedTargetNode, EGPD_Input) : nullptr;
+	UEdGraphPin* FrameworkIn = Provider->FrameworkPin;
+	TestNotNull(TEXT("Source real anim node has pose output"), SourceOut);
+	TestNotNull(TEXT("Target real anim node has pose input"), TargetIn);
+	TestNotNull(TEXT("Provider attached unmanaged framework endpoint"), FrameworkIn);
+	if (!SourceOut || !TargetIn)
+	{
+		return false;
+	}
+
+	TestFalse(TEXT("Schema-backed apply rejects authored link that would break unmanaged endpoint"), Result.bSuccess);
+	TestEqual(
+		TEXT("Break-unmanaged rejection diagnostic code is explicit"),
+		FirstDiagnosticCode(Result),
+		FString(TEXT("GraphLinkWouldBreakUnmanagedEndpoint")));
+	TestEqual(
+		TEXT("Break-unmanaged rejection diagnostic path is the authored link"),
+		FirstDiagnosticPath(Result),
+		FString::Printf(
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Links/Source.%s->Target.%s"),
+			*SourceTemplateOut->PinName.ToString(),
+			*TargetTemplateIn->PinName.ToString()));
+	TestTrue(
+		TEXT("Rejected schema apply preserves managed-to-unmanaged output link"),
+		SourceOut->LinkedTo.Contains(FrameworkIn));
+	TestTrue(
+		TEXT("Rejected schema apply preserves unmanaged-to-managed input link"),
+		FrameworkIn && FrameworkIn->LinkedTo.Contains(SourceOut));
+	TestFalse(
+		TEXT("Rejected schema apply does not create authored managed-managed link"),
+		SourceOut->LinkedTo.Contains(TargetIn));
 	return true;
 }
 

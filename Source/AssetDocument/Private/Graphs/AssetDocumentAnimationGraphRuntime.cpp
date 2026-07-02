@@ -334,6 +334,109 @@ void RestoreManagedManagedLinks(
 	}
 }
 
+TArray<FManagedGraphLinkSnapshotEntry> SnapshotManagedUnmanagedLinks(const TMap<FString, UEdGraphNode*>& NodesById)
+{
+	TArray<FManagedGraphLinkSnapshotEntry> Snapshot;
+	const TSet<UEdGraphNode*> ManagedNodes = MakeManagedNodeSet(NodesById);
+	for (UEdGraphNode* Node : ManagedNodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin)
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				if (!LinkedPin || ManagedNodes.Contains(LinkedPin->GetOwningNode()))
+				{
+					continue;
+				}
+
+				FManagedGraphLinkSnapshotEntry Entry;
+				Entry.FromPin = Pin;
+				Entry.ToPin = LinkedPin;
+				Snapshot.Add(Entry);
+			}
+		}
+	}
+	return Snapshot;
+}
+
+void RestoreManagedUnmanagedLinks(const TArray<FManagedGraphLinkSnapshotEntry>& Snapshot)
+{
+	for (const FManagedGraphLinkSnapshotEntry& Link : Snapshot)
+	{
+		if (Link.FromPin && Link.ToPin && !Link.FromPin->LinkedTo.Contains(Link.ToPin))
+		{
+			Link.FromPin->MakeLinkTo(Link.ToPin);
+		}
+	}
+}
+
+bool AreSnapshotLinksPresent(const TArray<FManagedGraphLinkSnapshotEntry>& Snapshot)
+{
+	for (const FManagedGraphLinkSnapshotEntry& Link : Snapshot)
+	{
+		if (!Link.FromPin || !Link.ToPin || !Link.FromPin->LinkedTo.Contains(Link.ToPin) || !Link.ToPin->LinkedTo.Contains(Link.FromPin))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ResponseBreaksFirstPin(ECanCreateConnectionResponse Response)
+{
+	return Response == CONNECT_RESPONSE_BREAK_OTHERS_A || Response == CONNECT_RESPONSE_BREAK_OTHERS_AB;
+}
+
+bool ResponseBreaksSecondPin(ECanCreateConnectionResponse Response)
+{
+	return Response == CONNECT_RESPONSE_BREAK_OTHERS_B || Response == CONNECT_RESPONSE_BREAK_OTHERS_AB;
+}
+
+bool HasUnmanagedLinkedPin(const UEdGraphPin* Pin, const UEdGraphPin* AuthoredOtherPin, const TSet<UEdGraphNode*>& ManagedNodes)
+{
+	if (!Pin)
+	{
+		return false;
+	}
+
+	for (const UEdGraphPin* LinkedPin : Pin->LinkedTo)
+	{
+		if (!LinkedPin || LinkedPin == AuthoredOtherPin)
+		{
+			continue;
+		}
+
+		if (!ManagedNodes.Contains(LinkedPin->GetOwningNode()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FAssetDocumentCapabilityResult LinkWouldBreakUnmanagedEndpointFailure(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentLinkSpec& Link,
+	const FAssetDocumentAnimationGraphContext& Context)
+{
+	return RuntimeFailure(
+		LinkPath(GraphSpec, Link, Context),
+		TEXT("GraphLinkWouldBreakUnmanagedEndpoint"),
+		FString::Printf(
+			TEXT("Graph schema would break an unmanaged endpoint while creating link '%s'."),
+			*Link.ToKey()));
+}
+
 struct FManagedPinNameCounts
 {
 	TMap<FString, int32> InputCounts;
@@ -824,6 +927,7 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 {
 	const UEdGraphSchema* Schema = Context.Graph ? Context.Graph->GetSchema() : nullptr;
 	TArray<FResolvedAnimationGraphLink> ResolvedLinks;
+	const TSet<UEdGraphNode*> ManagedNodes = MakeManagedNodeSet(NodesById);
 
 	for (const FAssetDocumentLinkSpec& Link : GraphSpec.Links)
 	{
@@ -876,6 +980,14 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 					TEXT("InvalidGraphLinkType"),
 					FString::Printf(TEXT("Graph schema rejected link '%s': %s"), *Link.ToKey(), *Response.Message.ToString()));
 			}
+			if (ResponseBreaksFirstPin(Response.Response) && HasUnmanagedLinkedPin(FromPin, ToPin, ManagedNodes))
+			{
+				return LinkWouldBreakUnmanagedEndpointFailure(GraphSpec, Link, Context);
+			}
+			if (ResponseBreaksSecondPin(Response.Response) && HasUnmanagedLinkedPin(ToPin, FromPin, ManagedNodes))
+			{
+				return LinkWouldBreakUnmanagedEndpointFailure(GraphSpec, Link, Context);
+			}
 		}
 
 		FResolvedAnimationGraphLink ResolvedLink;
@@ -886,6 +998,7 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 	}
 
 	const TArray<FManagedGraphLinkSnapshotEntry> LinkSnapshot = SnapshotManagedManagedLinks(NodesById);
+	const TArray<FManagedGraphLinkSnapshotEntry> UnmanagedLinkSnapshot = SnapshotManagedUnmanagedLinks(NodesById);
 	BreakManagedManagedLinks(NodesById);
 
 	for (const FResolvedAnimationGraphLink& ResolvedLink : ResolvedLinks)
@@ -895,10 +1008,17 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 			if (!Schema->TryCreateConnection(ResolvedLink.FromPin, ResolvedLink.ToPin))
 			{
 				RestoreManagedManagedLinks(NodesById, LinkSnapshot);
+				RestoreManagedUnmanagedLinks(UnmanagedLinkSnapshot);
 				return RuntimeFailure(
 					LinkPath(GraphSpec, ResolvedLink.Link, Context),
 					TEXT("InvalidGraphLinkType"),
 					FString::Printf(TEXT("Graph schema rejected link '%s'."), *ResolvedLink.Link.ToKey()));
+			}
+			if (!AreSnapshotLinksPresent(UnmanagedLinkSnapshot))
+			{
+				RestoreManagedManagedLinks(NodesById, LinkSnapshot);
+				RestoreManagedUnmanagedLinks(UnmanagedLinkSnapshot);
+				return LinkWouldBreakUnmanagedEndpointFailure(GraphSpec, ResolvedLink.Link, Context);
 			}
 		}
 		else if (!ResolvedLink.FromPin->LinkedTo.Contains(ResolvedLink.ToPin))
