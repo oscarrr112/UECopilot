@@ -22,6 +22,7 @@
 #include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -199,6 +200,39 @@ bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Paylo
 		&& Failed
 		&& Changed->Num() == 0
 		&& Failed->Num() == 0;
+}
+
+bool DiffPayloadHasChangedPath(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedPath)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	if (!Payload.IsValid() || !Payload->TryGetArrayField(TEXT("changed"), Changed) || !Changed)
+	{
+		return false;
+	}
+
+	return Changed->ContainsByPredicate([&ExpectedPath](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() && EntryValue->Type == EJson::Object
+			? EntryValue->AsObject()
+			: nullptr;
+		FString Path;
+		return Entry.IsValid()
+			&& Entry->TryGetStringField(TEXT("path"), Path)
+			&& Path == ExpectedPath;
+	});
+}
+
+int32 CountBlackboardKeyTypeChildren(UBlackboardData* Blackboard)
+{
+	int32 Count = 0;
+	ForEachObjectWithOuter(Blackboard, [&Count](UObject* Object)
+	{
+		if (Object && Object->IsA<UBlackboardKeyType>())
+		{
+			++Count;
+		}
+	}, true);
+	return Count;
 }
 }
 
@@ -1029,6 +1063,196 @@ bool FAssetDocumentBlackboardDataApplyExtractDiffTest::RunTest(const FString&)
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Blackboard diff succeeds"), DiffResult.IsSuccess());
 	TestTrue(TEXT("Apply/extract diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataRepeatedApplyPreservesKeyObjectsTest,
+	"AssetFactory.AssetDocument.BlackboardData.RepeatedApplyPreservesKeyObjects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataRepeatedApplyPreservesKeyObjectsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesKeyObjects");
+	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(nullptr, {
+		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
+		MakeBlackboardKeyJson(TEXT("Count"), TEXT("Int")),
+	});
+	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(Target, Body);
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult FirstApplyResult = Service.Apply(MakeApplyRequest(Document));
+	TestTrue(TEXT("Initial blackboard apply succeeds"), FirstApplyResult.IsSuccess());
+	if (!FirstApplyResult.IsSuccess())
+	{
+		AddError(FirstApplyResult.Message);
+		return false;
+	}
+
+	UBlackboardData* Blackboard = LoadBlackboardForTarget(Target);
+	TestNotNull(TEXT("Blackboard loads after initial apply"), Blackboard);
+	if (!Blackboard || Blackboard->Keys.Num() != 2)
+	{
+		return false;
+	}
+
+	UBlackboardKeyType* FirstTargetKeyType = Blackboard->Keys[0].KeyType;
+	UBlackboardKeyType* FirstCountKeyType = Blackboard->Keys[1].KeyType;
+	const int32 FirstChildCount = CountBlackboardKeyTypeChildren(Blackboard);
+
+	const FAssetDocumentResult SecondApplyResult = Service.Apply(MakeApplyRequest(Document));
+	TestTrue(TEXT("Repeated identical blackboard apply succeeds"), SecondApplyResult.IsSuccess());
+	if (!SecondApplyResult.IsSuccess())
+	{
+		AddError(SecondApplyResult.Message);
+		return false;
+	}
+
+	TestEqual(TEXT("Repeated apply preserves key count"), Blackboard->Keys.Num(), 2);
+	if (Blackboard->Keys.Num() == 2)
+	{
+		TestTrue(TEXT("Repeated apply preserves first key type object"), Blackboard->Keys[0].KeyType == FirstTargetKeyType);
+		TestTrue(TEXT("Repeated apply preserves second key type object"), Blackboard->Keys[1].KeyType == FirstCountKeyType);
+	}
+	TestEqual(TEXT("Repeated apply does not create extra key type children"), CountBlackboardKeyTypeChildren(Blackboard), FirstChildCount);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataDryRunDoesNotMaterializeKeysTest,
+	"AssetFactory.AssetDocument.BlackboardData.DryRunDoesNotMaterializeKeys",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataDryRunDoesNotMaterializeKeysTest::RunTest(const FString&)
+{
+	UBlackboardData* Blackboard = NewObject<UBlackboardData>(GetTransientPackage(), TEXT("BB_AD_DryRunDoesNotMaterializeKeys"));
+	TestNotNull(TEXT("Transient blackboard creates"), Blackboard);
+	if (!Blackboard)
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(nullptr, {
+		MakeBlackboardKeyJson(TEXT("DryRunKey"), TEXT("Bool")),
+	});
+
+	FBlackboardDataAssetDocumentCapability Capability;
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = Blackboard;
+	Context.AssetClass = UBlackboardData::StaticClass();
+	Context.TargetAssetPath = TEXT("/Game/AssetDocumentTests/BB_AD_DryRunDoesNotMaterializeKeys");
+	Context.bIsDryRun = true;
+
+	const int32 KeyCountBefore = Blackboard->Keys.Num();
+	const int32 ChildCountBefore = CountBlackboardKeyTypeChildren(Blackboard);
+	const FAssetDocumentCapabilityResult Result = Capability.Apply(Context, MakeShared<FJsonValueObject>(Body.ToSharedRef()));
+
+	TestTrue(TEXT("Dry-run apply succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Dry-run does not mutate Keys"), Blackboard->Keys.Num(), KeyCountBefore);
+	TestEqual(TEXT("Dry-run does not create key type children"), CountBlackboardKeyTypeChildren(Blackboard), ChildCountBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataDiffReportsKeyReorderTest,
+	"AssetFactory.AssetDocument.BlackboardData.DiffReportsKeyReorder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataDiffReportsKeyReorderTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_DiffReportsKeyReorder");
+	TSharedPtr<FJsonObject> InitialBody = MakeBlackboardDataBody(nullptr, {
+		MakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
+		MakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
+	});
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(Target, InitialBody)));
+	TestTrue(TEXT("Initial ordered apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> ReorderedBody = MakeBlackboardDataBody(nullptr, {
+		MakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
+		MakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
+	});
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = MakeBlackboardDataDocument(Target, ReorderedBody);
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+
+	TestTrue(TEXT("Reorder diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Reorder diff reports Body.Keys changed"), DiffPayloadHasChangedPath(DiffResult.Payload, TEXT("/Body/Keys")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataRejectsParentSelfCycleTest,
+	"AssetFactory.AssetDocument.BlackboardData.RejectsParentSelfCycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataRejectsParentSelfCycleTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsParentSelfCycle");
+	FAssetDocumentService Service;
+	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		Target,
+		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
+	TestTrue(TEXT("Initial self-cycle fixture apply succeeds"), InitialResult.IsSuccess());
+	if (!InitialResult.IsSuccess())
+	{
+		AddError(InitialResult.Message);
+		return false;
+	}
+
+	const FAssetDocumentResult SelfParentResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		Target,
+		MakeBlackboardDataBody(MakeAssetRef(Target), {MakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
+
+	TestFalse(TEXT("Self-parent apply fails"), SelfParentResult.IsSuccess());
+	TestTrue(TEXT("Self-parent reports cycle diagnostic"), ResultHasDiagnostic(SelfParentResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataRejectsParentChainCycleTest,
+	"AssetFactory.AssetDocument.BlackboardData.RejectsParentChainCycle",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataRejectsParentChainCycleTest::RunTest(const FString&)
+{
+	const FString ParentTarget = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsParentChainCycle_Parent");
+	const FString ChildTarget = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsParentChainCycle");
+	FAssetDocumentService Service;
+
+	const FAssetDocumentResult ParentResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		ParentTarget,
+		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
+	TestTrue(TEXT("Parent fixture apply succeeds"), ParentResult.IsSuccess());
+	if (!ParentResult.IsSuccess())
+	{
+		AddError(ParentResult.Message);
+		return false;
+	}
+
+	const FAssetDocumentResult ChildResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		ChildTarget,
+		MakeBlackboardDataBody(MakeAssetRef(ParentTarget), {MakeBlackboardKeyJson(TEXT("ChildKey"), TEXT("Int"))}))));
+	TestTrue(TEXT("Child fixture apply succeeds"), ChildResult.IsSuccess());
+	if (!ChildResult.IsSuccess())
+	{
+		AddError(ChildResult.Message);
+		return false;
+	}
+
+	const FAssetDocumentResult CycleResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		ParentTarget,
+		MakeBlackboardDataBody(MakeAssetRef(ChildTarget), {MakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
+
+	TestFalse(TEXT("Parent-chain cycle apply fails"), CycleResult.IsSuccess());
+	TestTrue(TEXT("Parent-chain cycle reports diagnostic"), ResultHasDiagnostic(CycleResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
 	return true;
 }
 

@@ -70,32 +70,47 @@ FAssetDocumentCapabilityResult ParseAndValidateKeys(
 	return FAssetDocumentBlackboardKeySchemaUtils::ValidateUniqueLocalKeys(OutSpecs, RegionPath(Context));
 }
 
-FAssetDocumentCapabilityResult BuildBlackboardEntry(
-	UBlackboardData* Blackboard,
-	const FAssetDocumentBlackboardKeySpec& Spec,
-	const FString& Path,
-	FBlackboardEntry& OutEntry)
+struct FResolvedBlackboardKeySpec
 {
+	FAssetDocumentBlackboardKeySpec Spec;
 	FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
-	FAssetDocumentCapabilityResult Result = FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Spec, Path, Metadata);
+	FString Path;
+};
+
+FAssetDocumentCapabilityResult ResolveKeySpecs(
+	const FAssetDocumentRegionContext& Context,
+	const TArray<TSharedRef<FJsonObject>>& Elements,
+	TArray<FResolvedBlackboardKeySpec>& OutResolvedSpecs)
+{
+	TArray<FAssetDocumentBlackboardKeySpec> Specs;
+	FAssetDocumentCapabilityResult Result = ParseAndValidateKeys(Context, Elements, Specs);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	UBlackboardKeyType* KeyType = NewObject<UBlackboardKeyType>(
-		Blackboard,
-		Metadata.KeyTypeClass,
-		NAME_None,
-		RF_Transactional);
-	if (!KeyType)
+	OutResolvedSpecs.Reset();
+	OutResolvedSpecs.Reserve(Specs.Num());
+	for (int32 Index = 0; Index < Specs.Num(); ++Index)
 	{
-		return FAssetDocumentJsonRegionUtils::Failure(
-			Path,
-			TEXT("BlackboardKeyTypeCreateFailed"),
-			FString::Printf(TEXT("Failed to create blackboard key type for '%s'"), *Spec.Name.ToString()));
+		FResolvedBlackboardKeySpec Resolved;
+		Resolved.Spec = MoveTemp(Specs[Index]);
+		Resolved.Path = MakeKeyPath(Context, Elements[Index], Index);
+		Result = FAssetDocumentBlackboardKeySchemaUtils::ResolveKeyMetadata(Resolved.Spec, Resolved.Path, Resolved.Metadata);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutResolvedSpecs.Add(MoveTemp(Resolved));
 	}
 
+	return FAssetDocumentCapabilityResult::Success(TEXT("Resolved blackboard key specs"));
+}
+
+void ApplyResolvedMetadataToKeyType(
+	UBlackboardKeyType* KeyType,
+	const FAssetDocumentBlackboardResolvedKeyMetadata& Metadata)
+{
 	if (UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(KeyType))
 	{
 		ObjectKey->BaseClass = Metadata.BaseClass;
@@ -113,6 +128,31 @@ FAssetDocumentCapabilityResult BuildBlackboardEntry(
 		NativeEnumKey->EnumType = Cast<UEnum>(Metadata.EnumObject);
 		NativeEnumKey->EnumName = Metadata.EnumObject ? Metadata.EnumObject->GetPathName() : FString();
 	}
+}
+
+FAssetDocumentCapabilityResult BuildBlackboardEntry(
+	UBlackboardData* Blackboard,
+	const FResolvedBlackboardKeySpec& ResolvedSpec,
+	FBlackboardEntry& OutEntry)
+{
+	const FAssetDocumentBlackboardKeySpec& Spec = ResolvedSpec.Spec;
+	const FAssetDocumentBlackboardResolvedKeyMetadata& Metadata = ResolvedSpec.Metadata;
+	const FString& Path = ResolvedSpec.Path;
+
+	UBlackboardKeyType* KeyType = NewObject<UBlackboardKeyType>(
+		Blackboard,
+		Metadata.KeyTypeClass,
+		NAME_None,
+		RF_Transactional);
+	if (!KeyType)
+	{
+		return FAssetDocumentJsonRegionUtils::Failure(
+			Path,
+			TEXT("BlackboardKeyTypeCreateFailed"),
+			FString::Printf(TEXT("Failed to create blackboard key type for '%s'"), *Spec.Name.ToString()));
+	}
+
+	ApplyResolvedMetadataToKeyType(KeyType, Metadata);
 
 	OutEntry = FBlackboardEntry();
 	OutEntry.EntryName = Spec.Name;
@@ -125,6 +165,28 @@ FAssetDocumentCapabilityResult BuildBlackboardEntry(
 TSharedPtr<FJsonValue> MakeObjectValue(const TSharedRef<FJsonObject>& Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
+}
+
+TSharedPtr<FJsonValue> MakeObjectArrayValue(const TArray<TSharedRef<FJsonObject>>& Elements)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Reserve(Elements.Num());
+	for (const TSharedRef<FJsonObject>& Element : Elements)
+	{
+		Values.Add(MakeObjectValue(Element));
+	}
+	return MakeShared<FJsonValueArray>(MoveTemp(Values));
+}
+
+TSharedPtr<FJsonValue> MakeNameArrayValue(const TArray<FString>& Names)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	Values.Reserve(Names.Num());
+	for (const FString& Name : Names)
+	{
+		Values.Add(MakeShared<FJsonValueString>(Name));
+	}
+	return MakeShared<FJsonValueArray>(MoveTemp(Values));
 }
 
 TMap<FString, TSharedRef<FJsonObject>> MakeKeyMap(const TArray<TSharedRef<FJsonObject>>& Elements)
@@ -144,6 +206,21 @@ TMap<FString, TSharedRef<FJsonObject>> MakeKeyMap(const TArray<TSharedRef<FJsonO
 FString KeyDiffPath(const FAssetDocumentRegionContext& Context, const FString& Name)
 {
 	return FString::Printf(TEXT("%s/%s"), *RegionPath(Context), *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Name));
+}
+
+TArray<FString> ExtractKeyNames(const TArray<TSharedRef<FJsonObject>>& Elements)
+{
+	TArray<FString> Names;
+	Names.Reserve(Elements.Num());
+	for (const TSharedRef<FJsonObject>& Element : Elements)
+	{
+		FString Name;
+		if (Element->TryGetStringField(TEXT("Name"), Name))
+		{
+			Names.Add(Name);
+		}
+	}
+	return Names;
 }
 
 FAssetDocumentNamedArrayRegionAdapterConfig MakeBlackboardKeyConfig(FName AdapterName)
@@ -185,28 +262,11 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 				TEXT("Blackboard key apply requires UBlackboardData asset"));
 		}
 
-		TArray<FAssetDocumentBlackboardKeySpec> Specs;
-		FAssetDocumentCapabilityResult Result = ParseAndValidateKeys(Context, Elements, Specs);
+		TArray<FResolvedBlackboardKeySpec> ResolvedSpecs;
+		FAssetDocumentCapabilityResult Result = ResolveKeySpecs(Context, Elements, ResolvedSpecs);
 		if (!Result.bSuccess)
 		{
 			return Result;
-		}
-
-		TArray<FBlackboardEntry> NewEntries;
-		NewEntries.Reserve(Specs.Num());
-		for (int32 Index = 0; Index < Specs.Num(); ++Index)
-		{
-			FBlackboardEntry Entry;
-			Result = BuildBlackboardEntry(
-				Blackboard,
-				Specs[Index],
-				MakeKeyPath(Context, Elements[Index], Index),
-				Entry);
-			if (!Result.bSuccess)
-			{
-				return Result;
-			}
-			NewEntries.Add(MoveTemp(Entry));
 		}
 
 		TArray<TSharedRef<FJsonObject>> CurrentElements;
@@ -215,41 +275,37 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 			CurrentElements.Add(FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(Entry));
 		}
 		TArray<TSharedRef<FJsonObject>> DesiredElements;
-		for (const FAssetDocumentBlackboardKeySpec& Spec : Specs)
+		for (const FResolvedBlackboardKeySpec& ResolvedSpec : ResolvedSpecs)
 		{
-			DesiredElements.Add(Spec.CanonicalJson.ToSharedRef());
+			DesiredElements.Add(ResolvedSpec.Spec.CanonicalJson.ToSharedRef());
 		}
 
 		const FString CurrentJson = FAssetDocumentJsonRegionUtils::JsonValueToComparableString(
-			MakeShared<FJsonValueArray>([&CurrentElements]()
-			{
-				TArray<TSharedPtr<FJsonValue>> Values;
-				for (const TSharedRef<FJsonObject>& Element : CurrentElements)
-				{
-					Values.Add(MakeObjectValue(Element));
-				}
-				return Values;
-			}()));
+			MakeObjectArrayValue(CurrentElements));
 		const FString DesiredJson = FAssetDocumentJsonRegionUtils::JsonValueToComparableString(
-			MakeShared<FJsonValueArray>([&DesiredElements]()
-			{
-				TArray<TSharedPtr<FJsonValue>> Values;
-				for (const TSharedRef<FJsonObject>& Element : DesiredElements)
-				{
-					Values.Add(MakeObjectValue(Element));
-				}
-				return Values;
-			}()));
+			MakeObjectArrayValue(DesiredElements));
 
 		bOutChanged = CurrentJson != DesiredJson;
-		if (!Context.bIsDryRun)
+		if (Context.bIsDryRun || !bOutChanged)
 		{
-			Blackboard->Keys = MoveTemp(NewEntries);
-			if (bOutChanged)
-			{
-				Blackboard->MarkPackageDirty();
-			}
+			return FAssetDocumentCapabilityResult::Success(TEXT("Applied blackboard keys"));
 		}
+
+		TArray<FBlackboardEntry> NewEntries;
+		NewEntries.Reserve(ResolvedSpecs.Num());
+		for (const FResolvedBlackboardKeySpec& ResolvedSpec : ResolvedSpecs)
+		{
+			FBlackboardEntry Entry;
+			Result = BuildBlackboardEntry(Blackboard, ResolvedSpec, Entry);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			NewEntries.Add(MoveTemp(Entry));
+		}
+
+		Blackboard->Keys = MoveTemp(NewEntries);
+		Blackboard->MarkPackageDirty();
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied blackboard keys"));
 	};
 
@@ -299,6 +355,29 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		}
 
 		TMap<FString, TSharedRef<FJsonObject>> CurrentByName = MakeKeyMap(CurrentElements);
+		const TArray<FString> CurrentOrder = ExtractKeyNames(CurrentElements);
+		const TArray<FString> DesiredOrder = [&DesiredSpecs]()
+		{
+			TArray<FString> Names;
+			Names.Reserve(DesiredSpecs.Num());
+			for (const FAssetDocumentBlackboardKeySpec& Spec : DesiredSpecs)
+			{
+				Names.Add(Spec.Name.ToString());
+			}
+			return Names;
+		}();
+		const FString CurrentOrderJson = FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeNameArrayValue(CurrentOrder));
+		const FString DesiredOrderJson = FAssetDocumentJsonRegionUtils::JsonValueToComparableString(MakeNameArrayValue(DesiredOrder));
+		if (CurrentOrderJson != DesiredOrderJson)
+		{
+			FAssetDocumentJsonRegionUtils::AddDiffEntry(
+				OutDiffEntries,
+				RegionPath(Context),
+				TEXT("changed"),
+				MakeNameArrayValue(CurrentOrder),
+				MakeNameArrayValue(DesiredOrder));
+		}
+
 		TSet<FString> SeenDesiredNames;
 		for (int32 Index = 0; Index < DesiredSpecs.Num(); ++Index)
 		{

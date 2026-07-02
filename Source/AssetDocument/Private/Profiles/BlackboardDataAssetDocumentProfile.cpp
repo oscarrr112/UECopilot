@@ -124,6 +124,39 @@ FAssetDocumentCapabilityResult ResolveBlackboardAssetRef(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Resolved BlackboardData parent"));
 }
 
+FAssetDocumentCapabilityResult ValidateBlackboardParentChain(
+	const UBlackboardData* Blackboard,
+	const UBlackboardData* Parent,
+	const FString& Path)
+{
+	if (!Blackboard || !Parent)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Validated BlackboardData parent chain"));
+	}
+
+	TSet<const UBlackboardData*> Visited;
+	for (const UBlackboardData* Current = Parent; Current; Current = Current->Parent.Get())
+	{
+		if (Current == Blackboard)
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				Path,
+				TEXT("BlackboardParentCycle"),
+				TEXT("Blackboard Parent cannot reference itself or one of its descendants"));
+		}
+		if (Visited.Contains(Current))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				Path,
+				TEXT("BlackboardParentCycle"),
+				TEXT("Blackboard Parent chain contains a cycle"));
+		}
+		Visited.Add(Current);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BlackboardData parent chain"));
+}
+
 TSharedPtr<FJsonValue> MakeBlackboardAssetRefValue(const UBlackboardData* Blackboard)
 {
 	if (!Blackboard)
@@ -173,7 +206,12 @@ public:
 		const TSharedPtr<FJsonValue>& DesiredValue) const override
 	{
 		UBlackboardData* Parent = nullptr;
-		return ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), Parent);
+		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), Parent);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		return ValidateBlackboardParentChain(Cast<UBlackboardData>(Context.Asset), Parent, RegionPath(Context));
 	}
 
 	virtual FAssetDocumentCapabilityResult ApplyRegion(
@@ -193,6 +231,11 @@ public:
 
 		UBlackboardData* Parent = nullptr;
 		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), Parent);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ValidateBlackboardParentChain(Blackboard, Parent, RegionPath(Context));
 		if (!Result.bSuccess)
 		{
 			return Result;
