@@ -85,6 +85,40 @@ FAssetDocumentCapabilityResult ValidateOptionalStringField(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ValidateOptionalObjectField(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& FieldName,
+	const FString& ObjectPath,
+	const FString& Code)
+{
+	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
+	if (FieldValue.IsValid() && FieldValue->Type != EJson::Object)
+	{
+		return Failure(
+			AppendPath(ObjectPath, FieldName),
+			Code,
+			FString::Printf(TEXT("%s must be a JSON object when present"), *FieldName));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateOptionalNumberField(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& FieldName,
+	const FString& ObjectPath,
+	const FString& Code)
+{
+	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
+	if (FieldValue.IsValid() && FieldValue->Type != EJson::Number)
+	{
+		return Failure(
+			AppendPath(ObjectPath, FieldName),
+			Code,
+			FString::Printf(TEXT("%s must be a number when present"), *FieldName));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
 FAssetDocumentCapabilityResult ValidateKnownFields(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& ObjectPath,
@@ -215,13 +249,14 @@ bool IsSupportedDecoratorLogicOperation(const FString& Operation)
 FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 	const FAssetDocumentTreeRegionAdapterConfig& Config,
 	const TSharedRef<FJsonObject>& OwnerObject,
-	const FString& OwnerAuthoredPath)
+	const FString& OwnerAuthoredPath,
+	const FString& LogicFieldName)
 {
 	TArray<TSharedPtr<FJsonValue>> LogicValues;
-	const FString LogicPath = AppendPath(OwnerAuthoredPath, Config.DecoratorLogicField);
+	const FString LogicPath = AppendPath(OwnerAuthoredPath, LogicFieldName);
 	FAssetDocumentCapabilityResult Result = ValidateOptionalArrayField(
 		OwnerObject,
-		Config.DecoratorLogicField,
+		LogicFieldName,
 		LogicPath,
 		TEXT("InvalidTreeDecoratorLogic"),
 		LogicValues);
@@ -240,7 +275,17 @@ FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 			return Failure(EntryPath, TEXT("InvalidTreeDecoratorLogic"), TEXT("Decorator logic entries must be objects"));
 		}
 
-		Result = ValidateKnownFields(LogicObject.ToSharedRef(), EntryPath, {TreeOperationField});
+		Result = ValidateKnownFields(LogicObject.ToSharedRef(), EntryPath, {TreeOperationField, Config.DecoratorLogicNumberField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		Result = ValidateOptionalNumberField(
+			LogicObject.ToSharedRef(),
+			Config.DecoratorLogicNumberField,
+			EntryPath,
+			TEXT("InvalidTreeDecoratorLogicNumber"));
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -298,7 +343,7 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 			return Failure(EntryPath, InvalidArrayCode, FString::Printf(TEXT("%s entries must be objects"), *FieldName));
 		}
 
-		Result = ValidateKnownFields(EntryObject.ToSharedRef(), EntryPath, {Config.IdField, Config.ClassField});
+		Result = ValidateKnownFields(EntryObject.ToSharedRef(), EntryPath, {Config.IdField, Config.ClassField, Config.PropertiesField});
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -312,6 +357,12 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 		}
 
 		Result = ValidateOptionalStringField(EntryObject.ToSharedRef(), Config.ClassField, EntryPath, TEXT("InvalidTreeNodeClass"));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		Result = ValidateOptionalObjectField(EntryObject.ToSharedRef(), Config.PropertiesField, EntryPath, TEXT("InvalidTreeProperties"));
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -351,6 +402,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		{
 			Config.IdField,
 			Config.ClassField,
+			Config.PropertiesField,
 			Config.ChildrenField,
 			Config.ServicesField,
 			Config.DecoratorsField,
@@ -363,6 +415,12 @@ FAssetDocumentCapabilityResult ValidateNode(
 
 	const FString NodeSemanticPath = FAssetDocumentTreeRegionAdapter::MakeNodePath(Context, OutNodeId);
 	Result = ValidateOptionalStringField(NodeObject, Config.ClassField, NodeJsonPath, TEXT("InvalidTreeNodeClass"));
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	Result = ValidateOptionalObjectField(NodeObject, Config.PropertiesField, NodeJsonPath, TEXT("InvalidTreeProperties"));
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -412,7 +470,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		return Result;
 	}
 
-	Result = ValidateDecoratorLogicArray(Config, NodeObject, NodeJsonPath);
+	Result = ValidateDecoratorLogicArray(Config, NodeObject, NodeJsonPath, Config.DecoratorLogicField);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -492,7 +550,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 			return Result;
 		}
 
-		Result = ValidateDecoratorLogicArray(Config, EdgeObject.ToSharedRef(), EdgePathBeforeChildId);
+		Result = ValidateDecoratorLogicArray(Config, EdgeObject.ToSharedRef(), EdgePathBeforeChildId, Config.DecoratorLogicField);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -546,9 +604,25 @@ FAssetDocumentTreeRegionAdapter::FAssetDocumentTreeRegionAdapter(
 	{
 		Config.DecoratorLogicField = TEXT("DecoratorLogic");
 	}
+	if (Config.RootDecoratorsField.IsEmpty())
+	{
+		Config.RootDecoratorsField = TEXT("RootDecorators");
+	}
+	if (Config.RootDecoratorLogicField.IsEmpty())
+	{
+		Config.RootDecoratorLogicField = TEXT("RootDecoratorLogic");
+	}
 	if (Config.ServicesField.IsEmpty())
 	{
 		Config.ServicesField = TEXT("Services");
+	}
+	if (Config.PropertiesField.IsEmpty())
+	{
+		Config.PropertiesField = TEXT("Properties");
+	}
+	if (Config.DecoratorLogicNumberField.IsEmpty())
+	{
+		Config.DecoratorLogicNumberField = TEXT("Number");
 	}
 }
 
@@ -612,7 +686,11 @@ TSharedRef<FJsonObject> FAssetDocumentTreeRegionAdapter::GetSchemaHint(const FAs
 	Schema->SetStringField(TEXT("ChildField"), Config.ChildField);
 	Schema->SetStringField(TEXT("DecoratorsField"), Config.DecoratorsField);
 	Schema->SetStringField(TEXT("DecoratorLogicField"), Config.DecoratorLogicField);
+	Schema->SetStringField(TEXT("RootDecoratorsField"), Config.RootDecoratorsField);
+	Schema->SetStringField(TEXT("RootDecoratorLogicField"), Config.RootDecoratorLogicField);
 	Schema->SetStringField(TEXT("ServicesField"), Config.ServicesField);
+	Schema->SetStringField(TEXT("PropertiesField"), Config.PropertiesField);
+	Schema->SetStringField(TEXT("DecoratorLogicNumberField"), Config.DecoratorLogicNumberField);
 	return Schema;
 }
 
@@ -764,18 +842,42 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		return Result;
 	}
 
-	Result = ValidateKnownFields(Tree, RegionPath(Context), {Config.RootField});
+	Result = ValidateKnownFields(Tree, RegionPath(Context), {Config.RootField, Config.RootDecoratorsField, Config.RootDecoratorLogicField});
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
 	FString RootId;
-	return ValidateNode(
+	Result = ValidateNode(
 		Config,
 		Context,
 		RootObject.ToSharedRef(),
 		AppendPath(RegionPath(Context), Config.RootField),
 		OutSemanticPaths,
 		RootId);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	const FString RootDecoratorsSemanticBasePath = AppendPath(RegionPath(Context), Config.RootDecoratorsField);
+	Result = ValidateIdentityArray(
+		Config,
+		Context,
+		Tree,
+		Config.RootDecoratorsField,
+		AppendPath(RegionPath(Context), Config.RootDecoratorsField),
+		TEXT("InvalidTreeDecorators"),
+		[&RootDecoratorsSemanticBasePath](const FString& DecoratorId)
+		{
+			return AppendPath(RootDecoratorsSemanticBasePath, DecoratorId);
+		},
+		OutSemanticPaths);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	return ValidateDecoratorLogicArray(Config, Tree, RegionPath(Context), Config.RootDecoratorLogicField);
 }

@@ -2696,6 +2696,16 @@ bool FAssetDocumentTreeRegionAdapterDuplicateDiagnosticsTest::RunTest(const FStr
 	TestFalse(TEXT("Duplicate decorator id is rejected"), Result.bSuccess);
 	TestDiagnostic(this, TEXT("Duplicate decorator id"), Result, TEXT("/Body/Tree/Root/Children/0/Decorators/1/Id"), TEXT("DuplicateTreeNodeId"));
 
+	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), MakeTreeNode(TEXT("Start")));
+	TArray<TSharedPtr<FJsonValue>> RootDecorators;
+	RootDecorators.Add(MakeObjectValue(MakeTreeNode(TEXT("Start"))));
+	Tree->SetArrayField(TEXT("RootDecorators"), RootDecorators);
+
+	Result = Adapter.ValidateRegion(Context, MakeObjectValue(Tree));
+	TestFalse(TEXT("Duplicate root decorator id is rejected"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Duplicate root decorator id"), Result, TEXT("/Body/Tree/RootDecorators/0/Id"), TEXT("DuplicateTreeNodeId"));
+
 	return true;
 }
 
@@ -2731,8 +2741,90 @@ bool FAssetDocumentTreeRegionAdapterDecoratorLogicTest::RunTest(const FString&)
 	TestFalse(TEXT("Invalid decorator logic operation is rejected"), Result.bSuccess);
 	TestDiagnostic(this, TEXT("Invalid logic op"), Result, TEXT("/Body/Tree/Root/DecoratorLogic/4/Operation"), TEXT("InvalidTreeDecoratorLogicOperation"));
 
+	TArray<TSharedPtr<FJsonValue>> InvalidNumberValues;
+	TSharedRef<FJsonObject> InvalidNumberLogic = MakeShared<FJsonObject>();
+	InvalidNumberLogic->SetStringField(TEXT("Operation"), TEXT("Test"));
+	InvalidNumberLogic->SetStringField(TEXT("Number"), TEXT("0"));
+	InvalidNumberValues.Add(MakeObjectValue(InvalidNumberLogic));
+	Root->SetArrayField(TEXT("DecoratorLogic"), InvalidNumberValues);
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestFalse(TEXT("Decorator logic Number must be numeric"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Invalid logic number"), Result, TEXT("/Body/Tree/Root/DecoratorLogic/0/Number"), TEXT("InvalidTreeDecoratorLogicNumber"));
+
 	const TSharedRef<FJsonObject> Schema = Adapter.GetSchemaHint(Context);
 	TestEqual(TEXT("Schema hint includes ClassField"), Schema->GetStringField(TEXT("ClassField")), FString(TEXT("Class")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTreeRegionAdapterAllowsShallowAuthoredFieldsTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Tree.ShallowAuthoredFields",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTreeRegionAdapterAllowsShallowAuthoredFieldsTest::RunTest(const FString&)
+{
+	FAssetDocumentTreeRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Tree"), TEXT("/Body/Tree"), &Policy);
+
+	TSharedRef<FJsonObject> Root = MakeTreeNode(TEXT("Start"));
+	TSharedRef<FJsonObject> RootProperties = MakeShared<FJsonObject>();
+	RootProperties->SetStringField(TEXT("Mode"), TEXT("Patrol"));
+	Root->SetObjectField(TEXT("Properties"), RootProperties);
+
+	TSharedRef<FJsonObject> Service = MakeTreeNode(TEXT("Sense"));
+	TSharedRef<FJsonObject> ServiceProperties = MakeShared<FJsonObject>();
+	ServiceProperties->SetNumberField(TEXT("Interval"), 0.25);
+	Service->SetObjectField(TEXT("Properties"), ServiceProperties);
+	TArray<TSharedPtr<FJsonValue>> Services;
+	Services.Add(MakeObjectValue(Service));
+	Root->SetArrayField(TEXT("Services"), Services);
+
+	TSharedRef<FJsonObject> Child = MakeTreeNode(TEXT("Move"));
+	TSharedRef<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), Child);
+	TSharedRef<FJsonObject> EdgeDecorator = MakeTreeNode(TEXT("NeedsTarget"));
+	TSharedRef<FJsonObject> DecoratorProperties = MakeShared<FJsonObject>();
+	DecoratorProperties->SetBoolField(TEXT("bInvert"), false);
+	EdgeDecorator->SetObjectField(TEXT("Properties"), DecoratorProperties);
+	TArray<TSharedPtr<FJsonValue>> EdgeDecorators;
+	EdgeDecorators.Add(MakeObjectValue(EdgeDecorator));
+	Edge->SetArrayField(TEXT("Decorators"), EdgeDecorators);
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(Edge));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	TSharedRef<FJsonObject> RootDecorator = MakeTreeNode(TEXT("RootGuard"));
+	TSharedRef<FJsonObject> RootDecoratorProperties = MakeShared<FJsonObject>();
+	RootDecoratorProperties->SetStringField(TEXT("Mode"), TEXT("Global"));
+	RootDecorator->SetObjectField(TEXT("Properties"), RootDecoratorProperties);
+	TArray<TSharedPtr<FJsonValue>> RootDecorators;
+	RootDecorators.Add(MakeObjectValue(RootDecorator));
+	Tree->SetArrayField(TEXT("RootDecorators"), RootDecorators);
+
+	TSharedRef<FJsonObject> RootLogic = MakeShared<FJsonObject>();
+	RootLogic->SetStringField(TEXT("Operation"), TEXT("Test"));
+	RootLogic->SetNumberField(TEXT("Number"), 0);
+	TArray<TSharedPtr<FJsonValue>> RootLogicValues;
+	RootLogicValues.Add(MakeObjectValue(RootLogic));
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), RootLogicValues);
+
+	FAssetDocumentCapabilityResult Result = Adapter.ValidateRegion(Context, MakeObjectValue(Tree));
+	TestTrue(TEXT("Shallow authored fields validate"), Result.bSuccess);
+
+	TMap<FString, FString> SemanticPaths;
+	Result = Adapter.CollectSemanticPaths(Context, Tree, SemanticPaths);
+	TestTrue(TEXT("Shallow authored fields collect semantic paths"), Result.bSuccess);
+	TestEqual(TEXT("Root decorator identity is collected"), SemanticPaths.FindRef(TEXT("RootGuard")), FString(TEXT("/Body/Tree/RootDecorators/RootGuard")));
+
+	Root = MakeTreeNode(TEXT("Start"));
+	Root->SetStringField(TEXT("Properties"), TEXT("typo"));
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestFalse(TEXT("Properties must be an object"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Invalid properties object"), Result, TEXT("/Body/Tree/Root/Properties"), TEXT("InvalidTreeProperties"));
 
 	return true;
 }
@@ -2893,6 +2985,8 @@ bool FAssetDocumentTreeRegionAdapterCustomConfigPathsTest::RunTest(const FString
 	Config.ChildField = TEXT("Target");
 	Config.DecoratorsField = TEXT("Guards");
 	Config.DecoratorLogicField = TEXT("GuardLogic");
+	Config.RootDecoratorsField = TEXT("GlobalGuards");
+	Config.RootDecoratorLogicField = TEXT("GlobalGuardLogic");
 	Config.ServicesField = TEXT("Observers");
 	FAssetDocumentTreeRegionAdapter Adapter(Config);
 	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
@@ -2913,15 +3007,22 @@ bool FAssetDocumentTreeRegionAdapterCustomConfigPathsTest::RunTest(const FString
 	TArray<TSharedPtr<FJsonValue>> Services;
 	Services.Add(MakeObjectValue(Service));
 	Root->SetArrayField(TEXT("Observers"), Services);
+	TSharedRef<FJsonObject> RootDecorator = MakeTreeNode(TEXT("RootGuard"));
+	TArray<TSharedPtr<FJsonValue>> RootDecorators;
+	RootDecorators.Add(MakeObjectValue(RootDecorator));
+	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("GlobalGuards"), RootDecorators);
 
 	TMap<FString, FString> SemanticPaths;
 	FAssetDocumentCapabilityResult Result =
-		Adapter.CollectSemanticPaths(Context, MakeTreeValue(Root)->AsObject().ToSharedRef(), SemanticPaths);
+		Adapter.CollectSemanticPaths(Context, Tree, SemanticPaths);
 	TestTrue(TEXT("Custom config tree validates"), Result.bSuccess);
 	TestEqual(TEXT("Custom child edge path uses configured ChildrenField"), Adapter.MakeChildEdgePath(Context, TEXT("Start"), TEXT("Move")), FString(TEXT("/Body/Tree/Start/Links/Move")));
 	TestEqual(TEXT("Custom decorator path uses configured DecoratorsField"), Adapter.MakeDecoratorPath(Context, TEXT("Start"), TEXT("Move"), TEXT("NeedsTarget")), FString(TEXT("/Body/Tree/Start/Links/Move/Guards/NeedsTarget")));
 	TestEqual(TEXT("Custom service path uses configured ServicesField"), Adapter.MakeServicePath(Context, TEXT("Start"), TEXT("Sense")), FString(TEXT("/Body/Tree/Start/Observers/Sense")));
 	TestEqual(TEXT("Collected decorator path uses custom fields"), SemanticPaths.FindRef(TEXT("NeedsTarget")), FString(TEXT("/Body/Tree/Start/Links/Move/Guards/NeedsTarget")));
+	TestEqual(TEXT("Collected root decorator path uses custom field"), SemanticPaths.FindRef(TEXT("RootGuard")), FString(TEXT("/Body/Tree/GlobalGuards/RootGuard")));
 
 	return true;
 }

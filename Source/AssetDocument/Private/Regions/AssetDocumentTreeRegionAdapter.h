@@ -16,7 +16,11 @@ struct FAssetDocumentTreeRegionAdapterConfig
 	FString ChildField = TEXT("Child");
 	FString DecoratorsField = TEXT("Decorators");
 	FString DecoratorLogicField = TEXT("DecoratorLogic");
+	FString RootDecoratorsField = TEXT("RootDecorators");
+	FString RootDecoratorLogicField = TEXT("RootDecoratorLogic");
 	FString ServicesField = TEXT("Services");
+	FString PropertiesField = TEXT("Properties");
+	FString DecoratorLogicNumberField = TEXT("Number");
 };
 
 struct FAssetDocumentTreeRegionAdapterHooks
