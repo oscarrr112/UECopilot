@@ -514,6 +514,43 @@ TSharedRef<FJsonObject> MakeStateMachineGraphWithBrokenStatePoseField(const TCHA
 	return Graph;
 }
 
+TSharedRef<FJsonObject> MakeStateMachineGraphWithBrokenBodyMutation(
+	const TCHAR* Id,
+	bool bBadEntryState,
+	bool bUnknownEndpoint)
+{
+	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id, false, bUnknownEndpoint);
+	Graph->GetObjectField(TEXT("Metadata"))->SetStringField(
+		TEXT("EntryState"),
+		bBadEntryState ? TEXT("MissingEntry") : TEXT("Run"));
+
+	TArray<TSharedPtr<FJsonValue>> Nodes = Graph->GetArrayField(TEXT("Nodes"));
+	for (const TSharedPtr<FJsonValue>& NodeValue : Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		FString NodeId;
+		if (Node.IsValid() && Node->TryGetStringField(TEXT("Id"), NodeId) && NodeId == TEXT("Idle"))
+		{
+			TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+			Position->SetNumberField(TEXT("X"), 999.0);
+			Position->SetNumberField(TEXT("Y"), 333.0);
+			Node->SetObjectField(TEXT("Position"), Position);
+		}
+	}
+
+	TSharedRef<FJsonObject> WalkNode = MakeShared<FJsonObject>();
+	WalkNode->SetStringField(TEXT("Id"), TEXT("Walk"));
+	WalkNode->SetStringField(TEXT("Kind"), TEXT("State"));
+	WalkNode->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimStateNode"));
+	TSharedRef<FJsonObject> WalkPosition = MakeShared<FJsonObject>();
+	WalkPosition->SetNumberField(TEXT("X"), 480.0);
+	WalkPosition->SetNumberField(TEXT("Y"), 120.0);
+	WalkNode->SetObjectField(TEXT("Position"), WalkPosition);
+	Nodes.Add(MakeShared<FJsonValueObject>(WalkNode));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	return Graph;
+}
+
 TSharedRef<FJsonObject> MakeStateMachinesGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
@@ -1214,6 +1251,68 @@ bool HasStateMachineNodePosition(
 		}
 	}
 
+	return false;
+}
+
+bool HasStateMachineNode(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedNodeId)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		FString NodeId;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HasStateMachineLink(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedFromNode,
+	const FString& ExpectedToNode)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Links = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Links"), Links) || !Links)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& LinkValue : *Links)
+	{
+		const TSharedPtr<FJsonObject> Link = LinkValue.IsValid() ? LinkValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* From = nullptr;
+		const TSharedPtr<FJsonObject>* To = nullptr;
+		FString FromNode;
+		FString ToNode;
+		if (Link.IsValid()
+			&& Link->TryGetObjectField(TEXT("From"), From)
+			&& From
+			&& (*From)->TryGetStringField(TEXT("Node"), FromNode)
+			&& Link->TryGetObjectField(TEXT("To"), To)
+			&& To
+			&& (*To)->TryGetStringField(TEXT("Node"), ToNode)
+			&& FromNode == ExpectedFromNode
+			&& ToNode == ExpectedToNode)
+		{
+			return true;
+		}
+	}
 	return false;
 }
 
@@ -2211,6 +2310,59 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	TestFalse(
 		TEXT("Failed subgraph apply does not leave new StatePose subgraph identity"),
 		HasStateMachineSubgraph(BrokenRollbackExtractedBody, TEXT("Locomotion"), TEXT("BrokenPose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+
+	auto AssertBaselineStateMachinePreserved = [this, &Capability, &AssetContext](const TCHAR* ContextLabel)
+	{
+		TSharedRef<FJsonObject> PreservedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractAfterFailure =
+			Capability.Extract(AssetContext, PreservedBody);
+		TestTrue(
+			FString::Printf(TEXT("%s extract succeeds"), ContextLabel),
+			ExtractAfterFailure.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("%s preserves EntryState"), ContextLabel),
+			HasStateMachineEntryState(PreservedBody, TEXT("Locomotion"), TEXT("Idle")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves Idle position"), ContextLabel),
+			HasStateMachineNodePosition(PreservedBody, TEXT("Locomotion"), TEXT("Idle"), 0.0, 0.0));
+		TestFalse(
+			FString::Printf(TEXT("%s does not leave new state node"), ContextLabel),
+			HasStateMachineNode(PreservedBody, TEXT("Locomotion"), TEXT("Walk")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves transition incoming link"), ContextLabel),
+			HasStateMachineLink(PreservedBody, TEXT("Locomotion"), TEXT("Idle"), TEXT("IdleToRun")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves transition outgoing link"), ContextLabel),
+			HasStateMachineLink(PreservedBody, TEXT("Locomotion"), TEXT("IdleToRun"), TEXT("Run")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves StatePose subgraph identity"), ContextLabel),
+			HasStateMachineSubgraph(PreservedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves TransitionRule subgraph identity"), ContextLabel),
+			HasStateMachineSubgraph(PreservedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+	};
+
+	TSharedRef<FJsonObject> BadEntryDocument = MakeAnimBlueprintApplyDocument(Target);
+	BadEntryDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraphWithBrokenBodyMutation(TEXT("Locomotion"), true, false)}));
+	FAssetDocumentApplyRequest BadEntryRequest;
+	BadEntryRequest.Document = BadEntryDocument;
+	BadEntryRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadEntryResult = Service.Apply(BadEntryRequest);
+	TestFalse(TEXT("StateMachines apply rejects bad EntryState on existing asset"), BadEntryResult.IsSuccess());
+	AssertBaselineStateMachinePreserved(TEXT("Bad EntryState apply"));
+
+	TSharedRef<FJsonObject> ExistingMissingTargetDocument = MakeAnimBlueprintApplyDocument(Target);
+	ExistingMissingTargetDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraphWithBrokenBodyMutation(TEXT("Locomotion"), false, true)}));
+	FAssetDocumentApplyRequest ExistingMissingTargetRequest;
+	ExistingMissingTargetRequest.Document = ExistingMissingTargetDocument;
+	ExistingMissingTargetRequest.bSaveAsset = false;
+	const FAssetDocumentResult ExistingMissingTargetResult = Service.Apply(ExistingMissingTargetRequest);
+	TestFalse(TEXT("StateMachines apply rejects missing transition target on existing asset"), ExistingMissingTargetResult.IsSuccess());
+	AssertBaselineStateMachinePreserved(TEXT("Missing target apply"));
 
 	const FString MissingTargetTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_MissingTarget_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	TSharedRef<FJsonObject> MissingTargetDocument = MakeAnimBlueprintApplyDocument(MissingTargetTarget);

@@ -1347,16 +1347,144 @@ FAssetDocumentCapabilityResult PreflightSubgraphFields(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult PreflightStateMachineSubgraphs(
-	UAnimBlueprint* AnimBlueprint,
-	const FAssetDocumentGraphSpec& GraphSpec)
+FAssetDocumentCapabilityResult PreflightStateMachineNodeFields(const FAssetDocumentGraphSpec& GraphSpec)
+{
+	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
+	{
+		const bool bTransition = IsTransitionNodeSpec(NodeSpec);
+		const bool bState = IsStateNodeSpec(NodeSpec);
+		if (!bTransition && !bState)
+		{
+			return Failure(
+				NodePath(GraphSpec, NodeSpec) / TEXT("Class"),
+				TEXT("UnsupportedStateMachineNodeClass"),
+				FString::Printf(TEXT("Unsupported state-machine node class '%s'."), *NodeSpec.Class));
+		}
+
+		if (!NodeSpec.Fields.IsValid() || NodeSpec.Fields->Values.IsEmpty())
+		{
+			continue;
+		}
+
+		UClass* NodeClass = bTransition ? UAnimStateTransitionNode::StaticClass() : UAnimStateNode::StaticClass();
+		const FAssetDocumentPropertyApplyResult FieldResult =
+			FAssetDocumentPropertyAdapter::PreflightProperties(NodeClass, NodeSpec.Fields);
+		if (!FieldResult.bSuccess)
+		{
+			return PropertyPreflightFailure(NodePath(GraphSpec, NodeSpec) / TEXT("Fields"), FieldResult);
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+TMap<FString, FString> MakeStateMachineNodeKinds(const FAssetDocumentGraphSpec& GraphSpec)
 {
 	TMap<FString, FString> NodeKinds;
 	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
 	{
 		NodeKinds.Add(NodeSpec.Id, IsTransitionNodeSpec(NodeSpec) ? TEXT("Transition") : TEXT("State"));
 	}
+	return NodeKinds;
+}
 
+FAssetDocumentCapabilityResult PreflightStateMachineLinks(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const TMap<FString, FString>& NodeKinds)
+{
+	TMap<FString, FString> PreviousByTransition;
+	TMap<FString, FString> NextByTransition;
+
+	for (const FAssetDocumentLinkSpec& Link : GraphSpec.Links)
+	{
+		const FString* FromKind = NodeKinds.Find(Link.From.Node);
+		const FString* ToKind = NodeKinds.Find(Link.To.Node);
+		if (!FromKind)
+		{
+			return Failure(
+				LinkPath(GraphSpec, Link) / TEXT("From/Node"),
+				TEXT("UnknownStateMachineLinkEndpoint"),
+				FString::Printf(TEXT("State-machine link '%s' references unknown source node '%s'."), *Link.ToKey(), *Link.From.Node));
+		}
+		if (!ToKind)
+		{
+			return Failure(
+				LinkPath(GraphSpec, Link) / TEXT("To/Node"),
+				TEXT("UnknownStateMachineLinkEndpoint"),
+				FString::Printf(TEXT("State-machine link '%s' references unknown target node '%s'."), *Link.ToKey(), *Link.To.Node));
+		}
+
+		const bool bFromTransition = *FromKind == TEXT("Transition");
+		const bool bToTransition = *ToKind == TEXT("Transition");
+		if (!bFromTransition && bToTransition)
+		{
+			PreviousByTransition.Add(Link.To.Node, Link.From.Node);
+		}
+		else if (bFromTransition && !bToTransition)
+		{
+			NextByTransition.Add(Link.From.Node, Link.To.Node);
+		}
+		else
+		{
+			return Failure(
+				GraphPath(GraphSpec) / TEXT("Links"),
+				TEXT("InvalidStateMachineTransitionLink"),
+				TEXT("State-machine links must connect State->Transition and Transition->State."));
+		}
+	}
+
+	for (const TPair<FString, FString>& Pair : NodeKinds)
+	{
+		if (Pair.Value != TEXT("Transition"))
+		{
+			continue;
+		}
+		if (!PreviousByTransition.Contains(Pair.Key) || !NextByTransition.Contains(Pair.Key))
+		{
+			return Failure(
+				GraphPath(GraphSpec) / TEXT("Links"),
+				TEXT("IncompleteStateMachineTransition"),
+				FString::Printf(TEXT("Transition '%s' requires source and target state links."), *Pair.Key));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightStateMachineEntryState(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const TMap<FString, FString>& NodeKinds)
+{
+	const TSharedPtr<FJsonObject> Metadata = GraphSpec.Metadata.IsValid() && GraphSpec.Metadata->Type == EJson::Object
+		? GraphSpec.Metadata->AsObject()
+		: nullptr;
+	if (!Metadata.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FString EntryState;
+	if (!Metadata->TryGetStringField(TEXT("EntryState"), EntryState))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (NodeKinds.FindRef(EntryState) != TEXT("State"))
+	{
+		return Failure(
+			GraphPath(GraphSpec) / TEXT("Metadata/EntryState"),
+			TEXT("UnknownEntryState"),
+			FString::Printf(TEXT("EntryState '%s' does not match a state node."), *EntryState));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightStateMachineSubgraphs(
+	UAnimBlueprint* AnimBlueprint,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const TMap<FString, FString>& NodeKinds)
+{
 	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
 	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
 	{
@@ -1417,6 +1545,33 @@ FAssetDocumentCapabilityResult PreflightStateMachineSubgraphs(
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult PreflightStateMachineGraph(
+	UAnimBlueprint* AnimBlueprint,
+	const FAssetDocumentGraphSpec& GraphSpec)
+{
+	const FAssetDocumentCapabilityResult NodeResult = PreflightStateMachineNodeFields(GraphSpec);
+	if (!NodeResult.bSuccess)
+	{
+		return NodeResult;
+	}
+
+	const TMap<FString, FString> NodeKinds = MakeStateMachineNodeKinds(GraphSpec);
+
+	const FAssetDocumentCapabilityResult LinkResult = PreflightStateMachineLinks(GraphSpec, NodeKinds);
+	if (!LinkResult.bSuccess)
+	{
+		return LinkResult;
+	}
+
+	const FAssetDocumentCapabilityResult EntryResult = PreflightStateMachineEntryState(GraphSpec, NodeKinds);
+	if (!EntryResult.bSuccess)
+	{
+		return EntryResult;
+	}
+
+	return PreflightStateMachineSubgraphs(AnimBlueprint, GraphSpec, NodeKinds);
 }
 
 FAssetDocumentCapabilityResult ApplyStateMachineSubgraphs(
@@ -1643,11 +1798,11 @@ FAssetDocumentCapabilityResult ApplyStateMachines(
 
 	for (const FAssetDocumentGraphSpec& GraphSpec : Graphs)
 	{
-		const FAssetDocumentCapabilityResult SubgraphPreflightResult =
-			PreflightStateMachineSubgraphs(AnimBlueprint, GraphSpec);
-		if (!SubgraphPreflightResult.bSuccess)
+		const FAssetDocumentCapabilityResult PreflightResult =
+			PreflightStateMachineGraph(AnimBlueprint, GraphSpec);
+		if (!PreflightResult.bSuccess)
 		{
-			return SubgraphPreflightResult;
+			return PreflightResult;
 		}
 	}
 
