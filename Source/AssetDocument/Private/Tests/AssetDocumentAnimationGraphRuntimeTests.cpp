@@ -338,6 +338,27 @@ UEdGraphPin* FindFakePin(
 	return Node && *Node ? (*Node)->FindPin(FName(*PinName)) : nullptr;
 }
 
+UEdGraphPin* FindFakePinByDirection(
+	const TSharedRef<FFakeAnimationGraphCandidateProvider>& Provider,
+	const FString& NodeId,
+	const FString& PinName,
+	EEdGraphPinDirection Direction)
+{
+	UEdGraphNode** Node = Provider->SpawnedNodesById.Find(NodeId);
+	if (!Node || !*Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : (*Node)->Pins)
+	{
+		if (Pin && Pin->PinName.ToString() == PinName && Pin->Direction == Direction)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
 UEdGraphNode* AddUnmanagedNode(
 	UEdGraph* Graph,
 	const FString& PinName,
@@ -1083,10 +1104,10 @@ bool FAssetDocumentAnimationGraphRuntimeExtractSkipsAmbiguousManagedPinLinksTest
 	FAssetDocumentNodeSpec TargetSpec = MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath());
 	UEdGraphNode* SourceNode = AddManagedEditorNode(Context.Graph, SourceGraph, SourceSpec, 0, 0);
 	UEdGraphNode* TargetNode = AddManagedEditorNode(Context.Graph, SourceGraph, TargetSpec, 200, 0);
-	UEdGraphPin* AmbiguousOut = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out")) : nullptr;
+	UEdGraphPin* AmbiguousOut = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Pose")) : nullptr;
 	if (SourceNode)
 	{
-		SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out"));
+		SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Pose"));
 	}
 	UEdGraphPin* TargetIn = TargetNode ? TargetNode->CreatePin(EGPD_Input, TEXT("Wildcard"), TEXT("In")) : nullptr;
 	if (AmbiguousOut && TargetIn)
@@ -1105,8 +1126,73 @@ bool FAssetDocumentAnimationGraphRuntimeExtractSkipsAmbiguousManagedPinLinksTest
 		const TSharedPtr<FJsonObject> SkippedLink = (*SkippedLinks)[0]->AsObject();
 		TestEqual(TEXT("Skipped ambiguous pin reason is explicit"), SkippedLink->GetStringField(TEXT("Reason")), FString(TEXT("AmbiguousManagedGraphPin")));
 		TestEqual(TEXT("Skipped ambiguous pin records node"), SkippedLink->GetStringField(TEXT("ManagedNode")), FString(TEXT("Source")));
-		TestEqual(TEXT("Skipped ambiguous pin records pin"), SkippedLink->GetStringField(TEXT("ManagedPin")), FString(TEXT("Out")));
+		TestEqual(TEXT("Skipped ambiguous pin records pin"), SkippedLink->GetStringField(TEXT("ManagedPin")), FString(TEXT("Pose")));
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractedSameNameOppositeDirectionPinsApplyRoundtripTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractedSameNameOppositeDirectionPinsApplyRoundtrip",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractedSameNameOppositeDirectionPinsApplyRoundtripTest::RunTest(const FString&)
+{
+	FAssetDocumentAnimationGraphRuntime ExtractRuntime;
+	FAssetDocumentAnimationGraphContext ExtractContext;
+	ExtractContext.GraphKind = TEXT("AnimGraph");
+	ExtractContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	ExtractContext.Graph = NewObject<UEdGraph>(GetTransientPackage());
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec SourceSpec = MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath());
+	FAssetDocumentNodeSpec TargetSpec = MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath());
+	UEdGraphNode* SourceNode = AddManagedEditorNode(ExtractContext.Graph, SourceGraph, SourceSpec, 0, 0);
+	UEdGraphNode* TargetNode = AddManagedEditorNode(ExtractContext.Graph, SourceGraph, TargetSpec, 200, 0);
+	if (SourceNode)
+	{
+		SourceNode->CreatePin(EGPD_Input, TEXT("Wildcard"), TEXT("Pose"));
+	}
+	UEdGraphPin* SourceOut = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Pose")) : nullptr;
+	UEdGraphPin* TargetIn = TargetNode ? TargetNode->CreatePin(EGPD_Input, TEXT("Wildcard"), TEXT("Pose")) : nullptr;
+	if (TargetNode)
+	{
+		TargetNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Pose"));
+	}
+	if (SourceOut && TargetIn)
+	{
+		SourceOut->MakeLinkTo(TargetIn);
+	}
+
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult ExtractResult = ExtractRuntime.ExtractGraph(ExtractContext, ExtractedGraph);
+	TestTrue(TEXT("Extract succeeds with same-name opposite-direction pins"), ExtractResult.bSuccess);
+	TestEqual(TEXT("Direction-unique same-name pin link is emitted"), ExtractedGraph.Links.Num(), 1);
+	if (ExtractedGraph.Links.Num() == 1)
+	{
+		TestEqual(TEXT("Extracted source pin keeps semantic name"), ExtractedGraph.Links[0].From.Pin, FString(TEXT("Pose")));
+		TestEqual(TEXT("Extracted target pin keeps semantic name"), ExtractedGraph.Links[0].To.Pin, FString(TEXT("Pose")));
+	}
+
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Pose"), EGPD_Input }, { TEXT("Pose"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("Pose"), EGPD_Input }, { TEXT("Pose"), EGPD_Output } });
+
+	FAssetDocumentAnimationGraphRuntime ApplyRuntime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext ApplyContext;
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyRuntime.ApplyGraph(ExtractedGraph, ApplyContext, Hook);
+	TestTrue(TEXT("Apply accepts extract-authored same-name opposite-direction pin link"), ApplyResult.bSuccess);
+	TestNotEqual(TEXT("Apply does not report ambiguous pin"), FirstDiagnosticCode(ApplyResult), FString(TEXT("AmbiguousGraphLinkEndpointPin")));
+
+	UEdGraphPin* AppliedSourceOut = FindFakePinByDirection(Provider, TEXT("Source"), TEXT("Pose"), EGPD_Output);
+	UEdGraphPin* AppliedTargetIn = FindFakePinByDirection(Provider, TEXT("Target"), TEXT("Pose"), EGPD_Input);
+	TestTrue(
+		TEXT("Apply materializes direction-resolved same-name link"),
+		AppliedSourceOut && AppliedTargetIn && AppliedSourceOut->LinkedTo.Contains(AppliedTargetIn));
 	return true;
 }
 

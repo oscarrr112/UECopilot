@@ -201,23 +201,40 @@ UEdGraphPin* FindUniquePinByName(
 		return nullptr;
 	}
 
-	TArray<UEdGraphPin*> Matches;
+	TArray<UEdGraphPin*> DirectionMatches;
+	bool bHasOppositeDirectionMatch = false;
 	for (UEdGraphPin* Pin : Node->Pins)
 	{
-		if (Pin && Pin->PinName.ToString() == Endpoint.Pin)
+		if (!Pin || Pin->PinName.ToString() != Endpoint.Pin)
 		{
-			Matches.Add(Pin);
+			continue;
+		}
+		if (Pin->Direction == ExpectedDirection)
+		{
+			DirectionMatches.Add(Pin);
+		}
+		else
+		{
+			bHasOppositeDirectionMatch = true;
 		}
 	}
-	if (Matches.IsEmpty())
+	if (DirectionMatches.IsEmpty())
 	{
+		if (bHasOppositeDirectionMatch)
+		{
+			OutResult = RuntimeFailure(
+				LinkPath(GraphSpec, Link, Context),
+				TEXT("InvalidGraphLinkType"),
+				FString::Printf(TEXT("Graph link endpoint '%s.%s' has the wrong pin direction."), *Endpoint.Node, *Endpoint.Pin));
+			return nullptr;
+		}
 		OutResult = RuntimeFailure(
 			LinkPath(GraphSpec, Link, Context),
 			TEXT("UnresolvedGraphLinkEndpoint"),
 			FString::Printf(TEXT("Graph link endpoint pin '%s.%s' could not be resolved after node reconstruction."), *Endpoint.Node, *Endpoint.Pin));
 		return nullptr;
 	}
-	if (Matches.Num() > 1)
+	if (DirectionMatches.Num() > 1)
 	{
 		OutResult = RuntimeFailure(
 			LinkPath(GraphSpec, Link, Context),
@@ -225,15 +242,7 @@ UEdGraphPin* FindUniquePinByName(
 			FString::Printf(TEXT("Graph link endpoint pin '%s.%s' is ambiguous after node reconstruction."), *Endpoint.Node, *Endpoint.Pin));
 		return nullptr;
 	}
-	if (Matches[0]->Direction != ExpectedDirection)
-	{
-		OutResult = RuntimeFailure(
-			LinkPath(GraphSpec, Link, Context),
-			TEXT("InvalidGraphLinkType"),
-			FString::Printf(TEXT("Graph link endpoint '%s.%s' has the wrong pin direction."), *Endpoint.Node, *Endpoint.Pin));
-		return nullptr;
-	}
-	return Matches[0];
+	return DirectionMatches[0];
 }
 
 struct FResolvedAnimationGraphLink
