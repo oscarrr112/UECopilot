@@ -2613,7 +2613,7 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	const FString AliasTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_OverrideAlias_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString AliasObjectPath = FString::Printf(TEXT("%s.%s"), *AliasTarget, *FPackageName::GetLongPackageAssetName(AliasTarget));
 	TSharedRef<FJsonObject> AliasDocument = MakeAnimBlueprintApplyDocument(AliasTarget);
-	AliasDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer")));
+	AliasDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, AnimationAssetPath));
 	AliasDocument->GetObjectField(TEXT("Body"))->SetArrayField(
 		TEXT("ParentAssetOverrides"),
 		MakeParentAssetOverrideArray({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AnimationAssetPath)}));
@@ -2668,6 +2668,15 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 			}
 		}
 	}
+
+	TArray<TSharedPtr<FJsonValue>> AliasNoOpDiffEntries;
+	const FAssetDocumentCapabilityResult AliasNoOpDiffResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AnimationAssetPath)}),
+			AliasNoOpDiffEntries);
+	TestTrue(TEXT("ParentAssetOverrides alias no-op diff succeeds"), AliasNoOpDiffResult.bSuccess);
+	TestTrue(TEXT("ParentAssetOverrides alias diff is unchanged after apply"), AliasNoOpDiffEntries.IsEmpty() || AllDiffEntriesUnchanged(AliasNoOpDiffEntries));
 
 	TArray<TSharedPtr<FJsonValue>> UnknownAliasDiffEntries;
 	const FAssetDocumentCapabilityResult UnknownAliasResult =
