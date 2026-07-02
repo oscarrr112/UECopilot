@@ -7,6 +7,7 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/Skeleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -82,6 +83,12 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		return Result;
 	}
 
+	if (ExistingAsset && Class == UBehaviorTree::StaticClass() && ExistingAsset->GetClass() != UBehaviorTree::StaticClass())
+	{
+		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not an exact UBehaviorTree asset"), *Result.ObjectPath);
+		return Result;
+	}
+
 	if (ExistingAsset && Class != UBlueprint::StaticClass() && !ExistingAsset->IsA(Class))
 	{
 		Result.Error = FString::Printf(TEXT("Existing asset '%s' is not a '%s'"), *Result.ObjectPath, *Class->GetName());
@@ -138,6 +145,11 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (Class == UBlackboardData::StaticClass())
 	{
 		return CreateBlackboardDataAsset(Target, Package, AssetName, Document);
+	}
+
+	if (Class == UBehaviorTree::StaticClass())
+	{
+		return CreateBehaviorTreeAsset(Target, Package, AssetName, Document);
 	}
 
 	UObject* NewAsset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
@@ -631,6 +643,29 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlackboardDataAsset
 	Package->MarkPackageDirty();
 
 	Result.Asset = BlackboardData;
+	Result.bCreated = true;
+	return Result;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBehaviorTreeAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+
+	UBehaviorTree* BehaviorTree = NewObject<UBehaviorTree>(
+		Package,
+		*AssetName,
+		RF_Public | RF_Standalone | RF_Transactional);
+	if (!BehaviorTree)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create BehaviorTree asset '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+
+	FAssetRegistryModule::AssetCreated(BehaviorTree);
+	Package->MarkPackageDirty();
+
+	Result.Asset = BehaviorTree;
 	Result.bCreated = true;
 	return Result;
 }

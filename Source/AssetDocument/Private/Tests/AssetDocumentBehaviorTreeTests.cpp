@@ -7,6 +7,7 @@
 
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BTDecorator.h"
+#include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
@@ -21,6 +22,7 @@
 #include "TestActorBase.h"
 #include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -46,6 +48,135 @@ TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
 	Ref->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
 	Ref->SetStringField(TEXT("Path"), Path);
 	return Ref;
+}
+
+FString MakeObjectPathFromTarget(const FString& Target)
+{
+	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+}
+
+UBlackboardData* MakeExistingBlackboardAsset(const FString& Target)
+{
+	UPackage* Package = CreatePackage(*Target);
+	return NewObject<UBlackboardData>(
+		Package,
+		*FPackageName::GetLongPackageAssetName(Target),
+		RF_Public | RF_Standalone | RF_Transactional);
+}
+
+UBehaviorTree* LoadBehaviorTreeForTarget(const FString& Target)
+{
+	return LoadObject<UBehaviorTree>(nullptr, *MakeObjectPathFromTarget(Target));
+}
+
+FAssetDocumentApplyRequest MakeApplyRequest(TSharedPtr<FJsonObject> Document)
+{
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	return Request;
+}
+
+FAssetDocumentDiffRequest MakeDiffRequest(TSharedPtr<FJsonObject> Document)
+{
+	FAssetDocumentDiffRequest Request;
+	Request.Document = Document;
+	return Request;
+}
+
+bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedCode, const FString& ExpectedPath)
+{
+	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode, &ExpectedPath](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Code == ExpectedCode && Diagnostic.Path == ExpectedPath;
+	});
+}
+
+bool DiffPayloadHasEntry(const TSharedPtr<FJsonObject>& Payload, const FString& BucketName, const FString& ExpectedPath)
+{
+	if (!Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+	if (!Payload->TryGetArrayField(BucketName, Entries) || !Entries)
+	{
+		return false;
+	}
+
+	return Entries->ContainsByPredicate([&ExpectedPath](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		return Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath;
+	});
+}
+
+TSharedPtr<FJsonObject> MakeBehaviorTreeBody(
+	TSharedPtr<FJsonObject> Blackboard,
+	TSharedPtr<FJsonObject> Tree = nullptr,
+	TSharedPtr<FJsonObject> EditorLayout = nullptr)
+{
+	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+	if (Blackboard.IsValid())
+	{
+		Body->SetObjectField(TEXT("Blackboard"), Blackboard);
+	}
+	else
+	{
+		Body->SetField(TEXT("Blackboard"), MakeShared<FJsonValueNull>());
+	}
+
+	if (Tree.IsValid())
+	{
+		Body->SetObjectField(TEXT("Tree"), Tree);
+	}
+	if (EditorLayout.IsValid())
+	{
+		Body->SetObjectField(TEXT("EditorLayout"), EditorLayout);
+	}
+	return Body;
+}
+
+TSharedPtr<FJsonObject> MakeEmptyBehaviorTree()
+{
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetObjectField(TEXT("Root"), MakeShared<FJsonObject>());
+	return Tree;
+}
+
+TSharedPtr<FJsonObject> MakeTreeWithKeySelectorLikeProperty()
+{
+	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
+	Selector->SetStringField(TEXT("Key"), TEXT("TargetActor"));
+
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetObjectField(TEXT("BlackboardKey"), Selector);
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("Id"), TEXT("RootWithKey"));
+	Root->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_WaitBlackboardTime"));
+	Root->SetObjectField(TEXT("Properties"), Properties);
+
+	TSharedPtr<FJsonObject> Tree = MakeEmptyBehaviorTree();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	return Tree;
+}
+
+TSharedPtr<FJsonObject> MakeBehaviorTreeDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
+{
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BehaviorTree"));
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Body"), Body);
+	return Document;
 }
 
 TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
@@ -133,6 +264,97 @@ bool FAssetDocumentBehaviorTreeProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Policy includes Body.Blackboard"), FindPolicyByRegionId(Policies, TEXT("Body.Blackboard")));
 	TestNotNull(TEXT("Policy includes Body.Tree"), FindPolicyByRegionId(Policies, TEXT("Body.Tree")));
 	TestNotNull(TEXT("Policy includes Body.EditorLayout"), FindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeBlackboardReferenceTest,
+	"AssetFactory.AssetDocument.BehaviorTree.BlackboardReference",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeBlackboardReferenceTest::RunTest(const FString&)
+{
+	const FString BlackboardTarget = TEXT("/Game/AssetDocumentTests/BB_BT_BlackboardReference");
+	const FString BehaviorTreeTarget = TEXT("/Game/AssetDocumentTests/BT_AD_BlackboardReference");
+	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(BlackboardTarget);
+	TestNotNull(TEXT("Referenced blackboard asset exists"), Blackboard);
+	if (!Blackboard)
+	{
+		return false;
+	}
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)), MakeEmptyBehaviorTree(), MakeShared<FJsonObject>());
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(BehaviorTreeTarget, Body)));
+	TestTrue(TEXT("BehaviorTree apply with Blackboard AssetRef succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(BehaviorTreeTarget);
+	TestNotNull(TEXT("BehaviorTree lifecycle creates an asset"), BehaviorTree);
+	if (!BehaviorTree)
+	{
+		return false;
+	}
+	TestTrue(TEXT("BehaviorTree has exact class"), BehaviorTree->GetClass() == UBehaviorTree::StaticClass());
+	TestTrue(TEXT("BlackboardAsset is assigned"), BehaviorTree->BlackboardAsset == Blackboard);
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = BehaviorTreeTarget;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("BehaviorTree extract succeeds"), ExtractResult.IsSuccess());
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedBlackboard = nullptr;
+	TestTrue(TEXT("Extracted payload contains Body"), ExtractResult.Payload.IsValid() && ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody) && ExtractedBody && ExtractedBody->IsValid());
+	TestTrue(TEXT("Extracted Body contains Blackboard AssetRef"), ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("Blackboard"), ExtractedBlackboard) && ExtractedBlackboard && ExtractedBlackboard->IsValid());
+	if (ExtractedBlackboard && ExtractedBlackboard->IsValid())
+	{
+		TestEqual(TEXT("Extracted Blackboard Kind"), (*ExtractedBlackboard)->GetStringField(TEXT("Kind")), FString(TEXT("AssetRef")));
+		TestEqual(TEXT("Extracted Blackboard Path"), (*ExtractedBlackboard)->GetStringField(TEXT("Path")), Blackboard->GetPathName());
+	}
+
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(MakeBehaviorTreeDocument(BehaviorTreeTarget, Body)));
+	TestTrue(TEXT("BehaviorTree diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("Blackboard diff path is stable"), DiffPayloadHasEntry(DiffResult.Payload, TEXT("unchanged"), TEXT("/Body/Blackboard")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeRejectsBlackboardInlineTest,
+	"AssetFactory.AssetDocument.BehaviorTree.RejectsBlackboardInline",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeRejectsBlackboardInlineTest::RunTest(const FString&)
+{
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(nullptr, MakeEmptyBehaviorTree(), MakeShared<FJsonObject>());
+	Body->SetObjectField(TEXT("BlackboardInline"), MakeShared<FJsonObject>());
+
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(TEXT("/Game/AssetDocumentTests/BT_AD_RejectsBlackboardInline"), Body);
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestFalse(TEXT("BehaviorTree rejects BlackboardInline"), Result.IsSuccess());
+	TestTrue(TEXT("BlackboardInline reports unknown region"), ResultHasDiagnostic(Result, TEXT("UnknownBodyKey"), TEXT("/Body/BlackboardInline")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeRejectsMissingBlackboardForKeySelectorsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.RejectsMissingBlackboardForKeySelectors",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeRejectsMissingBlackboardForKeySelectorsTest::RunTest(const FString&)
+{
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(nullptr, MakeTreeWithKeySelectorLikeProperty(), MakeShared<FJsonObject>());
+
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(TEXT("/Game/AssetDocumentTests/BT_AD_RejectsMissingBlackboardForKeySelectors"), Body);
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestFalse(TEXT("BehaviorTree rejects key selectors without Blackboard"), Result.IsSuccess());
+	TestTrue(TEXT("Missing blackboard diagnostic is stable"), ResultHasDiagnostic(Result, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/Blackboard")));
 	return true;
 }
 
