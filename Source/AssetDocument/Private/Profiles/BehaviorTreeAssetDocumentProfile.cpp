@@ -233,71 +233,6 @@ TSharedPtr<FJsonValue> MakeEmptyObjectValue()
 	return MakeShared<FJsonValueObject>(MakeShared<FJsonObject>());
 }
 
-bool ObjectContainsKeySelectorLikeProperty(const TSharedPtr<FJsonObject>& Object)
-{
-	if (!Object.IsValid())
-	{
-		return false;
-	}
-
-	const bool bHasKeySelectorKey =
-		(Object->HasField(TEXT("Key")) || Object->HasField(TEXT("SelectedKeyName"))) &&
-		(Object->HasField(TEXT("AllowedTypes")) || Object->Values.Num() <= 4);
-	if (bHasKeySelectorKey)
-	{
-		return true;
-	}
-
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Field : Object->Values)
-	{
-		if (!Field.Value.IsValid())
-		{
-			continue;
-		}
-		if (Field.Value->Type == EJson::Object && ObjectContainsKeySelectorLikeProperty(Field.Value->AsObject()))
-		{
-			return true;
-		}
-		if (Field.Value->Type == EJson::Array)
-		{
-			for (const TSharedPtr<FJsonValue>& Entry : Field.Value->AsArray())
-			{
-				if (Entry.IsValid() && Entry->Type == EJson::Object && ObjectContainsKeySelectorLikeProperty(Entry->AsObject()))
-				{
-					return true;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-FAssetDocumentCapabilityResult ValidateMissingBlackboardForKeySelectors(const TSharedRef<FJsonValue>& BodyJson)
-{
-	TSharedPtr<FJsonObject> BodyObject;
-	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(BodyJson, TEXT("/Body"), BodyObject);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-
-	const TSharedPtr<FJsonValue> BlackboardValue = BodyObject->TryGetField(TEXT("Blackboard"));
-	const bool bHasBlackboard = BlackboardValue.IsValid() && BlackboardValue->Type != EJson::Null;
-	const TSharedPtr<FJsonObject> Tree = BodyObject->HasTypedField<EJson::Object>(TEXT("Tree"))
-		? BodyObject->GetObjectField(TEXT("Tree"))
-		: nullptr;
-	if (!bHasBlackboard && ObjectContainsKeySelectorLikeProperty(Tree))
-	{
-		return FAssetDocumentJsonRegionUtils::Failure(
-			TEXT("/Body/Blackboard"),
-			TEXT("MissingBehaviorTreeBlackboard"),
-			TEXT("Body.Blackboard is required when Body.Tree contains key-selector-like properties"));
-	}
-
-	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BehaviorTree Blackboard preflight"));
-}
-
 class FBehaviorTreeBlackboardRegionAdapter final : public IAssetDocumentRegionAdapter
 {
 public:
@@ -747,11 +682,15 @@ FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 	Adapters.Add(TreeAdapter.GetName(), &TreeAdapter);
 	Adapters.Add(EditorLayoutAdapter.GetName(), &EditorLayoutAdapter);
 
+	FAssetDocumentBodyRegionDispatcherHooks Hooks;
+	Hooks.ValidateCrossRegion = &FBehaviorTreeAssetDocumentMaterializer::ValidateBodyCrossRegion;
+
 	const FBehaviorTreeAssetDocumentProfile Profile;
 	const FAssetDocumentBodyRegionDispatcher Dispatcher(
 		FBehaviorTreeAssetDocumentProfile::MakeRegionBindings(),
 		Profile.GetRegionPolicies(),
-		Adapters);
+		Adapters,
+		MoveTemp(Hooks));
 	return Dispatch(Dispatcher);
 }
 }
@@ -815,11 +754,6 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Validate(co
 	{
 		return Result;
 	}
-	Result = ValidateMissingBlackboardForKeySelectors(BodyJson);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
 	return RemapDispatcherCompatibilityCodes(DispatchBehaviorTreeBody(
 		[&Context, &BodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
@@ -830,11 +764,6 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Validate(co
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
 {
 	FAssetDocumentCapabilityResult Result = ValidateBehaviorTreeContext(Context);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-	Result = ValidateMissingBlackboardForKeySelectors(BodyJson);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -868,11 +797,6 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Diff(
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
 	FAssetDocumentCapabilityResult Result = ValidateBehaviorTreeContext(Context);
-	if (!Result.bSuccess)
-	{
-		return Result;
-	}
-	Result = ValidateMissingBlackboardForKeySelectors(DesiredJson);
 	if (!Result.bSuccess)
 	{
 		return Result;

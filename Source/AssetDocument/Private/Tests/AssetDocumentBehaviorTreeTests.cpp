@@ -12,8 +12,10 @@
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
 #include "BehaviorTree/Services/BTService_DefaultFocus.h"
 #include "BehaviorTree/Tasks/BTTask_MoveTo.h"
@@ -73,6 +75,43 @@ UBlackboardData* MakeExistingBlackboardAsset(const FString& Target)
 		Package,
 		*FPackageName::GetLongPackageAssetName(Target),
 		RF_Public | RF_Standalone | RF_Transactional);
+}
+
+template <typename TKeyType>
+void AddBlackboardKey(UBlackboardData* Blackboard, FName Name)
+{
+	if (!Blackboard)
+	{
+		return;
+	}
+
+	FBlackboardEntry Entry;
+	Entry.EntryName = Name;
+	Entry.KeyType = NewObject<TKeyType>(Blackboard);
+	Blackboard->Keys.Add(Entry);
+}
+
+void AddObjectBlackboardKey(UBlackboardData* Blackboard, FName Name, UClass* BaseClass = AActor::StaticClass())
+{
+	if (!Blackboard)
+	{
+		return;
+	}
+
+	FBlackboardEntry Entry;
+	Entry.EntryName = Name;
+	UBlackboardKeyType_Object* KeyType = NewObject<UBlackboardKeyType_Object>(Blackboard);
+	KeyType->BaseClass = BaseClass;
+	Entry.KeyType = KeyType;
+	Blackboard->Keys.Add(Entry);
+}
+
+UBlackboardData* MakeTask7BlackboardAsset(const FString& Target)
+{
+	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(Target);
+	AddObjectBlackboardKey(Blackboard, TEXT("TargetActor"));
+	AddObjectBlackboardKey(Blackboard, TEXT("OtherTargetActor"));
+	return Blackboard;
 }
 
 UBehaviorTree* MakeExistingBehaviorTreeAsset(const FString& Target)
@@ -206,17 +245,25 @@ TSharedPtr<FJsonObject> MakeMinimalSelectorBehaviorTree()
 TSharedPtr<FJsonObject> MakeTreeWithKeySelectorLikeProperty()
 {
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
-	Selector->SetStringField(TEXT("Key"), TEXT("TargetActor"));
+	Selector->SetStringField(TEXT("SelectedKeyName"), TEXT("TargetActor"));
+	Selector->SetBoolField(TEXT("bNoneIsAllowedValue"), false);
 
 	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
 	Properties->SetObjectField(TEXT("BlackboardKey"), Selector);
 
-	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetStringField(TEXT("Id"), TEXT("RootWithKey"));
-	Root->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_WaitBlackboardTime"));
-	Root->SetObjectField(TEXT("Properties"), Properties);
+	TSharedPtr<FJsonObject> Task = MakeShared<FJsonObject>();
+	Task->SetStringField(TEXT("Id"), TEXT("WaitForTarget"));
+	Task->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_WaitBlackboardTime"));
+	Task->SetObjectField(TEXT("Properties"), Properties);
+	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), Task);
 
 	TSharedPtr<FJsonObject> Tree = MakeMinimalSelectorBehaviorTree();
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("Id"), TEXT("Root"));
+	Root->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Services"), TArray<TSharedPtr<FJsonValue>>());
+	Root->SetArrayField(TEXT("Children"), {MakeObjectValue(Edge)});
 	Tree->SetObjectField(TEXT("Root"), Root);
 	return Tree;
 }
@@ -234,6 +281,23 @@ TSharedPtr<FJsonObject> MakeSelectorProperty(const FString& KeyName)
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
 	Selector->SetStringField(TEXT("SelectedKeyName"), KeyName);
 	Selector->SetBoolField(TEXT("bNoneIsAllowedValue"), false);
+	return Selector;
+}
+
+TSharedPtr<FJsonObject> MakeAllowedKeyType(const FString& ClassPath)
+{
+	TSharedPtr<FJsonObject> AllowedType = MakeShared<FJsonObject>();
+	AllowedType->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	AllowedType->SetStringField(TEXT("Path"), ClassPath);
+	return AllowedType;
+}
+
+TSharedPtr<FJsonObject> MakeSelectorPropertyWithAllowedType(const FString& KeyName, const FString& AllowedKeyTypeClass)
+{
+	TSharedPtr<FJsonObject> Selector = MakeSelectorProperty(KeyName);
+	TArray<TSharedPtr<FJsonValue>> AllowedTypes;
+	AllowedTypes.Add(MakeObjectValue(MakeAllowedKeyType(AllowedKeyTypeClass)));
+	Selector->SetArrayField(TEXT("AllowedTypes"), AllowedTypes);
 	return Selector;
 }
 
@@ -258,6 +322,58 @@ TSharedPtr<FJsonObject> MakeDecoratorLogicTest(int32 Number = 0)
 	Logic->SetStringField(TEXT("Operation"), TEXT("Test"));
 	Logic->SetNumberField(TEXT("Number"), Number);
 	return Logic;
+}
+
+TSharedPtr<FJsonObject> MakeMoveToTreeWithKeys(const TArray<FString>& KeyNames)
+{
+	TArray<TSharedPtr<FJsonValue>> Children;
+	for (const FString& KeyName : KeyNames)
+	{
+		TSharedPtr<FJsonObject> MoveToProperties = MakeShared<FJsonObject>();
+		MoveToProperties->SetObjectField(TEXT("BlackboardKey"), MakeSelectorProperty(KeyName));
+		const FString NodeId = KeyName == TEXT("TargetActor")
+			? FString(TEXT("MoveToTarget"))
+			: FString::Printf(TEXT("MoveTo_%s"), *KeyName);
+		TSharedPtr<FJsonObject> MoveToNode = MakeBtNode(NodeId, TEXT("/Script/AIModule.BTTask_MoveTo"), MoveToProperties);
+
+		TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+		Edge->SetObjectField(TEXT("Child"), MoveToNode);
+		Children.Add(MakeObjectValue(Edge));
+	}
+
+	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+	return Tree;
+}
+
+TSharedPtr<FJsonObject> MakeRunBehaviorTree(const FString& SubtreeTarget)
+{
+	TSharedPtr<FJsonObject> RunSubtreeProperties = MakeShared<FJsonObject>();
+	RunSubtreeProperties->SetObjectField(TEXT("BehaviorAsset"), MakeAssetRef(MakeObjectPathFromTarget(SubtreeTarget)));
+	TSharedPtr<FJsonObject> RunSubtreeNode = MakeBtNode(
+		TEXT("RunSubtree"),
+		TEXT("/Script/AIModule.BTTask_RunBehavior"),
+		RunSubtreeProperties);
+
+	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), RunSubtreeNode);
+
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(Edge));
+
+	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+	return Tree;
 }
 
 TSharedPtr<FJsonObject> MakeTask7BehaviorTree(
@@ -413,7 +529,7 @@ bool ApplyTask7TreeFixture(
 {
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(BlackboardTarget);
+	UBlackboardData* Blackboard = MakeTask7BlackboardAsset(BlackboardTarget);
 	Test.TestNotNull(TEXT("Task7 fixture blackboard exists"), Blackboard);
 	if (!Blackboard)
 	{
@@ -1176,7 +1292,7 @@ bool FAssetDocumentBehaviorTreeDecoratorLogicRejectsInvalidShapeTest::RunTest(co
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_InvalidDecoratorLogic");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	MakeExistingBlackboardAsset(BlackboardTarget);
+	MakeTask7BlackboardAsset(BlackboardTarget);
 	MakeExistingBehaviorTreeAsset(SubtreeTarget);
 
 	TSharedPtr<FJsonObject> InvalidTree = MakeTask7BehaviorTree(SubtreeTarget, true, false);
@@ -1232,7 +1348,7 @@ bool FAssetDocumentBehaviorTreeRejectsNodeLevelDecoratorsTest::RunTest(const FSt
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_NodeLevelDecorators");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	MakeExistingBlackboardAsset(BlackboardTarget);
+	MakeTask7BlackboardAsset(BlackboardTarget);
 	MakeExistingBehaviorTreeAsset(SubtreeTarget);
 
 	TSharedPtr<FJsonObject> Tree = MakeTask7BehaviorTree(SubtreeTarget, false, false);
@@ -1331,7 +1447,7 @@ bool FAssetDocumentBehaviorTreeOrderDiffPathsTest::RunTest(const FString&)
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_OrderDiffPaths");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	MakeExistingBlackboardAsset(BlackboardTarget);
+	MakeTask7BlackboardAsset(BlackboardTarget);
 	MakeExistingBehaviorTreeAsset(SubtreeTarget);
 
 	FAssetDocumentService Service;
@@ -1555,6 +1671,202 @@ bool FAssetDocumentBehaviorTreeApplyFailureDoesNotMutateExistingTest::RunTest(co
 	TestEqual(TEXT("services survive late failed apply"), OriginalRoot ? OriginalRoot->Services.Num() : -1, OriginalServices);
 	TestEqual(TEXT("decorators survive late failed apply"), OriginalRoot && OriginalRoot->Children.Num() > 0 ? OriginalRoot->Children[0].Decorators.Num() : -1, OriginalDecorators);
 	TestTrue(TEXT("BlackboardAsset survives late failed apply"), BehaviorTree->BlackboardAsset == OriginalBlackboard);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeBlackboardKeySelectorsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.BlackboardKeySelectors",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeBlackboardKeySelectorsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task8_KeySelectors");
+	const FString ParentBlackboardTarget = Target + TEXT("_ParentBB");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	UBlackboardData* ParentBlackboard = MakeExistingBlackboardAsset(ParentBlackboardTarget);
+	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(BlackboardTarget);
+	TestNotNull(TEXT("parent blackboard exists"), ParentBlackboard);
+	TestNotNull(TEXT("child blackboard exists"), Blackboard);
+	if (!ParentBlackboard || !Blackboard)
+	{
+		return false;
+	}
+
+	AddObjectBlackboardKey(ParentBlackboard, TEXT("TargetActor"));
+	AddBlackboardKey<UBlackboardKeyType_Vector>(Blackboard, TEXT("MoveLocation"));
+	Blackboard->Parent = ParentBlackboard;
+
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithKeys({TEXT("TargetActor"), TEXT("MoveLocation")}),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(Target, Body);
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestTrue(TEXT("selector keys resolve through local and parent blackboards"), Result.IsSuccess());
+	if (!Result.IsSuccess())
+	{
+		AddError(Result.Message);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest,
+	"AssetFactory.AssetDocument.BehaviorTree.SubtreeBlackboardCompatibility",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task8_SubtreeCompatibility");
+	const FString ParentBlackboardTarget = Target + TEXT("_ParentBB");
+	const FString CompatibleBlackboardTarget = Target + TEXT("_CompatibleBB");
+	const FString IncompatibleBlackboardTarget = Target + TEXT("_IncompatibleBB");
+	const FString CompatibleSubtreeTarget = Target + TEXT("_CompatibleSubtree");
+	const FString IncompatibleSubtreeTarget = Target + TEXT("_IncompatibleSubtree");
+
+	UBlackboardData* ParentBlackboard = MakeExistingBlackboardAsset(ParentBlackboardTarget);
+	UBlackboardData* CompatibleBlackboard = MakeExistingBlackboardAsset(CompatibleBlackboardTarget);
+	UBlackboardData* IncompatibleBlackboard = MakeExistingBlackboardAsset(IncompatibleBlackboardTarget);
+	TestNotNull(TEXT("parent blackboard exists"), ParentBlackboard);
+	TestNotNull(TEXT("compatible child blackboard exists"), CompatibleBlackboard);
+	TestNotNull(TEXT("incompatible blackboard exists"), IncompatibleBlackboard);
+	if (!ParentBlackboard || !CompatibleBlackboard || !IncompatibleBlackboard)
+	{
+		return false;
+	}
+
+	AddObjectBlackboardKey(ParentBlackboard, TEXT("TargetActor"));
+	AddBlackboardKey<UBlackboardKeyType_Vector>(CompatibleBlackboard, TEXT("MoveLocation"));
+	AddBlackboardKey<UBlackboardKeyType_Bool>(IncompatibleBlackboard, TEXT("HasTarget"));
+	CompatibleBlackboard->Parent = ParentBlackboard;
+
+	UBehaviorTree* CompatibleSubtree = MakeExistingBehaviorTreeAsset(CompatibleSubtreeTarget);
+	UBehaviorTree* IncompatibleSubtree = MakeExistingBehaviorTreeAsset(IncompatibleSubtreeTarget);
+	TestNotNull(TEXT("compatible subtree exists"), CompatibleSubtree);
+	TestNotNull(TEXT("incompatible subtree exists"), IncompatibleSubtree);
+	if (!CompatibleSubtree || !IncompatibleSubtree)
+	{
+		return false;
+	}
+	CompatibleSubtree->BlackboardAsset = CompatibleBlackboard;
+	IncompatibleSubtree->BlackboardAsset = IncompatibleBlackboard;
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> CompatibleBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)),
+		MakeRunBehaviorTree(CompatibleSubtreeTarget),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest CompatibleRequest;
+	CompatibleRequest.Document = MakeBehaviorTreeDocument(Target, CompatibleBody);
+	const FAssetDocumentResult CompatibleResult = Service.Validate(CompatibleRequest);
+	TestTrue(TEXT("subtree with related blackboard validates"), CompatibleResult.IsSuccess());
+	if (!CompatibleResult.IsSuccess())
+	{
+		AddError(CompatibleResult.Message);
+	}
+
+	TSharedPtr<FJsonObject> IncompatibleBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)),
+		MakeRunBehaviorTree(IncompatibleSubtreeTarget),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest IncompatibleRequest;
+	IncompatibleRequest.Document = MakeBehaviorTreeDocument(Target, IncompatibleBody);
+	const FAssetDocumentResult IncompatibleResult = Service.Validate(IncompatibleRequest);
+	TestFalse(TEXT("subtree with unrelated blackboard is rejected"), IncompatibleResult.IsSuccess());
+	TestTrue(TEXT("subtree mismatch diagnostic is exact"), ResultHasDiagnostic(IncompatibleResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/RunSubtree/Properties/BehaviorAsset")));
+
+	const FAssetDocumentResult ApplyCompatible = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, CompatibleBody)));
+	TestTrue(TEXT("compatible subtree fixture apply succeeds"), ApplyCompatible.IsSuccess());
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBTCompositeNode* OriginalRoot = BehaviorTree ? BehaviorTree->RootNode : nullptr;
+	UBlackboardData* OriginalBlackboard = BehaviorTree ? BehaviorTree->BlackboardAsset : nullptr;
+	TestNotNull(TEXT("applied root exists before missing blackboard check"), OriginalRoot);
+
+	TSharedPtr<FJsonObject> MissingBlackboardBody = MakeBehaviorTreeBody(
+		nullptr,
+		MakeRunBehaviorTree(CompatibleSubtreeTarget),
+		MakeShared<FJsonObject>());
+	const FAssetDocumentResult MissingBlackboardApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, MissingBlackboardBody)));
+	TestFalse(TEXT("missing Body.Blackboard for subtree validation is rejected"), MissingBlackboardApply.IsSuccess());
+	TestTrue(TEXT("missing blackboard diagnostic is exact"), ResultHasDiagnostic(MissingBlackboardApply, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/Blackboard")));
+	TestTrue(TEXT("failed missing-blackboard apply does not replace root"), BehaviorTree && BehaviorTree->RootNode == OriginalRoot);
+	TestTrue(TEXT("failed missing-blackboard apply does not replace blackboard"), BehaviorTree && BehaviorTree->BlackboardAsset == OriginalBlackboard);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeUnknownBlackboardKeyRejectsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.UnknownBlackboardKeyRejects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeUnknownBlackboardKeyRejectsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task8_UnknownKey");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(BlackboardTarget);
+	TestNotNull(TEXT("blackboard exists"), Blackboard);
+	if (!Blackboard)
+	{
+		return false;
+	}
+	AddObjectBlackboardKey(Blackboard, TEXT("TargetActor"));
+
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeMoveToTreeWithKeys({TEXT("MissingTarget")}),
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(Target, Body);
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestFalse(TEXT("unknown blackboard selector key is rejected"), Result.IsSuccess());
+	TestTrue(TEXT("unknown key diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("UnknownBlackboardKey"), TEXT("/Body/Tree/MoveTo_MissingTarget/Properties/BlackboardKey/SelectedKeyName")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.IncompatibleBlackboardKeyTypeRejects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task8_KeyTypeMismatch");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	UBlackboardData* Blackboard = MakeExistingBlackboardAsset(BlackboardTarget);
+	TestNotNull(TEXT("blackboard exists"), Blackboard);
+	if (!Blackboard)
+	{
+		return false;
+	}
+	AddBlackboardKey<UBlackboardKeyType_Bool>(Blackboard, TEXT("HasTarget"));
+
+	TSharedPtr<FJsonObject> Selector = MakeSelectorPropertyWithAllowedType(
+		TEXT("HasTarget"),
+		UBlackboardKeyType_Vector::StaticClass()->GetPathName());
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetObjectField(TEXT("BlackboardKey"), Selector);
+
+	TSharedPtr<FJsonObject> MoveToNode = MakeBtNode(TEXT("MoveToTarget"), TEXT("/Script/AIModule.BTTask_MoveTo"), Properties);
+	TSharedPtr<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), MoveToNode);
+	TSharedPtr<FJsonObject> Root = MakeBtNode(TEXT("RootSelector"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetArrayField(TEXT("Children"), {MakeObjectValue(Edge)});
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		Tree,
+		MakeShared<FJsonObject>());
+	FAssetDocumentValidateRequest Request;
+	Request.Document = MakeBehaviorTreeDocument(Target, Body);
+	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
+	TestFalse(TEXT("selector key type mismatch is rejected"), Result.IsSuccess());
+	TestTrue(TEXT("key type mismatch diagnostic is exact"), ResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
 	return true;
 }
 

@@ -4,6 +4,7 @@
 
 #include "AssetDocumentJsonRegionUtils.h"
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
+#include "Regions/AssetDocumentBlackboardKeySchemaUtils.h"
 #include "Utils/ClassFinderUtils.h"
 
 #include "BehaviorTree/BehaviorTree.h"
@@ -11,7 +12,13 @@
 #include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BTTaskNode.h"
+#include "BehaviorTree/BehaviorTreeTypes.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Class.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "Dom/JsonValue.h"
+#include "Misc/PackageName.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -98,6 +105,53 @@ FString JoinPath(const FString& Path, int32 Index)
 FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(Path, Code, Message);
+}
+
+FString NormalizeObjectPath(const FString& Path)
+{
+	FString ObjectPath = Path.TrimStartAndEnd();
+	if (ObjectPath.StartsWith(TEXT("/")) && !ObjectPath.Contains(TEXT(".")))
+	{
+		const FString AssetName = FPackageName::GetLongPackageAssetName(ObjectPath);
+		if (!AssetName.IsEmpty())
+		{
+			ObjectPath = FString::Printf(TEXT("%s.%s"), *ObjectPath, *AssetName);
+		}
+	}
+	return ObjectPath;
+}
+
+bool TryReadAssetRefPath(const TSharedPtr<FJsonValue>& Value, FString& OutPath)
+{
+	OutPath.Reset();
+	if (!Value.IsValid() || Value->Type == EJson::Null)
+	{
+		return true;
+	}
+	if (Value->TryGetString(OutPath))
+	{
+		OutPath.TrimStartAndEndInline();
+		return true;
+	}
+
+	const TSharedPtr<FJsonObject>* Object = nullptr;
+	if (!Value->TryGetObject(Object) || !Object || !Object->IsValid())
+	{
+		return false;
+	}
+
+	FString Kind;
+	if (!(*Object)->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("AssetRef"))
+	{
+		return false;
+	}
+
+	if (!(*Object)->TryGetStringField(TEXT("Path"), OutPath))
+	{
+		return false;
+	}
+	OutPath.TrimStartAndEndInline();
+	return true;
 }
 
 FAssetDocumentCapabilityResult RequireObjectField(
@@ -978,6 +1032,486 @@ FAssetDocumentCapabilityResult MaterializeTree(UBehaviorTree* BehaviorTree, cons
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FString SemanticNodePath(const FString& NodeId)
+{
+	return JoinPath(TEXT("/Body/Tree"), NodeId);
+}
+
+FString SemanticPropertiesPath(const FString& NodeId)
+{
+	return JoinPath(SemanticNodePath(NodeId), PropertiesField);
+}
+
+bool IsBlackboardKeySelectorStruct(const FStructProperty* Property)
+{
+	return Property && Property->Struct == FBlackboardKeySelector::StaticStruct();
+}
+
+bool IsBehaviorTreeAssetReferenceProperty(const FProperty* Property)
+{
+	if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(Property))
+	{
+		return ObjectProperty->PropertyClass && ObjectProperty->PropertyClass->IsChildOf(UBehaviorTree::StaticClass());
+	}
+	if (const FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(Property))
+	{
+		return SoftObjectProperty->PropertyClass && SoftObjectProperty->PropertyClass->IsChildOf(UBehaviorTree::StaticClass());
+	}
+	return false;
+}
+
+UClass* AllowedObjectBaseClass(const UBlackboardKeyType* KeyType)
+{
+	if (const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(KeyType))
+	{
+		return ObjectKey->BaseClass;
+	}
+	if (const UBlackboardKeyType_Class* ClassKey = Cast<UBlackboardKeyType_Class>(KeyType))
+	{
+		return ClassKey->BaseClass;
+	}
+	return nullptr;
+}
+
+bool IsLookupEntryCompatibleWithAllowedType(
+	const FAssetDocumentBlackboardKeyLookupEntry& LookupEntry,
+	const UBlackboardKeyType* AllowedType)
+{
+	if (!LookupEntry.KeyTypeClass || !AllowedType)
+	{
+		return false;
+	}
+
+	const UClass* AllowedKeyTypeClass = AllowedType->GetClass();
+	if (!LookupEntry.KeyTypeClass->IsChildOf(AllowedKeyTypeClass))
+	{
+		return false;
+	}
+
+	if (UClass* AllowedBaseClass = AllowedObjectBaseClass(AllowedType))
+	{
+		if (AllowedBaseClass != UObject::StaticClass())
+		{
+			return LookupEntry.BaseClass && LookupEntry.BaseClass->IsChildOf(AllowedBaseClass);
+		}
+	}
+	return true;
+}
+
+FAssetDocumentCapabilityResult ResolveCrossRegionBlackboard(
+	const TSharedRef<FJsonObject>& Body,
+	UBlackboardData*& OutBlackboard)
+{
+	OutBlackboard = nullptr;
+	const TSharedPtr<FJsonValue> BlackboardValue = Body->TryGetField(TEXT("Blackboard"));
+	if (!BlackboardValue.IsValid() || BlackboardValue->Type == EJson::Null)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FString BlackboardPath;
+	if (!TryReadAssetRefPath(BlackboardValue, BlackboardPath) || BlackboardPath.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	OutBlackboard = LoadObject<UBlackboardData>(nullptr, *NormalizeObjectPath(BlackboardPath));
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+bool TryReadSelectorKeyName(
+	const TSharedRef<FJsonObject>& SelectorJson,
+	const FString& SelectorPath,
+	FName& OutKeyName,
+	FString& OutKeyPath)
+{
+	OutKeyName = NAME_None;
+	OutKeyPath.Reset();
+
+	FString KeyName;
+	if (SelectorJson->TryGetStringField(TEXT("SelectedKeyName"), KeyName))
+	{
+		OutKeyName = FName(*KeyName);
+		OutKeyPath = JoinPath(SelectorPath, TEXT("SelectedKeyName"));
+		return true;
+	}
+	if (SelectorJson->TryGetStringField(TEXT("Key"), KeyName))
+	{
+		OutKeyName = FName(*KeyName);
+		OutKeyPath = JoinPath(SelectorPath, TEXT("Key"));
+		return true;
+	}
+	return false;
+}
+
+FAssetDocumentCapabilityResult MissingBlackboardForCrossRegion()
+{
+	return Failure(
+		TEXT("/Body/Blackboard"),
+		TEXT("MissingBehaviorTreeBlackboard"),
+		TEXT("Body.Blackboard is required when BehaviorTree properties reference blackboard keys or subtrees"));
+}
+
+FAssetDocumentCapabilityResult ValidateSelectorAgainstBlackboard(
+	const FBlackboardKeySelector* Selector,
+	const TSharedRef<FJsonObject>& SelectorJson,
+	const FString& SelectorPath,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	FName KeyName;
+	FString KeyPath;
+	if (!TryReadSelectorKeyName(SelectorJson, SelectorPath, KeyName, KeyPath) || KeyName.IsNone())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!Blackboard)
+	{
+		return MissingBlackboardForCrossRegion();
+	}
+
+	FAssetDocumentBlackboardKeyLookupEntry LookupEntry;
+	if (!FAssetDocumentBlackboardKeySchemaUtils::FindKeyInLookup(Lookup, KeyName, LookupEntry))
+	{
+		return Failure(
+			KeyPath,
+			TEXT("UnknownBlackboardKey"),
+			FString::Printf(TEXT("Blackboard key '%s' is not present on Body.Blackboard or its parent chain"), *KeyName.ToString()));
+	}
+
+	if (Selector && Selector->AllowedTypes.Num() > 0)
+	{
+		const bool bCompatible = Selector->AllowedTypes.ContainsByPredicate(
+			[&LookupEntry](const TObjectPtr<UBlackboardKeyType>& AllowedType)
+			{
+				return IsLookupEntryCompatibleWithAllowedType(LookupEntry, AllowedType);
+			});
+		if (!bCompatible)
+		{
+			return Failure(
+				KeyPath,
+				TEXT("IncompatibleBlackboardKeyType"),
+				FString::Printf(TEXT("Blackboard key '%s' is not compatible with the selector allowed key types"), *KeyName.ToString()));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateSubtreeBlackboardCompatibility(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path,
+	const UBlackboardData* ParentBlackboard)
+{
+	FString SubtreePath;
+	if (!TryReadAssetRefPath(Value, SubtreePath) || SubtreePath.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!ParentBlackboard)
+	{
+		return MissingBlackboardForCrossRegion();
+	}
+
+	const UBehaviorTree* Subtree = LoadObject<UBehaviorTree>(nullptr, *NormalizeObjectPath(SubtreePath));
+	if (!Subtree || !Subtree->BlackboardAsset)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (!Subtree->BlackboardAsset->IsRelatedTo(*ParentBlackboard))
+	{
+		return Failure(
+			Path,
+			TEXT("IncompatibleBehaviorTreeBlackboard"),
+			FString::Printf(TEXT("Subtree '%s' blackboard is not related to Body.Blackboard"), *SubtreePath));
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateAuthoredPropertyCrossRegion(
+	FProperty* Property,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& JsonValue,
+	const FString& Path,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup);
+
+FAssetDocumentCapabilityResult ValidateStructCrossRegion(
+	FStructProperty* StructProperty,
+	void* ValuePtr,
+	const TSharedRef<FJsonObject>& Json,
+	const FString& Path,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	if (IsBlackboardKeySelectorStruct(StructProperty))
+	{
+		return ValidateSelectorAgainstBlackboard(
+			static_cast<const FBlackboardKeySelector*>(ValuePtr),
+			Json,
+			Path,
+			Blackboard,
+			Lookup);
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Json->Values)
+	{
+		FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
+		if (!FieldProperty)
+		{
+			continue;
+		}
+		FAssetDocumentCapabilityResult Result = ValidateAuthoredPropertyCrossRegion(
+			FieldProperty,
+			FieldProperty->ContainerPtrToValuePtr<void>(ValuePtr),
+			Pair.Value,
+			JoinPath(Path, Pair.Key),
+			Blackboard,
+			Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateArrayCrossRegion(
+	FArrayProperty* ArrayProperty,
+	void* ValuePtr,
+	const TArray<TSharedPtr<FJsonValue>>& JsonArray,
+	const FString& Path,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
+	const int32 Count = FMath::Min(ArrayHelper.Num(), JsonArray.Num());
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		FAssetDocumentCapabilityResult Result = ValidateAuthoredPropertyCrossRegion(
+			ArrayProperty->Inner,
+			ArrayHelper.GetRawPtr(Index),
+			JsonArray[Index],
+			JoinPath(Path, Index),
+			Blackboard,
+			Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateAuthoredPropertyCrossRegion(
+	FProperty* Property,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& JsonValue,
+	const FString& Path,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	if (!Property || !ValuePtr || !JsonValue.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		const TSharedPtr<FJsonObject>* Object = nullptr;
+		return JsonValue->TryGetObject(Object) && Object && Object->IsValid()
+			? ValidateStructCrossRegion(StructProperty, ValuePtr, (*Object).ToSharedRef(), Path, Blackboard, Lookup)
+			: FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (IsBehaviorTreeAssetReferenceProperty(Property))
+	{
+		return ValidateSubtreeBlackboardCompatibility(JsonValue, Path, Blackboard);
+	}
+
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		return JsonValue->TryGetArray(Array) && Array
+			? ValidateArrayCrossRegion(ArrayProperty, ValuePtr, *Array, Path, Blackboard, Lookup)
+			: FAssetDocumentCapabilityResult::Success();
+	}
+
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
+		if (!JsonValue->TryGetArray(Array) || !Array)
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+
+		FScriptSetHelper SetHelper(SetProperty, ValuePtr);
+		const int32 Count = FMath::Min(SetHelper.Num(), Array->Num());
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (!SetHelper.IsValidIndex(Index))
+			{
+				continue;
+			}
+			FAssetDocumentCapabilityResult Result = ValidateAuthoredPropertyCrossRegion(
+				SetProperty->ElementProp,
+				SetHelper.GetElementPtr(Index),
+				(*Array)[Index],
+				JoinPath(Path, Index),
+				Blackboard,
+				Lookup);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidatePropertiesCrossRegion(
+	UObject* PreviewNode,
+	const TSharedRef<FJsonObject>& Properties,
+	const FString& PropertiesPath,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	if (!PreviewNode)
+	{
+		return Failure(PropertiesPath, TEXT("InvalidBehaviorTreeNodeClass"), TEXT("Failed to instantiate BehaviorTree node"));
+	}
+
+	const FAssetDocumentCapabilityResult ApplyResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(PreviewNode, Properties, PropertiesPath);
+	if (!ApplyResult.bSuccess)
+	{
+		return ApplyResult;
+	}
+
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
+	{
+		FProperty* Property = FindFProperty<FProperty>(PreviewNode->GetClass(), *Pair.Key);
+		if (!Property)
+		{
+			continue;
+		}
+
+		FAssetDocumentCapabilityResult Result = ValidateAuthoredPropertyCrossRegion(
+			Property,
+			Property->ContainerPtrToValuePtr<void>(PreviewNode),
+			Pair.Value,
+			JoinPath(PropertiesPath, Pair.Key),
+			Blackboard,
+			Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateAttachmentCrossRegion(
+	const FBehaviorTreeAttachmentSpec& Spec,
+	UClass* RequiredBaseClass,
+	UObject* Outer,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	UBTNode* PreviewNode = NewObject<UBTNode>(Outer, Spec.NodeClass, NAME_None, RF_Transactional);
+	if (!PreviewNode || !PreviewNode->GetClass()->IsChildOf(RequiredBaseClass))
+	{
+		return Failure(SemanticNodePath(Spec.Id), TEXT("InvalidBehaviorTreeNodeClass"), TEXT("Failed to instantiate BehaviorTree attachment node"));
+	}
+	return ValidatePropertiesCrossRegion(PreviewNode, Spec.Properties.ToSharedRef(), SemanticPropertiesPath(Spec.Id), Blackboard, Lookup);
+}
+
+FAssetDocumentCapabilityResult ValidateNodeCrossRegion(
+	const FBehaviorTreeNodeSpec& Spec,
+	UObject* Outer,
+	const UBlackboardData* Blackboard,
+	const TMap<FName, FAssetDocumentBlackboardKeyLookupEntry>& Lookup)
+{
+	UBTNode* PreviewNode = NewObject<UBTNode>(Outer, Spec.NodeClass, NAME_None, RF_Transactional);
+	FAssetDocumentCapabilityResult Result =
+		ValidatePropertiesCrossRegion(PreviewNode, Spec.Properties.ToSharedRef(), SemanticPropertiesPath(Spec.Id), Blackboard, Lookup);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	for (const FBehaviorTreeAttachmentSpec& Service : Spec.Services)
+	{
+		Result = ValidateAttachmentCrossRegion(Service, UBTService::StaticClass(), Outer, Blackboard, Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	for (const TSharedPtr<FBehaviorTreeChildSpec>& Child : Spec.Children)
+	{
+		if (!Child.IsValid())
+		{
+			continue;
+		}
+		for (const FBehaviorTreeAttachmentSpec& Decorator : Child->Decorators)
+		{
+			Result = ValidateAttachmentCrossRegion(Decorator, UBTDecorator::StaticClass(), Outer, Blackboard, Lookup);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+
+		Result = ValidateNodeCrossRegion(Child->Child, Outer, Blackboard, Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateSpecCrossRegion(
+	const FBehaviorTreeSpec& Spec,
+	UObject* Outer,
+	const UBlackboardData* Blackboard)
+{
+	if (!Spec.bHasSemanticRoot)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TMap<FName, FAssetDocumentBlackboardKeyLookupEntry> Lookup;
+	if (Blackboard)
+	{
+		FAssetDocumentCapabilityResult LookupResult = FAssetDocumentBlackboardKeySchemaUtils::BuildLookup(Blackboard, Lookup);
+		if (!LookupResult.bSuccess)
+		{
+			return LookupResult;
+		}
+	}
+
+	for (const FBehaviorTreeAttachmentSpec& RootDecorator : Spec.RootDecorators)
+	{
+		const FAssetDocumentCapabilityResult Result =
+			ValidateAttachmentCrossRegion(RootDecorator, UBTDecorator::StaticClass(), Outer, Blackboard, Lookup);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	return ValidateNodeCrossRegion(Spec.Root, Outer, Blackboard, Lookup);
+}
+
 FAssetDocumentCapabilityResult ExtractProperties(UBTNode* Node, TSharedRef<FJsonObject>& OutProperties, const FString& Path)
 {
 	return FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(Node, OutProperties, JoinPath(Path, PropertiesField));
@@ -1564,6 +2098,45 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateT
 
 	UBehaviorTree* PreviewTree = NewObject<UBehaviorTree>(GetTransientPackage());
 	return ValidateSpec(Spec, PreviewTree);
+}
+
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateBodyCrossRegion(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonObject>& Body)
+{
+	const TSharedPtr<FJsonValue> TreeValue = Body->TryGetField(TEXT("Tree"));
+	if (!TreeValue.IsValid() || TreeValue->Type != EJson::Object || !TreeValue->AsObject().IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No BehaviorTree semantic tree cross-region validation required"));
+	}
+
+	FAssetDocumentRegionContext TreeContext;
+	TreeContext.Asset = Context.Asset;
+	TreeContext.AssetClass = Context.AssetClass;
+	TreeContext.TargetAssetPath = Context.TargetAssetPath;
+	TreeContext.SourceDocumentPath = Context.SourceDocumentPath;
+	TreeContext.Definitions = Context.Definitions;
+	TreeContext.Result = Context.Result;
+	TreeContext.bIsDryRun = Context.bIsDryRun;
+	TreeContext.BodyPath = TEXT("Body.Tree");
+	TreeContext.JsonPointer = TEXT("/Body/Tree");
+
+	FBehaviorTreeSpec Spec;
+	FAssetDocumentCapabilityResult Result = ParseTreeSpec(TreeContext, TreeValue->AsObject().ToSharedRef(), Spec);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UBlackboardData* Blackboard = nullptr;
+	Result = ResolveCrossRegionBlackboard(Body, Blackboard);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UObject* Outer = Context.Asset ? Context.Asset : GetTransientPackage();
+	return ValidateSpecCrossRegion(Spec, Outer, Blackboard);
 }
 
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree(

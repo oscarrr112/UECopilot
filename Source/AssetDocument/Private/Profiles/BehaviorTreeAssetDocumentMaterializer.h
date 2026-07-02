@@ -14,6 +14,10 @@ public:
 		const FAssetDocumentRegionContext& Context,
 		const TSharedRef<FJsonObject>& Tree);
 
+	static FAssetDocumentCapabilityResult ValidateBodyCrossRegion(
+		const FAssetDocumentCapabilityContext& Context,
+		const TSharedRef<FJsonObject>& Body);
+
 	static FAssetDocumentCapabilityResult ApplyTree(
 		FAssetDocumentRegionContext& Context,
 		const TSharedRef<FJsonObject>& Tree,
