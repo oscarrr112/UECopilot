@@ -23,8 +23,11 @@
 #include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
 #include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
 #include "BehaviorTree/Tasks/BTTask_WaitBlackboardTime.h"
+#include "BehaviorTreeGraph.h"
+#include "BehaviorTreeGraphNode.h"
 #include "Animation/NodeMappingContainer.h"
 #include "BlueprintEditorSettings.h"
+#include "EdGraphNode_Comment.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "Sections/MovieSceneCVarSection.h"
@@ -211,6 +214,61 @@ bool DiffPayloadHasAnyEntry(const TSharedPtr<FJsonObject>& Payload, const FStrin
 		|| DiffPayloadHasEntry(Payload, TEXT("removed"), ExpectedPath)
 		|| DiffPayloadHasEntry(Payload, TEXT("unchanged"), ExpectedPath);
 }
+
+bool DiffPayloadBucketHasPathPrefix(const TSharedPtr<FJsonObject>& Payload, const FString& BucketName, const FString& ExpectedPrefix)
+{
+	if (!Payload.IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+	if (!Payload->TryGetArrayField(BucketName, Entries) || !Entries)
+	{
+		return false;
+	}
+
+	return Entries->ContainsByPredicate([&ExpectedPrefix](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		return Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path.StartsWith(ExpectedPrefix);
+	});
+}
+
+bool DiffPayloadHasChangedPathPrefix(const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedPrefix)
+{
+	return DiffPayloadBucketHasPathPrefix(Payload, TEXT("changed"), ExpectedPrefix)
+		|| DiffPayloadBucketHasPathPrefix(Payload, TEXT("added"), ExpectedPrefix)
+		|| DiffPayloadBucketHasPathPrefix(Payload, TEXT("removed"), ExpectedPrefix);
+}
+
+void AddDiffPathsWithPrefix(FAutomationTestBase& Test, const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedPrefix)
+{
+	if (!Payload.IsValid())
+	{
+		return;
+	}
+
+	for (const FString& BucketName : {FString(TEXT("changed")), FString(TEXT("added")), FString(TEXT("removed"))})
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+		if (!Payload->TryGetArrayField(BucketName, Entries) || !Entries)
+		{
+			continue;
+		}
+		for (const TSharedPtr<FJsonValue>& EntryValue : *Entries)
+		{
+			const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+			FString Path;
+			if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path.StartsWith(ExpectedPrefix))
+			{
+				Test.AddError(FString::Printf(TEXT("Unexpected %s diff at %s"), *BucketName, *Path));
+			}
+		}
+	}
+}
+
 
 void SwapArrayEntries(TSharedPtr<FJsonObject> Object, const FString& FieldName, int32 FirstIndex, int32 SecondIndex)
 {
@@ -399,6 +457,55 @@ TSharedPtr<FJsonObject> MakeMoveToTreeWithKeys(const TArray<FString>& KeyNames)
 	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
 	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 	return Tree;
+}
+
+TSharedPtr<FJsonObject> MakePositionObject(double X, double Y)
+{
+	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), X);
+	Position->SetNumberField(TEXT("Y"), Y);
+	return Position;
+}
+
+TSharedPtr<FJsonObject> MakeEditorLayoutNode(const FString& NodeId, double X, double Y)
+{
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("NodeId"), NodeId);
+	Node->SetObjectField(TEXT("Position"), MakePositionObject(X, Y));
+	return Node;
+}
+
+TSharedPtr<FJsonObject> MakeEditorLayoutComment(
+	const FString& Id,
+	const FString& Text,
+	double X,
+	double Y,
+	double Width,
+	double Height)
+{
+	TSharedPtr<FJsonObject> Color = MakeShared<FJsonObject>();
+	Color->SetNumberField(TEXT("R"), 0.1);
+	Color->SetNumberField(TEXT("G"), 0.2);
+	Color->SetNumberField(TEXT("B"), 0.3);
+	Color->SetNumberField(TEXT("A"), 0.4);
+
+	TSharedPtr<FJsonObject> Comment = MakeShared<FJsonObject>();
+	Comment->SetStringField(TEXT("Id"), Id);
+	Comment->SetStringField(TEXT("Text"), Text);
+	Comment->SetObjectField(TEXT("Position"), MakePositionObject(X, Y));
+	Comment->SetObjectField(TEXT("Size"), MakePositionObject(Width, Height));
+	Comment->SetObjectField(TEXT("Color"), Color);
+	return Comment;
+}
+
+TSharedPtr<FJsonObject> MakeEditorLayout(
+	const TArray<TSharedPtr<FJsonValue>>& Nodes,
+	const TArray<TSharedPtr<FJsonValue>>& Comments = TArray<TSharedPtr<FJsonValue>>())
+{
+	TSharedPtr<FJsonObject> Layout = MakeShared<FJsonObject>();
+	Layout->SetArrayField(TEXT("Nodes"), Nodes);
+	Layout->SetArrayField(TEXT("Comments"), Comments);
+	return Layout;
 }
 
 TSharedPtr<FJsonObject> MakeRunBehaviorTree(const FString& SubtreeTarget)
@@ -1649,6 +1756,187 @@ bool FAssetDocumentBehaviorTreeExtractsUniqueIdsForDuplicateDisplayNamesTest::Ru
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(MakeBehaviorTreeDocument(Target, DiffBody)));
 	TestTrue(TEXT("diff with extracted duplicate-display tree succeeds"), DiffResult.IsSuccess());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayout",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_EditorLayout");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	const FString CommentId = TEXT("11111111-2222-3333-4444-555555555555");
+	TSharedPtr<FJsonObject> Layout = MakeEditorLayout(
+		{
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+		},
+		{
+			MakeObjectValue(MakeEditorLayoutComment(CommentId, TEXT("Primary movement branch"), -40, 80, 640, 220)),
+		});
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		Layout);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, Body)));
+	TestTrue(TEXT("semantic tree and editor layout apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	TestNotNull(TEXT("BTGraph exists after layout apply"), Graph);
+	if (!Graph)
+	{
+		return false;
+	}
+
+	bool bFoundRoot = false;
+	bool bFoundMoveTo = false;
+	bool bFoundComment = false;
+	for (UEdGraphNode* GraphNode : Graph->Nodes)
+	{
+		if (UBehaviorTreeGraphNode* BTGraphNode = Cast<UBehaviorTreeGraphNode>(GraphNode))
+		{
+			const UBTNode* NodeInstance = Cast<UBTNode>(BTGraphNode->NodeInstance);
+			if (NodeInstance && NodeInstance->NodeName == TEXT("RootSelector"))
+			{
+				bFoundRoot = true;
+				TestEqual(TEXT("root X applied to graph node"), BTGraphNode->NodePosX, 100);
+				TestEqual(TEXT("root Y applied to graph node"), BTGraphNode->NodePosY, 200);
+			}
+			if (NodeInstance && NodeInstance->NodeName == TEXT("MoveToTarget"))
+			{
+				bFoundMoveTo = true;
+				TestEqual(TEXT("MoveTo X applied to graph node"), BTGraphNode->NodePosX, 300);
+				TestEqual(TEXT("MoveTo Y applied to graph node"), BTGraphNode->NodePosY, 520);
+			}
+		}
+		else if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(GraphNode))
+		{
+			bFoundComment = CommentNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens).Equals(CommentId, ESearchCase::IgnoreCase);
+			if (bFoundComment)
+			{
+				TestEqual(TEXT("comment text applied"), CommentNode->NodeComment, FString(TEXT("Primary movement branch")));
+				TestEqual(TEXT("comment X applied"), CommentNode->NodePosX, -40);
+				TestEqual(TEXT("comment Y applied"), CommentNode->NodePosY, 80);
+				TestEqual(TEXT("comment width applied"), CommentNode->NodeWidth, 640);
+				TestEqual(TEXT("comment height applied"), CommentNode->NodeHeight, 220);
+			}
+		}
+	}
+	TestTrue(TEXT("RootSelector graph node found"), bFoundRoot);
+	TestTrue(TEXT("MoveToTarget graph node found"), bFoundMoveTo);
+	TestTrue(TEXT("layout comment graph node found"), bFoundComment);
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("editor layout extract succeeds"), ExtractResult.IsSuccess());
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
+	TestTrue(TEXT("extract payload contains Body.EditorLayout"), ExtractResult.Payload.IsValid()
+		&& ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody)
+		&& ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout));
+	if (ExtractedLayout && ExtractedLayout->IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedNodes = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedComments = nullptr;
+		TestTrue(TEXT("layout nodes extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Nodes"), ExtractedNodes) && ExtractedNodes && ExtractedNodes->Num() >= 2);
+		TestTrue(TEXT("layout comments extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Comments"), ExtractedComments) && ExtractedComments && ExtractedComments->Num() == 1);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutRejectsDanglingNodeTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutRejectsDanglingNode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutRejectsDanglingNodeTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_DanglingLayout");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		MakeEditorLayout({MakeObjectValue(MakeEditorLayoutNode(TEXT("MissingNode"), 10, 20))}));
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, Body)));
+	TestFalse(TEXT("dangling layout node apply is rejected"), ApplyResult.IsSuccess());
+	TestTrue(TEXT("dangling layout diagnostic is exact"), ResultHasDiagnostic(ApplyResult, TEXT("UnknownEditorLayoutNode"), TEXT("/Body/EditorLayout/Nodes/MissingNode")));
+	TestNull(TEXT("failed layout preflight does not create target BehaviorTree"), LoadBehaviorTreeForTarget(Target));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutOnlyDiffTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutOnlyDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutOnlyDiffTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_LayoutOnlyDiff");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> AppliedTree = MakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> AppliedLayout = MakeEditorLayout(
+		{
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+		});
+	TSharedPtr<FJsonObject> AppliedBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		AppliedTree,
+		AppliedLayout);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, AppliedBody)));
+	TestTrue(TEXT("layout diff fixture apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DesiredTree = MakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> DesiredLayout = MakeEditorLayout(
+		{
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 180, 260)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+		});
+	TSharedPtr<FJsonObject> DesiredBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		DesiredTree,
+		DesiredLayout);
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(MakeBehaviorTreeDocument(Target, DesiredBody)));
+	TestTrue(TEXT("layout-only diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("layout node path changed"), DiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/EditorLayout/Nodes/RootSelector")));
+	if (DiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")))
+	{
+		AddDiffPathsWithPrefix(*this, DiffResult.Payload, TEXT("/Body/Tree"));
+	}
+	TestFalse(TEXT("layout-only diff does not emit changed semantic tree entries"), DiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
 	return true;
 }
 

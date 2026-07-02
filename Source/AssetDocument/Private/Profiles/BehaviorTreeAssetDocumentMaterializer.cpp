@@ -3,10 +3,17 @@
 #include "Profiles/BehaviorTreeAssetDocumentMaterializer.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "Regions/AssetDocumentEditorLayoutRegionAdapter.h"
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
 #include "Regions/AssetDocumentBlackboardKeySchemaUtils.h"
 #include "Utils/ClassFinderUtils.h"
 
+#include "BehaviorTreeGraph.h"
+#include "BehaviorTreeGraphNode.h"
+#include "BehaviorTreeGraphNode_Root.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraphSchema_BehaviorTree.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BTCompositeNode.h"
 #include "BehaviorTree/BTDecorator.h"
@@ -1496,6 +1503,150 @@ FAssetDocumentCapabilityResult ValidateSpecCrossRegion(
 	return ValidateNodeCrossRegion(Spec.Root, Outer, Blackboard, Lookup);
 }
 
+void CollectAttachmentIds(const FBehaviorTreeAttachmentSpec& Spec, TSet<FString>& OutIds)
+{
+	if (!Spec.Id.IsEmpty())
+	{
+		OutIds.Add(Spec.Id);
+	}
+}
+
+void CollectNodeIds(const FBehaviorTreeNodeSpec& Spec, TSet<FString>& OutIds)
+{
+	if (!Spec.Id.IsEmpty())
+	{
+		OutIds.Add(Spec.Id);
+	}
+
+	for (const FBehaviorTreeAttachmentSpec& Service : Spec.Services)
+	{
+		CollectAttachmentIds(Service, OutIds);
+	}
+
+	for (const TSharedPtr<FBehaviorTreeChildSpec>& Child : Spec.Children)
+	{
+		if (!Child.IsValid())
+		{
+			continue;
+		}
+		for (const FBehaviorTreeAttachmentSpec& Decorator : Child->Decorators)
+		{
+			CollectAttachmentIds(Decorator, OutIds);
+		}
+		CollectNodeIds(Child->Child, OutIds);
+	}
+}
+
+void CollectSpecIds(const FBehaviorTreeSpec& Spec, TSet<FString>& OutIds)
+{
+	OutIds.Reset();
+	if (!Spec.bHasSemanticRoot)
+	{
+		return;
+	}
+
+	for (const FBehaviorTreeAttachmentSpec& RootDecorator : Spec.RootDecorators)
+	{
+		CollectAttachmentIds(RootDecorator, OutIds);
+	}
+	CollectNodeIds(Spec.Root, OutIds);
+}
+
+bool GraphHasRootNode(const UBehaviorTreeGraph* Graph)
+{
+	if (!Graph)
+	{
+		return false;
+	}
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Cast<UBehaviorTreeGraphNode_Root>(Node))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void CreateDefaultBehaviorTreeGraphNodes(UBehaviorTreeGraph* Graph)
+{
+	if (!Graph)
+	{
+		return;
+	}
+
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	if (!Schema)
+	{
+		Schema = GetDefault<UEdGraphSchema_BehaviorTree>();
+	}
+	if (Schema)
+	{
+		Schema->CreateDefaultNodesForGraph(*Graph);
+	}
+}
+
+FAssetDocumentCapabilityResult RebuildBehaviorTreeEditorGraph(
+	UBehaviorTree* BehaviorTree,
+	bool bForceRebuild,
+	bool& bOutChanged)
+{
+	bOutChanged = false;
+	if (!BehaviorTree)
+	{
+		return Failure(TEXT("/Body/EditorLayout"), TEXT("UnsupportedAsset"), TEXT("BehaviorTree editor graph rebuild requires UBehaviorTree asset"));
+	}
+
+#if WITH_EDITOR
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	if (!Graph)
+	{
+		BehaviorTree->BTGraph = NewObject<UBehaviorTreeGraph>(
+			BehaviorTree,
+			TEXT("BehaviorTree"),
+			RF_Transactional);
+		Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+		bOutChanged = true;
+	}
+
+	if (!Graph)
+	{
+		return Failure(TEXT("/Body/EditorLayout"), TEXT("MissingBehaviorTreeEditorGraph"), TEXT("Failed to create UBehaviorTreeGraph"));
+	}
+
+	Graph->Modify();
+	Graph->LockUpdates();
+	if (bForceRebuild)
+	{
+		Graph->Nodes.Reset();
+		CreateDefaultBehaviorTreeGraphNodes(Graph);
+		bOutChanged = true;
+	}
+	else if (!GraphHasRootNode(Graph))
+	{
+		CreateDefaultBehaviorTreeGraphNodes(Graph);
+		bOutChanged = true;
+	}
+
+	if (GraphHasRootNode(Graph))
+	{
+		Graph->SpawnMissingNodes();
+		Graph->UpdatePinConnectionTypes();
+		Graph->Initialize();
+	}
+	Graph->UnlockUpdates();
+
+	if (bOutChanged)
+	{
+		Graph->MarkPackageDirty();
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Rebuilt BehaviorTree editor graph"));
+#else
+	return Failure(TEXT("/Body/EditorLayout"), TEXT("EditorOnlyRegionUnavailable"), TEXT("BehaviorTree editor layout requires WITH_EDITOR"));
+#endif
+}
+
 FAssetDocumentCapabilityResult ExtractProperties(UBTNode* Node, TSharedRef<FJsonObject>& OutProperties, const FString& Path)
 {
 	return FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(Node, OutProperties, JoinPath(Path, PropertiesField));
@@ -1683,6 +1834,116 @@ FString IdForNode(const UBTNode* Node, const FBehaviorTreeExtractContext& Contex
 	return Id ? *Id : StableExtractIdForNode(Node, {});
 }
 
+void AddGraphNodeMapping(
+	UBehaviorTreeGraphNode* GraphNode,
+	const FBehaviorTreeExtractContext& ExtractContext,
+	TMap<FString, UEdGraphNode*>& OutNodesById)
+{
+	if (!GraphNode)
+	{
+		return;
+	}
+
+	if (const UBTNode* NodeInstance = Cast<UBTNode>(GraphNode->NodeInstance))
+	{
+		const FString Id = IdForNode(NodeInstance, ExtractContext);
+		if (!Id.IsEmpty())
+		{
+			OutNodesById.FindOrAdd(Id, GraphNode);
+		}
+	}
+
+	for (UBehaviorTreeGraphNode* Decorator : GraphNode->Decorators)
+	{
+		AddGraphNodeMapping(Decorator, ExtractContext, OutNodesById);
+	}
+	for (UBehaviorTreeGraphNode* Service : GraphNode->Services)
+	{
+		AddGraphNodeMapping(Service, ExtractContext, OutNodesById);
+	}
+}
+
+void CollectSemanticNodesById(const UBehaviorTree* BehaviorTree, TMap<FString, UBTNode*>& OutNodesById)
+{
+	OutNodesById.Reset();
+	if (!BehaviorTree)
+	{
+		return;
+	}
+
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
+	for (const TPair<const UBTNode*, FString>& Entry : ExtractContext.IdsByNode)
+	{
+		if (Entry.Key && !Entry.Value.IsEmpty())
+		{
+			OutNodesById.Add(Entry.Value, const_cast<UBTNode*>(Entry.Key));
+		}
+	}
+}
+
+void CollectGraphNodeIds(
+	UBehaviorTreeGraphNode* GraphNode,
+	const FBehaviorTreeExtractContext& ExtractContext,
+	TMap<UBehaviorTreeGraphNode*, FString>& OutGraphNodeIds)
+{
+	if (!GraphNode)
+	{
+		return;
+	}
+
+	if (const UBTNode* NodeInstance = Cast<UBTNode>(GraphNode->NodeInstance))
+	{
+		const FString Id = IdForNode(NodeInstance, ExtractContext);
+		if (!Id.IsEmpty())
+		{
+			OutGraphNodeIds.Add(GraphNode, Id);
+		}
+	}
+
+	for (UBehaviorTreeGraphNode* Decorator : GraphNode->Decorators)
+	{
+		CollectGraphNodeIds(Decorator, ExtractContext, OutGraphNodeIds);
+	}
+	for (UBehaviorTreeGraphNode* Service : GraphNode->Services)
+	{
+		CollectGraphNodeIds(Service, ExtractContext, OutGraphNodeIds);
+	}
+}
+
+void CollectGraphNodeIds(
+	UBehaviorTreeGraph* Graph,
+	const UBehaviorTree* BehaviorTree,
+	TMap<UBehaviorTreeGraphNode*, FString>& OutGraphNodeIds)
+{
+	OutGraphNodeIds.Reset();
+	if (!Graph || !BehaviorTree)
+	{
+		return;
+	}
+
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
+	for (UEdGraphNode* GraphNode : Graph->Nodes)
+	{
+		CollectGraphNodeIds(Cast<UBehaviorTreeGraphNode>(GraphNode), ExtractContext, OutGraphNodeIds);
+	}
+}
+
+void RestoreGraphNodeInstances(
+	const TMap<UBehaviorTreeGraphNode*, FString>& GraphNodeIds,
+	const TMap<FString, UBTNode*>& SemanticNodesById)
+{
+	for (const TPair<UBehaviorTreeGraphNode*, FString>& Entry : GraphNodeIds)
+	{
+		if (Entry.Key)
+		{
+			if (UBTNode* const* Node = SemanticNodesById.Find(Entry.Value))
+			{
+				Entry.Key->NodeInstance = *Node;
+			}
+		}
+	}
+}
+
 FAssetDocumentCapabilityResult ExtractAttachment(
 	UBTNode* Node,
 	const FString& Path,
@@ -1833,6 +2094,10 @@ FAssetDocumentCapabilityResult BuildCanonicalDesiredTree(
 	}
 
 	UBehaviorTree* PreviewTree = NewObject<UBehaviorTree>(GetTransientPackage());
+	if (const UBehaviorTree* CurrentTree = Cast<UBehaviorTree>(Context.Asset))
+	{
+		PreviewTree->BlackboardAsset = CurrentTree->BlackboardAsset;
+	}
 	Result = ValidateSpec(Spec, PreviewTree);
 	if (!Result.bSuccess)
 	{
@@ -2089,10 +2354,7 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateB
 	const TSharedRef<FJsonObject>& Body)
 {
 	const TSharedPtr<FJsonValue> TreeValue = Body->TryGetField(TEXT("Tree"));
-	if (!TreeValue.IsValid() || TreeValue->Type != EJson::Object || !TreeValue->AsObject().IsValid())
-	{
-		return FAssetDocumentCapabilityResult::Success(TEXT("No BehaviorTree semantic tree cross-region validation required"));
-	}
+	const bool bHasTree = TreeValue.IsValid() && TreeValue->Type == EJson::Object && TreeValue->AsObject().IsValid();
 
 	FAssetDocumentRegionContext TreeContext;
 	TreeContext.Asset = Context.Asset;
@@ -2105,22 +2367,53 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateB
 	TreeContext.BodyPath = TEXT("Body.Tree");
 	TreeContext.JsonPointer = TEXT("/Body/Tree");
 
-	FBehaviorTreeSpec Spec;
-	FAssetDocumentCapabilityResult Result = ParseTreeSpec(TreeContext, TreeValue->AsObject().ToSharedRef(), Spec);
-	if (!Result.bSuccess)
+	TSet<FString> SemanticIds;
+	if (bHasTree)
 	{
-		return Result;
+		FBehaviorTreeSpec Spec;
+		FAssetDocumentCapabilityResult Result = ParseTreeSpec(TreeContext, TreeValue->AsObject().ToSharedRef(), Spec);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		UBlackboardData* Blackboard = nullptr;
+		Result = ResolveCrossRegionBlackboard(Body, Blackboard);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		UObject* Outer = Context.Asset ? Context.Asset : GetTransientPackage();
+		Result = ValidateSpecCrossRegion(Spec, Outer, Blackboard);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		CollectSpecIds(Spec, SemanticIds);
+	}
+	else
+	{
+		FAssetDocumentRegionContext AssetContext = TreeContext;
+		AssetContext.BodyPath = TEXT("Body.EditorLayout");
+		AssetContext.JsonPointer = TEXT("/Body/EditorLayout");
+		FAssetDocumentCapabilityResult Result = CollectSemanticNodeIds(AssetContext, SemanticIds);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
 	}
 
-	UBlackboardData* Blackboard = nullptr;
-	Result = ResolveCrossRegionBlackboard(Body, Blackboard);
-	if (!Result.bSuccess)
+	const TSharedPtr<FJsonValue> EditorLayoutValue = Body->TryGetField(TEXT("EditorLayout"));
+	if (EditorLayoutValue.IsValid())
 	{
-		return Result;
+		return FAssetDocumentEditorLayoutRegionAdapter::ValidateSemanticReferences(
+			EditorLayoutValue,
+			TEXT("/Body/EditorLayout"),
+			SemanticIds);
 	}
 
-	UObject* Outer = Context.Asset ? Context.Asset : GetTransientPackage();
-	return ValidateSpecCrossRegion(Spec, Outer, Blackboard);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BehaviorTree cross-region body"));
 }
 
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree(
@@ -2143,6 +2436,7 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	}
 
 	UBehaviorTree* PreviewTree = NewObject<UBehaviorTree>(GetTransientPackage());
+	PreviewTree->BlackboardAsset = BehaviorTree->BlackboardAsset;
 	Result = ValidateSpec(Spec, PreviewTree);
 	if (!Result.bSuccess)
 	{
@@ -2179,6 +2473,27 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	{
 		return Result;
 	}
+	bool bGraphChanged = false;
+	Result = RebuildEditorGraph(Context, true, bGraphChanged);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph))
+	{
+		TMap<UBehaviorTreeGraphNode*, FString> GraphNodeIds;
+		CollectGraphNodeIds(Graph, BehaviorTree, GraphNodeIds);
+		Result = MaterializeTree(BehaviorTree, Spec);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+
+		TMap<FString, UBTNode*> SemanticNodesById;
+		CollectSemanticNodesById(BehaviorTree, SemanticNodesById);
+		RestoreGraphNodeInstances(GraphNodeIds, SemanticNodesById);
+	}
+	bOutChanged = bOutChanged || bGraphChanged;
 	BehaviorTree->MarkPackageDirty();
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied BehaviorTree semantic tree"));
 }
@@ -2217,4 +2532,122 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::DiffTree(
 	CollectTreeDiffValues(Context, DesiredCanonicalTree, DesiredValues);
 	AddMapDiffs(CurrentValues, DesiredValues, OutDiffEntries);
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed BehaviorTree semantic tree"));
+}
+
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectSemanticNodeIdsFromTree(
+	const FAssetDocumentRegionContext& Context,
+	const TSharedRef<FJsonObject>& Tree,
+	TSet<FString>& OutIds)
+{
+	FBehaviorTreeSpec Spec;
+	FAssetDocumentCapabilityResult Result = ParseTreeSpec(Context, Tree, Spec);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	CollectSpecIds(Spec, OutIds);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree semantic ids from authored tree"));
+}
+
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectSemanticNodeIds(
+	const FAssetDocumentRegionContext& Context,
+	TSet<FString>& OutIds)
+{
+	OutIds.Reset();
+	const UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	if (!BehaviorTree)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No BehaviorTree semantic ids to collect"));
+	}
+
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
+	for (const TPair<const UBTNode*, FString>& Entry : ExtractContext.IdsByNode)
+	{
+		if (!Entry.Value.IsEmpty())
+		{
+			OutIds.Add(Entry.Value);
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree semantic ids from asset"));
+}
+
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::RebuildEditorGraph(
+	FAssetDocumentRegionContext& Context,
+	bool bForceRebuild,
+	bool& bOutChanged)
+{
+	UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	FBehaviorTreeSpec SavedSpec;
+	bool bHasSavedSpec = false;
+	if (BehaviorTree)
+	{
+		TSharedRef<FJsonObject> SavedTree = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult SaveResult = ExtractTreeObject(BehaviorTree, SavedTree);
+		if (!SaveResult.bSuccess)
+		{
+			return SaveResult;
+		}
+
+		FAssetDocumentRegionContext TreeContext = Context;
+		TreeContext.BodyPath = TEXT("Body.Tree");
+		TreeContext.JsonPointer = TEXT("/Body/Tree");
+		SaveResult = ParseTreeSpec(TreeContext, SavedTree, SavedSpec);
+		if (!SaveResult.bSuccess)
+		{
+			return SaveResult;
+		}
+		bHasSavedSpec = true;
+	}
+
+	FAssetDocumentCapabilityResult Result = RebuildBehaviorTreeEditorGraph(BehaviorTree, bForceRebuild, bOutChanged);
+	if (!Result.bSuccess || !BehaviorTree || !bHasSavedSpec)
+	{
+		return Result;
+	}
+
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	TMap<UBehaviorTreeGraphNode*, FString> GraphNodeIds;
+	CollectGraphNodeIds(Graph, BehaviorTree, GraphNodeIds);
+
+	Result = MaterializeTree(BehaviorTree, SavedSpec);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	TMap<FString, UBTNode*> SemanticNodesById;
+	CollectSemanticNodesById(BehaviorTree, SemanticNodesById);
+	RestoreGraphNodeInstances(GraphNodeIds, SemanticNodesById);
+	return FAssetDocumentCapabilityResult::Success(TEXT("Rebuilt BehaviorTree editor graph without changing semantic tree"));
+}
+
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectEditorGraphNodes(
+	const FAssetDocumentRegionContext& Context,
+	UEdGraph*& OutGraph,
+	TMap<FString, UEdGraphNode*>& OutNodesById)
+{
+	OutGraph = nullptr;
+	OutNodesById.Reset();
+
+	const UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	if (!BehaviorTree)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No BehaviorTree editor graph to collect"));
+	}
+
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	if (!Graph)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("BehaviorTree has no editor graph"));
+	}
+
+	OutGraph = Graph;
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
+	for (UEdGraphNode* GraphNode : Graph->Nodes)
+	{
+		AddGraphNodeMapping(Cast<UBehaviorTreeGraphNode>(GraphNode), ExtractContext, OutNodesById);
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree editor graph nodes"));
 }

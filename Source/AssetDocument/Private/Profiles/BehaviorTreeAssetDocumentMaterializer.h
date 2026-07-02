@@ -31,4 +31,23 @@ public:
 		const FAssetDocumentRegionContext& Context,
 		const TSharedRef<FJsonObject>& DesiredTree,
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries);
+
+	static FAssetDocumentCapabilityResult CollectSemanticNodeIdsFromTree(
+		const FAssetDocumentRegionContext& Context,
+		const TSharedRef<FJsonObject>& Tree,
+		TSet<FString>& OutIds);
+
+	static FAssetDocumentCapabilityResult CollectSemanticNodeIds(
+		const FAssetDocumentRegionContext& Context,
+		TSet<FString>& OutIds);
+
+	static FAssetDocumentCapabilityResult RebuildEditorGraph(
+		FAssetDocumentRegionContext& Context,
+		bool bForceRebuild,
+		bool& bOutChanged);
+
+	static FAssetDocumentCapabilityResult CollectEditorGraphNodes(
+		const FAssetDocumentRegionContext& Context,
+		class UEdGraph*& OutGraph,
+		TMap<FString, class UEdGraphNode*>& OutNodesById);
 };

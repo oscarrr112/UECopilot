@@ -6,6 +6,7 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "Profiles/BehaviorTreeAssetDocumentMaterializer.h"
+#include "Regions/AssetDocumentEditorLayoutRegionAdapter.h"
 #include "Regions/AssetDocumentTreeRegionAdapter.h"
 
 #include "BehaviorTree/BehaviorTree.h"
@@ -675,7 +676,45 @@ FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 {
 	FBehaviorTreeBlackboardRegionAdapter BlackboardAdapter(FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName());
 	FBehaviorTreeSemanticTreeRegionAdapter TreeAdapter(FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName());
-	FBehaviorTreeStrictEmptyObjectRegionAdapter EditorLayoutAdapter(FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName());
+
+	FAssetDocumentEditorLayoutRegionAdapterConfig EditorLayoutConfig;
+	EditorLayoutConfig.Name = FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName();
+	FAssetDocumentEditorLayoutRegionAdapterHooks EditorLayoutHooks;
+	EditorLayoutHooks.CollectSemanticNodeIds =
+		[](const FAssetDocumentRegionContext& Context, TSet<FString>& OutIds)
+		{
+			return FBehaviorTreeAssetDocumentMaterializer::CollectSemanticNodeIds(Context, OutIds);
+		};
+	EditorLayoutHooks.PrepareGraphForApply =
+		[](FAssetDocumentRegionContext& Context, FAssetDocumentEditorLayoutGraphState& OutGraphState)
+		{
+			FAssetDocumentCapabilityResult Result = FBehaviorTreeAssetDocumentMaterializer::CollectEditorGraphNodes(
+				Context,
+				OutGraphState.Graph,
+				OutGraphState.NodesById);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (OutGraphState.Graph && OutGraphState.NodesById.Num() > 0)
+			{
+				return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree editor graph"));
+			}
+
+			bool bGraphChanged = false;
+			Result = FBehaviorTreeAssetDocumentMaterializer::RebuildEditorGraph(Context, false, bGraphChanged);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			return FBehaviorTreeAssetDocumentMaterializer::CollectEditorGraphNodes(Context, OutGraphState.Graph, OutGraphState.NodesById);
+		};
+	EditorLayoutHooks.CollectGraphForExtract =
+		[](const FAssetDocumentRegionContext& Context, FAssetDocumentEditorLayoutGraphState& OutGraphState)
+		{
+			return FBehaviorTreeAssetDocumentMaterializer::CollectEditorGraphNodes(Context, OutGraphState.Graph, OutGraphState.NodesById);
+		};
+	FAssetDocumentEditorLayoutRegionAdapter EditorLayoutAdapter(MoveTemp(EditorLayoutConfig), MoveTemp(EditorLayoutHooks));
 
 	TMap<FName, IAssetDocumentRegionAdapter*> Adapters;
 	Adapters.Add(BlackboardAdapter.GetName(), &BlackboardAdapter);
