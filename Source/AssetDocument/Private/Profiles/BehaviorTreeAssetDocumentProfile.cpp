@@ -21,6 +21,7 @@ bool MakeRegionPolicy(
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
 	TArray<FString> ManagedUePropertyPaths,
+	FName CanonicalizerHookName,
 	FAssetDocumentRegionPolicy& OutPolicy)
 {
 	FAssetDocumentRegionPolicyPreset Preset;
@@ -37,7 +38,21 @@ bool MakeRegionPolicy(
 	{
 		Override.ManagedUePropertyPaths = MoveTemp(ManagedUePropertyPaths);
 	}
+	if (!CanonicalizerHookName.IsNone())
+	{
+		Override.CanonicalizerHookName = CanonicalizerHookName;
+	}
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
+}
+
+bool MakeRegionPolicy(
+	FName PresetName,
+	FName RegionId,
+	EAssetDocumentRegionKind RegionKind,
+	TArray<FString> ManagedUePropertyPaths,
+	FAssetDocumentRegionPolicy& OutPolicy)
+{
+	return MakeRegionPolicy(PresetName, RegionId, RegionKind, MoveTemp(ManagedUePropertyPaths), NAME_None, OutPolicy);
 }
 
 FString RegionPath(const FAssetDocumentRegionContext& Context)
@@ -947,11 +962,18 @@ TArray<FAssetDocumentRegionPolicy> FBehaviorTreeAssetDocumentProfile::GetRegionP
 		TEXT("Body.Tree"),
 		EAssetDocumentRegionKind::Object,
 		{TEXT("RootNode"), TEXT("RootDecorators"), TEXT("RootDecoratorOps")},
+		TEXT("BehaviorTreePostApply"),
 		Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.EditorLayout"), EAssetDocumentRegionKind::Object, {TEXT("BTGraph")}, Policy))
+	if (MakeRegionPolicy(
+		TEXT("ManagedRegion"),
+		TEXT("Body.EditorLayout"),
+		EAssetDocumentRegionKind::Object,
+		{TEXT("BTGraph")},
+		TEXT("EditorLayout"),
+		Policy))
 	{
 		Policies.Add(Policy);
 	}

@@ -2,6 +2,7 @@
 
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "AssetDocumentSidecar.h"
 #include "Profiles/BlackboardDataAssetDocumentProfile.h"
 #include "Regions/AssetDocumentBlackboardKeySchemaUtils.h"
 
@@ -220,6 +221,66 @@ bool DiffPayloadHasChangedPath(const TSharedPtr<FJsonObject>& Payload, const FSt
 			&& Entry->TryGetStringField(TEXT("path"), Path)
 			&& Path == ExpectedPath;
 	});
+}
+
+bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+{
+	FString Error;
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
+	Test->TestTrue(FString::Printf(TEXT("Writes sidecar JSON '%s'"), *SidecarPath), bWrote);
+	if (!bWrote)
+	{
+		Test->AddError(Error);
+	}
+	return bWrote;
+}
+
+bool LoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSharedPtr<FJsonObject>& OutDocument)
+{
+	FString Error;
+	const bool bLoaded = FAssetDocumentSidecar::LoadJsonFile(SidecarPath, OutDocument, Error);
+	Test->TestTrue(FString::Printf(TEXT("Loads sidecar JSON '%s'"), *SidecarPath), bLoaded);
+	if (!bLoaded)
+	{
+		Test->AddError(Error);
+	}
+	return bLoaded;
+}
+
+bool ExpectSyncRegions(
+	FAutomationTestBase* Test,
+	const TSharedPtr<FJsonObject>& Document,
+	const TArray<FString>& ExpectedRegionIds)
+{
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta"), Document.IsValid() && Document->TryGetObjectField(TEXT("_meta"), Meta));
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta.sync"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta.sync.regions"), Sync && Sync->IsValid() && (*Sync)->TryGetObjectField(TEXT("regions"), Regions));
+	if (!Regions || !Regions->IsValid())
+	{
+		return false;
+	}
+
+	for (const FString& RegionId : ExpectedRegionIds)
+	{
+		const TSharedPtr<FJsonObject>* Region = nullptr;
+		Test->TestTrue(FString::Printf(TEXT("Sync state includes %s"), *RegionId), (*Regions)->TryGetObjectField(RegionId, Region));
+		if (!Region || !Region->IsValid())
+		{
+			continue;
+		}
+
+		FString SidecarHash;
+		FString AssetEvidenceHash;
+		Test->TestTrue(FString::Printf(TEXT("%s sidecarHash exists"), *RegionId), (*Region)->TryGetStringField(TEXT("sidecarHash"), SidecarHash));
+		Test->TestTrue(FString::Printf(TEXT("%s assetEvidenceHash exists"), *RegionId), (*Region)->TryGetStringField(TEXT("assetEvidenceHash"), AssetEvidenceHash));
+		Test->TestFalse(FString::Printf(TEXT("%s sidecarHash is non-empty"), *RegionId), SidecarHash.IsEmpty());
+		Test->TestFalse(FString::Printf(TEXT("%s assetEvidenceHash is non-empty"), *RegionId), AssetEvidenceHash.IsEmpty());
+		Test->TestEqual(FString::Printf(TEXT("%s sync hashes match"), *RegionId), AssetEvidenceHash, SidecarHash);
+	}
+	return true;
 }
 
 int32 CountBlackboardKeyTypeChildren(UBlackboardData* Blackboard)
@@ -1439,6 +1500,103 @@ bool FAssetDocumentBlackboardDataRejectsInvalidKeyTypeTest::RunTest(const FStrin
 		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus"))}))));
 	TestFalse(TEXT("Invalid blackboard key type apply fails"), Result.IsSuccess());
 	TestTrue(TEXT("Invalid type failure has exact diagnostic"), ResultHasDiagnostic(Result, TEXT("InvalidBlackboardKeyType"), TEXT("/Body/Keys/Broken/Type")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest,
+	"AssetFactory.AssetDocument.BlackboardData.ApplyFileCanonicalWriteback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const FString&)
+{
+	const FString ParentTarget = TEXT("/Game/AssetDocumentTests/BB_AD_Task10_ApplyFileWriteback_Parent");
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_Task10_ApplyFileWriteback");
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ParentApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		ParentTarget,
+		MakeBlackboardDataBody(nullptr, {
+			MakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Object"), AActor::StaticClass()->GetPathName()),
+			MakeBlackboardKeyJson(TEXT("InheritedGate"), TEXT("Bool"),
+				TEXT(""),
+				TEXT(""),
+				TEXT(""),
+				TEXT("Inherited condition")),
+		}))));
+	TestTrue(TEXT("ApplyFile parent blackboard apply succeeds"), ParentApplyResult.IsSuccess());
+	if (!ParentApplyResult.IsSuccess())
+	{
+		AddError(ParentApplyResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(MakeAssetRef(MakeObjectPathFromTarget(ParentTarget)), {
+		MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), AActor::StaticClass()->GetPathName(), TEXT(""), TEXT(""), TEXT("Local target")),
+		MakeBlackboardKeyJson(TEXT("MoveLocation"), TEXT("Vector")),
+		MakeBlackboardKeyJson(TEXT("AlertName"), TEXT("Name")),
+	});
+	Body->GetArrayField(TEXT("Keys"))[2]->AsObject()->SetBoolField(TEXT("bInstanceSynced"), true);
+	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(Target, Body);
+	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+	if (!WriteSidecarJson(this, SidecarPath, Document))
+	{
+		return false;
+	}
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult ValidateResult = Service.Validate(ValidateRequest);
+	TestTrue(TEXT("BlackboardData ApplyFile sidecar validates"), ValidateResult.IsSuccess());
+	if (!ValidateResult.IsSuccess())
+	{
+		AddError(ValidateResult.Message);
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = true;
+	const FAssetDocumentResult ApplyFileResult = Service.ApplyFile(ApplyFileRequest);
+	TestTrue(TEXT("BlackboardData ApplyFile succeeds"), ApplyFileResult.IsSuccess());
+	TestTrue(TEXT("BlackboardData ApplyFile writes sidecar sync state"), ApplyFileResult.bWroteSidecar);
+	if (ApplyFileResult.Payload.IsValid())
+	{
+		FString SkipReason;
+		if (ApplyFileResult.Payload->TryGetStringField(TEXT("sidecar_sync_update_skip_reason"), SkipReason))
+		{
+			AddError(FString::Printf(TEXT("BlackboardData sidecar sync update skip reason: %s"), *SkipReason));
+		}
+		TestFalse(TEXT("BlackboardData ApplyFile does not skip sync update"), ApplyFileResult.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
+	}
+	if (!ApplyFileResult.IsSuccess())
+	{
+		AddError(ApplyFileResult.Message);
+		return false;
+	}
+
+	UBlackboardData* Blackboard = LoadBlackboardForTarget(Target);
+	TestNotNull(TEXT("ApplyFile-created blackboard loads"), Blackboard);
+	if (Blackboard)
+	{
+		TestTrue(TEXT("ApplyFile applies parent"), Blackboard->Parent.Get() == LoadBlackboardForTarget(ParentTarget));
+		TestEqual(TEXT("ApplyFile applies local key count"), Blackboard->Keys.Num(), 3);
+	}
+
+	TSharedPtr<FJsonObject> ReloadedSidecar;
+	if (!LoadSidecarJson(this, SidecarPath, ReloadedSidecar))
+	{
+		return false;
+	}
+	ExpectSyncRegions(this, ReloadedSidecar, {
+		TEXT("Body.Parent"),
+		TEXT("Body.Keys"),
+	});
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("BlackboardData ApplyFile diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("BlackboardData ApplyFile diff has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 

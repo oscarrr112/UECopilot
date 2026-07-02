@@ -2,6 +2,7 @@
 
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentService.h"
+#include "AssetDocumentSidecar.h"
 #include "AssetDocumentJsonRegionUtils.h"
 #include "Profiles/BehaviorTreeAssetDocumentProfile.h"
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
@@ -213,6 +214,19 @@ bool DiffPayloadHasAnyEntry(const TSharedPtr<FJsonObject>& Payload, const FStrin
 		|| DiffPayloadHasEntry(Payload, TEXT("added"), ExpectedPath)
 		|| DiffPayloadHasEntry(Payload, TEXT("removed"), ExpectedPath)
 		|| DiffPayloadHasEntry(Payload, TEXT("unchanged"), ExpectedPath);
+}
+
+bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Payload)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
+	return Payload.IsValid()
+		&& Payload->TryGetArrayField(TEXT("changed"), Changed)
+		&& Payload->TryGetArrayField(TEXT("failed"), Failed)
+		&& Changed
+		&& Failed
+		&& Changed->Num() == 0
+		&& Failed->Num() == 0;
 }
 
 bool DiffPayloadBucketHasPathPrefix(const TSharedPtr<FJsonObject>& Payload, const FString& BucketName, const FString& ExpectedPrefix)
@@ -656,6 +670,74 @@ TSharedPtr<FJsonObject> MakeBehaviorTreeDocument(const FString& Target, TSharedP
 	return Document;
 }
 
+TSharedRef<FJsonObject> MakeBlackboardKeyJson(
+	const FString& Name,
+	const FString& Type,
+	const FString& BaseClass = TEXT(""),
+	const FString& Enum = TEXT(""),
+	const FString& KeyTypeClass = TEXT(""),
+	const FString& Description = TEXT(""))
+{
+	TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+	Json->SetStringField(TEXT("Name"), Name);
+	if (!Type.IsEmpty())
+	{
+		Json->SetStringField(TEXT("Type"), Type);
+	}
+	if (!BaseClass.IsEmpty())
+	{
+		Json->SetStringField(TEXT("BaseClass"), BaseClass);
+	}
+	if (!Enum.IsEmpty())
+	{
+		Json->SetStringField(TEXT("Enum"), Enum);
+	}
+	if (!KeyTypeClass.IsEmpty())
+	{
+		Json->SetStringField(TEXT("KeyTypeClass"), KeyTypeClass);
+	}
+	if (!Description.IsEmpty())
+	{
+		Json->SetStringField(TEXT("Description"), Description);
+	}
+	return Json;
+}
+
+TSharedPtr<FJsonObject> MakeBlackboardDataBody(TSharedPtr<FJsonObject> Parent, TArray<TSharedRef<FJsonObject>> Keys)
+{
+	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+	if (Parent.IsValid())
+	{
+		Body->SetObjectField(TEXT("Parent"), Parent);
+	}
+	else
+	{
+		Body->SetField(TEXT("Parent"), MakeShared<FJsonValueNull>());
+	}
+
+	TArray<TSharedPtr<FJsonValue>> KeyValues;
+	KeyValues.Reserve(Keys.Num());
+	for (const TSharedRef<FJsonObject>& Key : Keys)
+	{
+		KeyValues.Add(MakeShared<FJsonValueObject>(Key));
+	}
+	Body->SetArrayField(TEXT("Keys"), MoveTemp(KeyValues));
+	return Body;
+}
+
+TSharedPtr<FJsonObject> MakeBlackboardDataDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
+{
+	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
+	Document->SetNumberField(TEXT("SchemaVersion"), 1);
+	Document->SetStringField(TEXT("Target"), Target);
+	Document->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BlackboardData"));
+	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
+	Document->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Document->SetObjectField(TEXT("Body"), Body);
+	return Document;
+}
+
 TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
 {
 	TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
@@ -845,6 +927,200 @@ bool CollectAllTreeIds(const TSharedPtr<FJsonObject>& Tree, TArray<FString>& Out
 	}
 
 	return true;
+}
+
+bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& Expected)
+{
+	if (!Values)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		if (Value.IsValid() && Value->Type == EJson::String && Value->AsString() == Expected)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool RegionPoliciesContain(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& ExpectedRegionId)
+{
+	if (!Values)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() && Value->Type == EJson::Object
+			? Value->AsObject()
+			: nullptr;
+		FString RegionId;
+		if (Object.IsValid() && Object->TryGetStringField(TEXT("RegionId"), RegionId) && RegionId == ExpectedRegionId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+{
+	FString Error;
+	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
+	Test->TestTrue(FString::Printf(TEXT("Writes sidecar JSON '%s'"), *SidecarPath), bWrote);
+	if (!bWrote)
+	{
+		Test->AddError(Error);
+	}
+	return bWrote;
+}
+
+bool LoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSharedPtr<FJsonObject>& OutDocument)
+{
+	FString Error;
+	const bool bLoaded = FAssetDocumentSidecar::LoadJsonFile(SidecarPath, OutDocument, Error);
+	Test->TestTrue(FString::Printf(TEXT("Loads sidecar JSON '%s'"), *SidecarPath), bLoaded);
+	if (!bLoaded)
+	{
+		Test->AddError(Error);
+	}
+	return bLoaded;
+}
+
+bool ExpectSyncRegions(
+	FAutomationTestBase* Test,
+	const TSharedPtr<FJsonObject>& Document,
+	const TArray<FString>& ExpectedRegionIds)
+{
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	const TSharedPtr<FJsonObject>* Regions = nullptr;
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta"), Document.IsValid() && Document->TryGetObjectField(TEXT("_meta"), Meta));
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta.sync"), Meta && Meta->IsValid() && (*Meta)->TryGetObjectField(TEXT("sync"), Sync));
+	Test->TestTrue(TEXT("ApplyFile sidecar includes _meta.sync.regions"), Sync && Sync->IsValid() && (*Sync)->TryGetObjectField(TEXT("regions"), Regions));
+	if (!Regions || !Regions->IsValid())
+	{
+		return false;
+	}
+
+	for (const FString& RegionId : ExpectedRegionIds)
+	{
+		const TSharedPtr<FJsonObject>* Region = nullptr;
+		Test->TestTrue(FString::Printf(TEXT("Sync state includes %s"), *RegionId), (*Regions)->TryGetObjectField(RegionId, Region));
+		if (!Region || !Region->IsValid())
+		{
+			continue;
+		}
+
+		FString SidecarHash;
+		FString AssetEvidenceHash;
+		Test->TestTrue(FString::Printf(TEXT("%s sidecarHash exists"), *RegionId), (*Region)->TryGetStringField(TEXT("sidecarHash"), SidecarHash));
+		Test->TestTrue(FString::Printf(TEXT("%s assetEvidenceHash exists"), *RegionId), (*Region)->TryGetStringField(TEXT("assetEvidenceHash"), AssetEvidenceHash));
+		Test->TestFalse(FString::Printf(TEXT("%s sidecarHash is non-empty"), *RegionId), SidecarHash.IsEmpty());
+		Test->TestFalse(FString::Printf(TEXT("%s assetEvidenceHash is non-empty"), *RegionId), AssetEvidenceHash.IsEmpty());
+		Test->TestEqual(FString::Printf(TEXT("%s sync hashes match"), *RegionId), AssetEvidenceHash, SidecarHash);
+	}
+	return true;
+}
+
+bool ApplyTask10BlackboardFixture(
+	FAutomationTestBase& Test,
+	FAssetDocumentService& Service,
+	const FString& ParentBlackboardTarget,
+	const FString& BlackboardTarget)
+{
+	const FAssetDocumentResult ParentApply = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+		ParentBlackboardTarget,
+		MakeBlackboardDataBody(nullptr, {
+			MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), AActor::StaticClass()->GetPathName(), TEXT(""), TEXT(""), TEXT("Inherited target")),
+			MakeBlackboardKeyJson(TEXT("HasTarget"), TEXT("Bool"),
+				TEXT(""),
+				TEXT(""),
+				TEXT(""),
+				TEXT("Inherited visibility gate")),
+		}))));
+	Test.TestTrue(TEXT("Task10 parent blackboard apply succeeds"), ParentApply.IsSuccess());
+	if (!ParentApply.IsSuccess())
+	{
+		Test.AddError(ParentApply.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> LocalBody = MakeBlackboardDataBody(MakeAssetRef(MakeObjectPathFromTarget(ParentBlackboardTarget)), {
+		MakeBlackboardKeyJson(TEXT("OtherTargetActor"), TEXT("Object"), AActor::StaticClass()->GetPathName()),
+		MakeBlackboardKeyJson(TEXT("MoveLocation"), TEXT("Vector")),
+	});
+	const FAssetDocumentResult LocalApply = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(BlackboardTarget, LocalBody)));
+	Test.TestTrue(TEXT("Task10 local blackboard apply succeeds"), LocalApply.IsSuccess());
+	if (!LocalApply.IsSuccess())
+	{
+		Test.AddError(LocalApply.Message);
+	}
+	return LocalApply.IsSuccess();
+}
+
+TSharedPtr<FJsonObject> MakeTask10EditorLayout()
+{
+	return MakeEditorLayout(
+		{
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 0, 0)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootHasTarget"), -180, -160)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("FocusService"), -240, 120)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("HasTarget"), -120, 320)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 80, 420)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RunSubtree"), 420, 420)),
+		},
+		{
+			MakeObjectValue(MakeEditorLayoutComment(
+				TEXT("55555555-6666-7777-8888-999999999999"),
+				TEXT("Full BT+BB roundtrip"),
+				-320,
+				-220,
+				900,
+				760)),
+		});
+}
+
+TSharedPtr<FJsonObject> MakeTask10BehaviorTreeBody(
+	const FString& BlackboardTarget,
+	const FString& SubtreeTarget)
+{
+	return MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		MakeTask10EditorLayout());
+}
+
+bool PrepareTask10BehaviorTreeFixture(
+	FAutomationTestBase& Test,
+	FAssetDocumentService& Service,
+	const FString& Target,
+	FString& OutParentBlackboardTarget,
+	FString& OutBlackboardTarget,
+	FString& OutSubtreeTarget)
+{
+	OutParentBlackboardTarget = Target + TEXT("_ParentBB");
+	OutBlackboardTarget = Target + TEXT("_BB");
+	OutSubtreeTarget = Target + TEXT("_Subtree");
+	if (!ApplyTask10BlackboardFixture(Test, Service, OutParentBlackboardTarget, OutBlackboardTarget))
+	{
+		return false;
+	}
+
+	UBehaviorTree* Subtree = MakeExistingBehaviorTreeAsset(OutSubtreeTarget);
+	Test.TestNotNull(TEXT("Task10 subtree asset exists"), Subtree);
+	if (!Subtree)
+	{
+		return false;
+	}
+
+	Subtree->BlackboardAsset = LoadObject<UBlackboardData>(nullptr, *MakeObjectPathFromTarget(OutBlackboardTarget));
+	Test.TestNotNull(TEXT("Task10 subtree blackboard resolves"), Subtree->BlackboardAsset.Get());
+	return Subtree->BlackboardAsset != nullptr;
 }
 }
 
@@ -2533,6 +2809,277 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	const FAssetDocumentResult NativeDifferentEnumResult = FAssetDocumentService().Validate(NativeDifferentEnumRequest);
 	TestFalse(TEXT("selector enum filter rejects deprecated native enum with a different enum"), NativeDifferentEnumResult.IsSuccess());
 	TestTrue(TEXT("native enum mismatch diagnostic is exact"), ResultHasDiagnostic(NativeDifferentEnumResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/MoveToTarget/Properties/BlackboardKey/SelectedKeyName")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeFullApplyExtractDiffTest,
+	"AssetFactory.AssetDocument.BehaviorTree.FullApplyExtractDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeFullApplyExtractDiffTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task10_FullApplyExtractDiff");
+	FAssetDocumentService Service;
+	FString ParentBlackboardTarget;
+	FString BlackboardTarget;
+	FString SubtreeTarget;
+	if (!PrepareTask10BehaviorTreeFixture(*this, Service, Target, ParentBlackboardTarget, BlackboardTarget, SubtreeTarget))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Body = MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget);
+	TSharedPtr<FJsonObject> Document = MakeBehaviorTreeDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+	TestTrue(TEXT("full BehaviorTree apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBlackboardData* Blackboard = LoadObject<UBlackboardData>(nullptr, *MakeObjectPathFromTarget(BlackboardTarget));
+	TestTrue(TEXT("local blackboard has parent"), Blackboard && Blackboard->Parent.Get() == LoadObject<UBlackboardData>(nullptr, *MakeObjectPathFromTarget(ParentBlackboardTarget)));
+	TestEqual(TEXT("local blackboard keeps local key count"), Blackboard ? Blackboard->Keys.Num() : -1, 2);
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBTCompositeNode* Root = BehaviorTree ? BehaviorTree->RootNode : nullptr;
+	TestTrue(TEXT("BehaviorTree references authored blackboard"), BehaviorTree && BehaviorTree->BlackboardAsset == Blackboard);
+	TestNotNull(TEXT("root composite exists"), Root);
+	TestEqual(TEXT("root decorator count"), BehaviorTree ? BehaviorTree->RootDecorators.Num() : -1, 1);
+	TestEqual(TEXT("root decorator logic count"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1, 1);
+	TestEqual(TEXT("root service count"), Root ? Root->Services.Num() : -1, 1);
+	TestEqual(TEXT("root child count"), Root ? Root->Children.Num() : -1, 2);
+	if (Root && Root->Children.Num() >= 2)
+	{
+		TestEqual(TEXT("first edge decorator count"), Root->Children[0].Decorators.Num(), 1);
+		TestEqual(TEXT("first edge decorator logic count"), Root->Children[0].DecoratorOps.Num(), 1);
+		TestNotNull(TEXT("first child task exists"), Root->Children[0].ChildTask.Get());
+		UBTTask_RunBehavior* RunSubtreeTask = Cast<UBTTask_RunBehavior>(Root->Children[1].ChildTask);
+		TestNotNull(TEXT("subtree task exists"), RunSubtreeTask);
+		TestTrue(TEXT("second child is BTTask_RunBehavior"), RunSubtreeTask && RunSubtreeTask->GetClass()->IsChildOf(UBTTask_RunBehavior::StaticClass()));
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("full BehaviorTree extract succeeds"), ExtractResult.IsSuccess());
+	TestTrue(TEXT("full BehaviorTree extract returns payload"), ExtractResult.Payload.IsValid());
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
+	{
+		AddError(ExtractResult.Message);
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedTree = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
+	TestTrue(TEXT("extract contains Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
+	TestTrue(TEXT("extract contains Body.Tree"), ExtractedBody && ExtractedBody->IsValid() && (*ExtractedBody)->TryGetObjectField(TEXT("Tree"), ExtractedTree));
+	TestTrue(TEXT("extract contains Body.EditorLayout"), ExtractedBody && ExtractedBody->IsValid() && (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout));
+	if (ExtractedTree && ExtractedTree->IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* RootLogic = nullptr;
+		TestTrue(TEXT("extract includes root decorators"), (*ExtractedTree)->TryGetArrayField(TEXT("RootDecorators"), RootDecorators) && RootDecorators && RootDecorators->Num() == 1);
+		TestTrue(TEXT("extract includes root decorator logic"), (*ExtractedTree)->TryGetArrayField(TEXT("RootDecoratorLogic"), RootLogic) && RootLogic && RootLogic->Num() == 1);
+	}
+	if (ExtractedLayout && ExtractedLayout->IsValid())
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		TestTrue(TEXT("extract includes editor layout nodes"), (*ExtractedLayout)->TryGetArrayField(TEXT("Nodes"), Nodes) && Nodes && Nodes->Num() >= 2);
+	}
+
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(Document));
+	TestTrue(TEXT("full BehaviorTree diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("full BehaviorTree roundtrip has no changed or failed diff entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ApplyFileCanonicalWriteback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task10_ApplyFileWriteback");
+	FAssetDocumentService Service;
+	FString ParentBlackboardTarget;
+	FString BlackboardTarget;
+	FString SubtreeTarget;
+	if (!PrepareTask10BehaviorTreeFixture(*this, Service, Target, ParentBlackboardTarget, BlackboardTarget, SubtreeTarget))
+	{
+		return false;
+	}
+
+	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
+	TSharedPtr<FJsonObject> Document = MakeBehaviorTreeDocument(Target, MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget));
+	if (!WriteSidecarJson(this, SidecarPath, Document))
+	{
+		return false;
+	}
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult ValidateResult = Service.Validate(ValidateRequest);
+	TestTrue(TEXT("BehaviorTree ApplyFile sidecar validates"), ValidateResult.IsSuccess());
+	if (!ValidateResult.IsSuccess())
+	{
+		AddError(ValidateResult.Message);
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = true;
+	const FAssetDocumentResult ApplyFileResult = Service.ApplyFile(ApplyFileRequest);
+	TestTrue(TEXT("BehaviorTree ApplyFile succeeds"), ApplyFileResult.IsSuccess());
+	TestTrue(TEXT("BehaviorTree ApplyFile writes sidecar sync state"), ApplyFileResult.bWroteSidecar);
+	if (ApplyFileResult.Payload.IsValid())
+	{
+		FString SkipReason;
+		if (ApplyFileResult.Payload->TryGetStringField(TEXT("sidecar_sync_update_skip_reason"), SkipReason))
+		{
+			AddError(FString::Printf(TEXT("BehaviorTree sidecar sync update skip reason: %s"), *SkipReason));
+		}
+		TestFalse(TEXT("BehaviorTree ApplyFile does not skip sync update"), ApplyFileResult.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
+	}
+	if (!ApplyFileResult.IsSuccess())
+	{
+		AddError(ApplyFileResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> ReloadedSidecar;
+	if (!LoadSidecarJson(this, SidecarPath, ReloadedSidecar))
+	{
+		return false;
+	}
+	ExpectSyncRegions(this, ReloadedSidecar, {
+		TEXT("Body.Blackboard"),
+		TEXT("Body.Tree"),
+		TEXT("Body.EditorLayout"),
+	});
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.FilePath = SidecarPath;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	TestTrue(TEXT("BehaviorTree ApplyFile diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("BehaviorTree ApplyFile diff has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeApplyFailureRollsBackTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ApplyFailureRollsBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeApplyFailureRollsBackTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task10_FailureRollback");
+	FAssetDocumentService Service;
+	FString ParentBlackboardTarget;
+	FString BlackboardTarget;
+	FString SubtreeTarget;
+	if (!PrepareTask10BehaviorTreeFixture(*this, Service, Target, ParentBlackboardTarget, BlackboardTarget, SubtreeTarget))
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> InitialDocument = MakeBehaviorTreeDocument(Target, MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget));
+	const FAssetDocumentResult InitialApply = Service.Apply(MakeApplyRequest(InitialDocument));
+	TestTrue(TEXT("initial full BehaviorTree apply succeeds"), InitialApply.IsSuccess());
+	if (!InitialApply.IsSuccess())
+	{
+		AddError(InitialApply.Message);
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBTCompositeNode* OriginalRoot = BehaviorTree ? BehaviorTree->RootNode : nullptr;
+	UBlackboardData* OriginalBlackboard = BehaviorTree ? BehaviorTree->BlackboardAsset : nullptr;
+	const int32 OriginalRootDecorators = BehaviorTree ? BehaviorTree->RootDecorators.Num() : -1;
+	const int32 OriginalRootLogic = BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1;
+	const int32 OriginalServices = OriginalRoot ? OriginalRoot->Services.Num() : -1;
+	const int32 OriginalChildren = OriginalRoot ? OriginalRoot->Children.Num() : -1;
+	const int32 OriginalEdgeDecorators = OriginalRoot && OriginalRoot->Children.Num() > 0 ? OriginalRoot->Children[0].Decorators.Num() : -1;
+	UBehaviorTreeGraph* OriginalGraph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	TestNotNull(TEXT("original full tree root exists"), OriginalRoot);
+
+	TSharedPtr<FJsonObject> InvalidBody = MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget);
+	TSharedPtr<FJsonObject> InvalidTree = GetObjectField(InvalidBody, TEXT("Tree"));
+	TSharedPtr<FJsonObject> InvalidRoot = GetObjectField(InvalidTree, TEXT("Root"));
+	if (InvalidRoot.IsValid())
+	{
+		InvalidRoot->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_MoveTo"));
+	}
+
+	const FAssetDocumentResult FailedApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, InvalidBody)));
+	TestFalse(TEXT("invalid full BehaviorTree apply fails"), FailedApply.IsSuccess());
+	TestTrue(TEXT("failure reports invalid root diagnostic"), ResultHasDiagnostic(FailedApply, TEXT("InvalidBehaviorTreeNodeClass"), TEXT("/Body/Tree/Root/Class")));
+	TestTrue(TEXT("failed apply preserves blackboard"), BehaviorTree && BehaviorTree->BlackboardAsset == OriginalBlackboard);
+	TestTrue(TEXT("failed apply preserves root pointer"), BehaviorTree && BehaviorTree->RootNode == OriginalRoot);
+	TestEqual(TEXT("failed apply preserves root decorators"), BehaviorTree ? BehaviorTree->RootDecorators.Num() : -1, OriginalRootDecorators);
+	TestEqual(TEXT("failed apply preserves root decorator logic"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1, OriginalRootLogic);
+	TestEqual(TEXT("failed apply preserves services"), OriginalRoot ? OriginalRoot->Services.Num() : -1, OriginalServices);
+	TestEqual(TEXT("failed apply preserves children"), OriginalRoot ? OriginalRoot->Children.Num() : -1, OriginalChildren);
+	TestEqual(TEXT("failed apply preserves edge decorators"), OriginalRoot && OriginalRoot->Children.Num() > 0 ? OriginalRoot->Children[0].Decorators.Num() : -1, OriginalEdgeDecorators);
+	TestTrue(TEXT("failed apply preserves editor graph"), BehaviorTree && Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) == OriginalGraph);
+
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(InitialDocument));
+	TestTrue(TEXT("post-failure original document diff succeeds"), DiffResult.IsSuccess());
+	TestTrue(TEXT("post-failure original document remains unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeProfileInspectionListsAllRegionsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ProfileInspectionListsAllRegions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeProfileInspectionListsAllRegionsTest::RunTest(const FString&)
+{
+	FAssetDocumentService Service;
+	FAssetDocumentProfileRequest Request;
+	Request.ClassOrAsset = TEXT("/Script/AIModule.BehaviorTree");
+	const FAssetDocumentResult Result = Service.InspectProfile(Request);
+	TestTrue(TEXT("BehaviorTree profile inspection succeeds"), Result.IsSuccess());
+	TestTrue(TEXT("BehaviorTree profile payload exists"), Result.Payload.IsValid());
+	if (!Result.Payload.IsValid())
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Profile class is BehaviorTree"), Result.Payload->GetStringField(TEXT("Class")), FString(TEXT("/Script/AIModule.BehaviorTree")));
+	const TArray<TSharedPtr<FJsonValue>>* BodySections = nullptr;
+	TestTrue(TEXT("BehaviorTree profile exposes BodySections"), Result.Payload->TryGetArrayField(TEXT("BodySections"), BodySections));
+	for (const FName& BodyKey : FBehaviorTreeAssetDocumentCapability::GetCanonicalBodyKeys())
+	{
+		TestTrue(
+			FString::Printf(TEXT("BehaviorTree BodySections contains %s"), *BodyKey.ToString()),
+			JsonArrayContainsString(BodySections, BodyKey.ToString()));
+	}
+	TestFalse(TEXT("BehaviorTree BodySections omits BlackboardInline"), JsonArrayContainsString(BodySections, TEXT("BlackboardInline")));
+
+	const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
+	TestTrue(TEXT("BehaviorTree profile exposes RegionPolicies"), Result.Payload->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
+	for (const FString& RegionId : {
+		TEXT("Body.Blackboard"),
+		TEXT("Body.Tree"),
+		TEXT("Body.EditorLayout"),
+	})
+	{
+		TestTrue(FString::Printf(TEXT("BehaviorTree RegionPolicies contains %s"), *RegionId), RegionPoliciesContain(RegionPolicies, RegionId));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* InternalAdapters = nullptr;
+	TestTrue(TEXT("BehaviorTree profile exposes InternalAdapters"), Result.Payload->TryGetArrayField(TEXT("InternalAdapters"), InternalAdapters));
+	TestTrue(TEXT("BehaviorTree profile lists blackboard adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName().ToString()));
+	TestTrue(TEXT("BehaviorTree profile lists tree adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName().ToString()));
+	TestTrue(TEXT("BehaviorTree profile lists editor layout adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName().ToString()));
 	return true;
 }
 
