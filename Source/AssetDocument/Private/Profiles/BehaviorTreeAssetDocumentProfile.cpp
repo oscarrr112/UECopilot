@@ -5,6 +5,8 @@
 #include "AssetDocumentBodyRegionDispatcher.h"
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPolicyRegistry.h"
+#include "Profiles/BehaviorTreeAssetDocumentMaterializer.h"
+#include "Regions/AssetDocumentTreeRegionAdapter.h"
 
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
@@ -589,7 +591,14 @@ FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 	TFunctionRef<FAssetDocumentCapabilityResult(const FAssetDocumentBodyRegionDispatcher&)> Dispatch)
 {
 	FBehaviorTreeBlackboardRegionAdapter BlackboardAdapter(FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName());
-	FBehaviorTreeStrictEmptyTreeRegionAdapter TreeAdapter(FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName());
+	FAssetDocumentTreeRegionAdapterConfig TreeConfig;
+	TreeConfig.Name = FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName();
+	FAssetDocumentTreeRegionAdapterHooks TreeHooks;
+	TreeHooks.ValidateTree = &FBehaviorTreeAssetDocumentMaterializer::ValidateTree;
+	TreeHooks.ApplyTree = &FBehaviorTreeAssetDocumentMaterializer::ApplyTree;
+	TreeHooks.ExtractTree = &FBehaviorTreeAssetDocumentMaterializer::ExtractTree;
+	TreeHooks.DiffTree = &FBehaviorTreeAssetDocumentMaterializer::DiffTree;
+	FAssetDocumentTreeRegionAdapter TreeAdapter(TreeConfig, MoveTemp(TreeHooks));
 	FBehaviorTreeStrictEmptyObjectRegionAdapter EditorLayoutAdapter(FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName());
 
 	TMap<FName, IAssetDocumentRegionAdapter*> Adapters;
@@ -832,7 +841,7 @@ TArray<FAssetDocumentRegionPolicy> FBehaviorTreeAssetDocumentProfile::GetRegionP
 	if (MakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.Tree"),
-		EAssetDocumentRegionKind::Graph,
+		EAssetDocumentRegionKind::Object,
 		{TEXT("RootNode"), TEXT("RootDecorators"), TEXT("RootDecoratorOps")},
 		Policy))
 	{
