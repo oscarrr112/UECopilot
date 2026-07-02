@@ -446,7 +446,7 @@ TSharedRef<FJsonObject> MakeStateMachineGraph(
 	Graph->SetArrayField(TEXT("Links"), Links);
 
 	TSharedRef<FJsonObject> RuleGraph = MakeShared<FJsonObject>();
-	RuleGraph->SetStringField(TEXT("Id"), TEXT("IdleToRunRule"));
+	RuleGraph->SetStringField(TEXT("Id"), TEXT("CanStartRunning"));
 	RuleGraph->SetStringField(TEXT("Kind"), TEXT("TransitionRule"));
 	TSharedRef<FJsonObject> Owner = MakeShared<FJsonObject>();
 	Owner->SetStringField(TEXT("Transition"), TEXT("IdleToRun"));
@@ -1208,6 +1208,43 @@ bool HasStateMachineSubgraph(
 			&& Owner
 			&& (*Owner)->TryGetStringField(OwnerField, OwnerValue)
 			&& OwnerValue == ExpectedOwner)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool HasStateMachineSubgraphMetadataResultPin(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedSubgraphId,
+	const FString& ExpectedPin)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Subgraphs"), Subgraphs) || !Subgraphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& SubgraphValue : *Subgraphs)
+	{
+		const TSharedPtr<FJsonObject> Subgraph = SubgraphValue.IsValid() ? SubgraphValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Metadata = nullptr;
+		const TSharedPtr<FJsonObject>* Result = nullptr;
+		FString Id;
+		FString Pin;
+		if (Subgraph.IsValid()
+			&& Subgraph->TryGetStringField(TEXT("Id"), Id)
+			&& Id == ExpectedSubgraphId
+			&& Subgraph->TryGetObjectField(TEXT("Metadata"), Metadata)
+			&& Metadata
+			&& (*Metadata)->TryGetObjectField(TEXT("Result"), Result)
+			&& Result
+			&& (*Result)->TryGetStringField(TEXT("Pin"), Pin)
+			&& Pin == ExpectedPin)
 		{
 			return true;
 		}
@@ -2021,7 +2058,10 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
 	TestTrue(
 		TEXT("StateMachines extract includes transition-owned TransitionRule subgraph"),
-		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("IdleToRunRule"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+	TestTrue(
+		TEXT("TransitionRule extract includes result pin metadata"),
+		HasStateMachineSubgraphMetadataResultPin(ExtractedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("CanEnterTransition")));
 
 	const FString MissingTargetTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_MissingTarget_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	TSharedRef<FJsonObject> MissingTargetDocument = MakeAnimBlueprintApplyDocument(MissingTargetTarget);

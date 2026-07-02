@@ -28,12 +28,15 @@
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
+#include "UObject/MetaData.h"
+#include "UObject/Package.h"
 
 namespace
 {
 constexpr const TCHAR* StateMachinesRegionId = TEXT("Body.StateMachines");
 constexpr const TCHAR* TransitionGraphsRegionId = TEXT("Body.TransitionGraphs");
 constexpr const TCHAR* TransitionResultPin = TEXT("CanEnterTransition");
+constexpr const TCHAR* OwnedSubgraphIdMetadataKey = TEXT("AssetDocument.SubgraphId");
 
 FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
 {
@@ -691,7 +694,7 @@ FGuid MakeOwnedSubgraphGuid(const FAssetDocumentGraphSpec& StateMachineGraph, co
 		OwnerKey = TEXT("Transition");
 	}
 	return FGuid::NewDeterministicGuid(
-		FString::Printf(TEXT("AssetDocument.StateMachine.%s.%s.%s.%s"), *StateMachineGraph.Id, *Subgraph.Kind, *OwnerKey, *OwnerValue));
+		FString::Printf(TEXT("AssetDocument.StateMachine.%s.%s.%s.%s.%s"), *StateMachineGraph.Id, *Subgraph.Kind, *OwnerKey, *OwnerValue, *Subgraph.Id));
 }
 
 FGuid MakeConventionalOwnedSubgraphGuid(
@@ -702,6 +705,42 @@ FGuid MakeConventionalOwnedSubgraphGuid(
 {
 	return FGuid::NewDeterministicGuid(
 		FString::Printf(TEXT("AssetDocument.StateMachine.%s.%s.%s.%s"), *StateMachineGraph.Id, *Kind, *OwnerKey, *OwnerValue));
+}
+
+void SetOwnedSubgraphIdentity(
+	UEdGraph* OwnedGraph,
+	const FAssetDocumentGraphSpec& StateMachineGraph,
+	const FAssetDocumentGraphSpec& Subgraph)
+{
+	if (!OwnedGraph)
+	{
+		return;
+	}
+
+	OwnedGraph->Modify();
+	OwnedGraph->GraphGuid = MakeOwnedSubgraphGuid(StateMachineGraph, Subgraph);
+	if (UPackage* Package = OwnedGraph->GetOutermost())
+	{
+		Package->GetMetaData().SetValue(OwnedGraph, OwnedSubgraphIdMetadataKey, *Subgraph.Id);
+	}
+}
+
+FString GetOwnedSubgraphId(UEdGraph* OwnedGraph)
+{
+	if (!OwnedGraph)
+	{
+		return FString();
+	}
+
+	if (UPackage* Package = OwnedGraph->GetOutermost())
+	{
+		if (const FString* SubgraphId = Package->GetMetaData().FindValue(OwnedGraph, OwnedSubgraphIdMetadataKey))
+		{
+			return *SubgraphId;
+		}
+	}
+
+	return FString();
 }
 
 void StripFrameworkResultSkippedNodes(FAssetDocumentGraphSpec& Graph)
@@ -1098,8 +1137,7 @@ public:
 			}
 
 			InOutContext.Graph = StateGraph;
-			StateGraph->Modify();
-			StateGraph->GraphGuid = MakeOwnedSubgraphGuid(StateMachineGraph, GraphSpec);
+			SetOwnedSubgraphIdentity(StateGraph, StateMachineGraph, GraphSpec);
 			return EnsureStateResultNode(StateGraph, InOutContext.GraphPath);
 		}
 
@@ -1121,8 +1159,7 @@ public:
 			}
 
 			InOutContext.Graph = TransitionGraph;
-			TransitionGraph->Modify();
-			TransitionGraph->GraphGuid = MakeOwnedSubgraphGuid(StateMachineGraph, GraphSpec);
+			SetOwnedSubgraphIdentity(TransitionGraph, StateMachineGraph, GraphSpec);
 			return EnsureTransitionResultNode(TransitionGraph, InOutContext.GraphPath);
 		}
 
@@ -1282,13 +1319,19 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 		if (UAnimStateTransitionNode* TransitionNode = Cast<UAnimStateTransitionNode>(StateMachineNodeBase))
 		{
 			UAnimationTransitionGraph* TransitionGraph = Cast<UAnimationTransitionGraph>(TransitionNode->GetBoundGraph());
-			if (!TransitionGraph
-				|| TransitionGraph->GraphGuid != MakeConventionalOwnedSubgraphGuid(Graph, TEXT("TransitionRule"), TEXT("Transition"), OwnerId))
+			FString SubgraphId = GetOwnedSubgraphId(TransitionGraph);
+			if (SubgraphId.IsEmpty()
+				&& TransitionGraph
+				&& TransitionGraph->GraphGuid == MakeConventionalOwnedSubgraphGuid(Graph, TEXT("TransitionRule"), TEXT("Transition"), OwnerId))
+			{
+				SubgraphId = OwnerId + TEXT("Rule");
+			}
+			if (!TransitionGraph || SubgraphId.IsEmpty())
 			{
 				continue;
 			}
 
-			EnsureTransitionResultNode(TransitionGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(OwnerId + TEXT("Rule")));
+			EnsureTransitionResultNode(TransitionGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(SubgraphId));
 			FAssetDocumentAnimationGraphContext RuntimeContext;
 			RuntimeContext.Asset = OwnerBlueprint;
 			RuntimeContext.Blueprint = OwnerBlueprint;
@@ -1296,7 +1339,7 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 			RuntimeContext.GraphKind = TEXT("TransitionRule");
 			FAssetDocumentGraphSpec RuleGraph;
 			Runtime.ExtractGraph(RuntimeContext, RuleGraph);
-			RuleGraph.Id = OwnerId + TEXT("Rule");
+			RuleGraph.Id = SubgraphId;
 			RuleGraph.Kind = TEXT("TransitionRule");
 			RuleGraph.Owner = MakeOwnerObject(TEXT("Transition"), OwnerId);
 			TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -1311,13 +1354,19 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 		else if (UAnimStateNode* StateNode = Cast<UAnimStateNode>(StateMachineNodeBase))
 		{
 			UAnimationStateGraph* StateGraph = Cast<UAnimationStateGraph>(StateNode->GetBoundGraph());
-			if (!StateGraph
-				|| StateGraph->GraphGuid != MakeConventionalOwnedSubgraphGuid(Graph, TEXT("StatePose"), TEXT("State"), OwnerId))
+			FString SubgraphId = GetOwnedSubgraphId(StateGraph);
+			if (SubgraphId.IsEmpty()
+				&& StateGraph
+				&& StateGraph->GraphGuid == MakeConventionalOwnedSubgraphGuid(Graph, TEXT("StatePose"), TEXT("State"), OwnerId))
+			{
+				SubgraphId = OwnerId + TEXT("Pose");
+			}
+			if (!StateGraph || SubgraphId.IsEmpty())
 			{
 				continue;
 			}
 
-			EnsureStateResultNode(StateGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(OwnerId + TEXT("Pose")));
+			EnsureStateResultNode(StateGraph, GraphPath(Graph) / TEXT("Subgraphs") / Escape(SubgraphId));
 			FAssetDocumentAnimationGraphContext RuntimeContext;
 			RuntimeContext.Asset = OwnerBlueprint;
 			RuntimeContext.Blueprint = OwnerBlueprint;
@@ -1325,7 +1374,7 @@ FAssetDocumentGraphSpec ExtractStateMachineGraph(UAnimGraphNode_StateMachineBase
 			RuntimeContext.GraphKind = TEXT("StatePose");
 			FAssetDocumentGraphSpec PoseGraph;
 			Runtime.ExtractGraph(RuntimeContext, PoseGraph);
-			PoseGraph.Id = OwnerId + TEXT("Pose");
+			PoseGraph.Id = SubgraphId;
 			PoseGraph.Kind = TEXT("StatePose");
 			PoseGraph.Owner = MakeOwnerObject(TEXT("State"), OwnerId);
 			StripFrameworkResultSkippedNodes(PoseGraph);
