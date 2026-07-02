@@ -13,6 +13,7 @@
 #include "Regions/AssetDocumentObjectRegionAdapter.h"
 #include "Regions/AssetDocumentPreviewApplyDiffAdapter.h"
 #include "Regions/AssetDocumentTimelinePlacementRegionAdapter.h"
+#include "Regions/AssetDocumentTreeRegionAdapter.h"
 #include "Regions/AssetDocumentWidgetBlueprintRegionWrappers.h"
 
 #include "Dom/JsonObject.h"
@@ -41,6 +42,21 @@ TSharedRef<FJsonObject> MakeTestFragment(const TCHAR* Kind)
 	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), Kind);
 	return Fragment;
+}
+
+TSharedRef<FJsonObject> MakeTreeNode(const FString& Id)
+{
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), Id);
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/Test.TreeNode"));
+	return Node;
+}
+
+TSharedPtr<FJsonValue> MakeTreeValue(const TSharedRef<FJsonObject>& Root)
+{
+	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	return MakeObjectValue(Tree);
 }
 
 int32 GetIdentityCount(const TSharedPtr<FJsonValue>& Value)
@@ -2556,6 +2572,166 @@ bool FAssetDocumentRegionRuntimeObjectFieldSchemaRejectsMissingRequiredFieldTest
 	TestFalse(TEXT("Missing required field schema fails"), Result.bSuccess);
 	TestEqual(TEXT("Missing field diagnostic code"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("MissingRequiredName")));
 	TestEqual(TEXT("Missing field diagnostic path"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/Required/Name")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTreeRegionAdapterRejectsInvalidShapesTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Tree.InvalidShapes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTreeRegionAdapterRejectsInvalidShapesTest::RunTest(const FString&)
+{
+	FAssetDocumentTreeRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Tree"), TEXT("/Body/Tree"), &Policy);
+
+	FAssetDocumentCapabilityResult Result =
+		Adapter.ValidateRegion(Context, MakeObjectValue(MakeShared<FJsonObject>()));
+	TestFalse(TEXT("Root object is required"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Missing root"), Result, TEXT("/Body/Tree/Root"), TEXT("MissingTreeRoot"));
+
+	TSharedRef<FJsonObject> RootWithoutId = MakeShared<FJsonObject>();
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(RootWithoutId));
+	TestFalse(TEXT("Every node requires an Id"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Missing root id"), Result, TEXT("/Body/Tree/Root/Id"), TEXT("MissingTreeNodeId"));
+
+	TSharedRef<FJsonObject> Root = MakeTreeNode(TEXT("Root"));
+	TSharedRef<FJsonObject> Edge = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(Edge));
+	Root->SetArrayField(TEXT("Children"), Children);
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestFalse(TEXT("Child edge requires exactly one Child object"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Missing edge child"), Result, TEXT("/Body/Tree/Root/Children/0/Child"), TEXT("InvalidTreeChildEdge"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTreeRegionAdapterCollectsIdentitiesTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Tree.CollectsIdentities",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTreeRegionAdapterCollectsIdentitiesTest::RunTest(const FString&)
+{
+	FAssetDocumentTreeRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Tree"), TEXT("/Body/Tree"), &Policy);
+
+	TSharedRef<FJsonObject> Root = MakeTreeNode(TEXT("Root"));
+	TSharedRef<FJsonObject> Child = MakeTreeNode(TEXT("Move/To~Target"));
+	TSharedRef<FJsonObject> Edge = MakeShared<FJsonObject>();
+	Edge->SetObjectField(TEXT("Child"), Child);
+	TSharedRef<FJsonObject> Decorator = MakeTreeNode(TEXT("NeedsTarget"));
+	TArray<TSharedPtr<FJsonValue>> Decorators;
+	Decorators.Add(MakeObjectValue(Decorator));
+	Edge->SetArrayField(TEXT("Decorators"), Decorators);
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(Edge));
+	Root->SetArrayField(TEXT("Children"), Children);
+	TSharedRef<FJsonObject> Service = MakeTreeNode(TEXT("SenseEnemy"));
+	TArray<TSharedPtr<FJsonValue>> Services;
+	Services.Add(MakeObjectValue(Service));
+	Root->SetArrayField(TEXT("Services"), Services);
+
+	TMap<FString, FString> SemanticPaths;
+	FAssetDocumentCapabilityResult Result =
+		Adapter.CollectSemanticPaths(Context, MakeTreeValue(Root)->AsObject().ToSharedRef(), SemanticPaths);
+
+	TestTrue(TEXT("Valid tree collects semantic paths"), Result.bSuccess);
+	TestEqual(TEXT("Root node path uses id"), SemanticPaths.FindRef(TEXT("Root")), FString(TEXT("/Body/Tree/Root")));
+	TestEqual(TEXT("Child node path escapes id"), SemanticPaths.FindRef(TEXT("Move/To~Target")), FString(TEXT("/Body/Tree/Move~1To~0Target")));
+	TestEqual(TEXT("Edge decorator path uses child id"), SemanticPaths.FindRef(TEXT("NeedsTarget")), FString(TEXT("/Body/Tree/Root/Children/Move~1To~0Target/Decorators/NeedsTarget")));
+	TestEqual(TEXT("Service path uses owner id"), SemanticPaths.FindRef(TEXT("SenseEnemy")), FString(TEXT("/Body/Tree/Root/Services/SenseEnemy")));
+
+	TSharedRef<FJsonObject> DuplicateService = MakeTreeNode(TEXT("Move/To~Target"));
+	Services.Add(MakeObjectValue(DuplicateService));
+	Root->SetArrayField(TEXT("Services"), Services);
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestFalse(TEXT("Duplicate ids across tree children are rejected"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Duplicate id"), Result, TEXT("/Body/Tree/Move~1To~0Target"), TEXT("DuplicateTreeNodeId"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTreeRegionAdapterDecoratorLogicTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Tree.DecoratorLogic",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTreeRegionAdapterDecoratorLogicTest::RunTest(const FString&)
+{
+	FAssetDocumentTreeRegionAdapter Adapter;
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Tree"), TEXT("/Body/Tree"), &Policy);
+
+	TSharedRef<FJsonObject> Root = MakeTreeNode(TEXT("Root"));
+	TArray<TSharedPtr<FJsonValue>> LogicValues;
+	for (const FString& Operation : {FString(TEXT("Test")), FString(TEXT("And")), FString(TEXT("Or")), FString(TEXT("Not"))})
+	{
+		TSharedRef<FJsonObject> Logic = MakeShared<FJsonObject>();
+		Logic->SetStringField(TEXT("Operation"), Operation);
+		LogicValues.Add(MakeObjectValue(Logic));
+	}
+	Root->SetArrayField(TEXT("DecoratorLogic"), LogicValues);
+
+	FAssetDocumentCapabilityResult Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestTrue(TEXT("Supported decorator logic operations validate"), Result.bSuccess);
+
+	TSharedRef<FJsonObject> InvalidLogic = MakeShared<FJsonObject>();
+	InvalidLogic->SetStringField(TEXT("Operation"), TEXT("Invalid"));
+	LogicValues.Add(MakeObjectValue(InvalidLogic));
+	Root->SetArrayField(TEXT("DecoratorLogic"), LogicValues);
+	Result = Adapter.ValidateRegion(Context, MakeTreeValue(Root));
+	TestFalse(TEXT("Invalid decorator logic operation is rejected"), Result.bSuccess);
+	TestDiagnostic(this, TEXT("Invalid logic op"), Result, TEXT("/Body/Tree/Root/DecoratorLogic/4/Operation"), TEXT("InvalidTreeDecoratorLogicOperation"));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentTreeRegionAdapterDiffUsesSemanticPathsTest,
+	"AssetFactory.AssetDocument.RegionRuntime.Tree.SemanticDiffPaths",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentTreeRegionAdapterDiffUsesSemanticPathsTest::RunTest(const FString&)
+{
+	FAssetDocumentTreeRegionAdapterHooks Hooks;
+	Hooks.DiffTree = [](const FAssetDocumentRegionContext& Context, const TSharedRef<FJsonObject>& DesiredTree, TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
+	{
+		const TSharedPtr<FJsonObject>* Root = nullptr;
+		if (!DesiredTree->TryGetObjectField(TEXT("Root"), Root) || !Root || !Root->IsValid())
+		{
+			return FAssetDocumentCapabilityResult::Failure(TEXT("missing root"), TEXT("/Body/Tree/Root"), TEXT("MissingTreeRoot"));
+		}
+
+		FString RootId;
+		(*Root)->TryGetStringField(TEXT("Id"), RootId);
+		FAssetDocumentJsonRegionUtils::AddDiffEntry(
+			OutDiffEntries,
+			FAssetDocumentTreeRegionAdapter::MakeNodePath(Context, RootId),
+			TEXT("changed"),
+			MakeShared<FJsonValueString>(TEXT("Before")),
+			MakeShared<FJsonValueString>(TEXT("After")));
+		return FAssetDocumentCapabilityResult::Success(TEXT("diffed tree"));
+	};
+
+	FAssetDocumentTreeRegionAdapter Adapter({}, MoveTemp(Hooks));
+	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Tree"), TEXT("Body.Tree"));
+	FAssetDocumentRegionContext Context = MakeRuntimeContext(TEXT("Body.Tree"), TEXT("/Body/Tree"), &Policy);
+	TSharedRef<FJsonObject> Root = MakeTreeNode(TEXT("Root/With~Token"));
+
+	TArray<TSharedPtr<FJsonValue>> DiffEntries;
+	const FAssetDocumentCapabilityResult Result = Adapter.DiffRegion(Context, MakeTreeValue(Root), DiffEntries);
+
+	TestTrue(TEXT("Diff hook succeeds after adapter validation"), Result.bSuccess);
+	TestEqual(TEXT("Diff emits one entry"), DiffEntries.Num(), 1);
+	TestEqual(
+		TEXT("Diff path uses escaped id instead of array index"),
+		GetDiffEntryPath(DiffEntries, 0),
+		FString(TEXT("/Body/Tree/Root~1With~0Token")));
+
 	return true;
 }
 
