@@ -133,15 +133,15 @@ FAssetDocumentCapabilityResult ReadIdentity(
 }
 
 FAssetDocumentCapabilityResult AddIdentity(
-	const FAssetDocumentRegionContext& Context,
 	const FString& Id,
 	const FString& SemanticPath,
+	const FString& DuplicateDiagnosticPath,
 	TMap<FString, FString>& OutSemanticPaths)
 {
 	if (OutSemanticPaths.Contains(Id))
 	{
 		return Failure(
-			FAssetDocumentTreeRegionAdapter::MakeNodePath(Context, Id),
+			DuplicateDiagnosticPath,
 			TEXT("DuplicateTreeNodeId"),
 			FString::Printf(TEXT("Duplicate tree node id %s"), *Id));
 	}
@@ -189,10 +189,10 @@ bool IsSupportedDecoratorLogicOperation(const FString& Operation)
 FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 	const FAssetDocumentTreeRegionAdapterConfig& Config,
 	const TSharedRef<FJsonObject>& OwnerObject,
-	const FString& OwnerSemanticPath)
+	const FString& OwnerAuthoredPath)
 {
 	TArray<TSharedPtr<FJsonValue>> LogicValues;
-	const FString LogicPath = AppendPath(OwnerSemanticPath, Config.DecoratorLogicField);
+	const FString LogicPath = AppendPath(OwnerAuthoredPath, Config.DecoratorLogicField);
 	FAssetDocumentCapabilityResult Result = ValidateOptionalArrayField(
 		OwnerObject,
 		Config.DecoratorLogicField,
@@ -279,7 +279,11 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 			return Result;
 		}
 
-		Result = AddIdentity(Context, EntryId, MakeSemanticPath(EntryId), OutSemanticPaths);
+		Result = AddIdentity(
+			EntryId,
+			MakeSemanticPath(EntryId),
+			AppendPath(EntryPath, Config.IdField),
+			OutSemanticPaths);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -310,7 +314,11 @@ FAssetDocumentCapabilityResult ValidateNode(
 		return Result;
 	}
 
-	Result = AddIdentity(Context, OutNodeId, NodeSemanticPath, OutSemanticPaths);
+	Result = AddIdentity(
+		OutNodeId,
+		NodeSemanticPath,
+		AppendPath(NodeJsonPath, Config.IdField),
+		OutSemanticPaths);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -321,7 +329,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		Context,
 		NodeObject,
 		Config.ServicesField,
-		AppendPath(NodeSemanticPath, Config.ServicesField),
+		AppendPath(NodeJsonPath, Config.ServicesField),
 		TEXT("InvalidTreeServices"),
 		[&Config, &Context, &OutNodeId](const FString& ServiceId)
 		{
@@ -338,7 +346,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		Context,
 		NodeObject,
 		Config.DecoratorsField,
-		AppendPath(NodeSemanticPath, Config.DecoratorsField),
+		AppendPath(NodeJsonPath, Config.DecoratorsField),
 		TEXT("InvalidTreeDecorators"),
 		[&Config, &NodeSemanticPath](const FString& DecoratorId)
 		{
@@ -350,7 +358,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		return Result;
 	}
 
-	Result = ValidateDecoratorLogicArray(Config, NodeObject, NodeSemanticPath);
+	Result = ValidateDecoratorLogicArray(Config, NodeObject, NodeJsonPath);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -360,7 +368,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 	Result = ValidateOptionalArrayField(
 		NodeObject,
 		Config.ChildrenField,
-		AppendPath(NodeSemanticPath, Config.ChildrenField),
+		AppendPath(NodeJsonPath, Config.ChildrenField),
 		TEXT("InvalidTreeChildren"),
 		Children);
 	if (!Result.bSuccess)
@@ -370,7 +378,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 
 	for (int32 Index = 0; Index < Children.Num(); ++Index)
 	{
-		const FString EdgePathBeforeChildId = AppendPath(AppendPath(NodeSemanticPath, Config.ChildrenField), Index);
+		const FString EdgePathBeforeChildId = AppendPath(AppendPath(NodeJsonPath, Config.ChildrenField), Index);
 		TSharedPtr<FJsonObject> EdgeObject;
 		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Children[Index], EdgePathBeforeChildId, EdgeObject);
 		if (!Result.bSuccess)
@@ -409,7 +417,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 			Context,
 			EdgeObject.ToSharedRef(),
 			Config.DecoratorsField,
-			AppendPath(EdgeSemanticPath, Config.DecoratorsField),
+			AppendPath(EdgePathBeforeChildId, Config.DecoratorsField),
 			TEXT("InvalidTreeDecorators"),
 			[&Config, &Context, &OutNodeId, &ChildId](const FString& DecoratorId)
 			{
@@ -421,7 +429,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 			return Result;
 		}
 
-		Result = ValidateDecoratorLogicArray(Config, EdgeObject.ToSharedRef(), EdgeSemanticPath);
+		Result = ValidateDecoratorLogicArray(Config, EdgeObject.ToSharedRef(), EdgePathBeforeChildId);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -540,6 +548,7 @@ TSharedRef<FJsonObject> FAssetDocumentTreeRegionAdapter::GetSchemaHint(const FAs
 	Schema->SetStringField(TEXT("BodyPath"), Context.BodyPath);
 	Schema->SetStringField(TEXT("RootField"), Config.RootField);
 	Schema->SetStringField(TEXT("IdField"), Config.IdField);
+	Schema->SetStringField(TEXT("ClassField"), Config.ClassField);
 	Schema->SetStringField(TEXT("ChildrenField"), Config.ChildrenField);
 	Schema->SetStringField(TEXT("ChildField"), Config.ChildField);
 	Schema->SetStringField(TEXT("DecoratorsField"), Config.DecoratorsField);
