@@ -481,20 +481,23 @@ TSharedPtr<FJsonObject> MakeEditorLayoutComment(
 	double X,
 	double Y,
 	double Width,
-	double Height)
+	double Height,
+	bool bIncludeColor = true)
 {
-	TSharedPtr<FJsonObject> Color = MakeShared<FJsonObject>();
-	Color->SetNumberField(TEXT("R"), 0.1);
-	Color->SetNumberField(TEXT("G"), 0.2);
-	Color->SetNumberField(TEXT("B"), 0.3);
-	Color->SetNumberField(TEXT("A"), 0.4);
-
 	TSharedPtr<FJsonObject> Comment = MakeShared<FJsonObject>();
 	Comment->SetStringField(TEXT("Id"), Id);
 	Comment->SetStringField(TEXT("Text"), Text);
 	Comment->SetObjectField(TEXT("Position"), MakePositionObject(X, Y));
 	Comment->SetObjectField(TEXT("Size"), MakePositionObject(Width, Height));
-	Comment->SetObjectField(TEXT("Color"), Color);
+	if (bIncludeColor)
+	{
+		TSharedPtr<FJsonObject> Color = MakeShared<FJsonObject>();
+		Color->SetNumberField(TEXT("R"), 0.1);
+		Color->SetNumberField(TEXT("G"), 0.2);
+		Color->SetNumberField(TEXT("B"), 0.3);
+		Color->SetNumberField(TEXT("A"), 0.4);
+		Comment->SetObjectField(TEXT("Color"), Color);
+	}
 	return Comment;
 }
 
@@ -506,6 +509,25 @@ TSharedPtr<FJsonObject> MakeEditorLayout(
 	Layout->SetArrayField(TEXT("Nodes"), Nodes);
 	Layout->SetArrayField(TEXT("Comments"), Comments);
 	return Layout;
+}
+
+UEdGraphNode_Comment* FindEditorLayoutComment(UBehaviorTreeGraph* Graph, const FString& Id)
+{
+	FGuid Guid;
+	if (!Graph || !FGuid::Parse(Id, Guid))
+	{
+		return nullptr;
+	}
+
+	for (UEdGraphNode* GraphNode : Graph->Nodes)
+	{
+		UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(GraphNode);
+		if (CommentNode && CommentNode->NodeGuid == Guid)
+		{
+			return CommentNode;
+		}
+	}
+	return nullptr;
 }
 
 TSharedPtr<FJsonObject> MakeRunBehaviorTree(const FString& SubtreeTarget)
@@ -1859,6 +1881,115 @@ bool FAssetDocumentBehaviorTreeEditorLayoutTest::RunTest(const FString&)
 		TestTrue(TEXT("layout nodes extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Nodes"), ExtractedNodes) && ExtractedNodes && ExtractedNodes->Num() >= 2);
 		TestTrue(TEXT("layout comments extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Comments"), ExtractedComments) && ExtractedComments && ExtractedComments->Num() == 1);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutSparsePreservesComments",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_SparseLayoutComments");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	const FString CommentId = TEXT("22222222-3333-4444-5555-666666666666");
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> InitialBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		MakeEditorLayout(
+			{
+				MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
+				MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+			},
+			{
+				MakeObjectValue(MakeEditorLayoutComment(CommentId, TEXT("Persist me"), -80, 40, 420, 160)),
+			}));
+	const FAssetDocumentResult InitialApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, InitialBody)));
+	TestTrue(TEXT("initial editor layout with comment applies"), InitialApply.IsSuccess());
+	if (!InitialApply.IsSuccess())
+	{
+		AddError(InitialApply.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> SparseBody = MakeShared<FJsonObject>();
+	SparseBody->SetObjectField(TEXT("EditorLayout"), MakeShared<FJsonObject>());
+	const FAssetDocumentResult SparseApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, SparseBody)));
+	TestTrue(TEXT("sparse EditorLayout apply succeeds"), SparseApply.IsSuccess());
+	if (!SparseApply.IsSuccess())
+	{
+		AddError(SparseApply.Message);
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	UEdGraphNode_Comment* Comment = FindEditorLayoutComment(Graph, CommentId);
+	TestNotNull(TEXT("sparse EditorLayout preserves existing comments"), Comment);
+	if (Comment)
+	{
+		TestEqual(TEXT("preserved comment text"), Comment->NodeComment, FString(TEXT("Persist me")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutCommentColorOptionalDiff",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_OptionalCommentColor");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	const FString CommentId = TEXT("33333333-4444-5555-6666-777777777777");
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Tree = MakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> LayoutWithoutColor = MakeEditorLayout(
+		{
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
+			MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+		},
+		{
+			MakeObjectValue(MakeEditorLayoutComment(CommentId, TEXT("No authored color"), -120, 60, 500, 180, false)),
+		});
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		Tree,
+		LayoutWithoutColor);
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, Body)));
+	TestTrue(TEXT("editor layout comment without Color applies"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DesiredBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		LayoutWithoutColor);
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(MakeBehaviorTreeDocument(Target, DesiredBody)));
+	TestTrue(TEXT("diff for comment without Color succeeds"), DiffResult.IsSuccess());
+	if (!DiffResult.IsSuccess())
+	{
+		AddError(DiffResult.Message);
+		return false;
+	}
+
+	const FString CommentPath = FString::Printf(TEXT("/Body/EditorLayout/Comments/%s"), *CommentId);
+	TestFalse(TEXT("omitted Color does not keep comment changed"), DiffPayloadHasChangedPathPrefix(DiffResult.Payload, CommentPath));
+	TestFalse(TEXT("optional comment Color diff does not emit changed semantic tree entries"), DiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
 	return true;
 }
 

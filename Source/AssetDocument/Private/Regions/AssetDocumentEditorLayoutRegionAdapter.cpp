@@ -45,7 +45,9 @@ struct FEditorLayoutCommentSpec
 
 struct FEditorLayoutSpec
 {
+	bool bHasNodes = false;
 	TArray<FEditorLayoutNodeSpec> Nodes;
+	bool bHasComments = false;
 	TArray<FEditorLayoutCommentSpec> Comments;
 };
 
@@ -334,7 +336,8 @@ FAssetDocumentCapabilityResult ParseLayout(
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
-	if (Object->TryGetArrayField(NodesField, Nodes) && Nodes)
+	OutSpec.bHasNodes = Object->HasField(NodesField);
+	if (OutSpec.bHasNodes && Object->TryGetArrayField(NodesField, Nodes) && Nodes)
 	{
 		TSet<FString> SeenNodeIds;
 		for (int32 Index = 0; Index < Nodes->Num(); ++Index)
@@ -353,13 +356,14 @@ FAssetDocumentCapabilityResult ParseLayout(
 			OutSpec.Nodes.Add(MoveTemp(NodeSpec));
 		}
 	}
-	else if (Object->HasField(NodesField))
+	else if (OutSpec.bHasNodes)
 	{
 		return Failure(JoinPath(LayoutPath, NodesField), TEXT("InvalidEditorLayoutNodes"), TEXT("EditorLayout Nodes must be an array"));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Comments = nullptr;
-	if (Object->TryGetArrayField(CommentsField, Comments) && Comments)
+	OutSpec.bHasComments = Object->HasField(CommentsField);
+	if (OutSpec.bHasComments && Object->TryGetArrayField(CommentsField, Comments) && Comments)
 	{
 		TSet<FString> SeenCommentIds;
 		for (int32 Index = 0; Index < Comments->Num(); ++Index)
@@ -378,12 +382,46 @@ FAssetDocumentCapabilityResult ParseLayout(
 			OutSpec.Comments.Add(MoveTemp(CommentSpec));
 		}
 	}
-	else if (Object->HasField(CommentsField))
+	else if (OutSpec.bHasComments)
 	{
 		return Failure(JoinPath(LayoutPath, CommentsField), TEXT("InvalidEditorLayoutComments"), TEXT("EditorLayout Comments must be an array"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Parsed EditorLayout"));
+}
+
+const TArray<TSharedPtr<FJsonValue>>* GetLayoutArray(const TSharedPtr<FJsonValue>& LayoutValue, const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject> Layout = LayoutValue.IsValid() && LayoutValue->Type == EJson::Object ? LayoutValue->AsObject() : nullptr;
+	if (!Layout.IsValid())
+	{
+		return nullptr;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+	return Layout->TryGetArrayField(FieldName, Values) ? Values : nullptr;
+}
+
+TSharedPtr<FJsonObject> FindObjectByStringId(
+	const TArray<TSharedPtr<FJsonValue>>* Values,
+	const FString& FieldName,
+	const FString& Id)
+{
+	if (!Values)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Value : *Values)
+	{
+		const TSharedPtr<FJsonObject> Object = Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+		FString CandidateId;
+		if (Object.IsValid() && Object->TryGetStringField(FieldName, CandidateId) && CandidateId == Id)
+		{
+			return Object;
+		}
+	}
+	return nullptr;
 }
 
 TSharedPtr<FJsonObject> MakePosition(int32 X, int32 Y)
@@ -634,6 +672,10 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	{
 		return Result;
 	}
+	if (!Spec.bHasNodes && !Spec.bHasComments)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Sparse EditorLayout had no managed fields to apply"));
+	}
 
 	FAssetDocumentEditorLayoutGraphState GraphState;
 	if (!Hooks.PrepareGraphForApply)
@@ -669,65 +711,68 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 		}
 	}
 
-	TMap<FGuid, UEdGraphNode_Comment*> ExistingCommentsByGuid;
-	for (UEdGraphNode* GraphNode : GraphState.Graph->Nodes)
+	if (Spec.bHasComments)
 	{
-		if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(GraphNode))
+		TMap<FGuid, UEdGraphNode_Comment*> ExistingCommentsByGuid;
+		for (UEdGraphNode* GraphNode : GraphState.Graph->Nodes)
 		{
-			ExistingCommentsByGuid.Add(CommentNode->NodeGuid, CommentNode);
-		}
-	}
-
-	TSet<FGuid> DesiredCommentGuids;
-	for (const FEditorLayoutCommentSpec& Comment : Spec.Comments)
-	{
-		DesiredCommentGuids.Add(Comment.Guid);
-		UEdGraphNode_Comment* CommentNode = ExistingCommentsByGuid.FindRef(Comment.Guid);
-		if (!CommentNode && !Context.bIsDryRun)
-		{
-			CommentNode = NewObject<UEdGraphNode_Comment>(GraphState.Graph);
-			CommentNode->NodeGuid = Comment.Guid;
-			GraphState.Graph->AddNode(CommentNode, false, false);
-			bOutChanged = true;
-		}
-		if (!CommentNode)
-		{
-			bOutChanged = true;
-			continue;
-		}
-
-		const bool bCommentChanged =
-			CommentNode->NodeComment != Comment.Text
-			|| CommentNode->NodePosX != Comment.X
-			|| CommentNode->NodePosY != Comment.Y
-			|| CommentNode->NodeWidth != Comment.Width
-			|| CommentNode->NodeHeight != Comment.Height
-			|| (Comment.bHasColor && CommentNode->CommentColor != Comment.Color);
-		bOutChanged = bOutChanged || bCommentChanged;
-		if (!Context.bIsDryRun)
-		{
-			CommentNode->Modify();
-			CommentNode->NodeGuid = Comment.Guid;
-			CommentNode->NodeComment = Comment.Text;
-			CommentNode->NodePosX = Comment.X;
-			CommentNode->NodePosY = Comment.Y;
-			CommentNode->NodeWidth = Comment.Width;
-			CommentNode->NodeHeight = Comment.Height;
-			if (Comment.bHasColor)
+			if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(GraphNode))
 			{
-				CommentNode->CommentColor = Comment.Color;
+				ExistingCommentsByGuid.Add(CommentNode->NodeGuid, CommentNode);
 			}
 		}
-	}
 
-	for (const TPair<FGuid, UEdGraphNode_Comment*>& Existing : ExistingCommentsByGuid)
-	{
-		if (!DesiredCommentGuids.Contains(Existing.Key))
+		TSet<FGuid> DesiredCommentGuids;
+		for (const FEditorLayoutCommentSpec& Comment : Spec.Comments)
 		{
-			bOutChanged = true;
-			if (!Context.bIsDryRun && Existing.Value)
+			DesiredCommentGuids.Add(Comment.Guid);
+			UEdGraphNode_Comment* CommentNode = ExistingCommentsByGuid.FindRef(Comment.Guid);
+			if (!CommentNode && !Context.bIsDryRun)
 			{
-				GraphState.Graph->RemoveNode(Existing.Value);
+				CommentNode = NewObject<UEdGraphNode_Comment>(GraphState.Graph);
+				CommentNode->NodeGuid = Comment.Guid;
+				GraphState.Graph->AddNode(CommentNode, false, false);
+				bOutChanged = true;
+			}
+			if (!CommentNode)
+			{
+				bOutChanged = true;
+				continue;
+			}
+
+			const bool bCommentChanged =
+				CommentNode->NodeComment != Comment.Text
+				|| CommentNode->NodePosX != Comment.X
+				|| CommentNode->NodePosY != Comment.Y
+				|| CommentNode->NodeWidth != Comment.Width
+				|| CommentNode->NodeHeight != Comment.Height
+				|| (Comment.bHasColor && CommentNode->CommentColor != Comment.Color);
+			bOutChanged = bOutChanged || bCommentChanged;
+			if (!Context.bIsDryRun)
+			{
+				CommentNode->Modify();
+				CommentNode->NodeGuid = Comment.Guid;
+				CommentNode->NodeComment = Comment.Text;
+				CommentNode->NodePosX = Comment.X;
+				CommentNode->NodePosY = Comment.Y;
+				CommentNode->NodeWidth = Comment.Width;
+				CommentNode->NodeHeight = Comment.Height;
+				if (Comment.bHasColor)
+				{
+					CommentNode->CommentColor = Comment.Color;
+				}
+			}
+		}
+
+		for (const TPair<FGuid, UEdGraphNode_Comment*>& Existing : ExistingCommentsByGuid)
+		{
+			if (!DesiredCommentGuids.Contains(Existing.Key))
+			{
+				bOutChanged = true;
+				if (!Context.bIsDryRun && Existing.Value)
+				{
+					GraphState.Graph->RemoveNode(Existing.Value);
+				}
 			}
 		}
 	}
@@ -769,6 +814,10 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::DiffRegi
 	{
 		return Result;
 	}
+	if (!DesiredSpec.bHasNodes && !DesiredSpec.bHasComments)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Sparse EditorLayout had no managed fields to diff"));
+	}
 
 	if (Hooks.CollectSemanticNodeIds)
 	{
@@ -792,24 +841,53 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::DiffRegi
 		return Result;
 	}
 
-	TSharedPtr<FJsonObject> DesiredObject = MakeShared<FJsonObject>();
-	TArray<TSharedPtr<FJsonValue>> DesiredNodes;
-	for (const FEditorLayoutNodeSpec& Node : DesiredSpec.Nodes)
+	TSharedPtr<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
+	const TArray<TSharedPtr<FJsonValue>>* CurrentNodes = GetLayoutArray(CurrentValue, NodesField);
+	if (DesiredSpec.bHasNodes)
 	{
-		DesiredNodes.Add(NodeSpecValue(Node));
+		CurrentObject->SetArrayField(NodesField, CurrentNodes ? *CurrentNodes : TArray<TSharedPtr<FJsonValue>>());
 	}
-	DesiredObject->SetArrayField(NodesField, DesiredNodes);
+	const TArray<TSharedPtr<FJsonValue>>* CurrentComments = GetLayoutArray(CurrentValue, CommentsField);
+	if (DesiredSpec.bHasComments)
+	{
+		CurrentObject->SetArrayField(CommentsField, CurrentComments ? *CurrentComments : TArray<TSharedPtr<FJsonValue>>());
+	}
 
-	TArray<TSharedPtr<FJsonValue>> DesiredComments;
-	for (const FEditorLayoutCommentSpec& Comment : DesiredSpec.Comments)
+	TSharedPtr<FJsonObject> DesiredObject = MakeShared<FJsonObject>();
+	if (DesiredSpec.bHasNodes)
 	{
-		DesiredComments.Add(CommentSpecValue(Comment));
+		TArray<TSharedPtr<FJsonValue>> DesiredNodes;
+		for (const FEditorLayoutNodeSpec& Node : DesiredSpec.Nodes)
+		{
+			DesiredNodes.Add(NodeSpecValue(Node));
+		}
+		DesiredObject->SetArrayField(NodesField, DesiredNodes);
 	}
-	DesiredObject->SetArrayField(CommentsField, DesiredComments);
+
+	if (DesiredSpec.bHasComments)
+	{
+		TArray<TSharedPtr<FJsonValue>> DesiredComments;
+		for (const FEditorLayoutCommentSpec& Comment : DesiredSpec.Comments)
+		{
+			const TSharedPtr<FJsonValue> DesiredCommentValue = CommentSpecValue(Comment);
+			const TSharedPtr<FJsonObject> DesiredCommentObject = DesiredCommentValue.IsValid() ? DesiredCommentValue->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject> CurrentCommentObject = FindObjectByStringId(CurrentComments, IdField, Comment.Id);
+			if (!Comment.bHasColor && DesiredCommentObject.IsValid() && CurrentCommentObject.IsValid())
+			{
+				const TSharedPtr<FJsonValue> CurrentColor = CurrentCommentObject->TryGetField(ColorField);
+				if (CurrentColor.IsValid())
+				{
+					DesiredCommentObject->SetField(ColorField, CurrentColor);
+				}
+			}
+			DesiredComments.Add(DesiredCommentValue);
+		}
+		DesiredObject->SetArrayField(CommentsField, DesiredComments);
+	}
 
 	TMap<FString, TSharedPtr<FJsonValue>> CurrentValues;
 	TMap<FString, TSharedPtr<FJsonValue>> DesiredValues;
-	CollectLayoutDiffValues(CurrentValue, RegionPath(Context), CurrentValues);
+	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(CurrentObject), RegionPath(Context), CurrentValues);
 	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(DesiredObject), RegionPath(Context), DesiredValues);
 	AddMapDiffs(CurrentValues, DesiredValues, OutDiffEntries);
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed EditorLayout"));
