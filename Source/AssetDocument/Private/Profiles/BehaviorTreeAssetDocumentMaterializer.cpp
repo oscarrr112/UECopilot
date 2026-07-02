@@ -1019,26 +1019,160 @@ TArray<TSharedPtr<FJsonValue>> ExtractLogicArray(const TArray<FBTDecoratorLogic>
 	return Values;
 }
 
-FString IdForNode(const UBTNode* Node)
+struct FBehaviorTreeExtractContext
+{
+	TMap<const UBTNode*, FString> IdsByNode;
+};
+
+FString DisplayNameForNode(const UBTNode* Node)
+{
+	return Node ? Node->NodeName.TrimStartAndEnd() : FString();
+}
+
+void CountDisplayName(const UBTNode* Node, TMap<FString, int32>& InOutCounts)
+{
+	const FString DisplayName = DisplayNameForNode(Node);
+	if (!DisplayName.IsEmpty())
+	{
+		++InOutCounts.FindOrAdd(DisplayName);
+	}
+}
+
+const UBTNode* ChildNodeFromCompositeChild(const FBTCompositeChild& Child)
+{
+	return Child.ChildComposite ? Cast<UBTNode>(Child.ChildComposite) : Cast<UBTNode>(Child.ChildTask);
+}
+
+void GatherNodeDisplayNames(const UBTNode* Node, TMap<FString, int32>& InOutCounts)
+{
+	if (!Node)
+	{
+		return;
+	}
+
+	CountDisplayName(Node, InOutCounts);
+	const UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node);
+	if (!Composite)
+	{
+		return;
+	}
+
+	for (const UBTService* Service : Composite->Services)
+	{
+		CountDisplayName(Service, InOutCounts);
+	}
+
+	for (const FBTCompositeChild& Child : Composite->Children)
+	{
+		for (const UBTDecorator* Decorator : Child.Decorators)
+		{
+			CountDisplayName(Decorator, InOutCounts);
+		}
+		GatherNodeDisplayNames(ChildNodeFromCompositeChild(Child), InOutCounts);
+	}
+}
+
+FString UniqueObjectIdForNode(const UBTNode* Node)
 {
 	if (!Node)
 	{
 		return FString();
 	}
-	if (!Node->NodeName.IsEmpty())
+
+	const FString ObjectName = Node->GetName();
+	if (!ObjectName.IsEmpty())
 	{
-		return Node->NodeName;
+		return ObjectName;
 	}
-	return Node->GetName();
+
+	return Node->GetClass() ? Node->GetClass()->GetName() : FString(TEXT("BTNode"));
+}
+
+FString StableExtractIdForNode(const UBTNode* Node, const TMap<FString, int32>& DisplayNameCounts)
+{
+	const FString DisplayName = DisplayNameForNode(Node);
+	if (!DisplayName.IsEmpty() && DisplayNameCounts.FindRef(DisplayName) == 1)
+	{
+		return DisplayName;
+	}
+	return UniqueObjectIdForNode(Node);
+}
+
+void AssignExtractIds(const UBTNode* Node, const TMap<FString, int32>& DisplayNameCounts, FBehaviorTreeExtractContext& InOutContext)
+{
+	if (!Node)
+	{
+		return;
+	}
+
+	InOutContext.IdsByNode.Add(Node, StableExtractIdForNode(Node, DisplayNameCounts));
+	const UBTCompositeNode* Composite = Cast<UBTCompositeNode>(Node);
+	if (!Composite)
+	{
+		return;
+	}
+
+	for (const UBTService* Service : Composite->Services)
+	{
+		if (Service)
+		{
+			InOutContext.IdsByNode.Add(Service, StableExtractIdForNode(Service, DisplayNameCounts));
+		}
+	}
+
+	for (const FBTCompositeChild& Child : Composite->Children)
+	{
+		for (const UBTDecorator* Decorator : Child.Decorators)
+		{
+			if (Decorator)
+			{
+				InOutContext.IdsByNode.Add(Decorator, StableExtractIdForNode(Decorator, DisplayNameCounts));
+			}
+		}
+		AssignExtractIds(ChildNodeFromCompositeChild(Child), DisplayNameCounts, InOutContext);
+	}
+}
+
+FBehaviorTreeExtractContext BuildExtractContext(const UBehaviorTree* BehaviorTree)
+{
+	FBehaviorTreeExtractContext Context;
+	if (!BehaviorTree)
+	{
+		return Context;
+	}
+
+	TMap<FString, int32> DisplayNameCounts;
+	GatherNodeDisplayNames(BehaviorTree->RootNode, DisplayNameCounts);
+	for (const UBTDecorator* Decorator : BehaviorTree->RootDecorators)
+	{
+		CountDisplayName(Decorator, DisplayNameCounts);
+	}
+
+	AssignExtractIds(BehaviorTree->RootNode, DisplayNameCounts, Context);
+	for (const UBTDecorator* Decorator : BehaviorTree->RootDecorators)
+	{
+		if (Decorator)
+		{
+			Context.IdsByNode.Add(Decorator, StableExtractIdForNode(Decorator, DisplayNameCounts));
+		}
+	}
+	return Context;
+}
+
+FString IdForNode(const UBTNode* Node, const FBehaviorTreeExtractContext& Context)
+{
+	const FString* Id = Context.IdsByNode.Find(Node);
+	return Id ? *Id : StableExtractIdForNode(Node, {});
 }
 
 FAssetDocumentCapabilityResult ExtractAttachment(
 	UBTNode* Node,
 	const FString& Path,
+	const FBehaviorTreeExtractContext& ExtractContext,
 	TSharedPtr<FJsonObject>& OutJson)
 {
 	OutJson = MakeShared<FJsonObject>();
-	OutJson->SetStringField(IdField, IdForNode(Node));
+	OutJson->SetStringField(IdField, IdForNode(Node, ExtractContext));
 	OutJson->SetStringField(ClassField, ClassPathForOutput(Node ? Node->GetClass() : nullptr));
 
 	TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
@@ -1054,9 +1188,13 @@ FAssetDocumentCapabilityResult ExtractAttachment(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ExtractNode(UBTNode* Node, const FString& Path, TSharedPtr<FJsonObject>& OutJson)
+FAssetDocumentCapabilityResult ExtractNode(
+	UBTNode* Node,
+	const FString& Path,
+	const FBehaviorTreeExtractContext& ExtractContext,
+	TSharedPtr<FJsonObject>& OutJson)
 {
-	FAssetDocumentCapabilityResult Result = ExtractAttachment(Node, Path, OutJson);
+	FAssetDocumentCapabilityResult Result = ExtractAttachment(Node, Path, ExtractContext, OutJson);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1076,7 +1214,7 @@ FAssetDocumentCapabilityResult ExtractNode(UBTNode* Node, const FString& Path, T
 			continue;
 		}
 		TSharedPtr<FJsonObject> ServiceJson;
-		Result = ExtractAttachment(Service, JoinPath(JoinPath(Path, ServicesField), IdForNode(Service)), ServiceJson);
+		Result = ExtractAttachment(Service, JoinPath(JoinPath(Path, ServicesField), IdForNode(Service, ExtractContext)), ExtractContext, ServiceJson);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1095,7 +1233,7 @@ FAssetDocumentCapabilityResult ExtractNode(UBTNode* Node, const FString& Path, T
 		}
 
 		TSharedPtr<FJsonObject> ChildNodeJson;
-		Result = ExtractNode(ChildNode, JoinPath(JoinPath(Path, ChildrenField), IdForNode(ChildNode)), ChildNodeJson);
+		Result = ExtractNode(ChildNode, JoinPath(JoinPath(Path, ChildrenField), IdForNode(ChildNode, ExtractContext)), ExtractContext, ChildNodeJson);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1112,7 +1250,7 @@ FAssetDocumentCapabilityResult ExtractNode(UBTNode* Node, const FString& Path, T
 				continue;
 			}
 			TSharedPtr<FJsonObject> DecoratorJson;
-			Result = ExtractAttachment(Decorator, JoinPath(JoinPath(JoinPath(Path, ChildrenField), IdForNode(ChildNode)), DecoratorsField), DecoratorJson);
+			Result = ExtractAttachment(Decorator, JoinPath(JoinPath(JoinPath(Path, ChildrenField), IdForNode(ChildNode, ExtractContext)), DecoratorsField), ExtractContext, DecoratorJson);
 			if (!Result.bSuccess)
 			{
 				return Result;
@@ -1135,8 +1273,9 @@ FAssetDocumentCapabilityResult ExtractTreeObject(const UBehaviorTree* BehaviorTr
 		return FAssetDocumentCapabilityResult::Success();
 	}
 
+	const FBehaviorTreeExtractContext ExtractContext = BuildExtractContext(BehaviorTree);
 	TSharedPtr<FJsonObject> RootJson;
-	FAssetDocumentCapabilityResult Result = ExtractNode(BehaviorTree->RootNode, JoinPath(TEXT("/Body/Tree"), RootField), RootJson);
+	FAssetDocumentCapabilityResult Result = ExtractNode(BehaviorTree->RootNode, JoinPath(TEXT("/Body/Tree"), RootField), ExtractContext, RootJson);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -1151,7 +1290,7 @@ FAssetDocumentCapabilityResult ExtractTreeObject(const UBehaviorTree* BehaviorTr
 			continue;
 		}
 		TSharedPtr<FJsonObject> DecoratorJson;
-		Result = ExtractAttachment(Decorator, JoinPath(JoinPath(TEXT("/Body/Tree"), RootDecoratorsField), IdForNode(Decorator)), DecoratorJson);
+		Result = ExtractAttachment(Decorator, JoinPath(JoinPath(TEXT("/Body/Tree"), RootDecoratorsField), IdForNode(Decorator, ExtractContext)), ExtractContext, DecoratorJson);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -1219,6 +1358,17 @@ TSharedPtr<FJsonValue> ObjectValue(const TSharedPtr<FJsonObject>& Object)
 TSharedPtr<FJsonObject> ObjectFromValue(const TSharedPtr<FJsonValue>& Value)
 {
 	return Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+}
+
+TSharedPtr<FJsonValue> StringArrayValue(const TArray<FString>& Values)
+{
+	TArray<TSharedPtr<FJsonValue>> JsonValues;
+	JsonValues.Reserve(Values.Num());
+	for (const FString& Value : Values)
+	{
+		JsonValues.Add(MakeShared<FJsonValueString>(Value));
+	}
+	return MakeShared<FJsonValueArray>(JsonValues);
 }
 
 void AddMapDiffs(
@@ -1289,14 +1439,18 @@ void CollectNodeDiffValues(
 	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
 	if (Node->TryGetArrayField(ServicesField, Services) && Services)
 	{
+		TArray<FString> ServiceOrder;
 		for (const TSharedPtr<FJsonValue>& ServiceValue : *Services)
 		{
 			TSharedPtr<FJsonObject> Service = ObjectFromValue(ServiceValue);
 			if (Service.IsValid())
 			{
-				CollectAttachmentDiffValue(Service, ServicePath(Context, Id, Service->GetStringField(IdField)), OutMap);
+				const FString ServiceId = Service->GetStringField(IdField);
+				ServiceOrder.Add(ServiceId);
+				CollectAttachmentDiffValue(Service, ServicePath(Context, Id, ServiceId), OutMap);
 			}
 		}
+		OutMap.Add(JoinPath(NodePath(Context, Id), ServicesField), StringArrayValue(ServiceOrder));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
@@ -1305,6 +1459,7 @@ void CollectNodeDiffValues(
 		return;
 	}
 
+	TArray<FString> ChildOrder;
 	for (const TSharedPtr<FJsonValue>& EdgeValue : *Children)
 	{
 		TSharedPtr<FJsonObject> Edge = ObjectFromValue(EdgeValue);
@@ -1315,6 +1470,7 @@ void CollectNodeDiffValues(
 		}
 
 		const FString ChildId = Child->GetStringField(IdField);
+		ChildOrder.Add(ChildId);
 		const FString EdgePath = ChildEdgePath(Context, Id, ChildId);
 		TSharedPtr<FJsonObject> EdgeIdentity = MakeShared<FJsonObject>();
 		EdgeIdentity->SetStringField(ChildField, ChildId);
@@ -1323,14 +1479,18 @@ void CollectNodeDiffValues(
 		const TArray<TSharedPtr<FJsonValue>>* Decorators = nullptr;
 		if (Edge->TryGetArrayField(DecoratorsField, Decorators) && Decorators)
 		{
+			TArray<FString> DecoratorOrder;
 			for (const TSharedPtr<FJsonValue>& DecoratorValue : *Decorators)
 			{
 				TSharedPtr<FJsonObject> Decorator = ObjectFromValue(DecoratorValue);
 				if (Decorator.IsValid())
 				{
-					CollectAttachmentDiffValue(Decorator, EdgeDecoratorPath(Context, Id, ChildId, Decorator->GetStringField(IdField)), OutMap);
+					const FString DecoratorId = Decorator->GetStringField(IdField);
+					DecoratorOrder.Add(DecoratorId);
+					CollectAttachmentDiffValue(Decorator, EdgeDecoratorPath(Context, Id, ChildId, DecoratorId), OutMap);
 				}
 			}
+			OutMap.Add(JoinPath(EdgePath, DecoratorsField), StringArrayValue(DecoratorOrder));
 		}
 
 		const TArray<TSharedPtr<FJsonValue>>* Logic = nullptr;
@@ -1344,6 +1504,7 @@ void CollectNodeDiffValues(
 
 		CollectNodeDiffValues(Context, Child, OutMap);
 	}
+	OutMap.Add(JoinPath(NodePath(Context, Id), ChildrenField), StringArrayValue(ChildOrder));
 }
 
 void CollectTreeDiffValues(
@@ -1365,14 +1526,18 @@ void CollectTreeDiffValues(
 	const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
 	if (Tree->TryGetArrayField(RootDecoratorsField, RootDecorators) && RootDecorators)
 	{
+		TArray<FString> RootDecoratorOrder;
 		for (const TSharedPtr<FJsonValue>& DecoratorValue : *RootDecorators)
 		{
 			TSharedPtr<FJsonObject> Decorator = ObjectFromValue(DecoratorValue);
 			if (Decorator.IsValid())
 			{
-				CollectAttachmentDiffValue(Decorator, RootDecoratorPath(Context, Decorator->GetStringField(IdField)), OutMap);
+				const FString DecoratorId = Decorator->GetStringField(IdField);
+				RootDecoratorOrder.Add(DecoratorId);
+				CollectAttachmentDiffValue(Decorator, RootDecoratorPath(Context, DecoratorId), OutMap);
 			}
 		}
+		OutMap.Add(JoinPath(RegionPath(Context), RootDecoratorsField), StringArrayValue(RootDecoratorOrder));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* RootLogic = nullptr;
