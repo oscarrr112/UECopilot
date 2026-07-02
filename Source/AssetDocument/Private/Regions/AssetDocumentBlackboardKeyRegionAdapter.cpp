@@ -162,6 +162,40 @@ FAssetDocumentCapabilityResult BuildBlackboardEntry(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Built blackboard key entry"));
 }
 
+FBlackboardEntry MakeBlackboardEntryFromResolvedSpec(
+	UBlackboardKeyType* KeyType,
+	const FResolvedBlackboardKeySpec& ResolvedSpec)
+{
+	FBlackboardEntry Entry;
+	Entry.EntryName = ResolvedSpec.Spec.Name;
+	Entry.KeyType = KeyType;
+	Entry.EntryDescription = ResolvedSpec.Spec.Description;
+	Entry.bInstanceSynced = ResolvedSpec.Spec.bInstanceSynced;
+	return Entry;
+}
+
+FAssetDocumentCapabilityResult BuildSemanticKeyJson(
+	const FResolvedBlackboardKeySpec& ResolvedSpec,
+	TSharedPtr<FJsonObject>& OutJson)
+{
+	UBlackboardKeyType* KeyType = NewObject<UBlackboardKeyType>(
+		GetTransientPackage(),
+		ResolvedSpec.Metadata.KeyTypeClass,
+		NAME_None,
+		RF_Transient);
+	if (!KeyType)
+	{
+		return FAssetDocumentJsonRegionUtils::Failure(
+			ResolvedSpec.Path,
+			TEXT("BlackboardKeyTypePreviewFailed"),
+			FString::Printf(TEXT("Failed to create preview blackboard key type for '%s'"), *ResolvedSpec.Spec.Name.ToString()));
+	}
+
+	ApplyResolvedMetadataToKeyType(KeyType, ResolvedSpec.Metadata);
+	OutJson = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(MakeBlackboardEntryFromResolvedSpec(KeyType, ResolvedSpec));
+	return FAssetDocumentCapabilityResult::Success(TEXT("Built semantic blackboard key JSON"));
+}
+
 TSharedPtr<FJsonValue> MakeObjectValue(const TSharedRef<FJsonObject>& Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
@@ -277,7 +311,13 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		TArray<TSharedRef<FJsonObject>> DesiredElements;
 		for (const FResolvedBlackboardKeySpec& ResolvedSpec : ResolvedSpecs)
 		{
-			DesiredElements.Add(ResolvedSpec.Spec.CanonicalJson.ToSharedRef());
+			TSharedPtr<FJsonObject> DesiredElement;
+			Result = BuildSemanticKeyJson(ResolvedSpec, DesiredElement);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			DesiredElements.Add(DesiredElement.ToSharedRef());
 		}
 
 		const FString CurrentJson = FAssetDocumentJsonRegionUtils::JsonValueToComparableString(

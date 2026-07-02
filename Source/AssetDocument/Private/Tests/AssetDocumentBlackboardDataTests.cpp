@@ -234,6 +234,51 @@ int32 CountBlackboardKeyTypeChildren(UBlackboardData* Blackboard)
 	}, true);
 	return Count;
 }
+
+bool ExpectRepeatedApplyPreservesSingleKeyObject(
+	FAutomationTestBase& Test,
+	const FString& Target,
+	const TSharedRef<FJsonObject>& KeyJson)
+{
+	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+		Target,
+		MakeBlackboardDataBody(nullptr, {KeyJson}));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult FirstApplyResult = Service.Apply(MakeApplyRequest(Document));
+	Test.TestTrue(TEXT("Initial blackboard apply succeeds"), FirstApplyResult.IsSuccess());
+	if (!FirstApplyResult.IsSuccess())
+	{
+		Test.AddError(FirstApplyResult.Message);
+		return false;
+	}
+
+	UBlackboardData* Blackboard = LoadBlackboardForTarget(Target);
+	Test.TestNotNull(TEXT("Blackboard loads after initial apply"), Blackboard);
+	if (!Blackboard || Blackboard->Keys.Num() != 1)
+	{
+		return false;
+	}
+
+	UBlackboardKeyType* FirstKeyType = Blackboard->Keys[0].KeyType;
+	const int32 FirstChildCount = CountBlackboardKeyTypeChildren(Blackboard);
+
+	const FAssetDocumentResult SecondApplyResult = Service.Apply(MakeApplyRequest(Document));
+	Test.TestTrue(TEXT("Repeated identical blackboard apply succeeds"), SecondApplyResult.IsSuccess());
+	if (!SecondApplyResult.IsSuccess())
+	{
+		Test.AddError(SecondApplyResult.Message);
+		return false;
+	}
+
+	Test.TestEqual(TEXT("Repeated apply preserves key count"), Blackboard->Keys.Num(), 1);
+	if (Blackboard->Keys.Num() == 1)
+	{
+		Test.TestTrue(TEXT("Repeated apply preserves key type object"), Blackboard->Keys[0].KeyType == FirstKeyType);
+	}
+	Test.TestEqual(TEXT("Repeated apply does not create extra key type children"), CountBlackboardKeyTypeChildren(Blackboard), FirstChildCount);
+	return true;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1116,6 +1161,42 @@ bool FAssetDocumentBlackboardDataRepeatedApplyPreservesKeyObjectsTest::RunTest(c
 	}
 	TestEqual(TEXT("Repeated apply does not create extra key type children"), CountBlackboardKeyTypeChildren(Blackboard), FirstChildCount);
 	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataRepeatedApplyPreservesExplicitKeyTypeClassTest,
+	"AssetFactory.AssetDocument.BlackboardData.RepeatedApplyPreservesExplicitKeyTypeClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataRepeatedApplyPreservesExplicitKeyTypeClassTest::RunTest(const FString&)
+{
+	return ExpectRepeatedApplyPreservesSingleKeyObject(
+		*this,
+		TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesExplicitKeyTypeClass"),
+		MakeBlackboardKeyJson(
+			TEXT("ExplicitName"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Name")));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataRepeatedApplyPreservesMatchingTypeAndKeyTypeClassTest,
+	"AssetFactory.AssetDocument.BlackboardData.RepeatedApplyPreservesMatchingTypeAndKeyTypeClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataRepeatedApplyPreservesMatchingTypeAndKeyTypeClassTest::RunTest(const FString&)
+{
+	return ExpectRepeatedApplyPreservesSingleKeyObject(
+		*this,
+		TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesMatchingTypeAndKeyTypeClass"),
+		MakeBlackboardKeyJson(
+			TEXT("ExplicitName"),
+			TEXT("Name"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Name")));
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
