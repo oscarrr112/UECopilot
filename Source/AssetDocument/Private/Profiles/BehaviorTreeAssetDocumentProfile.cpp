@@ -202,6 +202,23 @@ FAssetDocumentCapabilityResult ValidateStrictEmptyTree(const TSharedPtr<FJsonObj
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated strict empty BehaviorTree Tree"));
 }
 
+bool IsStrictEmptyTreeObject(const TSharedPtr<FJsonObject>& Tree)
+{
+	return ValidateStrictEmptyTree(Tree, TEXT("/Body/Tree")).bSuccess;
+}
+
+bool IsStrictEmptyTreeValue(const TSharedPtr<FJsonValue>& Value, TSharedPtr<FJsonObject>& OutTree)
+{
+	OutTree.Reset();
+	if (!Value.IsValid() || Value->Type != EJson::Object || !Value->AsObject().IsValid())
+	{
+		return false;
+	}
+
+	OutTree = Value->AsObject();
+	return IsStrictEmptyTreeObject(OutTree);
+}
+
 TSharedPtr<FJsonValue> MakeEmptyTreeValue()
 {
 	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
@@ -388,6 +405,137 @@ public:
 			CurrentValue,
 			DesiredCanonicalValue);
 		return FAssetDocumentCapabilityResult::Success(TEXT("Diffed BehaviorTree Blackboard"));
+	}
+
+private:
+	FName Name;
+};
+
+FAssetDocumentTreeRegionAdapter MakeBehaviorTreeSemanticTreeAdapter(FName Name)
+{
+	FAssetDocumentTreeRegionAdapterConfig TreeConfig;
+	TreeConfig.Name = Name;
+	FAssetDocumentTreeRegionAdapterHooks TreeHooks;
+	TreeHooks.ValidateTree = &FBehaviorTreeAssetDocumentMaterializer::ValidateTree;
+	TreeHooks.ApplyTree = &FBehaviorTreeAssetDocumentMaterializer::ApplyTree;
+	TreeHooks.ExtractTree = &FBehaviorTreeAssetDocumentMaterializer::ExtractTree;
+	TreeHooks.DiffTree = &FBehaviorTreeAssetDocumentMaterializer::DiffTree;
+	return FAssetDocumentTreeRegionAdapter(TreeConfig, MoveTemp(TreeHooks));
+}
+
+class FBehaviorTreeSemanticTreeRegionAdapter final : public IAssetDocumentRegionAdapter
+{
+public:
+	explicit FBehaviorTreeSemanticTreeRegionAdapter(FName InName)
+		: Name(InName)
+	{
+	}
+
+	virtual FName GetName() const override
+	{
+		return Name;
+	}
+
+	virtual bool SupportsRegion(const FAssetDocumentRegionContext& Context) const override
+	{
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		return TreeAdapter.SupportsRegion(Context);
+	}
+
+	virtual TSharedRef<FJsonObject> GetSchemaHint(const FAssetDocumentRegionContext& Context) const override
+	{
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		TSharedRef<FJsonObject> Schema = TreeAdapter.GetSchemaHint(Context);
+		Schema->SetStringField(TEXT("EmptyTree"), TEXT("Root={} with empty RootDecorators and RootDecoratorLogic"));
+		return Schema;
+	}
+
+	virtual FAssetDocumentCapabilityResult ValidateRegion(
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue) const override
+	{
+		TSharedPtr<FJsonObject> Tree;
+		if (IsStrictEmptyTreeValue(DesiredValue, Tree))
+		{
+			return FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, Tree.ToSharedRef());
+		}
+
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		return TreeAdapter.ValidateRegion(Context, DesiredValue);
+	}
+
+	virtual FAssetDocumentCapabilityResult ApplyRegion(
+		FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		bool& bOutChanged) override
+	{
+		TSharedPtr<FJsonObject> Tree;
+		if (IsStrictEmptyTreeValue(DesiredValue, Tree))
+		{
+			return FBehaviorTreeAssetDocumentMaterializer::ApplyTree(Context, Tree.ToSharedRef(), bOutChanged);
+		}
+
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		return TreeAdapter.ApplyRegion(Context, DesiredValue, bOutChanged);
+	}
+
+	virtual FAssetDocumentCapabilityResult ExtractRegion(
+		const FAssetDocumentRegionContext& Context,
+		TSharedPtr<FJsonValue>& OutCurrentValue) const override
+	{
+		TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(Context, Tree);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (IsStrictEmptyTreeObject(Tree))
+		{
+			OutCurrentValue = MakeShared<FJsonValueObject>(Tree);
+			return FAssetDocumentCapabilityResult::Success(TEXT("Extracted empty BehaviorTree Tree"));
+		}
+
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		return TreeAdapter.ExtractRegion(Context, OutCurrentValue);
+	}
+
+	virtual FAssetDocumentCapabilityResult DiffRegion(
+		const FAssetDocumentRegionContext& Context,
+		const TSharedPtr<FJsonValue>& DesiredValue,
+		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const override
+	{
+		TSharedPtr<FJsonObject> DesiredTree;
+		if (IsStrictEmptyTreeValue(DesiredValue, DesiredTree))
+		{
+			TSharedRef<FJsonObject> CurrentTree = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityResult Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(Context, CurrentTree);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+
+			const bool bCurrentEmpty = IsStrictEmptyTreeObject(CurrentTree);
+			if (bCurrentEmpty)
+			{
+				const TSharedPtr<FJsonValue> CurrentValue = MakeShared<FJsonValueObject>(CurrentTree);
+				const TSharedPtr<FJsonValue> DesiredCanonicalValue = MakeEmptyTreeValue();
+				const bool bSame =
+					FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) ==
+					FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredCanonicalValue);
+				FAssetDocumentJsonRegionUtils::AddDiffEntry(
+					OutDiffEntries,
+					RegionPath(Context),
+					bSame ? TEXT("unchanged") : TEXT("changed"),
+					CurrentValue,
+					DesiredCanonicalValue);
+				return FAssetDocumentCapabilityResult::Success(TEXT("Diffed empty BehaviorTree Tree"));
+			}
+
+			return FBehaviorTreeAssetDocumentMaterializer::DiffTree(Context, DesiredTree.ToSharedRef(), OutDiffEntries);
+		}
+
+		FAssetDocumentTreeRegionAdapter TreeAdapter = MakeBehaviorTreeSemanticTreeAdapter(Name);
+		return TreeAdapter.DiffRegion(Context, DesiredValue, OutDiffEntries);
 	}
 
 private:
@@ -591,14 +739,7 @@ FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 	TFunctionRef<FAssetDocumentCapabilityResult(const FAssetDocumentBodyRegionDispatcher&)> Dispatch)
 {
 	FBehaviorTreeBlackboardRegionAdapter BlackboardAdapter(FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName());
-	FAssetDocumentTreeRegionAdapterConfig TreeConfig;
-	TreeConfig.Name = FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName();
-	FAssetDocumentTreeRegionAdapterHooks TreeHooks;
-	TreeHooks.ValidateTree = &FBehaviorTreeAssetDocumentMaterializer::ValidateTree;
-	TreeHooks.ApplyTree = &FBehaviorTreeAssetDocumentMaterializer::ApplyTree;
-	TreeHooks.ExtractTree = &FBehaviorTreeAssetDocumentMaterializer::ExtractTree;
-	TreeHooks.DiffTree = &FBehaviorTreeAssetDocumentMaterializer::DiffTree;
-	FAssetDocumentTreeRegionAdapter TreeAdapter(TreeConfig, MoveTemp(TreeHooks));
+	FBehaviorTreeSemanticTreeRegionAdapter TreeAdapter(FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName());
 	FBehaviorTreeStrictEmptyObjectRegionAdapter EditorLayoutAdapter(FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName());
 
 	TMap<FName, IAssetDocumentRegionAdapter*> Adapters;

@@ -371,22 +371,70 @@ FAssetDocumentCapabilityResult ValidateDecoratorLogicShape(
 	const TArray<FBehaviorTreeDecoratorLogicSpec>& Logic,
 	const FString& LogicPath)
 {
-	for (int32 Index = 0; Index < Logic.Num(); ++Index)
+	if (Logic.Num() == 0)
 	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TFunction<FAssetDocumentCapabilityResult(int32&)> ConsumeExpression;
+	ConsumeExpression = [&](int32& Index) -> FAssetDocumentCapabilityResult
+	{
+		if (!Logic.IsValidIndex(Index))
+		{
+			return Failure(LogicPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Decorator logic expression does not contain enough operands"));
+		}
+
 		const FBehaviorTreeDecoratorLogicSpec& Entry = Logic[Index];
 		const FString EntryPath = JoinPath(LogicPath, Index);
-		if (Entry.Operation == EBTDecoratorLogic::Test && Entry.Number >= Decorators.Num())
+		++Index;
+
+		if (Entry.Operation == EBTDecoratorLogic::Test)
 		{
-			return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Decorator logic Test references a missing decorator index"));
+			if (Entry.Number >= Decorators.Num())
+			{
+				return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Decorator logic Test references a missing decorator index"));
+			}
+			return FAssetDocumentCapabilityResult::Success();
 		}
-		if ((Entry.Operation == EBTDecoratorLogic::And || Entry.Operation == EBTDecoratorLogic::Or) && Entry.Number < 2)
+
+		if (Entry.Operation == EBTDecoratorLogic::Not)
 		{
-			return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("And/Or decorator logic must span at least two entries"));
+			if (Entry.Number != 1)
+			{
+				return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Not decorator logic must span exactly one entry"));
+			}
+			return ConsumeExpression(Index);
 		}
-		if (Entry.Operation == EBTDecoratorLogic::Not && Entry.Number != 1)
+
+		if (Entry.Operation == EBTDecoratorLogic::And || Entry.Operation == EBTDecoratorLogic::Or)
 		{
-			return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Not decorator logic must span exactly one entry"));
+			if (Entry.Number < 2)
+			{
+				return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("And/Or decorator logic must span at least two entries"));
+			}
+			for (uint16 OperandIndex = 0; OperandIndex < Entry.Number; ++OperandIndex)
+			{
+				FAssetDocumentCapabilityResult Result = ConsumeExpression(Index);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			return FAssetDocumentCapabilityResult::Success();
 		}
+
+		return Failure(EntryPath, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Unsupported decorator logic operation"));
+	};
+
+	int32 ConsumedIndex = 0;
+	FAssetDocumentCapabilityResult Result = ConsumeExpression(ConsumedIndex);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (ConsumedIndex != Logic.Num())
+	{
+		return Failure(JoinPath(LogicPath, ConsumedIndex), TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("Decorator logic expression has unconsumed entries"));
 	}
 	return FAssetDocumentCapabilityResult::Success();
 }
@@ -507,6 +555,15 @@ FAssetDocumentCapabilityResult ParseNode(
 	bool bIsRoot,
 	FBehaviorTreeNodeSpec& OutSpec)
 {
+	if (Object->HasField(DecoratorsField))
+	{
+		return Failure(JoinPath(Path, DecoratorsField), TEXT("UnsupportedBehaviorTreeNodeDecorators"), TEXT("BehaviorTree node-level Decorators are not part of the authored schema; use root or child-edge decorators"));
+	}
+	if (Object->HasField(DecoratorLogicField))
+	{
+		return Failure(JoinPath(Path, DecoratorLogicField), TEXT("UnsupportedBehaviorTreeNodeDecorators"), TEXT("BehaviorTree node-level DecoratorLogic is not part of the authored schema; use root or child-edge decorator logic"));
+	}
+
 	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, IdField, JoinPath(Path, IdField), OutSpec.Id, TEXT("MissingTreeNodeId"));
 	if (!Result.bSuccess)
 	{
@@ -1195,7 +1252,25 @@ void CollectAttachmentDiffValue(
 	const FString& Path,
 	TMap<FString, TSharedPtr<FJsonValue>>& OutMap)
 {
-	OutMap.Add(Path, ObjectValue(Object));
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TSharedPtr<FJsonObject> OwnObject = MakeShared<FJsonObject>();
+	if (Object->HasField(IdField))
+	{
+		OwnObject->SetField(IdField, Object->TryGetField(IdField));
+	}
+	if (Object->HasField(ClassField))
+	{
+		OwnObject->SetField(ClassField, Object->TryGetField(ClassField));
+	}
+	if (Object->HasField(PropertiesField))
+	{
+		OwnObject->SetField(PropertiesField, Object->TryGetField(PropertiesField));
+	}
+	OutMap.Add(Path, ObjectValue(OwnObject));
 }
 
 void CollectNodeDiffValues(
@@ -1241,7 +1316,9 @@ void CollectNodeDiffValues(
 
 		const FString ChildId = Child->GetStringField(IdField);
 		const FString EdgePath = ChildEdgePath(Context, Id, ChildId);
-		OutMap.Add(EdgePath, ObjectValue(Edge));
+		TSharedPtr<FJsonObject> EdgeIdentity = MakeShared<FJsonObject>();
+		EdgeIdentity->SetStringField(ChildField, ChildId);
+		OutMap.Add(EdgePath, ObjectValue(EdgeIdentity));
 
 		const TArray<TSharedPtr<FJsonValue>>* Decorators = nullptr;
 		if (Edge->TryGetArrayField(DecoratorsField, Decorators) && Decorators)
