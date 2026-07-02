@@ -34,6 +34,18 @@ struct FAnimGraphOutputPoseSpec
 	FString Pin;
 };
 
+struct FAnimGraphOutputPoseLink
+{
+	FString Node;
+	FString Pin;
+};
+
+struct FPinLinkSnapshotEntry
+{
+	UEdGraphPin* Pin = nullptr;
+	TArray<UEdGraphPin*> LinkedPins;
+};
+
 FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
@@ -363,19 +375,91 @@ FAssetDocumentCapabilityResult FindResultPoseInputPin(UEdGraphNode* ResultNode, 
 	return ResultPinResult;
 }
 
-void BreakExistingLinks(UEdGraphPin* Pin, UEdGraphPin* PreservePin)
+bool BreakExistingLinks(UEdGraphPin* Pin, UEdGraphPin* PreservePin)
 {
 	if (!Pin)
 	{
-		return;
+		return false;
 	}
 
+	bool bChanged = false;
 	TArray<UEdGraphPin*> LinkedPins = Pin->LinkedTo;
 	for (UEdGraphPin* LinkedPin : LinkedPins)
 	{
 		if (LinkedPin && LinkedPin != PreservePin)
 		{
 			Pin->BreakLinkTo(LinkedPin);
+			bChanged = true;
+		}
+	}
+	return bChanged;
+}
+
+TArray<FPinLinkSnapshotEntry> SnapshotPinLinks(UEdGraphPin* FirstPin, UEdGraphPin* SecondPin)
+{
+	TArray<UEdGraphPin*> Pins;
+	if (FirstPin)
+	{
+		Pins.AddUnique(FirstPin);
+		for (UEdGraphPin* LinkedPin : FirstPin->LinkedTo)
+		{
+			Pins.AddUnique(LinkedPin);
+		}
+	}
+	if (SecondPin)
+	{
+		Pins.AddUnique(SecondPin);
+		for (UEdGraphPin* LinkedPin : SecondPin->LinkedTo)
+		{
+			Pins.AddUnique(LinkedPin);
+		}
+	}
+
+	TArray<FPinLinkSnapshotEntry> Snapshot;
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (!Pin)
+		{
+			continue;
+		}
+		FPinLinkSnapshotEntry Entry;
+		Entry.Pin = Pin;
+		Entry.LinkedPins = Pin->LinkedTo;
+		Snapshot.Add(MoveTemp(Entry));
+	}
+	return Snapshot;
+}
+
+void RestorePinLinks(const TArray<FPinLinkSnapshotEntry>& Snapshot)
+{
+	for (const FPinLinkSnapshotEntry& Entry : Snapshot)
+	{
+		if (!Entry.Pin)
+		{
+			continue;
+		}
+		TArray<UEdGraphPin*> LinkedPins = Entry.Pin->LinkedTo;
+		for (UEdGraphPin* LinkedPin : LinkedPins)
+		{
+			if (LinkedPin)
+			{
+				Entry.Pin->BreakLinkTo(LinkedPin);
+			}
+		}
+	}
+
+	for (const FPinLinkSnapshotEntry& Entry : Snapshot)
+	{
+		if (!Entry.Pin)
+		{
+			continue;
+		}
+		for (UEdGraphPin* LinkedPin : Entry.LinkedPins)
+		{
+			if (LinkedPin && !Entry.Pin->LinkedTo.Contains(LinkedPin))
+			{
+				Entry.Pin->MakeLinkTo(LinkedPin);
+			}
 		}
 	}
 }
@@ -431,6 +515,8 @@ FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 	}
 
 	const bool bAlreadyLinked = OutputPin && ResultPin && OutputPin->LinkedTo.Contains(ResultPin);
+	const TArray<FPinLinkSnapshotEntry> LinkSnapshot = SnapshotPinLinks(ResultPin, OutputPin);
+	bool bLinkTopologyChanged = false;
 	if (const UEdGraphSchema* Schema = Context.Graph ? Context.Graph->GetSchema() : nullptr)
 	{
 		const FPinConnectionResponse Response = Schema->CanCreateConnection(OutputPin, ResultPin);
@@ -441,22 +527,35 @@ FAssetDocumentCapabilityResult ConnectOutputPoseToResult(
 				TEXT("InvalidAnimGraphOutputPoseLink"),
 				FString::Printf(TEXT("AnimGraph result pose rejected OutputPose link: %s"), *Response.Message.ToString()));
 		}
-		BreakExistingLinks(ResultPin, OutputPin);
+		bLinkTopologyChanged |= BreakExistingLinks(ResultPin, OutputPin);
 		if (!bAlreadyLinked && !Schema->TryCreateConnection(OutputPin, ResultPin))
 		{
+			RestorePinLinks(LinkSnapshot);
 			return Failure(
 				CanonicalGraphPath,
 				TEXT("InvalidAnimGraphOutputPoseLink"),
 				TEXT("AnimGraph result pose rejected OutputPose link."));
 		}
+		if (!OutputPin->LinkedTo.Contains(ResultPin) || !ResultPin->LinkedTo.Contains(OutputPin))
+		{
+			RestorePinLinks(LinkSnapshot);
+			return Failure(
+				CanonicalGraphPath,
+				TEXT("InvalidAnimGraphOutputPoseLink"),
+				TEXT("AnimGraph result pose did not retain the requested OutputPose link."));
+		}
 	}
 	else if (!bAlreadyLinked && OutputPin && ResultPin)
 	{
-		BreakExistingLinks(ResultPin, OutputPin);
+		bLinkTopologyChanged |= BreakExistingLinks(ResultPin, OutputPin);
 		OutputPin->MakeLinkTo(ResultPin);
 	}
+	else
+	{
+		bLinkTopologyChanged |= BreakExistingLinks(ResultPin, OutputPin);
+	}
 
-	if (!bAlreadyLinked)
+	if (!bAlreadyLinked || bLinkTopologyChanged)
 	{
 		bOutChanged = true;
 	}
@@ -474,6 +573,40 @@ void SetOutputPoseMetadata(FAssetDocumentGraphSpec& Graph, const FString& NodeId
 	Graph.Metadata = MakeShared<FJsonValueObject>(Metadata);
 }
 
+void AddSkippedOutputPose(FAssetDocumentGraphSpec& Graph, TArray<FAnimGraphOutputPoseLink> Links)
+{
+	Links.Sort([](const FAnimGraphOutputPoseLink& Left, const FAnimGraphOutputPoseLink& Right)
+	{
+		const int32 NodeCompare = Left.Node.Compare(Right.Node, ESearchCase::CaseSensitive);
+		return NodeCompare == 0
+			? Left.Pin.Compare(Right.Pin, ESearchCase::CaseSensitive) < 0
+			: NodeCompare < 0;
+	});
+
+	TArray<TSharedPtr<FJsonValue>> Entries;
+	for (const FAnimGraphOutputPoseLink& Link : Links)
+	{
+		TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+		Entry->SetStringField(TEXT("Reason"), TEXT("AmbiguousAnimGraphOutputPoseLinks"));
+		Entry->SetStringField(TEXT("Node"), Link.Node);
+		Entry->SetStringField(TEXT("Pin"), Link.Pin);
+		Entries.Add(MakeShared<FJsonValueObject>(Entry));
+	}
+
+	TSharedPtr<FJsonObject> SkippedObject;
+	if (Graph.UnderscoreSkipped.IsValid() && Graph.UnderscoreSkipped->Type == EJson::Object)
+	{
+		SkippedObject = Graph.UnderscoreSkipped->AsObject();
+	}
+	if (!SkippedObject.IsValid())
+	{
+		SkippedObject = MakeShared<FJsonObject>();
+	}
+	SkippedObject->SetArrayField(OutputPoseField, MoveTemp(Entries));
+	Graph.UnderscoreSkipped = MakeShared<FJsonValueObject>(SkippedObject.ToSharedRef());
+	Graph.Metadata.Reset();
+}
+
 void ExtractOutputPoseFromResultLink(const FAssetDocumentAnimationGraphContext& Context, FAssetDocumentGraphSpec& Graph)
 {
 	UEdGraphNode* ResultNode = nullptr;
@@ -488,6 +621,7 @@ void ExtractOutputPoseFromResultLink(const FAssetDocumentAnimationGraphContext& 
 		return;
 	}
 
+	TArray<FAnimGraphOutputPoseLink> ManagedOutputLinks;
 	for (UEdGraphPin* LinkedPin : ResultPin->LinkedTo)
 	{
 		const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
@@ -497,9 +631,17 @@ void ExtractOutputPoseFromResultLink(const FAssetDocumentAnimationGraphContext& 
 			&& LinkedPin->Direction == EGPD_Output
 			&& !LinkedPin->PinName.IsNone())
 		{
-			SetOutputPoseMetadata(Graph, NodeId, LinkedPin->PinName.ToString());
-			return;
+			ManagedOutputLinks.Add({NodeId, LinkedPin->PinName.ToString()});
 		}
+	}
+
+	if (ManagedOutputLinks.Num() == 1)
+	{
+		SetOutputPoseMetadata(Graph, ManagedOutputLinks[0].Node, ManagedOutputLinks[0].Pin);
+	}
+	else if (ManagedOutputLinks.Num() > 1)
+	{
+		AddSkippedOutputPose(Graph, MoveTemp(ManagedOutputLinks));
 	}
 }
 
@@ -511,8 +653,6 @@ void NormalizeGraphForAnimGraphDiff(FAssetDocumentGraphSpec& Graph)
 	Graph.Evidence.Reset();
 	for (FAssetDocumentNodeSpec& Node : Graph.Nodes)
 	{
-		Node.Kind.Reset();
-		Node.Fields.Reset();
 		Node.Evidence.Reset();
 	}
 	for (FAssetDocumentGraphSpec& Subgraph : Graph.Subgraphs)
@@ -793,6 +933,11 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimGraphRegionAdapter::ApplyRegion
 	if (!ParseResult.bSuccess)
 	{
 		return ParseResult;
+	}
+	const FAssetDocumentCapabilityResult OutputPoseResult = ValidateOutputPose(Graphs[0]);
+	if (!OutputPoseResult.bSuccess)
+	{
+		return OutputPoseResult;
 	}
 
 	FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
