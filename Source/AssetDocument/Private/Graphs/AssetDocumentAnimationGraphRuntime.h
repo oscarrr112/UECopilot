@@ -100,7 +100,13 @@ private:
 
 	FAssetDocumentCapabilityResult MaterializeGraphNodes(
 		const FAssetDocumentGraphSpec& GraphSpec,
-		const FAssetDocumentAnimationGraphContext& Context) const;
+		const FAssetDocumentAnimationGraphContext& Context,
+		TMap<FString, UEdGraphNode*>& OutNodesById) const;
+
+	FAssetDocumentCapabilityResult MaterializeGraphLinks(
+		const FAssetDocumentGraphSpec& GraphSpec,
+		const FAssetDocumentAnimationGraphContext& Context,
+		const TMap<FString, UEdGraphNode*>& NodesById) const;
 
 	FAssetDocumentCapabilityResult ApplyGraphAfterPreflight(
 		const FAssetDocumentGraphSpec& GraphSpec,
