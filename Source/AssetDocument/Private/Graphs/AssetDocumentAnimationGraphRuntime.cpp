@@ -229,6 +229,13 @@ void BreakAllManagedNodeLinks(const TMap<FString, UEdGraphNode*>& NodesById)
 	}
 }
 
+struct FResolvedAnimationGraphLink
+{
+	FAssetDocumentLinkSpec Link;
+	UEdGraphPin* FromPin = nullptr;
+	UEdGraphPin* ToPin = nullptr;
+};
+
 void AddExtractedManagedLinks(
 	const TArray<UEdGraphNode*>& GraphNodes,
 	const TMap<const UEdGraphNode*, FString>& NodeIds,
@@ -545,8 +552,8 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 	const FAssetDocumentAnimationGraphContext& Context,
 	const TMap<FString, UEdGraphNode*>& NodesById) const
 {
-	BreakAllManagedNodeLinks(NodesById);
 	const UEdGraphSchema* Schema = Context.Graph ? Context.Graph->GetSchema() : nullptr;
+	TArray<FResolvedAnimationGraphLink> ResolvedLinks;
 
 	for (const FAssetDocumentLinkSpec& Link : GraphSpec.Links)
 	{
@@ -590,17 +597,41 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 
 		if (Schema)
 		{
-			if (!Schema->TryCreateConnection(FromPin, ToPin))
+			const bool bAlreadyLinked = FromPin->LinkedTo.Contains(ToPin);
+			const FPinConnectionResponse Response = Schema->CanCreateConnection(FromPin, ToPin);
+			if (!bAlreadyLinked && Response.Response == CONNECT_RESPONSE_DISALLOW)
 			{
 				return RuntimeFailure(
 					LinkPath(GraphSpec, Link, Context),
 					TEXT("InvalidGraphLinkType"),
-					FString::Printf(TEXT("Graph schema rejected link '%s'."), *Link.ToKey()));
+					FString::Printf(TEXT("Graph schema rejected link '%s': %s"), *Link.ToKey(), *Response.Message.ToString()));
 			}
 		}
-		else if (!FromPin->LinkedTo.Contains(ToPin))
+
+		FResolvedAnimationGraphLink ResolvedLink;
+		ResolvedLink.Link = Link;
+		ResolvedLink.FromPin = FromPin;
+		ResolvedLink.ToPin = ToPin;
+		ResolvedLinks.Add(MoveTemp(ResolvedLink));
+	}
+
+	BreakAllManagedNodeLinks(NodesById);
+
+	for (const FResolvedAnimationGraphLink& ResolvedLink : ResolvedLinks)
+	{
+		if (Schema)
 		{
-			FromPin->MakeLinkTo(ToPin);
+			if (!Schema->TryCreateConnection(ResolvedLink.FromPin, ResolvedLink.ToPin))
+			{
+				return RuntimeFailure(
+					LinkPath(GraphSpec, ResolvedLink.Link, Context),
+					TEXT("InvalidGraphLinkType"),
+					FString::Printf(TEXT("Graph schema rejected link '%s'."), *ResolvedLink.Link.ToKey()));
+			}
+		}
+		else if (!ResolvedLink.FromPin->LinkedTo.Contains(ResolvedLink.ToPin))
+		{
+			ResolvedLink.FromPin->MakeLinkTo(ResolvedLink.ToPin);
 		}
 	}
 

@@ -5,12 +5,17 @@
 #include "Graphs/AssetDocumentGraphFieldRules.h"
 #include "Graphs/AssetDocumentAnimationGraphRuntime.h"
 
+#include "Animation/AnimBlueprint.h"
 #include "Animation/AnimationAsset.h"
+#include "AnimationGraph.h"
+#include "AnimationGraphSchema.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/AutomationTest.h"
 
 namespace
@@ -78,6 +83,7 @@ class FFakeAnimationGraphCandidateProvider final : public IAssetDocumentAnimatio
 public:
 	TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
 	TMap<FString, TArray<FFakeAnimationGraphPinSpec>> PinsByNodeId;
+	TMap<FString, UEdGraphNode*> SpawnedNodesById;
 	int32 QueryCount = 0;
 	int32 SpawnCount = 0;
 	UEdGraphNode* LastSpawnedNode = nullptr;
@@ -112,6 +118,7 @@ public:
 				OutNode->CreatePin(PinSpec.Direction, TEXT("Wildcard"), FName(*PinSpec.Name));
 			}
 		}
+		const_cast<FFakeAnimationGraphCandidateProvider*>(this)->SpawnedNodesById.Add(NodeSpec.Id, OutNode);
 		const_cast<FFakeAnimationGraphCandidateProvider*>(this)->LastSpawnedNode = OutNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
@@ -199,10 +206,14 @@ UEdGraphNode* AddManagedEditorNode(
 	const FAssetDocumentGraphSpec& GraphSpec,
 	const FAssetDocumentNodeSpec& NodeSpec,
 	int32 X,
-	int32 Y)
+	int32 Y,
+	UClass* NodeClass = UEdGraphNode::StaticClass())
 {
 	UEdGraphNode* Node = Graph
-		? NewObject<UEdGraphNode>(Graph, FName(*FAssetDocumentAnimationGraphRuntime::MakeManagedNodeObjectName(NodeSpec.Id)))
+		? NewObject<UEdGraphNode>(
+			Graph,
+			NodeClass ? NodeClass : UEdGraphNode::StaticClass(),
+			FName(*FAssetDocumentAnimationGraphRuntime::MakeManagedNodeObjectName(NodeSpec.Id)))
 		: nullptr;
 	if (!Node)
 	{
@@ -213,6 +224,32 @@ UEdGraphNode* AddManagedEditorNode(
 	Node->NodePosX = X;
 	Node->NodePosY = Y;
 	return Node;
+}
+
+UAnimationGraph* CreateTransientAnimGraph(UAnimBlueprint*& OutAnimBlueprint)
+{
+	OutAnimBlueprint = NewObject<UAnimBlueprint>(GetTransientPackage());
+	if (!OutAnimBlueprint)
+	{
+		return nullptr;
+	}
+
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		OutAnimBlueprint,
+		UEdGraphSchema_K2::GN_AnimGraph,
+		UAnimationGraph::StaticClass(),
+		UAnimationGraphSchema::StaticClass());
+	FBlueprintEditorUtils::AddDomainSpecificGraph(OutAnimBlueprint, NewGraph);
+	return Cast<UAnimationGraph>(NewGraph);
+}
+
+UEdGraphPin* FindFakePin(
+	const TSharedRef<FFakeAnimationGraphCandidateProvider>& Provider,
+	const FString& NodeId,
+	const FString& PinName)
+{
+	UEdGraphNode** Node = Provider->SpawnedNodesById.Find(NodeId);
+	return Node && *Node ? (*Node)->FindPin(FName(*PinName)) : nullptr;
 }
 }
 
@@ -705,6 +742,82 @@ bool FAssetDocumentAnimationGraphRuntimeRejectsAmbiguousLinkPinTest::RunTest(con
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeMaterializesAuthoredLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.MaterializesAuthoredLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeMaterializesAuthoredLinksTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+	Graph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("In")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("ApplyGraph succeeds with authored link"), Result.bSuccess);
+
+	UEdGraphPin* OutPin = FindFakePin(Provider, TEXT("Source"), TEXT("Out"));
+	UEdGraphPin* InPin = FindFakePin(Provider, TEXT("Target"), TEXT("In"));
+	TestNotNull(TEXT("Source output pin exists"), OutPin);
+	TestNotNull(TEXT("Target input pin exists"), InPin);
+	if (OutPin && InPin)
+	{
+		TestTrue(TEXT("Authored link is materialized on output pin"), OutPin->LinkedTo.Contains(InPin));
+		TestTrue(TEXT("Authored link is materialized on input pin"), InPin->LinkedTo.Contains(OutPin));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeFailedLinkApplyPreservesExistingLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.FailedLinkApplyPreservesExistingLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeFailedLinkApplyPreservesExistingLinksTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec BaseGraph;
+	BaseGraph.Id = TEXT("AnimGraph");
+	BaseGraph.Kind = TEXT("AnimGraph");
+	BaseGraph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	BaseGraph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+	BaseGraph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("In")));
+
+	const FAssetDocumentCapabilityResult BaseResult = Runtime.ApplyGraph(BaseGraph, Context, Hook);
+	TestTrue(TEXT("Base apply succeeds"), BaseResult.bSuccess);
+	UEdGraphPin* OutPin = FindFakePin(Provider, TEXT("Source"), TEXT("Out"));
+	UEdGraphPin* InPin = FindFakePin(Provider, TEXT("Target"), TEXT("In"));
+	TestTrue(TEXT("Base link exists before bad apply"), OutPin && InPin && OutPin->LinkedTo.Contains(InPin));
+
+	FAssetDocumentGraphSpec BadGraph = BaseGraph;
+	BadGraph.Links.Reset();
+	BadGraph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("Missing")));
+	const FAssetDocumentCapabilityResult BadResult = Runtime.ApplyGraph(BadGraph, Context, Hook);
+	TestFalse(TEXT("Bad link apply fails"), BadResult.bSuccess);
+	TestEqual(TEXT("Bad apply fails on unresolved endpoint"), FirstDiagnosticCode(BadResult), FString(TEXT("UnresolvedGraphLinkEndpoint")));
+	TestTrue(TEXT("Failed link apply preserves existing output link"), OutPin && InPin && OutPin->LinkedTo.Contains(InPin));
+	TestTrue(TEXT("Failed link apply preserves existing input link"), OutPin && InPin && InPin->LinkedTo.Contains(OutPin));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimationGraphRuntimeExtractsManagedNodesAndLinksTest,
 	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractsManagedNodesAndLinks",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -771,6 +884,72 @@ bool FAssetDocumentAnimationGraphRuntimeExtractsManagedNodesAndLinksTest::RunTes
 		TestEqual(TEXT("Link source pin is semantic"), ExtractedGraph.Links[0].From.Pin, FString(TEXT("Out")));
 		TestEqual(TEXT("Link target node is semantic"), ExtractedGraph.Links[0].To.Node, FString(TEXT("Target")));
 		TestEqual(TEXT("Link target pin is semantic"), ExtractedGraph.Links[0].To.Pin, FString(TEXT("In")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractsRealAnimGraphNodePositionTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractsRealAnimGraphNodePosition",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractsRealAnimGraphNodePositionTest::RunTest(const FString&)
+{
+	UAnimBlueprint* AnimBlueprint = nullptr;
+	UAnimationGraph* AnimGraph = CreateTransientAnimGraph(AnimBlueprint);
+	TestNotNull(TEXT("Transient AnimBlueprint is created"), AnimBlueprint);
+	TestNotNull(TEXT("Real animation editor graph is created"), AnimGraph);
+
+	UClass* AnimGraphNodeClass = StaticLoadClass(
+		UEdGraphNode::StaticClass(),
+		nullptr,
+		TEXT("/Script/AnimGraph.AnimGraphNode_BlendListByBool"));
+	TestNotNull(TEXT("Real AnimGraphNode class loads dynamically"), AnimGraphNodeClass);
+	if (!AnimBlueprint || !AnimGraph || !AnimGraphNodeClass)
+	{
+		return false;
+	}
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec NodeSpec = MakeRuntimeNode(TEXT("BlendByBool"), AnimGraphNodeClass->GetPathName());
+	UEdGraphNode* Node = AddManagedEditorNode(AnimGraph, SourceGraph, NodeSpec, 512, -128, AnimGraphNodeClass);
+	TestNotNull(TEXT("Real AnimGraphNode instance is created"), Node);
+	if (Node)
+	{
+		Node->AllocateDefaultPins();
+	}
+
+	FAssetDocumentAnimationGraphContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.Blueprint = AnimBlueprint;
+	Context.Graph = AnimGraph;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+
+	FAssetDocumentAnimationGraphRuntime Runtime;
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
+
+	TestTrue(TEXT("Real anim graph extract succeeds"), Result.bSuccess);
+	TestEqual(TEXT("One managed real anim node is extracted"), ExtractedGraph.Nodes.Num(), 1);
+	if (ExtractedGraph.Nodes.Num() == 1)
+	{
+		const FAssetDocumentNodeSpec& ExtractedNode = ExtractedGraph.Nodes[0];
+		TestEqual(TEXT("Managed id is extracted from real anim node"), ExtractedNode.Id, FString(TEXT("BlendByBool")));
+		TestEqual(TEXT("Real anim node class is extracted"), ExtractedNode.Class, AnimGraphNodeClass->GetPathName());
+		double X = 0.0;
+		double Y = 0.0;
+		TestTrue(TEXT("Real anim node position is extracted"), ExtractedNode.Position.IsValid());
+		if (ExtractedNode.Position.IsValid())
+		{
+			ExtractedNode.Position->TryGetNumberField(TEXT("X"), X);
+			ExtractedNode.Position->TryGetNumberField(TEXT("Y"), Y);
+		}
+		TestEqual(TEXT("Real anim node position X roundtrips"), X, 512.0);
+		TestEqual(TEXT("Real anim node position Y roundtrips"), Y, -128.0);
+		TestTrue(TEXT("Real anim node evidence is extracted"), ExtractedNode.Evidence.IsValid());
 	}
 	return true;
 }
