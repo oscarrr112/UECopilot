@@ -269,7 +269,7 @@ void NormalizeEmptyGeneratedContainers(const TSharedPtr<FJsonValue>& Value)
 	}
 }
 
-bool IsBehaviorTreeGeneratedDefaultField(const FString& FieldName, const TSharedPtr<FJsonValue>& Value)
+bool IsBehaviorTreeGeneratedEmptyArrayField(const FString& FieldName, const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid())
 	{
@@ -288,128 +288,7 @@ bool IsBehaviorTreeGeneratedDefaultField(const FString& FieldName, const TShared
 		return true;
 	}
 
-	const bool bIsDefaultFalseField =
-		FieldName == TEXT("bNoneIsAllowedValue")
-		|| FieldName == TEXT("bAllowStrafe")
-		|| FieldName == TEXT("bApplyDecoratorScope")
-		|| FieldName == TEXT("bCallTickOnSearchStart")
-		|| FieldName == TEXT("bNotifyBecomeRelevant")
-		|| FieldName == TEXT("bNotifyCeaseRelevant")
-		|| FieldName == TEXT("bNotifyTick")
-		|| FieldName == TEXT("bIgnoreRestartSelf")
-		|| FieldName == TEXT("bInverseCondition")
-		|| FieldName == TEXT("bRestartTimerOnEachActivation")
-		|| FieldName == TEXT("bCreateNodeInstance");
-	if (bIsDefaultFalseField && Value->Type == EJson::Boolean && !Value->AsBool())
-	{
-		return true;
-	}
-
-	if (FieldName == TEXT("AllowedTypes") && Value->Type == EJson::Array)
-	{
-		return true;
-	}
-
-	if ((FieldName == TEXT("ArithmeticOperation") && Value->Type == EJson::String && Value->AsString() == TEXT("Equal"))
-		|| (FieldName == TEXT("BasicOperation") && Value->Type == EJson::String && Value->AsString() == TEXT("Set"))
-		|| (FieldName == TEXT("FlowAbortMode") && Value->Type == EJson::String && Value->AsString() == TEXT("None"))
-		|| (FieldName == TEXT("NotifyObserver") && Value->Type == EJson::String && Value->AsString() == TEXT("ResultChange"))
-		|| (FieldName == TEXT("TextOperation") && Value->Type == EJson::String && Value->AsString() == TEXT("Equal"))
-		|| (FieldName == TEXT("StringValue") && Value->Type == EJson::String && Value->AsString().IsEmpty()))
-	{
-		return true;
-	}
-
-	if ((FieldName == TEXT("FloatValue") || FieldName == TEXT("IntValue")) && Value->Type == EJson::Number && FMath::IsNearlyZero(Value->AsNumber()))
-	{
-		return true;
-	}
-
-	if (FieldName == TEXT("RandomDeviation") && Value->Type == EJson::Number && FMath::IsNearlyEqual(Value->AsNumber(), 0.1, 0.0001))
-	{
-		return true;
-	}
-
 	return false;
-}
-
-bool IsBehaviorTreeDefaultWrappedProperty(const FString& FieldName, const TSharedPtr<FJsonValue>& Value)
-{
-	if (!Value.IsValid() || Value->Type != EJson::Object)
-	{
-		return false;
-	}
-
-	const TSharedPtr<FJsonObject> Object = Value->AsObject();
-	if (!Object.IsValid() || Object->Values.Num() < 2)
-	{
-		return false;
-	}
-
-	FString Key;
-	if (!Object->TryGetStringField(TEXT("Key"), Key) || Key != TEXT("None"))
-	{
-		return false;
-	}
-
-	const TSharedPtr<FJsonValue> DefaultValue = Object->TryGetField(TEXT("DefaultValue"));
-	if (!DefaultValue.IsValid())
-	{
-		return false;
-	}
-
-	if ((FieldName == TEXT("AcceptableRadius") && DefaultValue->Type == EJson::Number && FMath::IsNearlyEqual(DefaultValue->AsNumber(), 5.0, 0.0001))
-		|| (FieldName == TEXT("ObservedBlackboardValueTolerance") && DefaultValue->Type == EJson::Number && FMath::IsNearlyEqual(DefaultValue->AsNumber(), 4.75, 0.0001)))
-	{
-		return true;
-	}
-
-	const bool bDefaultTrueField =
-		FieldName == TEXT("bAllowPartialPath")
-		|| FieldName == TEXT("bProjectGoalLocation")
-		|| FieldName == TEXT("bReachTestIncludesAgentRadius")
-		|| FieldName == TEXT("bReachTestIncludesGoalRadius")
-		|| FieldName == TEXT("bRequireNavigableEndLocation")
-		|| FieldName == TEXT("bTrackMovingGoal");
-	if (bDefaultTrueField && DefaultValue->Type == EJson::Boolean && DefaultValue->AsBool())
-	{
-		return true;
-	}
-
-	const bool bDefaultFalseWrappedField =
-		FieldName == TEXT("bAllowStrafe")
-		|| FieldName == TEXT("bStartFromPreviousPath");
-	if (bDefaultFalseWrappedField && DefaultValue->Type == EJson::Boolean && !DefaultValue->AsBool())
-	{
-		return true;
-	}
-
-	if (FieldName == TEXT("FilterClass") && DefaultValue->Type == EJson::Null)
-	{
-		return true;
-	}
-
-	return false;
-}
-
-bool IsBehaviorTreeObjectEmpty(const TSharedPtr<FJsonValue>& Value)
-{
-	if (!Value.IsValid() || Value->Type != EJson::Object)
-	{
-		return false;
-	}
-	const TSharedPtr<FJsonObject> Object = Value->AsObject();
-	return Object.IsValid() && Object->Values.Num() == 0;
-}
-
-bool IsBehaviorTreeDefaultFocusClass(const TSharedPtr<FJsonObject>& Object)
-{
-	if (!Object.IsValid())
-	{
-		return false;
-	}
-	FString ClassPath;
-	return Object->TryGetStringField(TEXT("Class"), ClassPath) && ClassPath == TEXT("/Script/AIModule.BTService_DefaultFocus");
 }
 
 void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
@@ -452,60 +331,9 @@ void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
 		}
 
 		NormalizeBehaviorTreePostApplyValue(*FieldValue);
-		if (IsBehaviorTreeGeneratedDefaultField(FieldName, *FieldValue))
+		if (IsBehaviorTreeGeneratedEmptyArrayField(FieldName, *FieldValue))
 		{
 			FieldsToRemove.Add(FieldName);
-			continue;
-		}
-		if (IsBehaviorTreeDefaultWrappedProperty(FieldName, *FieldValue))
-		{
-			FieldsToRemove.Add(FieldName);
-			continue;
-		}
-		if (FieldName == TEXT("Properties") && IsBehaviorTreeObjectEmpty(*FieldValue))
-		{
-			FieldsToRemove.Add(FieldName);
-		}
-	}
-
-	FString Id;
-	FString NodeName;
-	if (Object->TryGetStringField(TEXT("Id"), Id))
-	{
-		const TSharedPtr<FJsonObject>* Properties = nullptr;
-		if (Object->Values.Find(TEXT("Properties"))
-			&& Object->TryGetObjectField(TEXT("Properties"), Properties)
-			&& Properties
-			&& Properties->IsValid()
-			&& (*Properties)->TryGetStringField(TEXT("NodeName"), NodeName)
-			&& NodeName == Id)
-		{
-			(*Properties)->RemoveField(TEXT("NodeName"));
-		}
-		if (Properties && Properties->IsValid() && (*Properties)->Values.Num() == 0)
-		{
-			FieldsToRemove.AddUnique(TEXT("Properties"));
-		}
-	}
-
-	if (IsBehaviorTreeDefaultFocusClass(Object))
-	{
-		const TSharedPtr<FJsonObject>* Properties = nullptr;
-		if (Object->TryGetObjectField(TEXT("Properties"), Properties) && Properties && Properties->IsValid())
-		{
-			const TSharedPtr<FJsonObject>* BlackboardKey = nullptr;
-			if ((*Properties)->TryGetObjectField(TEXT("BlackboardKey"), BlackboardKey)
-				&& BlackboardKey
-				&& BlackboardKey->IsValid()
-				&& (*BlackboardKey)->Values.Num() == 1
-				&& (*BlackboardKey)->HasField(TEXT("SelectedKeyName")))
-			{
-				(*Properties)->RemoveField(TEXT("BlackboardKey"));
-			}
-			if ((*Properties)->Values.Num() == 0)
-			{
-				FieldsToRemove.AddUnique(TEXT("Properties"));
-			}
 		}
 	}
 

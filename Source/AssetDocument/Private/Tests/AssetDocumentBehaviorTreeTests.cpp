@@ -18,6 +18,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Vector.h"
+#include "BehaviorTree/Composites/BTComposite_Selector.h"
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
 #include "BehaviorTree/Services/BTService_DefaultFocus.h"
 #include "BehaviorTree/Tasks/BTTask_MoveTo.h"
@@ -1085,13 +1086,133 @@ TSharedPtr<FJsonObject> MakeTask10EditorLayout()
 		});
 }
 
+TSharedPtr<FJsonObject> MakeReflectedTask10NodeProperties(UClass* NodeClass, const TSharedRef<FJsonObject>& SparseProperties)
+{
+	UObject* Node = NodeClass ? NewObject<UObject>(GetTransientPackage(), NodeClass) : nullptr;
+	if (!Node)
+	{
+		return SparseProperties;
+	}
+
+	const FAssetDocumentCapabilityResult ApplyResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Node, SparseProperties, TEXT("/Properties"));
+	if (!ApplyResult.bSuccess)
+	{
+		return SparseProperties;
+	}
+
+	TSharedRef<FJsonObject> ExtractedProperties = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult =
+		FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(Node, ExtractedProperties, TEXT("/Properties"));
+	return ExtractResult.bSuccess ? ExtractedProperties : SparseProperties;
+}
+
+TSharedRef<FJsonObject> MakeTask10SparseNodeProperties(const FString& NodeName)
+{
+	TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetStringField(TEXT("NodeName"), NodeName);
+	return Properties;
+}
+
+TSharedPtr<FJsonObject> MakeTask10CompositeProperties(const FString& NodeName)
+{
+	return MakeReflectedTask10NodeProperties(UBTComposite_Selector::StaticClass(), MakeTask10SparseNodeProperties(NodeName));
+}
+
+TSharedPtr<FJsonObject> MakeTask10DefaultFocusProperties(const FString& NodeName)
+{
+	TSharedRef<FJsonObject> Properties = MakeTask10SparseNodeProperties(NodeName);
+	Properties->SetNumberField(TEXT("Interval"), 1.25);
+	Properties->SetObjectField(TEXT("BlackboardKey"), MakeSelectorProperty(TEXT("TargetActor")));
+	return MakeReflectedTask10NodeProperties(UBTService_DefaultFocus::StaticClass(), Properties);
+}
+
+TSharedPtr<FJsonObject> MakeTask10BlackboardDecoratorProperties(const FString& NodeName)
+{
+	TSharedRef<FJsonObject> Properties = MakeTask10SparseNodeProperties(NodeName);
+	Properties->SetObjectField(TEXT("BlackboardKey"), MakeSelectorProperty(TEXT("TargetActor")));
+	return MakeReflectedTask10NodeProperties(UBTDecorator_Blackboard::StaticClass(), Properties);
+}
+
+TSharedPtr<FJsonObject> MakeTask10MoveToProperties(const FString& NodeName)
+{
+	TSharedRef<FJsonObject> Properties = MakeTask10SparseNodeProperties(NodeName);
+	Properties->SetObjectField(TEXT("BlackboardKey"), MakeSelectorProperty(TEXT("TargetActor")));
+	return MakeReflectedTask10NodeProperties(UBTTask_MoveTo::StaticClass(), Properties);
+}
+
+TSharedPtr<FJsonObject> MakeTask10RunBehaviorProperties(const FString& NodeName, const FString& SubtreeTarget)
+{
+	TSharedRef<FJsonObject> Properties = MakeTask10SparseNodeProperties(NodeName);
+	Properties->SetObjectField(TEXT("BehaviorAsset"), MakeAssetRef(MakeObjectPathFromTarget(SubtreeTarget)));
+	return MakeReflectedTask10NodeProperties(UBTTask_RunBehavior::StaticClass(), Properties);
+}
+
+TSharedPtr<FJsonObject> MakeTask10BehaviorTree(const FString& SubtreeTarget)
+{
+	TArray<TSharedPtr<FJsonValue>> Services;
+	Services.Add(MakeObjectValue(MakeBtNode(
+		TEXT("FocusService"),
+		TEXT("/Script/AIModule.BTService_DefaultFocus"),
+		MakeTask10DefaultFocusProperties(TEXT("FocusService")))));
+
+	TArray<TSharedPtr<FJsonValue>> EdgeDecorators;
+	EdgeDecorators.Add(MakeObjectValue(MakeBtNode(
+		TEXT("HasTarget"),
+		TEXT("/Script/AIModule.BTDecorator_Blackboard"),
+		MakeTask10BlackboardDecoratorProperties(TEXT("HasTarget")))));
+
+	TArray<TSharedPtr<FJsonValue>> EdgeLogic;
+	EdgeLogic.Add(MakeObjectValue(MakeDecoratorLogicTest()));
+
+	TSharedPtr<FJsonObject> MoveEdge = MakeShared<FJsonObject>();
+	MoveEdge->SetObjectField(TEXT("Child"), MakeBtNode(
+		TEXT("MoveToTarget"),
+		TEXT("/Script/AIModule.BTTask_MoveTo"),
+		MakeTask10MoveToProperties(TEXT("MoveToTarget"))));
+	MoveEdge->SetArrayField(TEXT("Decorators"), EdgeDecorators);
+	MoveEdge->SetArrayField(TEXT("DecoratorLogic"), EdgeLogic);
+
+	TSharedPtr<FJsonObject> RunSubtreeEdge = MakeShared<FJsonObject>();
+	RunSubtreeEdge->SetObjectField(TEXT("Child"), MakeBtNode(
+		TEXT("RunSubtree"),
+		TEXT("/Script/AIModule.BTTask_RunBehavior"),
+		MakeTask10RunBehaviorProperties(TEXT("RunSubtree"), SubtreeTarget)));
+
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(MoveEdge));
+	Children.Add(MakeObjectValue(RunSubtreeEdge));
+
+	TSharedPtr<FJsonObject> Root = MakeBtNode(
+		TEXT("RootSelector"),
+		TEXT("/Script/AIModule.BTComposite_Selector"),
+		MakeTask10CompositeProperties(TEXT("RootSelector")));
+	Root->SetArrayField(TEXT("Services"), Services);
+	Root->SetArrayField(TEXT("Children"), Children);
+
+	TArray<TSharedPtr<FJsonValue>> RootDecorators;
+	RootDecorators.Add(MakeObjectValue(MakeBtNode(
+		TEXT("RootHasTarget"),
+		TEXT("/Script/AIModule.BTDecorator_Blackboard"),
+		MakeTask10BlackboardDecoratorProperties(TEXT("RootHasTarget")))));
+
+	TArray<TSharedPtr<FJsonValue>> RootLogic;
+	RootLogic.Add(MakeObjectValue(MakeDecoratorLogicTest()));
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("RootDecorators"), RootDecorators);
+	Tree->SetArrayField(TEXT("RootDecoratorLogic"), RootLogic);
+	return Tree;
+}
+
 TSharedPtr<FJsonObject> MakeTask10BehaviorTreeBody(
 	const FString& BlackboardTarget,
 	const FString& SubtreeTarget)
 {
 	return MakeBehaviorTreeBody(
 		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
-		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		MakeTask10BehaviorTree(SubtreeTarget),
 		MakeTask10EditorLayout());
 }
 
@@ -2969,6 +3090,48 @@ bool FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest::RunTest(const FS
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("BehaviorTree ApplyFile diff succeeds"), DiffResult.IsSuccess());
 	TestTrue(TEXT("BehaviorTree ApplyFile diff has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+
+	TSharedPtr<FJsonObject> ReorderedAllowedTypesDocument = MakeBehaviorTreeDocument(Target, MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget));
+	TSharedPtr<FJsonObject> ReorderedBody = GetObjectField(ReorderedAllowedTypesDocument, TEXT("Body"));
+	TSharedPtr<FJsonObject> ReorderedTree = GetObjectField(ReorderedBody, TEXT("Tree"));
+	TSharedPtr<FJsonObject> ReorderedRoot = GetObjectField(ReorderedTree, TEXT("Root"));
+	const TArray<TSharedPtr<FJsonValue>>* ReorderedChildren = nullptr;
+	if (ReorderedRoot.IsValid() && ReorderedRoot->TryGetArrayField(TEXT("Children"), ReorderedChildren) && ReorderedChildren && ReorderedChildren->Num() > 0)
+	{
+		TSharedPtr<FJsonObject> MoveEdge = GetObjectFromValue((*ReorderedChildren)[0]);
+		TSharedPtr<FJsonObject> MoveToNode = GetObjectField(MoveEdge, TEXT("Child"));
+		TSharedPtr<FJsonObject> MoveToProperties = GetObjectField(MoveToNode, TEXT("Properties"));
+		TSharedPtr<FJsonObject> MoveToBlackboardKey = GetObjectField(MoveToProperties, TEXT("BlackboardKey"));
+		const TArray<TSharedPtr<FJsonValue>>* AllowedTypes = nullptr;
+		if (MoveToBlackboardKey.IsValid() && MoveToBlackboardKey->TryGetArrayField(TEXT("AllowedTypes"), AllowedTypes) && AllowedTypes && AllowedTypes->Num() > 1)
+		{
+			TArray<TSharedPtr<FJsonValue>> ReorderedAllowedTypes = *AllowedTypes;
+			Swap(ReorderedAllowedTypes[0], ReorderedAllowedTypes[1]);
+			MoveToBlackboardKey->SetArrayField(TEXT("AllowedTypes"), ReorderedAllowedTypes);
+		}
+	}
+	const FAssetDocumentResult AllowedTypesDiffResult = Service.Diff(MakeDiffRequest(ReorderedAllowedTypesDocument));
+	TestTrue(TEXT("BehaviorTree ApplyFile AllowedTypes diff succeeds"), AllowedTypesDiffResult.IsSuccess());
+	TestTrue(TEXT("BehaviorTree ApplyFile does not canonicalize away selector AllowedTypes"), DiffPayloadHasChangedPathPrefix(AllowedTypesDiffResult.Payload, TEXT("/Body/Tree/MoveToTarget")));
+
+	TSharedPtr<FJsonObject> ChangedServiceSelectorDocument = MakeBehaviorTreeDocument(Target, MakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget));
+	TSharedPtr<FJsonObject> ChangedBody = GetObjectField(ChangedServiceSelectorDocument, TEXT("Body"));
+	TSharedPtr<FJsonObject> ChangedTree = GetObjectField(ChangedBody, TEXT("Tree"));
+	TSharedPtr<FJsonObject> ChangedRoot = GetObjectField(ChangedTree, TEXT("Root"));
+	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
+	if (ChangedRoot.IsValid() && ChangedRoot->TryGetArrayField(TEXT("Services"), Services) && Services && Services->Num() > 0)
+	{
+		TSharedPtr<FJsonObject> ServiceNode = GetObjectFromValue((*Services)[0]);
+		TSharedPtr<FJsonObject> ServiceProperties = GetObjectField(ServiceNode, TEXT("Properties"));
+		TSharedPtr<FJsonObject> ServiceBlackboardKey = GetObjectField(ServiceProperties, TEXT("BlackboardKey"));
+		if (ServiceBlackboardKey.IsValid())
+		{
+			ServiceBlackboardKey->SetBoolField(TEXT("bNoneIsAllowedValue"), true);
+		}
+	}
+	const FAssetDocumentResult ServiceSelectorDiffResult = Service.Diff(MakeDiffRequest(ChangedServiceSelectorDocument));
+	TestTrue(TEXT("BehaviorTree ApplyFile service BlackboardKey diff succeeds"), ServiceSelectorDiffResult.IsSuccess());
+	TestTrue(TEXT("BehaviorTree ApplyFile does not canonicalize away service BlackboardKey"), DiffPayloadHasChangedPathPrefix(ServiceSelectorDiffResult.Payload, TEXT("/Body/Tree/RootSelector/Services/FocusService")));
 	return true;
 }
 
