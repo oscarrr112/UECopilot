@@ -4,6 +4,7 @@
 #include "AssetDocumentService.h"
 #include "AssetDocumentSidecar.h"
 #include "AssetDocumentJsonRegionUtils.h"
+#include "Profiles/BehaviorTreeAssetDocumentMaterializer.h"
 #include "Profiles/BehaviorTreeAssetDocumentProfile.h"
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
 
@@ -186,6 +187,19 @@ bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& Expe
 	{
 		return Diagnostic.Code == ExpectedCode && Diagnostic.Path == ExpectedPath;
 	});
+}
+
+int32 CountBehaviorTreeNodeChildren(UBehaviorTree* BehaviorTree)
+{
+	int32 Count = 0;
+	ForEachObjectWithOuter(BehaviorTree, [&Count](UObject* Object)
+	{
+		if (Object && Object->IsA<UBTNode>())
+		{
+			++Count;
+		}
+	}, true);
+	return Count;
 }
 
 bool DiffPayloadHasEntry(const TSharedPtr<FJsonObject>& Payload, const FString& BucketName, const FString& ExpectedPath)
@@ -2644,6 +2658,91 @@ bool FAssetDocumentBehaviorTreeApplyFailureDoesNotMutateExistingTest::RunTest(co
 	TestEqual(TEXT("services survive late failed apply"), OriginalRoot ? OriginalRoot->Services.Num() : -1, OriginalServices);
 	TestEqual(TEXT("decorators survive late failed apply"), OriginalRoot && OriginalRoot->Children.Num() > 0 ? OriginalRoot->Children[0].Decorators.Num() : -1, OriginalDecorators);
 	TestTrue(TEXT("BlackboardAsset survives late failed apply"), BehaviorTree->BlackboardAsset == OriginalBlackboard);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeCrossRegionValidationUsesTransientOuterTest,
+	"AssetFactory.AssetDocument.BehaviorTree.CrossRegionValidationUsesTransientOuter",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeCrossRegionValidationUsesTransientOuterTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_CrossRegionTransientOuter");
+	FAssetDocumentService Service;
+	if (!ApplyTask7TreeFixture(*this, Service, Target, false))
+	{
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	TestNotNull(TEXT("BehaviorTree exists before cross-region validation"), BehaviorTree);
+	if (!BehaviorTree)
+	{
+		return false;
+	}
+
+	const int32 OriginalNodeChildren = CountBehaviorTreeNodeChildren(BehaviorTree);
+	TSharedPtr<FJsonObject> Body = MakeBehaviorTreeBody(
+		MakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
+		MakeMoveToTreeWithKeys({TEXT("TargetActor")}),
+		MakeShared<FJsonObject>());
+
+	FAssetDocumentCapabilityContext Context;
+	Context.Asset = BehaviorTree;
+	Context.AssetClass = UBehaviorTree::StaticClass();
+	Context.TargetAssetPath = Target;
+	Context.bIsDryRun = true;
+	const FAssetDocumentCapabilityResult ValidateResult =
+		FBehaviorTreeAssetDocumentMaterializer::ValidateBodyCrossRegion(Context, Body.ToSharedRef());
+	TestTrue(TEXT("cross-region validation succeeds"), ValidateResult.bSuccess);
+	TestEqual(TEXT("cross-region validation does not create preview BT nodes under real asset"), CountBehaviorTreeNodeChildren(BehaviorTree), OriginalNodeChildren);
+
+	TSharedPtr<FJsonObject> InvalidBody = MakeBehaviorTreeBody(
+		MakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
+		MakeMoveToTreeWithKeys({TEXT("MissingTarget")}),
+		MakeShared<FJsonObject>());
+	const FAssetDocumentResult FailedApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, InvalidBody)));
+	TestFalse(TEXT("invalid key apply preflight fails"), FailedApply.IsSuccess());
+	TestEqual(TEXT("failed apply preflight does not create preview BT nodes under real asset"), CountBehaviorTreeNodeChildren(BehaviorTree), OriginalNodeChildren);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphFailureRollsBackSemanticTreeTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphFailureRollsBackSemanticTree",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphFailureRollsBackSemanticTreeTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_GraphFailureRollback");
+	FAssetDocumentService Service;
+	if (!ApplyTask7TreeFixture(*this, Service, Target, false))
+	{
+		return false;
+	}
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBTCompositeNode* OriginalRoot = BehaviorTree ? BehaviorTree->RootNode : nullptr;
+	UBehaviorTreeGraph* OriginalGraph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	const int32 OriginalNodeChildren = CountBehaviorTreeNodeChildren(BehaviorTree);
+	const int32 OriginalChildren = OriginalRoot ? OriginalRoot->Children.Num() : -1;
+	const int32 OriginalServices = OriginalRoot ? OriginalRoot->Services.Num() : -1;
+	TestNotNull(TEXT("original root exists before forced graph failure"), OriginalRoot);
+
+	TSharedPtr<FJsonObject> ChangedBody = MakeBehaviorTreeBody(
+		MakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
+		MakeMoveToTreeWithKeys({TEXT("TargetActor")}),
+		MakeShared<FJsonObject>());
+	FBehaviorTreeAssetDocumentMaterializer::FailNextEditorGraphRebuildForTest();
+	const FAssetDocumentResult FailedApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, ChangedBody)));
+	TestFalse(TEXT("forced graph rebuild apply fails"), FailedApply.IsSuccess());
+	TestTrue(TEXT("forced graph rebuild diagnostic is exact"), ResultHasDiagnostic(FailedApply, TEXT("ForcedBehaviorTreeEditorGraphRebuildFailure"), TEXT("/Body/EditorLayout")));
+	TestTrue(TEXT("graph failure preserves root pointer"), BehaviorTree && BehaviorTree->RootNode == OriginalRoot);
+	TestTrue(TEXT("graph failure preserves editor graph pointer"), BehaviorTree && Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) == OriginalGraph);
+	TestEqual(TEXT("graph failure preserves child count"), OriginalRoot ? OriginalRoot->Children.Num() : -1, OriginalChildren);
+	TestEqual(TEXT("graph failure preserves service count"), OriginalRoot ? OriginalRoot->Services.Num() : -1, OriginalServices);
+	TestEqual(TEXT("graph failure does not leave replacement BT nodes under real asset"), CountBehaviorTreeNodeChildren(BehaviorTree), OriginalNodeChildren);
 	return true;
 }
 

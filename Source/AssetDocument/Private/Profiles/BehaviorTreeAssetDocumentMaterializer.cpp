@@ -23,6 +23,7 @@
 #include "Dom/JsonValue.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Misc/PackageName.h"
+#include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -40,6 +41,10 @@ constexpr const TCHAR* DecoratorLogicField = TEXT("DecoratorLogic");
 constexpr const TCHAR* ServicesField = TEXT("Services");
 constexpr const TCHAR* OperationField = TEXT("Operation");
 constexpr const TCHAR* NumberField = TEXT("Number");
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool bFailNextEditorGraphRebuildForTest = false;
+#endif
 
 enum class EBehaviorTreeNodeRole
 {
@@ -1035,6 +1040,50 @@ FAssetDocumentCapabilityResult MaterializeTree(UBehaviorTree* BehaviorTree, cons
 	InitializeRootDecorators(*BehaviorTree, ExecutionIndex);
 	InitializeNodeRecursive(*BehaviorTree, nullptr, BehaviorTree->RootNode, 0, ExecutionIndex);
 	return FAssetDocumentCapabilityResult::Success();
+}
+
+void CollectBehaviorTreeOwnedObjects(UBehaviorTree* BehaviorTree, TSet<UObject*>& OutObjects)
+{
+	OutObjects.Reset();
+	if (!BehaviorTree)
+	{
+		return;
+	}
+
+	ForEachObjectWithOuter(BehaviorTree, [&OutObjects](UObject* Object)
+	{
+		if (Object)
+		{
+			OutObjects.Add(Object);
+		}
+	}, true);
+}
+
+void MoveNewBehaviorTreeOwnedRuntimeObjectsToTransient(
+	UBehaviorTree* BehaviorTree,
+	const TSet<UObject*>& ExistingObjects)
+{
+	if (!BehaviorTree)
+	{
+		return;
+	}
+
+	TArray<UObject*> NewObjects;
+	ForEachObjectWithOuter(BehaviorTree, [&ExistingObjects, &NewObjects](UObject* Object)
+	{
+		if (Object && !ExistingObjects.Contains(Object) && (Object->IsA<UBTNode>() || Object->IsA<UBehaviorTreeGraph>()))
+		{
+			NewObjects.Add(Object);
+		}
+	}, true);
+
+	for (UObject* Object : NewObjects)
+	{
+		if (Object)
+		{
+			Object->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+		}
+	}
 }
 
 FString SemanticNodePath(const FString& NodeId)
@@ -2418,8 +2467,9 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateB
 			return Result;
 		}
 
-		UObject* Outer = Context.Asset ? Context.Asset : GetTransientPackage();
-		Result = ValidateSpecCrossRegion(Spec, Outer, Blackboard);
+		UBehaviorTree* PreviewOuter = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+		PreviewOuter->BlackboardAsset = Blackboard;
+		Result = ValidateSpecCrossRegion(Spec, PreviewOuter, Blackboard);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -2501,16 +2551,35 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 		return FAssetDocumentCapabilityResult::Success(TEXT("BehaviorTree semantic tree unchanged"));
 	}
 
+	UBTCompositeNode* SavedRootNode = BehaviorTree->RootNode;
+	const auto SavedRootDecorators = BehaviorTree->RootDecorators;
+	const auto SavedRootDecoratorOps = BehaviorTree->RootDecoratorOps;
+	UBlackboardData* SavedBlackboard = BehaviorTree->BlackboardAsset;
+	UEdGraph* SavedGraph = BehaviorTree->BTGraph;
+	TSet<UObject*> ExistingOwnedObjects;
+	CollectBehaviorTreeOwnedObjects(BehaviorTree, ExistingOwnedObjects);
+	auto RestoreAfterMutationFailure = [&]()
+	{
+		BehaviorTree->RootNode = SavedRootNode;
+		BehaviorTree->RootDecorators = SavedRootDecorators;
+		BehaviorTree->RootDecoratorOps = SavedRootDecoratorOps;
+		BehaviorTree->BlackboardAsset = SavedBlackboard;
+		BehaviorTree->BTGraph = SavedGraph;
+		MoveNewBehaviorTreeOwnedRuntimeObjectsToTransient(BehaviorTree, ExistingOwnedObjects);
+	};
+
 	BehaviorTree->Modify();
 	Result = MaterializeTree(BehaviorTree, Spec);
 	if (!Result.bSuccess)
 	{
+		RestoreAfterMutationFailure();
 		return Result;
 	}
 	bool bGraphChanged = false;
 	Result = RebuildEditorGraph(Context, true, bGraphChanged);
 	if (!Result.bSuccess)
 	{
+		RestoreAfterMutationFailure();
 		return Result;
 	}
 	if (UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph))
@@ -2520,6 +2589,7 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 		Result = MaterializeTree(BehaviorTree, Spec);
 		if (!Result.bSuccess)
 		{
+			RestoreAfterMutationFailure();
 			return Result;
 		}
 
@@ -2616,6 +2686,14 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::RebuildEd
 	bool& bOutChanged)
 {
 	UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bFailNextEditorGraphRebuildForTest)
+	{
+		bFailNextEditorGraphRebuildForTest = false;
+		return Failure(TEXT("/Body/EditorLayout"), TEXT("ForcedBehaviorTreeEditorGraphRebuildFailure"), TEXT("Forced BehaviorTree editor graph rebuild failure for automation coverage"));
+	}
+#endif
+
 	FBehaviorTreeSpec SavedSpec;
 	bool bHasSavedSpec = false;
 	if (BehaviorTree)
@@ -2694,3 +2772,10 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectEd
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree editor graph nodes"));
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FBehaviorTreeAssetDocumentMaterializer::FailNextEditorGraphRebuildForTest()
+{
+	bFailNextEditorGraphRebuildForTest = true;
+}
+#endif

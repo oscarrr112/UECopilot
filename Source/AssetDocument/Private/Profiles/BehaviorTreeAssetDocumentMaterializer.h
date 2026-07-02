@@ -50,4 +50,8 @@ public:
 		const FAssetDocumentRegionContext& Context,
 		class UEdGraph*& OutGraph,
 		TMap<FString, class UEdGraphNode*>& OutNodesById);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	static void FailNextEditorGraphRebuildForTest();
+#endif
 };
