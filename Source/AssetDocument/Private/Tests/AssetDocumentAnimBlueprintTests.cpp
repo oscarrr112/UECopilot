@@ -842,6 +842,45 @@ bool HasCanonicalAnimGraphObject(const TSharedPtr<FJsonObject>& Body)
 		&& Kind == TEXT("AnimGraph");
 }
 
+bool HasAnimGraphNode(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+		{
+			const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+			FString NodeId;
+			if (Node.IsValid()
+				&& Node->TryGetStringField(TEXT("Id"), NodeId)
+				&& NodeId == ExpectedNodeId)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
 {
 	return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
@@ -1117,6 +1156,32 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("AnimGraph subgraph missing current is serialized as null"),
 		HasDiffNullField(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose"), TEXT("current")));
+
+	const FString ManagedNodeTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraphNode_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ManagedNodeObjectPath = FString::Printf(TEXT("%s.%s"), *ManagedNodeTarget, *FPackageName::GetLongPackageAssetName(ManagedNodeTarget));
+	TSharedRef<FJsonObject> ManagedNodeDocument = MakeAnimBlueprintApplyDocument(ManagedNodeTarget);
+	ManagedNodeDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer")));
+
+	FAssetDocumentApplyRequest ManagedNodeRequest;
+	ManagedNodeRequest.Document = ManagedNodeDocument;
+	ManagedNodeRequest.bSaveAsset = false;
+	const FAssetDocumentResult ManagedNodeApplyResult = Service.Apply(ManagedNodeRequest);
+	if (!ManagedNodeApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Managed AnimGraph node apply failed: %s"), *ManagedNodeApplyResult.Message));
+	}
+	TestTrue(TEXT("Managed AnimGraph node apply succeeds"), ManagedNodeApplyResult.IsSuccess());
+
+	UAnimBlueprint* ManagedNodeAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ManagedNodeObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint with managed AnimGraph node loads"), ManagedNodeAnimBlueprint);
+	FAssetDocumentCapabilityContext ManagedNodeContext;
+	ManagedNodeContext.Asset = ManagedNodeAnimBlueprint;
+	ManagedNodeContext.AssetClass = UAnimBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> ManagedNodeExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ManagedNodeExtractResult = Capability.Extract(ManagedNodeContext, ManagedNodeExtractedBody);
+	TestTrue(TEXT("Managed AnimGraph node extract succeeds"), ManagedNodeExtractResult.bSuccess);
+	TestTrue(TEXT("Managed AnimGraph node extracts by authored identity"), HasAnimGraphNode(ManagedNodeExtractedBody, TEXT("IdlePlayer")));
 
 	return true;
 }
@@ -1394,6 +1459,7 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	TSharedRef<FJsonObject> AliasExtractedBody = MakeShared<FJsonObject>();
 	const FAssetDocumentCapabilityResult AliasExtractResult = Capability.Extract(AliasContext, AliasExtractedBody);
 	TestTrue(TEXT("ParentAssetOverrides alias extract succeeds"), AliasExtractResult.bSuccess);
+	TestTrue(TEXT("Alias extract includes one parent asset override"), HasArrayFieldCount(AliasExtractedBody, TEXT("ParentAssetOverrides"), 1));
 	const TArray<TSharedPtr<FJsonValue>>* AliasExtractedOverrides = nullptr;
 	if (AliasExtractedBody->TryGetArrayField(TEXT("ParentAssetOverrides"), AliasExtractedOverrides) && AliasExtractedOverrides && AliasExtractedOverrides->Num() == 1)
 	{

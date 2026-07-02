@@ -155,3 +155,12 @@ target=/Game/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke
 代码侧的 recursive graph schema、动态 NodeSpawner/materialization、公共字段规则、state machine subgraph、anim layer/function/macro graph region、parent override node alias 已完成并通过 focused automation。
 
 尚不能把这条分支标记为“外部端到端完全闭环”：AVH1 已证明 HTTP server 可用，但 full graph apply 会触发 `AnimBlueprintCompileFailed`，窄化输入又证明 authored graph node / parent override alias 不能被 extract roundtrip。后续需要补齐 real graph extraction fidelity、parent override persisted extraction，以及 full graph apply 后的 ABP compile repair，再取消 smoke 脚本中的 graph changed allowlist。
+
+## 2026-07-03 Smoke Fix Red Baseline
+
+新修复线从 `3facfed453e3c22cea4fc87b69e0db1241ec79b0` fork，并在 `840aba8` 固定了 smoke-fix spec/plan。Task 0 已把当前失败转换成 focused automation 锚点：
+
+- `AssetFactory.AssetDocument.AnimBlueprint.AnimGraph` 现在要求 applied `IdlePlayer` managed node 在 extract 后仍以 authored identity 出现在 `Body.AnimGraph.Graphs[*].Nodes`。
+- `AssetFactory.AssetDocument.AnimBlueprint.AnimLayersAndParentAssetOverrides` 现在要求 `ParentAssetOverrides.Node = "IdlePlayer"` 的 alias extract 至少返回一个 override entry，不能因为数组为空而跳过 alias roundtrip 断言。
+
+这些检查预计在当前实现上是红的；它们不是完成证据，而是防止后续再用 canonical empty graph、空 `ParentAssetOverrides` 或 smoke diff allowlist 掩盖真实缺口。
