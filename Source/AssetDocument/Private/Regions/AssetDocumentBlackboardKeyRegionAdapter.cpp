@@ -372,8 +372,8 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		const TArray<TSharedRef<FJsonObject>>& DesiredElements,
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries)
 	{
-		TArray<FAssetDocumentBlackboardKeySpec> DesiredSpecs;
-		FAssetDocumentCapabilityResult Result = ParseAndValidateKeys(Context, DesiredElements, DesiredSpecs);
+		TArray<FResolvedBlackboardKeySpec> DesiredSpecs;
+		FAssetDocumentCapabilityResult Result = ResolveKeySpecs(Context, DesiredElements, DesiredSpecs);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -400,9 +400,9 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		{
 			TArray<FString> Names;
 			Names.Reserve(DesiredSpecs.Num());
-			for (const FAssetDocumentBlackboardKeySpec& Spec : DesiredSpecs)
+			for (const FResolvedBlackboardKeySpec& Spec : DesiredSpecs)
 			{
-				Names.Add(Spec.Name.ToString());
+				Names.Add(Spec.Spec.Name.ToString());
 			}
 			return Names;
 		}();
@@ -421,10 +421,16 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		TSet<FString> SeenDesiredNames;
 		for (int32 Index = 0; Index < DesiredSpecs.Num(); ++Index)
 		{
-			const FString Name = DesiredSpecs[Index].Name.ToString();
+			const FString Name = DesiredSpecs[Index].Spec.Name.ToString();
 			SeenDesiredNames.Add(Name);
 			const TSharedRef<FJsonObject>* Current = CurrentByName.Find(Name);
-			const TSharedPtr<FJsonValue> DesiredValue = MakeObjectValue(DesiredSpecs[Index].CanonicalJson.ToSharedRef());
+			TSharedPtr<FJsonObject> DesiredElement;
+			Result = BuildSemanticKeyJson(DesiredSpecs[Index], DesiredElement);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			const TSharedPtr<FJsonValue> DesiredValue = MakeObjectValue(DesiredElement.ToSharedRef());
 			const TSharedPtr<FJsonValue> CurrentValue = Current ? MakeObjectValue(*Current) : MakeShared<FJsonValueNull>();
 			const bool bSame = Current &&
 				FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) ==

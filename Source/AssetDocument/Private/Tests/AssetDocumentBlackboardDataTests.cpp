@@ -279,6 +279,38 @@ bool ExpectRepeatedApplyPreservesSingleKeyObject(
 	Test.TestEqual(TEXT("Repeated apply does not create extra key type children"), CountBlackboardKeyTypeChildren(Blackboard), FirstChildCount);
 	return true;
 }
+
+bool ExpectApplyThenDiffUnchangedForSingleKey(
+	FAutomationTestBase& Test,
+	const FString& Target,
+	const TSharedRef<FJsonObject>& KeyJson)
+{
+	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+		Target,
+		MakeBlackboardDataBody(nullptr, {KeyJson}));
+
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+	Test.TestTrue(TEXT("Initial blackboard apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		Test.AddError(ApplyResult.Message);
+		return false;
+	}
+
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Document;
+	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
+	Test.TestTrue(TEXT("Diff against same authored document succeeds"), DiffResult.IsSuccess());
+	if (!DiffResult.IsSuccess())
+	{
+		Test.AddError(DiffResult.Message);
+		return false;
+	}
+
+	Test.TestTrue(TEXT("Diff against same authored document has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	return true;
+}
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1191,6 +1223,42 @@ bool FAssetDocumentBlackboardDataRepeatedApplyPreservesMatchingTypeAndKeyTypeCla
 	return ExpectRepeatedApplyPreservesSingleKeyObject(
 		*this,
 		TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesMatchingTypeAndKeyTypeClass"),
+		MakeBlackboardKeyJson(
+			TEXT("ExplicitName"),
+			TEXT("Name"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Name")));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataDiffUnchangedForExplicitKeyTypeClassTest,
+	"AssetFactory.AssetDocument.BlackboardData.DiffUnchangedForExplicitKeyTypeClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataDiffUnchangedForExplicitKeyTypeClassTest::RunTest(const FString&)
+{
+	return ExpectApplyThenDiffUnchangedForSingleKey(
+		*this,
+		TEXT("/Game/AssetDocumentTests/BB_AD_DiffUnchangedForExplicitKeyTypeClass"),
+		MakeBlackboardKeyJson(
+			TEXT("ExplicitName"),
+			TEXT(""),
+			TEXT(""),
+			TEXT(""),
+			TEXT("/Script/AIModule.BlackboardKeyType_Name")));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataDiffUnchangedForMatchingTypeAndKeyTypeClassTest,
+	"AssetFactory.AssetDocument.BlackboardData.DiffUnchangedForMatchingTypeAndKeyTypeClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataDiffUnchangedForMatchingTypeAndKeyTypeClassTest::RunTest(const FString&)
+{
+	return ExpectApplyThenDiffUnchangedForSingleKey(
+		*this,
+		TEXT("/Game/AssetDocumentTests/BB_AD_DiffUnchangedForMatchingTypeAndKeyTypeClass"),
 		MakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT("Name"),
