@@ -8,7 +8,9 @@
 #include "Animation/AnimationAsset.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
 #include "Misc/AutomationTest.h"
 
 namespace
@@ -65,10 +67,17 @@ FAssetDocumentNodeSpec MakeRuntimeNode(const FString& Id, const FString& ClassPa
 	return Node;
 }
 
+struct FFakeAnimationGraphPinSpec
+{
+	FString Name;
+	EEdGraphPinDirection Direction = EGPD_Input;
+};
+
 class FFakeAnimationGraphCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
 {
 public:
 	TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> Candidates;
+	TMap<FString, TArray<FFakeAnimationGraphPinSpec>> PinsByNodeId;
 	int32 QueryCount = 0;
 	int32 SpawnCount = 0;
 	UEdGraphNode* LastSpawnedNode = nullptr;
@@ -89,7 +98,20 @@ public:
 		UEdGraphNode*& OutNode) const override
 	{
 		++const_cast<FFakeAnimationGraphCandidateProvider*>(this)->SpawnCount;
-		OutNode = NewObject<UEdGraphNode>(GetTransientPackage());
+		UObject* Outer = Context.Graph ? static_cast<UObject*>(Context.Graph) : GetTransientPackage();
+		OutNode = NewObject<UEdGraphNode>(Outer);
+		if (Context.Graph)
+		{
+			Context.Graph->AddNode(OutNode, false, false);
+		}
+		if (const TArray<FFakeAnimationGraphPinSpec>* PinSpecs =
+			const_cast<FFakeAnimationGraphCandidateProvider*>(this)->PinsByNodeId.Find(NodeSpec.Id))
+		{
+			for (const FFakeAnimationGraphPinSpec& PinSpec : *PinSpecs)
+			{
+				OutNode->CreatePin(PinSpec.Direction, TEXT("Wildcard"), FName(*PinSpec.Name));
+			}
+		}
 		const_cast<FFakeAnimationGraphCandidateProvider*>(this)->LastSpawnedNode = OutNode;
 		return FAssetDocumentCapabilityResult::Success();
 	}
@@ -98,6 +120,7 @@ public:
 class FFakeAnimationGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
 {
 public:
+	UEdGraph* CreatedGraph = nullptr;
 	int32 LocateCount = 0;
 	int32 RepairCount = 0;
 
@@ -106,6 +129,11 @@ public:
 		FAssetDocumentAnimationGraphContext& InOutContext) override
 	{
 		++LocateCount;
+		if (!InOutContext.Graph)
+		{
+			CreatedGraph = NewObject<UEdGraph>(GetTransientPackage());
+			InOutContext.Graph = CreatedGraph;
+		}
 		InOutContext.GraphKind = GraphSpec.Kind;
 		InOutContext.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
 		return FAssetDocumentCapabilityResult::Success();
@@ -145,6 +173,46 @@ FString FakeGraphNodeClassPath()
 FString FirstDiagnosticCode(const FAssetDocumentCapabilityResult& Result)
 {
 	return Result.Diagnostics.IsEmpty() ? FString() : Result.Diagnostics[0].Code;
+}
+
+FString FirstDiagnosticPath(const FAssetDocumentCapabilityResult& Result)
+{
+	return Result.Diagnostics.IsEmpty() ? FString() : Result.Diagnostics[0].Path;
+}
+
+FAssetDocumentLinkSpec MakeRuntimeLink(
+	const FString& FromNode,
+	const FString& FromPin,
+	const FString& ToNode,
+	const FString& ToPin)
+{
+	FAssetDocumentLinkSpec Link;
+	Link.From.Node = FromNode;
+	Link.From.Pin = FromPin;
+	Link.To.Node = ToNode;
+	Link.To.Pin = ToPin;
+	return Link;
+}
+
+UEdGraphNode* AddManagedEditorNode(
+	UEdGraph* Graph,
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentNodeSpec& NodeSpec,
+	int32 X,
+	int32 Y)
+{
+	UEdGraphNode* Node = Graph
+		? NewObject<UEdGraphNode>(Graph, FName(*FAssetDocumentAnimationGraphRuntime::MakeManagedNodeObjectName(NodeSpec.Id)))
+		: nullptr;
+	if (!Node)
+	{
+		return nullptr;
+	}
+	Graph->AddNode(Node, false, false);
+	Node->NodeGuid = FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(GraphSpec, NodeSpec);
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	return Node;
 }
 }
 
@@ -509,6 +577,37 @@ bool FAssetDocumentAnimationGraphRuntimeManagedNodeIdentityTest::RunTest(const F
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeReusesManagedNodeIdentityTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ReusesManagedNodeIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeReusesManagedNodeIdentityTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentNodeSpec Node = MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath());
+	FAssetDocumentGraphSpec Graph = MakeRuntimeGraphWithNode(Node);
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+
+	const FAssetDocumentCapabilityResult FirstResult = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("First apply succeeds"), FirstResult.bSuccess);
+	const FAssetDocumentCapabilityResult SecondResult = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestTrue(TEXT("Second apply succeeds"), SecondResult.bSuccess);
+	TestEqual(TEXT("Managed node is spawned once and reused by authored identity"), Provider->SpawnCount, 1);
+	TestNotNull(TEXT("Structural hook created a real graph"), Hook.CreatedGraph);
+	if (Hook.CreatedGraph)
+	{
+		TestEqual(TEXT("Graph still contains one managed node"), Hook.CreatedGraph->Nodes.Num(), 1);
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest,
 	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.StructuralHookCoversSubgraphs",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -542,22 +641,164 @@ bool FAssetDocumentAnimationGraphRuntimeStructuralHookCoversSubgraphsTest::RunTe
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest,
-	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractSkippedEvidence",
+	FAssetDocumentAnimationGraphRuntimeRejectsMissingLinkPinTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.RejectsMissingLinkPin",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentAnimationGraphRuntimeExtractSkippedEvidenceTest::RunTest(const FString&)
+bool FAssetDocumentAnimationGraphRuntimeRejectsMissingLinkPinTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+	Graph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("Missing")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestFalse(TEXT("Missing semantic link endpoint is rejected after node reconstruction"), Result.bSuccess);
+	TestEqual(TEXT("Missing pin diagnostic code"), FirstDiagnosticCode(Result), FString(TEXT("UnresolvedGraphLinkEndpoint")));
+	TestEqual(
+		TEXT("Missing pin diagnostic path is semantic"),
+		FirstDiagnosticPath(Result),
+		FString(TEXT("/Body/AnimGraph/Graphs/AnimGraph/Links/Source.Out->Target.Missing")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeRejectsAmbiguousLinkPinTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.RejectsAmbiguousLinkPin",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeRejectsAmbiguousLinkPinTest::RunTest(const FString&)
+{
+	TSharedRef<FFakeAnimationGraphCandidateProvider> Provider = MakeShared<FFakeAnimationGraphCandidateProvider>();
+	Provider->Candidates.Add(MakeCandidate(FakeGraphNodeClassPath()));
+	Provider->PinsByNodeId.Add(TEXT("Source"), { { TEXT("Out"), EGPD_Output }, { TEXT("Out"), EGPD_Output } });
+	Provider->PinsByNodeId.Add(TEXT("Target"), { { TEXT("In"), EGPD_Input } });
+
+	FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	FFakeAnimationGraphStructuralHook Hook;
+	FAssetDocumentAnimationGraphContext Context;
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath()));
+	Graph.Nodes.Add(MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath()));
+	Graph.Links.Add(MakeRuntimeLink(TEXT("Source"), TEXT("Out"), TEXT("Target"), TEXT("In")));
+
+	const FAssetDocumentCapabilityResult Result = Runtime.ApplyGraph(Graph, Context, Hook);
+	TestFalse(TEXT("Ambiguous semantic link endpoint is rejected after node reconstruction"), Result.bSuccess);
+	TestEqual(TEXT("Ambiguous pin diagnostic code"), FirstDiagnosticCode(Result), FString(TEXT("AmbiguousGraphLinkEndpointPin")));
+	TestEqual(
+		TEXT("Ambiguous pin diagnostic path is semantic"),
+		FirstDiagnosticPath(Result),
+		FString(TEXT("/Body/AnimGraph/Graphs/AnimGraph/Links/Source.Out->Target.In")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeExtractsManagedNodesAndLinksTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.ExtractsManagedNodesAndLinks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeExtractsManagedNodesAndLinksTest::RunTest(const FString&)
 {
 	FAssetDocumentAnimationGraphRuntime Runtime;
 	FAssetDocumentAnimationGraphContext Context;
 	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+	Context.Graph = NewObject<UEdGraph>(GetTransientPackage());
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec SourceSpec = MakeRuntimeNode(TEXT("Source"), FakeGraphNodeClassPath());
+	FAssetDocumentNodeSpec TargetSpec = MakeRuntimeNode(TEXT("Target"), FakeGraphNodeClassPath());
+	UEdGraphNode* SourceNode = AddManagedEditorNode(Context.Graph, SourceGraph, SourceSpec, 120, 240);
+	UEdGraphNode* TargetNode = AddManagedEditorNode(Context.Graph, SourceGraph, TargetSpec, 360, 240);
+	UEdGraphPin* OutPin = SourceNode ? SourceNode->CreatePin(EGPD_Output, TEXT("Wildcard"), TEXT("Out")) : nullptr;
+	UEdGraphPin* InPin = TargetNode ? TargetNode->CreatePin(EGPD_Input, TEXT("Wildcard"), TEXT("In")) : nullptr;
+	if (OutPin && InPin)
+	{
+		OutPin->MakeLinkTo(InPin);
+	}
 
 	FAssetDocumentGraphSpec ExtractedGraph;
 	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
 
-	TestTrue(TEXT("Runtime shell extract succeeds"), Result.bSuccess);
-	TestFalse(TEXT("Runtime shell does not put skipped data in authored Evidence"), ExtractedGraph.Evidence.IsValid());
-	TestTrue(TEXT("Runtime shell emits extract-only graph _Skipped"), ExtractedGraph.UnderscoreSkipped.IsValid());
+	TestTrue(TEXT("Managed graph extract succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Managed nodes are extracted"), ExtractedGraph.Nodes.Num(), 2);
+	TestEqual(TEXT("Managed links are extracted"), ExtractedGraph.Links.Num(), 1);
+	const FAssetDocumentNodeSpec* ExtractedSource = ExtractedGraph.Nodes.FindByPredicate(
+		[](const FAssetDocumentNodeSpec& Node)
+		{
+			return Node.Id == TEXT("Source");
+		});
+	TestNotNull(TEXT("Source node is extracted by authored identity"), ExtractedSource);
+	if (ExtractedSource)
+	{
+		TestEqual(TEXT("Class is extracted"), ExtractedSource->Class, FakeGraphNodeClassPath());
+		double X = 0.0;
+		double Y = 0.0;
+		TestTrue(TEXT("Position is extracted"), ExtractedSource->Position.IsValid());
+		if (ExtractedSource->Position.IsValid())
+		{
+			ExtractedSource->Position->TryGetNumberField(TEXT("X"), X);
+			ExtractedSource->Position->TryGetNumberField(TEXT("Y"), Y);
+		}
+		TestEqual(TEXT("Position X roundtrips"), X, 120.0);
+		TestEqual(TEXT("Position Y roundtrips"), Y, 240.0);
+		TestTrue(TEXT("Evidence object is extracted"), ExtractedSource->Evidence.IsValid());
+		if (ExtractedSource->Evidence.IsValid())
+		{
+			TestEqual(
+				TEXT("Evidence.NodeGuid is extracted"),
+				ExtractedSource->Evidence->GetStringField(TEXT("NodeGuid")),
+				FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(SourceGraph, SourceSpec).ToString(EGuidFormats::Digits));
+		}
+	}
+	if (ExtractedGraph.Links.Num() == 1)
+	{
+		TestEqual(TEXT("Link source node is semantic"), ExtractedGraph.Links[0].From.Node, FString(TEXT("Source")));
+		TestEqual(TEXT("Link source pin is semantic"), ExtractedGraph.Links[0].From.Pin, FString(TEXT("Out")));
+		TestEqual(TEXT("Link target node is semantic"), ExtractedGraph.Links[0].To.Node, FString(TEXT("Target")));
+		TestEqual(TEXT("Link target pin is semantic"), ExtractedGraph.Links[0].To.Pin, FString(TEXT("In")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphRuntimeNoShellSkippedForManagedNodesTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.NoShellSkippedForManagedNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphRuntimeNoShellSkippedForManagedNodesTest::RunTest(const FString&)
+{
+	FAssetDocumentAnimationGraphRuntime Runtime;
+	FAssetDocumentAnimationGraphContext Context;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.Graph = NewObject<UEdGraph>(GetTransientPackage());
+
+	FAssetDocumentGraphSpec SourceGraph;
+	SourceGraph.Id = TEXT("AnimGraph");
+	SourceGraph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec NodeSpec = MakeRuntimeNode(TEXT("IdlePlayer"), FakeGraphNodeClassPath());
+	AddManagedEditorNode(Context.Graph, SourceGraph, NodeSpec, 10, 20);
+
+	FAssetDocumentGraphSpec ExtractedGraph;
+	const FAssetDocumentCapabilityResult Result = Runtime.ExtractGraph(Context, ExtractedGraph);
+
+	TestTrue(TEXT("Managed graph extract succeeds"), Result.bSuccess);
+	TestEqual(TEXT("Managed node is extracted instead of shell skipped"), ExtractedGraph.Nodes.Num(), 1);
+	TestFalse(TEXT("Managed-only graph does not emit shell _Skipped"), ExtractedGraph.UnderscoreSkipped.IsValid());
 	return true;
 }
 

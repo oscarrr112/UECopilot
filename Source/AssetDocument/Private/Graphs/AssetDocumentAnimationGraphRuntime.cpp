@@ -5,7 +5,10 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPropertyAdapter.h"
 
+#include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
 #include "UObject/Object.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -38,6 +41,14 @@ FString NodePath(
 	const FAssetDocumentAnimationGraphContext& Context)
 {
 	return JoinPath(JoinPath(GraphPath(GraphSpec, Context), TEXT("Nodes")), NodeSpec.Id);
+}
+
+FString LinkPath(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentLinkSpec& Link,
+	const FAssetDocumentAnimationGraphContext& Context)
+{
+	return JoinPath(JoinPath(GraphPath(GraphSpec, Context), TEXT("Links")), Link.ToKey());
 }
 
 FAssetDocumentCapabilityResult RuntimeFailure(
@@ -90,6 +101,177 @@ FAssetDocumentCapabilityResult PropertyApplyFailure(
 		Result.Diagnostics.Add(MoveTemp(Mapped));
 	}
 	return Result;
+}
+
+TSharedRef<FJsonObject> MakePositionObject(const UEdGraphNode* Node)
+{
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), Node ? Node->NodePosX : 0);
+	Position->SetNumberField(TEXT("Y"), Node ? Node->NodePosY : 0);
+	return Position;
+}
+
+TSharedRef<FJsonObject> MakeNodeEvidenceObject(const UEdGraphNode* Node)
+{
+	TSharedRef<FJsonObject> Evidence = MakeShared<FJsonObject>();
+	Evidence->SetStringField(TEXT("NodeGuid"), Node ? Node->NodeGuid.ToString(EGuidFormats::Digits) : FString());
+	return Evidence;
+}
+
+TSharedRef<FJsonObject> MakeSkippedNodeObject(const UEdGraphNode* Node)
+{
+	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+	Skipped->SetStringField(TEXT("Reason"), TEXT("UnsupportedAnimationGraphNodeIdentity"));
+	Skipped->SetStringField(TEXT("Class"), Node && Node->GetClass() ? Node->GetClass()->GetPathName() : FString());
+	Skipped->SetStringField(TEXT("NodeTitle"), Node ? Node->GetNodeTitle(ENodeTitleType::ListView).ToString() : FString());
+	Skipped->SetStringField(TEXT("NodeGuid"), Node ? Node->NodeGuid.ToString(EGuidFormats::Digits) : FString());
+	return Skipped;
+}
+
+bool IsPinNameRepresentable(const UEdGraphPin* Pin)
+{
+	return Pin && !Pin->PinName.IsNone() && !Pin->PinName.ToString().IsEmpty();
+}
+
+UEdGraphNode* FindManagedNodeById(const FString& NodeId, const FAssetDocumentAnimationGraphContext& Context)
+{
+	if (!Context.Graph)
+	{
+		return nullptr;
+	}
+
+	for (UEdGraphNode* Node : Context.Graph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		FString ParsedNodeId;
+		if (FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(Node->GetFName(), ParsedNodeId)
+			&& ParsedNodeId == NodeId)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindUniquePinByName(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentLinkSpec& Link,
+	const FAssetDocumentAnimationGraphContext& Context,
+	const FAssetDocumentGraphEndpoint& Endpoint,
+	UEdGraphNode* Node,
+	EEdGraphPinDirection ExpectedDirection,
+	FAssetDocumentCapabilityResult& OutResult)
+{
+	OutResult = FAssetDocumentCapabilityResult::Success();
+	if (!Node)
+	{
+		OutResult = RuntimeFailure(
+			LinkPath(GraphSpec, Link, Context),
+			TEXT("UnresolvedGraphLinkEndpoint"),
+			FString::Printf(TEXT("Graph link endpoint node '%s' could not be resolved."), *Endpoint.Node));
+		return nullptr;
+	}
+
+	TArray<UEdGraphPin*> Matches;
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->PinName.ToString() == Endpoint.Pin)
+		{
+			Matches.Add(Pin);
+		}
+	}
+	if (Matches.IsEmpty())
+	{
+		OutResult = RuntimeFailure(
+			LinkPath(GraphSpec, Link, Context),
+			TEXT("UnresolvedGraphLinkEndpoint"),
+			FString::Printf(TEXT("Graph link endpoint pin '%s.%s' could not be resolved after node reconstruction."), *Endpoint.Node, *Endpoint.Pin));
+		return nullptr;
+	}
+	if (Matches.Num() > 1)
+	{
+		OutResult = RuntimeFailure(
+			LinkPath(GraphSpec, Link, Context),
+			TEXT("AmbiguousGraphLinkEndpointPin"),
+			FString::Printf(TEXT("Graph link endpoint pin '%s.%s' is ambiguous after node reconstruction."), *Endpoint.Node, *Endpoint.Pin));
+		return nullptr;
+	}
+	if (Matches[0]->Direction != ExpectedDirection)
+	{
+		OutResult = RuntimeFailure(
+			LinkPath(GraphSpec, Link, Context),
+			TEXT("InvalidGraphLinkType"),
+			FString::Printf(TEXT("Graph link endpoint '%s.%s' has the wrong pin direction."), *Endpoint.Node, *Endpoint.Pin));
+		return nullptr;
+	}
+	return Matches[0];
+}
+
+void BreakAllManagedNodeLinks(const TMap<FString, UEdGraphNode*>& NodesById)
+{
+	for (const TPair<FString, UEdGraphNode*>& Pair : NodesById)
+	{
+		if (!Pair.Value)
+		{
+			continue;
+		}
+		for (UEdGraphPin* Pin : Pair.Value->Pins)
+		{
+			if (Pin)
+			{
+				Pin->BreakAllPinLinks();
+			}
+		}
+	}
+}
+
+void AddExtractedManagedLinks(
+	const TArray<UEdGraphNode*>& GraphNodes,
+	const TMap<const UEdGraphNode*, FString>& NodeIds,
+	FAssetDocumentGraphSpec& OutGraph)
+{
+	TSet<FString> LinkKeys;
+	for (UEdGraphNode* Node : GraphNodes)
+	{
+		const FString* FromNodeId = NodeIds.Find(Node);
+		if (!FromNodeId)
+		{
+			continue;
+		}
+
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Output || !IsPinNameRepresentable(Pin))
+			{
+				continue;
+			}
+
+			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+			{
+				const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+				const FString* ToNodeId = NodeIds.Find(LinkedNode);
+				if (!ToNodeId || !IsPinNameRepresentable(LinkedPin))
+				{
+					continue;
+				}
+
+				FAssetDocumentLinkSpec Link;
+				Link.From.Node = *FromNodeId;
+				Link.From.Pin = Pin->PinName.ToString();
+				Link.To.Node = *ToNodeId;
+				Link.To.Pin = LinkedPin->PinName.ToString();
+				if (!LinkKeys.Contains(Link.ToKey()))
+				{
+					LinkKeys.Add(Link.ToKey());
+					OutGraph.Links.Add(MoveTemp(Link));
+				}
+			}
+		}
+	}
 }
 
 TCHAR ToHexDigit(uint8 Value)
@@ -273,29 +455,38 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ValidateGrap
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeGraphNodes(
 	const FAssetDocumentGraphSpec& GraphSpec,
-	const FAssetDocumentAnimationGraphContext& Context) const
+	const FAssetDocumentAnimationGraphContext& Context,
+	TMap<FString, UEdGraphNode*>& OutNodesById) const
 {
+	OutNodesById.Reset();
 	for (const FAssetDocumentNodeSpec& NodeSpec : GraphSpec.Nodes)
 	{
-		FAssetDocumentAnimationGraphNodeSpawnCandidate Candidate;
-		FAssetDocumentCapabilityResult CandidateResult = ResolveCandidate(GraphSpec, NodeSpec, Context, Candidate);
-		if (!CandidateResult.bSuccess)
-		{
-			return CandidateResult;
-		}
-
-		UEdGraphNode* SpawnedNode = nullptr;
-		CandidateResult = CandidateProvider->SpawnNode(GraphSpec, NodeSpec, Context, Candidate, SpawnedNode);
-		if (!CandidateResult.bSuccess)
-		{
-			return CandidateResult;
-		}
+		UEdGraphNode* SpawnedNode = FindManagedNodeById(NodeSpec.Id, Context);
 		if (!SpawnedNode)
 		{
-			return RuntimeFailure(
-				JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Class")),
-				TEXT("GraphNodeSpawnFailed"),
-				FString::Printf(TEXT("Graph node '%s' did not produce a UE graph node."), *NodeSpec.Id));
+			FAssetDocumentAnimationGraphNodeSpawnCandidate Candidate;
+			FAssetDocumentCapabilityResult CandidateResult = ResolveCandidate(GraphSpec, NodeSpec, Context, Candidate);
+			if (!CandidateResult.bSuccess)
+			{
+				return CandidateResult;
+			}
+
+			CandidateResult = CandidateProvider->SpawnNode(GraphSpec, NodeSpec, Context, Candidate, SpawnedNode);
+			if (!CandidateResult.bSuccess)
+			{
+				return CandidateResult;
+			}
+			if (!SpawnedNode)
+			{
+				return RuntimeFailure(
+					JoinPath(NodePath(GraphSpec, NodeSpec, Context), TEXT("Class")),
+					TEXT("GraphNodeSpawnFailed"),
+					FString::Printf(TEXT("Graph node '%s' did not produce a UE graph node."), *NodeSpec.Id));
+			}
+			if (Context.Graph && !Context.Graph->Nodes.Contains(SpawnedNode))
+			{
+				Context.Graph->AddNode(SpawnedNode, false, false);
+			}
 		}
 		if (!NodeSpec.Class.IsEmpty() && SpawnedNode->GetClass()->GetPathName() != NodeSpec.Class)
 		{
@@ -343,6 +534,74 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeG
 			}
 		}
 		SpawnedNode->ReconstructNode();
+		OutNodesById.Add(NodeSpec.Id, SpawnedNode);
+	}
+
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::MaterializeGraphLinks(
+	const FAssetDocumentGraphSpec& GraphSpec,
+	const FAssetDocumentAnimationGraphContext& Context,
+	const TMap<FString, UEdGraphNode*>& NodesById) const
+{
+	BreakAllManagedNodeLinks(NodesById);
+	const UEdGraphSchema* Schema = Context.Graph ? Context.Graph->GetSchema() : nullptr;
+
+	for (const FAssetDocumentLinkSpec& Link : GraphSpec.Links)
+	{
+		UEdGraphNode* const* FromNode = NodesById.Find(Link.From.Node);
+		UEdGraphNode* const* ToNode = NodesById.Find(Link.To.Node);
+
+		FAssetDocumentCapabilityResult PinResult;
+		UEdGraphPin* FromPin = FindUniquePinByName(
+			GraphSpec,
+			Link,
+			Context,
+			Link.From,
+			FromNode ? *FromNode : nullptr,
+			EGPD_Output,
+			PinResult);
+		if (!PinResult.bSuccess)
+		{
+			return PinResult;
+		}
+
+		UEdGraphPin* ToPin = FindUniquePinByName(
+			GraphSpec,
+			Link,
+			Context,
+			Link.To,
+			ToNode ? *ToNode : nullptr,
+			EGPD_Input,
+			PinResult);
+		if (!PinResult.bSuccess)
+		{
+			return PinResult;
+		}
+
+		if (!FromPin || !ToPin)
+		{
+			return RuntimeFailure(
+				LinkPath(GraphSpec, Link, Context),
+				TEXT("UnresolvedGraphLinkEndpoint"),
+				FString::Printf(TEXT("Graph link endpoint '%s' could not be resolved after node reconstruction."), *Link.ToKey()));
+		}
+
+		if (Schema)
+		{
+			if (!Schema->TryCreateConnection(FromPin, ToPin))
+			{
+				return RuntimeFailure(
+					LinkPath(GraphSpec, Link, Context),
+					TEXT("InvalidGraphLinkType"),
+					FString::Printf(TEXT("Graph schema rejected link '%s'."), *Link.ToKey()));
+			}
+		}
+		else if (!FromPin->LinkedTo.Contains(ToPin))
+		{
+			FromPin->MakeLinkTo(ToPin);
+		}
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -359,10 +618,17 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ApplyGraphAf
 		return LocateResult;
 	}
 
-	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeGraphNodes(GraphSpec, Context);
+	TMap<FString, UEdGraphNode*> NodesById;
+	const FAssetDocumentCapabilityResult MaterializeResult = MaterializeGraphNodes(GraphSpec, Context, NodesById);
 	if (!MaterializeResult.bSuccess)
 	{
 		return MaterializeResult;
+	}
+
+	const FAssetDocumentCapabilityResult LinkResult = MaterializeGraphLinks(GraphSpec, Context, NodesById);
+	if (!LinkResult.bSuccess)
+	{
+		return LinkResult;
 	}
 
 	for (const FAssetDocumentGraphSpec& Subgraph : GraphSpec.Subgraphs)
@@ -401,10 +667,48 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph
 {
 	OutGraph.Id = Context.GraphKind.IsEmpty() ? TEXT("AnimGraph") : Context.GraphKind;
 	OutGraph.Kind = Context.GraphKind;
-	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
-	Skipped->SetStringField(TEXT("Reason"), TEXT("AnimationGraphExtractionNotMaterialized"));
-	Skipped->SetStringField(TEXT("Message"), TEXT("Animation graph extraction is not materialized in the runtime shell."));
-	OutGraph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped);
+	OutGraph.Nodes.Reset();
+	OutGraph.Links.Reset();
+	OutGraph.UnderscoreSkipped.Reset();
+
+	if (!Context.Graph)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SkippedNodes;
+	TMap<const UEdGraphNode*, FString> NodeIds;
+	for (UEdGraphNode* Node : Context.Graph->Nodes)
+	{
+		if (!Node)
+		{
+			continue;
+		}
+
+		FString NodeId;
+		if (!TryParseManagedNodeObjectName(Node->GetFName(), NodeId))
+		{
+			SkippedNodes.Add(MakeShared<FJsonValueObject>(MakeSkippedNodeObject(Node)));
+			continue;
+		}
+
+		FAssetDocumentNodeSpec NodeSpec;
+		NodeSpec.Id = NodeId;
+		NodeSpec.Class = Node->GetClass() ? Node->GetClass()->GetPathName() : FString();
+		NodeSpec.Position = MakePositionObject(Node);
+		NodeSpec.Evidence = MakeNodeEvidenceObject(Node);
+		NodeIds.Add(Node, NodeId);
+		OutGraph.Nodes.Add(MoveTemp(NodeSpec));
+	}
+
+	AddExtractedManagedLinks(Context.Graph->Nodes, NodeIds, OutGraph);
+
+	if (!SkippedNodes.IsEmpty())
+	{
+		TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
+		Skipped->SetArrayField(TEXT("Nodes"), MoveTemp(SkippedNodes));
+		OutGraph.UnderscoreSkipped = MakeShared<FJsonValueObject>(Skipped);
+	}
 	return FAssetDocumentCapabilityResult::Success();
 }
 
