@@ -1940,6 +1940,85 @@ bool FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest::RunTest(
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeEditorLayoutExplicitEmptyCommentsDeletesTest,
+	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutExplicitEmptyCommentsDeletes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeEditorLayoutExplicitEmptyCommentsDeletesTest::RunTest(const FString&)
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_DeleteLayoutComments");
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	MakeTask7BlackboardAsset(BlackboardTarget);
+	MakeExistingBehaviorTreeAsset(SubtreeTarget);
+
+	const FString CommentId = TEXT("44444444-5555-6666-7777-888888888888");
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> InitialBody = MakeBehaviorTreeBody(
+		MakeAssetRef(MakeObjectPathFromTarget(BlackboardTarget)),
+		MakeTask7BehaviorTree(SubtreeTarget, true, false),
+		MakeEditorLayout(
+			{
+				MakeObjectValue(MakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
+				MakeObjectValue(MakeEditorLayoutNode(TEXT("MoveToTarget"), 300, 520)),
+			},
+			{
+				MakeObjectValue(MakeEditorLayoutComment(CommentId, TEXT("Delete me"), -40, 80, 640, 220)),
+			}));
+	const FAssetDocumentResult InitialApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, InitialBody)));
+	TestTrue(TEXT("initial editor layout comment applies before explicit delete"), InitialApply.IsSuccess());
+	if (!InitialApply.IsSuccess())
+	{
+		AddError(InitialApply.Message);
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> DeleteLayout = MakeShared<FJsonObject>();
+	DeleteLayout->SetArrayField(TEXT("Comments"), TArray<TSharedPtr<FJsonValue>>());
+	TSharedPtr<FJsonObject> DeleteBody = MakeShared<FJsonObject>();
+	DeleteBody->SetObjectField(TEXT("EditorLayout"), DeleteLayout);
+	const FAssetDocumentResult DeleteApply = Service.Apply(MakeApplyRequest(MakeBehaviorTreeDocument(Target, DeleteBody)));
+	TestTrue(TEXT("explicit empty Comments apply succeeds"), DeleteApply.IsSuccess());
+	if (!DeleteApply.IsSuccess())
+	{
+		AddError(DeleteApply.Message);
+		return false;
+	}
+
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = Target;
+	ExtractRequest.bDiffOnly = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	TestTrue(TEXT("extract after explicit comment delete succeeds"), ExtractResult.IsSuccess());
+
+	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedComments = nullptr;
+	TestTrue(TEXT("extract contains empty Body.EditorLayout.Comments"), ExtractResult.Payload.IsValid()
+		&& ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody)
+		&& ExtractedBody
+		&& (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout)
+		&& ExtractedLayout
+		&& (*ExtractedLayout)->TryGetArrayField(TEXT("Comments"), ExtractedComments)
+		&& ExtractedComments
+		&& ExtractedComments->Num() == 0);
+
+	UBehaviorTree* BehaviorTree = LoadBehaviorTreeForTarget(Target);
+	UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	TestNull(TEXT("explicit empty Comments removes existing comment graph node"), FindEditorLayoutComment(Graph, CommentId));
+
+	const FAssetDocumentResult DiffResult = Service.Diff(MakeDiffRequest(MakeBehaviorTreeDocument(Target, DeleteBody)));
+	TestTrue(TEXT("diff after explicit empty Comments succeeds"), DiffResult.IsSuccess());
+	if (!DiffResult.IsSuccess())
+	{
+		AddError(DiffResult.Message);
+		return false;
+	}
+	TestFalse(TEXT("explicit comment deletion does not emit changed semantic tree entries"), DiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest,
 	"AssetFactory.AssetDocument.BehaviorTree.EditorLayoutCommentColorOptionalDiff",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
