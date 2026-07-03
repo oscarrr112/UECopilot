@@ -2485,6 +2485,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(const FString&)
 {
 	const FString AnimationAssetPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
+	const FString TutorialSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+	const FString TutorialPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
 	const FString ParentGuidA = TEXT("01234567-89ab-cdef-0123-456789abcdef");
 	const FString ParentGuidB = TEXT("11111111-2222-3333-4444-555555555555");
 
@@ -2612,7 +2614,11 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 
 	const FString AliasTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_OverrideAlias_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString AliasObjectPath = FString::Printf(TEXT("%s.%s"), *AliasTarget, *FPackageName::GetLongPackageAssetName(AliasTarget));
-	TSharedRef<FJsonObject> AliasDocument = MakeAnimBlueprintApplyDocument(AliasTarget);
+	TSharedRef<FJsonObject> AliasDocument = MakeAnimBlueprintApplyDocument(
+		AliasTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
 	AliasDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, AnimationAssetPath));
 	AliasDocument->GetObjectField(TEXT("Body"))->SetArrayField(
 		TEXT("ParentAssetOverrides"),
@@ -2633,6 +2639,9 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	const FGuid ExpectedIdlePlayerGuid = MakeExpectedManagedAnimGraphNodeGuid(TEXT("IdlePlayer"));
 	if (AliasAnimBlueprint && ExpectedAsset)
 	{
+		USkeleton* ExpectedAliasSkeleton = ExpectedAsset->GetSkeleton();
+		TestNotNull(TEXT("Alias override animation asset skeleton loads"), ExpectedAliasSkeleton);
+		TestEqual(TEXT("Alias AnimBlueprint target skeleton matches override animation skeleton"), AliasAnimBlueprint->TargetSkeleton.Get(), ExpectedAliasSkeleton);
 		TestEqual(TEXT("One node alias parent asset override applied"), AliasAnimBlueprint->ParentAssetOverrides.Num(), 1);
 		if (AliasAnimBlueprint->ParentAssetOverrides.Num() == 1)
 		{
