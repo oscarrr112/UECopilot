@@ -820,28 +820,6 @@ FAssetDocumentCapabilityResult ParseAnimGraphRegion(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-class FEmptyAnimGraphCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
-{
-public:
-	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
-		const FAssetDocumentNodeSpec& NodeSpec,
-		const FAssetDocumentAnimationGraphContext& Context) const override
-	{
-		return {};
-	}
-
-	virtual FAssetDocumentCapabilityResult SpawnNode(
-		const FAssetDocumentGraphSpec& GraphSpec,
-		const FAssetDocumentNodeSpec& NodeSpec,
-		const FAssetDocumentAnimationGraphContext& Context,
-		const FAssetDocumentAnimationGraphNodeSpawnCandidate& Candidate,
-		UEdGraphNode*& OutNode) const override
-	{
-		OutNode = nullptr;
-		return FAssetDocumentCapabilityResult::Success();
-	}
-};
-
 class FAnimGraphStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
 {
 public:
@@ -905,16 +883,7 @@ FAssetDocumentCapabilityResult ValidateAnimGraphValue(
 	}
 	RuntimeContext.GraphPath = CanonicalGraphPath;
 	RuntimeContext.GraphKind = CanonicalGraphKind;
-	TSharedPtr<IAssetDocumentAnimationGraphCandidateProvider> Provider;
-	if (RegionContext && RegionContext->Asset)
-	{
-		Provider = MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>();
-	}
-	else
-	{
-		Provider = MakeShared<FEmptyAnimGraphCandidateProvider>();
-	}
-	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
 	return Runtime.ValidateGraph(Graphs[0], RuntimeContext);
 }
 

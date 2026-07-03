@@ -106,6 +106,22 @@ TSharedRef<FJsonObject> MakeAnimLayerGraph(const TCHAR* LayerName)
 	return Graph;
 }
 
+TSharedRef<FJsonObject> MakeAnimLayerGraphWithSequencePlayer(const TCHAR* LayerName)
+{
+	TSharedRef<FJsonObject> Graph = MakeAnimLayerGraph(LayerName);
+
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), TEXT("LayerIdlePlayer"));
+	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 120.0);
+	Position->SetNumberField(TEXT("Y"), 40.0);
+	Node->SetObjectField(TEXT("Position"), Position);
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	return Graph;
+}
+
 TSharedRef<FJsonObject> MakeAnimLayerGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
@@ -1175,6 +1191,38 @@ bool HasAnimGraphOutputPose(const TSharedPtr<FJsonObject>& Body, const FString& 
 		&& Pin == ExpectedPin;
 }
 
+bool HasAnimGraphNodeSequenceField(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId, const FString& ExpectedSequencePath)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedRootAnimGraph(Body);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Fields = nullptr;
+		const TSharedPtr<FJsonObject>* AnimNodeFields = nullptr;
+		FString NodeId;
+		FString SequencePath;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId
+			&& Node->TryGetObjectField(TEXT("Fields"), Fields)
+			&& Fields
+			&& (*Fields)->TryGetObjectField(TEXT("Node"), AnimNodeFields)
+			&& AnimNodeFields
+			&& (*AnimNodeFields)->TryGetStringField(TEXT("Sequence"), SequencePath)
+			&& SequencePath == ExpectedSequencePath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool HasAnimGraphSkippedOutputPose(const TSharedPtr<FJsonObject>& Body)
 {
 	const TSharedPtr<FJsonObject> Graph = GetExtractedRootAnimGraph(Body);
@@ -1877,6 +1925,19 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 
 	TestTrue(TEXT("Canonical recursive AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
 
+	const FString TutorialIdleAnimationPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
+	TSharedRef<FJsonObject> SequencePlayerValidateBody = MakeShared<FJsonObject>();
+	SequencePlayerValidateBody->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath));
+	const FAssetDocumentCapabilityResult SequencePlayerValidateResult =
+		Capability.Validate(ValidationContext, MakeShared<FJsonValueObject>(SequencePlayerValidateBody));
+	if (!SequencePlayerValidateResult.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("SequencePlayer AnimGraph validate failed: %s"), *SequencePlayerValidateResult.Message));
+	}
+	TestTrue(TEXT("AnimGraph authored nodes validate without an existing asset instance"), SequencePlayerValidateResult.bSuccess);
+
 	const FAssetDocumentCapabilityResult LegacyArrayResult =
 		Capability.Validate(ValidationContext, MakeBodyWithLegacyAnimGraphArray());
 	TestFalse(TEXT("Legacy AnimGraph array rejects under recursive schema"), LegacyArrayResult.bSuccess);
@@ -1968,7 +2029,6 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 
 	const FString TutorialSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
 	const FString TutorialPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
-	const FString TutorialIdleAnimationPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
 	const FString MissingOutputPoseTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_MissingOutput_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString MissingOutputPoseObjectPath = FString::Printf(TEXT("%s.%s"), *MissingOutputPoseTarget, *FPackageName::GetLongPackageAssetName(MissingOutputPoseTarget));
 	TSharedRef<FJsonObject> MissingOutputPoseDocument = MakeAnimBlueprintApplyDocument(
@@ -2034,12 +2094,15 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	TestTrue(
 		TEXT("Managed AnimGraph node extracts output pose"),
 		HasAnimGraphOutputPose(ManagedNodeExtractedBody, TEXT("IdlePlayer"), TEXT("Pose")));
+	TestTrue(
+		TEXT("Managed AnimGraph node extracts authored reflection fields"),
+		HasAnimGraphNodeSequenceField(ManagedNodeExtractedBody, TEXT("IdlePlayer"), TutorialIdleAnimationPath));
 
 	TArray<TSharedPtr<FJsonValue>> ManagedNodeDiffEntries;
 	TSharedRef<FJsonObject> ManagedNodeDiffBody = MakeShared<FJsonObject>();
 	ManagedNodeDiffBody->SetObjectField(
 		TEXT("AnimGraph"),
-		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, FString(), false));
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath, false));
 	const FAssetDocumentCapabilityResult ManagedNodeDiffResult =
 		Capability.Diff(
 			ManagedNodeContext,
@@ -2499,6 +2562,11 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 		Capability.Validate(
 			ValidationContext,
 			MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraph(TEXT("UpperBodyLayer"))})).bSuccess);
+	TestTrue(
+		TEXT("AnimLayers authored nodes validate without an existing asset instance"),
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraphWithSequencePlayer(TEXT("UpperBodyLayer"))})).bSuccess);
 
 	TestTrue(
 		TEXT("ParentAssetOverrides validates stable guid identity array"),

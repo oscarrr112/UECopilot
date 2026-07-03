@@ -231,28 +231,6 @@ TSharedPtr<FJsonObject> GraphDiffEntryToBodyDiffEntry(const FAssetDocumentGraphD
 	return Entry;
 }
 
-class FEmptyAnimLayerCandidateProvider final : public IAssetDocumentAnimationGraphCandidateProvider
-{
-public:
-	virtual TArray<FAssetDocumentAnimationGraphNodeSpawnCandidate> FindCandidates(
-		const FAssetDocumentNodeSpec&,
-		const FAssetDocumentAnimationGraphContext&) const override
-	{
-		return {};
-	}
-
-	virtual FAssetDocumentCapabilityResult SpawnNode(
-		const FAssetDocumentGraphSpec&,
-		const FAssetDocumentNodeSpec&,
-		const FAssetDocumentAnimationGraphContext&,
-		const FAssetDocumentAnimationGraphNodeSpawnCandidate&,
-		UEdGraphNode*& OutNode) const override
-	{
-		OutNode = nullptr;
-		return FAssetDocumentCapabilityResult::Success();
-	}
-};
-
 class FAnimLayerStructuralHook final : public IAssetDocumentAnimationGraphStructuralHook
 {
 public:
@@ -317,16 +295,7 @@ FAssetDocumentCapabilityResult ValidateAnimLayerValue(
 	RuntimeContext.Blueprint = Cast<UAnimBlueprint>(Context.Asset);
 	RuntimeContext.GraphKind = AnimLayerKind;
 	RuntimeContext.GraphPath = AnimLayersPath;
-	TSharedPtr<IAssetDocumentAnimationGraphCandidateProvider> Provider;
-	if (Context.Asset)
-	{
-		Provider = MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>();
-	}
-	else
-	{
-		Provider = MakeShared<FEmptyAnimLayerCandidateProvider>();
-	}
-	const FAssetDocumentAnimationGraphRuntime Runtime(Provider);
+	const FAssetDocumentAnimationGraphRuntime Runtime(MakeShared<FAssetDocumentAnimationGraphNodeActionProvider>());
 	for (const FAssetDocumentGraphSpec& Graph : Graphs)
 	{
 		FAssetDocumentAnimationGraphContext GraphContext = RuntimeContext;

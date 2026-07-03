@@ -11,6 +11,7 @@
 #include "EdGraph/EdGraphSchema.h"
 #include "UObject/Object.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
 
 namespace
 {
@@ -116,6 +117,116 @@ TSharedRef<FJsonObject> MakeNodeEvidenceObject(const UEdGraphNode* Node)
 	TSharedRef<FJsonObject> Evidence = MakeShared<FJsonObject>();
 	Evidence->SetStringField(TEXT("NodeGuid"), Node ? Node->NodeGuid.ToString(EGuidFormats::Digits) : FString());
 	return Evidence;
+}
+
+bool IsOptionalPinMetadataObject(const TSharedPtr<FJsonObject>& Object)
+{
+	return Object.IsValid()
+		&& Object->HasField(TEXT("PropertyName"))
+		&& Object->HasField(TEXT("PropertyFriendlyName"))
+		&& Object->HasField(TEXT("bShowPin"))
+		&& Object->HasField(TEXT("bCanToggleVisibility"));
+}
+
+bool IsGeneratedGraphNodeFieldValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return true;
+	}
+
+	if (Value->Type == EJson::Object)
+	{
+		const TSharedPtr<FJsonObject> Object = Value->AsObject();
+		return Object.IsValid()
+			&& Object->Values.Num() == 1
+			&& Object->HasField(TEXT("Class"));
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		const TArray<TSharedPtr<FJsonValue>>& Array = Value->AsArray();
+		if (Array.IsEmpty())
+		{
+			return true;
+		}
+
+		for (const TSharedPtr<FJsonValue>& EntryValue : Array)
+		{
+			if (!EntryValue.IsValid() || EntryValue->Type != EJson::Object || !IsOptionalPinMetadataObject(EntryValue->AsObject()))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	return false;
+}
+
+TSharedPtr<FJsonValue> ExtractPropertyDeltaToJson(FProperty* Property, const void* ValuePtr, const void* DefaultValuePtr)
+{
+	if (!Property || !ValuePtr || !DefaultValuePtr || Property->Identical(ValuePtr, DefaultValuePtr))
+	{
+		return nullptr;
+	}
+
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		TSharedPtr<FJsonObject> StructJson = MakeShared<FJsonObject>();
+		for (TFieldIterator<FProperty> FieldIt(StructProperty->Struct); FieldIt; ++FieldIt)
+		{
+			FProperty* Field = *FieldIt;
+			const void* FieldValuePtr = Field->ContainerPtrToValuePtr<void>(ValuePtr);
+			const void* DefaultFieldValuePtr = Field->ContainerPtrToValuePtr<void>(DefaultValuePtr);
+			TSharedPtr<FJsonValue> FieldJson = ExtractPropertyDeltaToJson(Field, FieldValuePtr, DefaultFieldValuePtr);
+			if (FieldJson.IsValid())
+			{
+				StructJson->SetField(Field->GetName(), FieldJson);
+			}
+		}
+		if (StructJson->Values.IsEmpty())
+		{
+			return nullptr;
+		}
+		return MakeShared<FJsonValueObject>(StructJson);
+	}
+
+	return FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, ValuePtr);
+}
+
+TSharedPtr<FJsonObject> ExtractAuthoredNodeFields(UEdGraphNode* Node)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+
+	UClass* NodeClass = Node->GetClass();
+	UObject* DefaultNode = NodeClass ? NodeClass->GetDefaultObject() : nullptr;
+	if (!NodeClass || !DefaultNode)
+	{
+		return nullptr;
+	}
+
+	TSharedPtr<FJsonObject> AuthoredFields = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> PropertyIt(NodeClass); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property))
+		{
+			continue;
+		}
+
+		const void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Node);
+		const void* DefaultValuePtr = Property->ContainerPtrToValuePtr<void>(DefaultNode);
+		TSharedPtr<FJsonValue> JsonValue = ExtractPropertyDeltaToJson(Property, ValuePtr, DefaultValuePtr);
+		if (JsonValue.IsValid() && !IsGeneratedGraphNodeFieldValue(JsonValue))
+		{
+			AuthoredFields->SetField(Property->GetName(), JsonValue);
+		}
+	}
+	return AuthoredFields->Values.IsEmpty() ? nullptr : AuthoredFields;
 }
 
 TSharedRef<FJsonObject> MakeSkippedNodeObject(const UEdGraphNode* Node)
@@ -1129,6 +1240,10 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimationGraphRuntime::ExtractGraph
 		NodeSpec.Class = Node->GetClass() ? Node->GetClass()->GetPathName() : FString();
 		NodeSpec.Position = MakePositionObject(Node);
 		NodeSpec.Evidence = MakeNodeEvidenceObject(Node);
+		if (TSharedPtr<FJsonObject> Fields = ExtractAuthoredNodeFields(Node))
+		{
+			NodeSpec.Fields = Fields;
+		}
 		NodeIds.Add(Node, NodeId);
 		OutGraph.Nodes.Add(MoveTemp(NodeSpec));
 	}
