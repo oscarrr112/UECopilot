@@ -1,66 +1,53 @@
 # AnimationBlueprint AssetDocument Complete Graph Semantics Report
 
-日期：2026-07-02
+日期：2026-07-10
 
-## 分支与 Worktree
+## 当前基线
 
-- branch: `feature/asset-document-abp-complete-graph-impl`
-- worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/abp-complete-graph-impl`
-- base branch: `feature/asset-document-abp-complete-graph-plan`
-- automation validation host: `C:/Users/HP/.config/superpowers/validation-hosts/abp-complete-graph-impl-worker-a/ABPGraphWorkerA.uproject`
-- external smoke validation host: `C:/AVH1/AVH1.uproject`
+- integration branch: `feature/asset-document-structured-capabilities-spec`
+- integration worktree: `E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec`
+- merged implementation branch: `feature/asset-document-abp-complete-graph-smoke-fix-impl`
+- merge commit: `1e85176 merge: animation blueprint graph smoke fix into structured capabilities`
+- smoke-fix implementation checkpoint: `15bdd30 test(assetdoc): harden animation blueprint graph smoke`
+- AVH1 validation host: `C:/AVH1/AVH1.uproject`
+- AVH1 plugin junction: `C:/AVH1/Plugins/AssetFactory -> E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/asset-document-structured-capabilities-spec`
 
 ## 已实现范围
 
-本轮把 AnimationBlueprint 的图语义从第一版保守 profile 推进到 recursive graph family：
+AnimationBlueprint graph-family regions 已从 focused automation 形态推进到 AVH1 external HTTP smoke 可闭环的语义形态：
 
-- `Body.AnimGraph` 改为 `{ Graphs: [...] }` 递归图 region，支持 graph/node/link/subgraph 的统一 schema。
-- `Body.StateMachines` 改为递归图 region，state、transition、transition rule subgraph 走同一 graph schema。
-- `Body.AnimLayers` 接入 graph region，不再是 deferred empty-only。
-- `Body.FunctionGraphs`、`Body.MacroGraphs` 接入 Blueprint common graph adapter。
-- graph core 支持 recursive graph region validation、definition refs、stable graph diff path 和 shared graph fields。
-- animation graph runtime shell 支持动态 node action provider / NodeSpawner 发现、node materialization、字段规则、structural hook、subgraph walk。
-- node 字段规则抽成公共 rule/trait/staged apply utility，而不是按节点类穷举。
-- parent asset override 支持 `Node` alias 身份，运行时用 managed node object name 和 deterministic node guid 解析；`ParentNodeGuid` 仍保留为 fallback。
-- deferred 文档已更新：ABP graph-family 旧的 empty-only gate 已关闭，剩余 deferred 只保留 obsolete side-list、debug/cache/derived/editor-only 等边界。
+- `Body.AnimGraph` 使用 recursive graph region，覆盖 graph/node/link/subgraph、layout position、managed node identity、authored field delta 和 output pose link。
+- `Body.StateMachines` 使用 recursive graph region，覆盖 state、transition、transition rule subgraph、entry state、state/transition layout 和 transition rule graph。
+- `Body.AnimLayers` 接入 graph region，不再是 empty-only / deferred gate。
+- `Body.FunctionGraphs`、`Body.MacroGraphs` 继续走 Blueprint common graph adapter。
+- animation graph runtime 支持动态 node action provider / `UBlueprintNodeSpawner` materialization、公共字段规则、structural hook、subgraph walk 和 managed node identity reuse。
+- node 字段规则抽成公共 rule/trait/staged apply utility，避免按 `UAnimGraphNode_*` 逐类硬编码。
+- `Body.ParentAssetOverrides` 支持 `Node` alias identity，运行时用 managed node object name / deterministic node guid 解析，`ParentNodeGuid` 仅作为 fallback。
+- smoke-managed graph nodes 不再 extract 成 canonical empty graph，也不再通过 `_Skipped` 或 diff allowlist 掩盖。
 
-## Checkpoint Chain
+## 历史失败基线
 
-- `9fc783f docs: plan animation blueprint complete graph implementation`
-- `5f02a56 feat(assetdoc): add recursive graph family core`
-- `4c7a9a9 fix(assetdoc): tighten recursive graph core validation`
-- `7e0c019 fix(assetdoc): preserve shared graph fields in graph arrays`
-- `61fa5d2 feat(assetdoc): add graph field rule utilities`
-- `75115d3 fix(assetdoc): align graph field rule contracts`
-- `580996a feat(assetdoc): add animation graph runtime shell`
-- `05b7eb8 fix(assetdoc): tighten animation graph runtime shell`
-- `c4cf549 feat(assetdoc): route anim graph through recursive schema`
-- `f816c59 fix(assetdoc): harden recursive anim graph diagnostics`
-- `f77fbc5 feat(assetdoc): add anim graph node action provider`
-- `80a1ac4 feat(assetdoc): materialize anim graph nodes`
-- `9f7f64b feat(assetdoc): materialize anim state machines`
-- `b1a66f7 feat(assetdoc): support anim layer and blueprint graph regions`
-- `b1761ed feat(assetdoc): resolve parent overrides by graph node identity`
-- `dddc3b6 docs(assetdoc): close animation blueprint graph deferred gates`
-- `2cc5e04 docs(assetdoc): report animation blueprint graph smoke status`
+`3facfed453e3c22cea4fc87b69e0db1241ec79b0` 仍作为本轮 smoke-fix 的红基线证据保留。当时 AVH1 external HTTP smoke 已经能启动 HTTP server，但 full graph apply 会返回：
 
-## Verification
+```text
+success=false
+code=AnimBlueprintCompileFailed
+message=Failed to compile AnimBlueprint after applying Body regions
+path=/Body
+target=/Game/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke
+```
+
+窄化输入还能进一步证明当时 extract 会把 authored graph node 和 `ParentAssetOverrides.Node = "IdlePlayer"` 抽成空结果；该失败不是 transport 问题，而是 graph apply/extract fidelity 缺口。现在这部分只作为 previous failure evidence，不再代表当前基线状态。
+
+## Fresh Verification
 
 UBT：
 
 ```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" UnrealEditor Win64 Development "-Project=C:/Users/HP/.config/superpowers/validation-hosts/abp-complete-graph-impl-worker-a/ABPGraphWorkerA.uproject" -NoHotReload -DisableUnity
+& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload -DisableUnity
 ```
 
-结果：通过，`Result: Succeeded`。
-
-Graph core 自动化：
-
-```powershell
-Automation RunTests AssetFactory.AssetDocument.GraphCore
-```
-
-结果：通过，当前日志确认 `22` 个 `GraphCore` 用例 `Result={Success}`。
+结果：通过，`Result: Succeeded`。本次对 AVH1 validation host 做了实际 rebuild，完成 `182` actions，总耗时约 `37.97s`。
 
 Animation graph runtime 自动化：
 
@@ -68,7 +55,7 @@ Animation graph runtime 自动化：
 Automation RunTests AssetFactory.AssetDocument.AnimationGraphRuntime
 ```
 
-结果：通过，当前日志确认 `15` 个 `AnimationGraphRuntime` 用例 `Result={Success}`，覆盖 field rules、NodeSpawner boundary、structural hook、subgraph walk、managed node identity。
+结果：通过，进程 exit code `0`；日志确认 found `28` automation tests，`28` 个 `Result={Success}`，`0` fail/error。
 
 AnimationBlueprint profile 自动化：
 
@@ -76,7 +63,7 @@ AnimationBlueprint profile 自动化：
 Automation RunTests AssetFactory.AssetDocument.AnimBlueprint
 ```
 
-结果：通过，当前日志确认 `9` 个用例 `Result={Success}`：
+结果：通过，进程 exit code `0`；日志确认 found `9` automation tests，`9` 个 `Result={Success}`，`0` fail/error。覆盖：
 
 - `AnimGraph`
 - `AnimLayersAndParentAssetOverrides`
@@ -88,79 +75,45 @@ Automation RunTests AssetFactory.AssetDocument.AnimBlueprint
 - `StateMachines`
 - `SyncGroups`
 
+完整 AssetDocument 自动化：
+
+```powershell
+Automation RunTests AssetFactory.AssetDocument
+```
+
+结果：通过，进程 exit code `0`；日志确认 found `336` automation tests，`336` 个 `Result={Success}`，`0` fail/error。
+
 MCP：
 
 ```powershell
+Push-Location MCP
 npm test
+Pop-Location
 ```
 
-运行目录：`MCP/`。结果：通过，`tests=39`、`pass=39`、`fail=0`。`npm test` 生成的 `MCP/dist` 已恢复，未纳入本次 diff。
+结果：通过，Node test runner 输出 `tests 39`、`pass 39`、`fail 0`。`npm test` 触碰到的 `MCP/dist` line-ending 工作区噪声已作为 run artifact 恢复，不纳入 checkpoint。
 
-Smoke script parser：
-
-```powershell
-[System.Management.Automation.PSParser]::Tokenize((Get-Content docs/superpowers/verification/run_asset_document_animationblueprint_smoke.ps1 -Raw), [ref]$null)
-```
-
-结果：PowerShell parser 通过。
-
-AVH1 UBT：
-
-```powershell
-& "E:/Epic Games/UE_5.7/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" AVH1Editor Win64 Development "-Project=C:/AVH1/AVH1.uproject" -NoHotReload -DisableUnity
-```
-
-验证前确认 `C:/AVH1/Plugins/AssetFactory` junction 已指向当前 worktree：
-
-```text
-E:/GameDev/PluginsWarehouse/.worktrees/UECopilot/abp-complete-graph-impl
-```
-
-结果：通过，`Result: Succeeded`。本次不是 up-to-date，UBT 实际重新编译了当前分支的 `AssetDocumentAnimGraphRegionAdapter`、`AssetDocumentAnimationGraphRuntime`、`AssetDocumentAnimBlueprintTests` 等文件。
-
-## External HTTP Smoke Status
-
-`docs/superpowers/verification/run_asset_document_animationblueprint_smoke.ps1` 已迁移到新的 recursive graph schema：
-
-- `Body.AnimGraph` 使用 `{ Graphs: [...] }`
-- `Body.StateMachines` 使用 state、transition、transition rule subgraph
-- `Body.AnimLayers` 使用 graph region
-- `Body.ParentAssetOverrides` 使用 `Node = "IdlePlayer"`
-
-AVH1 外部 HTTP smoke 未闭环，但失败点已经从临时 host 的 health 问题推进到真实 ABP 语义问题：
+External HTTP smoke：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File docs/superpowers/verification/run_asset_document_animationblueprint_smoke.ps1 -Project C:/AVH1/AVH1.uproject -KeepSidecar
 ```
 
-结果：失败，`/assetfactory/health` 已可用，`apply-file` 返回：
+结果：通过，脚本输出：
 
 ```text
-success=false
-code=AnimBlueprintCompileFailed
-message=Failed to compile AnimBlueprint after applying Body regions
-path=/Body
-target=/Game/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke
+AnimationBlueprint AssetDocument HTTP smoke passed
 ```
 
-为了排除脚本语法和 HTTP transport 问题，做过一次临时窄化验证：只保留 `AnimGraph` 的 `IdlePlayer` node、空 `StateMachines` / `AnimLayers` 和 `ParentAssetOverrides.Node = "IdlePlayer"`。该窄化输入可以通过 `apply-file` 和 `extract`，但 extract payload 显示：
+真实资产与 sidecar：
 
-- `payload.Body.AnimGraph.Graphs[0].Nodes = []`
-- `payload.Body.ParentAssetOverrides = []`
+- asset: `/Game/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke`
+- sidecar: `C:/AVH1/Content/AssetDocumentSmoke/ABP_AnimationBlueprintSmoke.assetdoc.json`
 
-这和代码现状吻合：`FAssetDocumentAnimGraphRegionAdapter::ExtractRegion` 当前固定返回 canonical empty graph，尚不能抽取 authored graph nodes。因此脚本目前对 diff 中 `/Body/AnimGraph`、`/Body/StateMachines`、`/Body/AnimLayers` 的 changed entries 仍有 allowlist；这不是最终完成态，只是把当前 graph extract/diff fidelity 缺口显式暴露出来。
+HTTP smoke 本轮验证了 `apply-file -> save -> extract -> diff` 闭环。`apply-file` payload 返回 `success=true`、`saved_asset=true`、`triggered_by_watcher=false`。保留的 sidecar 中仍可见 `IdlePlayer`、`StateMachines`、`AnimLayers` 和 `ParentAssetOverrides.Node = "IdlePlayer"`，并且没有 `_Skipped` entry。
 
 ## 当前结论
 
-代码侧的 recursive graph schema、动态 NodeSpawner/materialization、公共字段规则、state machine subgraph、anim layer/function/macro graph region、parent override node alias 已完成并通过 focused automation。
+`feature/asset-document-abp-complete-graph-smoke-fix-impl` 已 merge 回 `feature/asset-document-structured-capabilities-spec`，并且当前基线通过了 Task 6 要求的 UBT、focused automation、full AssetDocument automation、MCP tests 和 AVH1 external HTTP smoke。
 
-尚不能把这条分支标记为“外部端到端完全闭环”：AVH1 已证明 HTTP server 可用，但 full graph apply 会触发 `AnimBlueprintCompileFailed`，窄化输入又证明 authored graph node / parent override alias 不能被 extract roundtrip。后续需要补齐 real graph extraction fidelity、parent override persisted extraction，以及 full graph apply 后的 ABP compile repair，再取消 smoke 脚本中的 graph changed allowlist。
-
-## 2026-07-03 Smoke Fix Red Baseline
-
-新修复线从 `3facfed453e3c22cea4fc87b69e0db1241ec79b0` fork，并在 `840aba8` 固定了 smoke-fix spec/plan。Task 0 已把当前失败转换成 focused automation 锚点：
-
-- `AssetFactory.AssetDocument.AnimBlueprint.AnimGraph` 现在要求 applied `IdlePlayer` managed node 在 extract 后仍以 authored identity 出现在 `Body.AnimGraph.Graphs[*].Nodes`。
-- `AssetFactory.AssetDocument.AnimBlueprint.AnimLayersAndParentAssetOverrides` 现在要求 `ParentAssetOverrides.Node = "IdlePlayer"` 的 alias extract 至少返回一个 override entry，不能因为数组为空而跳过 alias roundtrip 断言。
-
-这些检查预计在当前实现上是红的；它们不是完成证据，而是防止后续再用 canonical empty graph、空 `ParentAssetOverrides` 或 smoke diff allowlist 掩盖真实缺口。
+因此，`2026-07-03-animationblueprint-complete-graph-smoke-fix-implementation.md` 的 smoke-fix closure 已完成。当前 smoke-managed ABP graph surface 没有未获批准的 authored deferred / `_Skipped` / diff allowlist 作为完成前提。
