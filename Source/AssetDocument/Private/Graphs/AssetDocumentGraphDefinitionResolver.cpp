@@ -2,6 +2,8 @@
 
 #include "Graphs/AssetDocumentGraphDefinitionResolver.h"
 
+#include "AssetDocumentJsonRegionUtils.h"
+
 namespace
 {
 bool IsDefinitionId(const FString& Value)
@@ -44,11 +46,12 @@ bool IsKnownDefinitionKind(const FString& Kind)
 
 FString JoinPath(const FString& BasePath, const FString& Segment)
 {
+	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
 	{
-		return FString::Printf(TEXT("/%s"), *Segment);
+		return FString::Printf(TEXT("/%s"), *EscapedSegment);
 	}
-	return FString::Printf(TEXT("%s/%s"), *BasePath, *Segment);
+	return FString::Printf(TEXT("%s/%s"), *BasePath, *EscapedSegment);
 }
 
 FString IndexPath(const FString& BasePath, int32 Index)
@@ -243,6 +246,13 @@ FAssetDocumentGraphSpec ResolveGraph(
 	FResolverContext& Context)
 {
 	FAssetDocumentGraphSpec Resolved = Graph;
+	Resolved.Owner = nullptr;
+	if (Graph.Owner.IsValid())
+	{
+		TArray<FString> Stack;
+		Resolved.Owner = Context.ResolveObject(Graph.Owner, JoinPath(GraphPath, TEXT("Owner")), Stack);
+	}
+
 	Resolved.Signature = nullptr;
 	if (Graph.Signature.IsValid())
 	{
@@ -250,12 +260,49 @@ FAssetDocumentGraphSpec ResolveGraph(
 		Resolved.Signature = Context.ResolveObject(Graph.Signature, JoinPath(GraphPath, TEXT("Signature")), Stack);
 	}
 
+	Resolved.Position = AssetDocumentGraphJson::CloneJsonObject(Graph.Position);
+	TArray<FString> GraphValueStack;
+	Resolved.EntryPins = Context.ResolveValue(Graph.EntryPins, JoinPath(GraphPath, TEXT("EntryPins")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.ResultPins = Context.ResolveValue(Graph.ResultPins, JoinPath(GraphPath, TEXT("ResultPins")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Metadata = Context.ResolveValue(Graph.Metadata, JoinPath(GraphPath, TEXT("Metadata")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Diagnostics = Context.ResolveValue(Graph.Diagnostics, JoinPath(GraphPath, TEXT("Diagnostics")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Skipped = Context.ResolveValue(Graph.Skipped, JoinPath(GraphPath, TEXT("Skipped")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.UnderscoreSkipped = Context.ResolveValue(Graph.UnderscoreSkipped, JoinPath(GraphPath, TEXT("_Skipped")), GraphValueStack);
+	GraphValueStack.Reset();
+	Resolved.Evidence = AssetDocumentGraphJson::CloneJsonObject(Graph.Evidence);
+
 	Resolved.Nodes.Reset();
 	for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
 	{
 		const FAssetDocumentNodeSpec& Node = Graph.Nodes[NodeIndex];
 		const FString NodePath = IndexPath(JoinPath(GraphPath, TEXT("Nodes")), NodeIndex);
 		FAssetDocumentNodeSpec ResolvedNode = Node;
+		ResolvedNode.Spawner = nullptr;
+		if (Node.Spawner.IsValid())
+		{
+			TArray<FString> Stack;
+			ResolvedNode.Spawner = Context.ResolveObject(Node.Spawner, JoinPath(NodePath, TEXT("Spawner")), Stack);
+		}
+
+		ResolvedNode.Fields = nullptr;
+		if (Node.Fields.IsValid())
+		{
+			TArray<FString> Stack;
+			ResolvedNode.Fields = Context.ResolveObject(Node.Fields, JoinPath(NodePath, TEXT("Fields")), Stack);
+		}
+
+		ResolvedNode.Pins = nullptr;
+		if (Node.Pins.IsValid())
+		{
+			TArray<FString> Stack;
+			ResolvedNode.Pins = Context.ResolveObject(Node.Pins, JoinPath(NodePath, TEXT("Pins")), Stack);
+		}
+
 		ResolvedNode.Member = nullptr;
 		if (Node.Member.IsValid())
 		{
@@ -263,6 +310,13 @@ FAssetDocumentGraphSpec ResolveGraph(
 			ResolvedNode.Member = Context.ResolveObject(Node.Member, JoinPath(NodePath, TEXT("Member")), Stack);
 		}
 		ResolvedNode.Position = AssetDocumentGraphJson::CloneJsonObject(Node.Position);
+		ResolvedNode.SubgraphRefs = nullptr;
+		if (Node.SubgraphRefs.IsValid())
+		{
+			TArray<FString> Stack;
+			ResolvedNode.SubgraphRefs = Context.ResolveObject(Node.SubgraphRefs, JoinPath(NodePath, TEXT("SubgraphRefs")), Stack);
+		}
+		ResolvedNode.Evidence = AssetDocumentGraphJson::CloneJsonObject(Node.Evidence);
 
 		ResolvedNode.PinOverrides.Reset();
 		for (int32 PinIndex = 0; PinIndex < Node.PinOverrides.Num(); ++PinIndex)
@@ -283,6 +337,15 @@ FAssetDocumentGraphSpec ResolveGraph(
 		}
 
 		Resolved.Nodes.Add(MoveTemp(ResolvedNode));
+	}
+
+	Resolved.Subgraphs.Reset();
+	for (int32 SubgraphIndex = 0; SubgraphIndex < Graph.Subgraphs.Num(); ++SubgraphIndex)
+	{
+		Resolved.Subgraphs.Add(ResolveGraph(
+			Graph.Subgraphs[SubgraphIndex],
+			IndexPath(JoinPath(GraphPath, TEXT("Subgraphs")), SubgraphIndex),
+			Context));
 	}
 
 	return Resolved;

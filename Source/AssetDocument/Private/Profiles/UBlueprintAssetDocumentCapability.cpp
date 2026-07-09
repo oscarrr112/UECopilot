@@ -48,9 +48,7 @@ bool IsKnownBodyKey(const FString& BodyKey)
 
 bool IsProtectedRegion(const FString& BodyKey)
 {
-	return BodyKey == TEXT("FunctionGraphs")
-		|| BodyKey == TEXT("MacroGraphs")
-		|| BodyKey == TEXT("Timelines");
+	return BodyKey == TEXT("Timelines");
 }
 
 FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
@@ -2857,8 +2855,8 @@ TSharedRef<FJsonObject> FUBlueprintAssetDocumentCapability::GetSchemaHint() cons
 	Schema->SetStringField(TEXT("Components"), TEXT("array<{Key:{Name,OwnerClass}, Scope, Class, AttachTo, Root, Properties}>"));
 	Schema->SetStringField(TEXT("ClassDefaults"), TEXT("object"));
 	Schema->SetStringField(TEXT("UbergraphPages"), TEXT("array<GraphSpec> validated by GraphCore; apply adapters deferred"));
-	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array unsupported until graph region implementation"));
-	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array unsupported until graph region implementation"));
+	Schema->SetStringField(TEXT("FunctionGraphs"), TEXT("array<GraphSpec> managed by UBlueprintGraph region adapter"));
+	Schema->SetStringField(TEXT("MacroGraphs"), TEXT("array<GraphSpec> managed by UBlueprintGraph region adapter"));
 	Schema->SetStringField(TEXT("Timelines"), TEXT("array unsupported until timeline region implementation"));
 	return Schema;
 }
@@ -3279,14 +3277,10 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 			OutBodyJson->SetField(Pair.Key, Pair.Value);
 		}
 	}
-	OutBodyJson->SetArrayField(TEXT("FunctionGraphs"), {});
-	OutBodyJson->SetArrayField(TEXT("MacroGraphs"), {});
 	OutBodyJson->SetArrayField(TEXT("Timelines"), {});
 
 	if (Blueprint)
 	{
-		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("FunctionGraphs"), Blueprint->FunctionGraphs.Num());
-		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("MacroGraphs"), Blueprint->MacroGraphs.Num());
 		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("Timelines"), Blueprint->Timelines.Num());
 	}
 

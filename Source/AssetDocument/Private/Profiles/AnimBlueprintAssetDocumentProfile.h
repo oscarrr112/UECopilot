@@ -15,6 +15,7 @@ public:
 	static FName BlueprintCommonRegionAdapterName();
 	static FName AnimGraphRegionAdapterName();
 	static FName StateMachineRegionAdapterName();
+	static FName AnimLayerRegionAdapterName();
 	static FName ParentAssetOverrideRegionAdapterName();
 	static FName DeferredRegionAdapterName();
 	static TArray<FAssetDocumentRegionBinding> MakeRegionBindings();

@@ -15,5 +15,10 @@ public:
 		const TSharedRef<FJsonObject>& GraphObject,
 		const FAssetDocumentGraphParseOptions& Options = FAssetDocumentGraphParseOptions());
 
+	static FAssetDocumentGraphParseResult ParseGraphRegion(
+		const TSharedRef<FJsonObject>& RegionObject,
+		const FAssetDocumentGraphParseOptions& Options = FAssetDocumentGraphParseOptions());
+
 	static TSharedRef<FJsonValue> WriteCanonicalGraphArray(const TArray<FAssetDocumentGraphSpec>& Graphs);
+	static TSharedRef<FJsonObject> WriteCanonicalGraphRegion(const TArray<FAssetDocumentGraphSpec>& Graphs);
 };

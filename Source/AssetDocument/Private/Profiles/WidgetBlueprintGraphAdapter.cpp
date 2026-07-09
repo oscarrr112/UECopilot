@@ -33,6 +33,13 @@ const TArray<FWidgetBlueprintGraphRegion>& GraphRegions()
 	return Regions;
 }
 
+bool IsEmptyFunctionOrMacroNoop(const FWidgetBlueprintGraphRegion& Region, const TArray<FAssetDocumentGraphSpec>& DesiredGraphs)
+{
+	return DesiredGraphs.IsEmpty()
+		&& (Region.K2Region == EAssetDocumentK2GraphRegion::FunctionGraphs
+			|| Region.K2Region == EAssetDocumentK2GraphRegion::MacroGraphs);
+}
+
 FAssetDocumentCapabilityResult GraphFailure(const FString& Message, const FString& Path, const FString& Code)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
@@ -518,6 +525,10 @@ FAssetDocumentCapabilityResult FWidgetBlueprintGraphAdapter::DiffRegions(
 		if (!DesiredParseResult.bSuccess)
 		{
 			return DesiredParseResult;
+		}
+		if (IsEmptyFunctionOrMacroNoop(Region, DesiredGraphs))
+		{
+			continue;
 		}
 
 		const FAssetDocumentK2GraphExtractResult CurrentExtract =

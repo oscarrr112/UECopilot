@@ -3,14 +3,20 @@
 #include "Regions/AssetDocumentAnimParentAssetOverrideRegionAdapter.h"
 
 #include "AssetDocumentJsonRegionUtils.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
+#include "Graphs/AssetDocumentGraphTypes.h"
 
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimationAsset.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 
 namespace
 {
 constexpr const TCHAR* ParentAssetOverridesRegionId = TEXT("Body.ParentAssetOverrides");
+constexpr const TCHAR* RootAnimGraphId = TEXT("AnimGraph");
+constexpr const TCHAR* RootAnimGraphKind = TEXT("AnimGraph");
 
 FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
 {
@@ -38,6 +44,132 @@ FString OverridePath(const FString& GuidIdentity)
 	return FString::Printf(TEXT("/Body/ParentAssetOverrides/%s"), *Escape(GuidIdentity));
 }
 
+struct FParsedParentAssetOverride
+{
+	FString NodeAlias;
+	bool bHasNodeAlias = false;
+	FAnimParentNodeAssetOverride Override;
+
+	FString Identity() const
+	{
+		return bHasNodeAlias ? NodeAlias : GuidToIdentity(Override.ParentNodeGuid);
+	}
+};
+
+FAssetDocumentGraphSpec MakeRootAnimGraphSpec()
+{
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = RootAnimGraphId;
+	Graph.Kind = RootAnimGraphKind;
+	return Graph;
+}
+
+FAssetDocumentNodeSpec MakeNodeSpecForAlias(const FString& NodeAlias)
+{
+	FAssetDocumentNodeSpec Node;
+	Node.Id = NodeAlias;
+	return Node;
+}
+
+bool TryGetManagedNodeAlias(const UEdGraphNode* Node, FString& OutAlias)
+{
+	return Node && FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(Node->GetFName(), OutAlias);
+}
+
+bool IsAnimationGraph(const UEdGraph* Graph)
+{
+	if (!Graph)
+	{
+		return false;
+	}
+
+	UClass* AnimationGraphSchemaClass =
+		StaticLoadClass(UObject::StaticClass(), nullptr, TEXT("/Script/AnimGraph.AnimationGraphSchema"));
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	return !AnimationGraphSchemaClass || (Schema && Schema->GetClass()->IsChildOf(AnimationGraphSchemaClass));
+}
+
+void GetAnimationGraphNodes(const UAnimBlueprint* AnimBlueprint, TArray<UEdGraphNode*>& OutNodes)
+{
+	OutNodes.Reset();
+	if (!AnimBlueprint)
+	{
+		return;
+	}
+
+	TArray<UEdGraph*> Graphs;
+	AnimBlueprint->GetAllGraphs(Graphs);
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!IsAnimationGraph(Graph))
+		{
+			continue;
+		}
+		TArray<UEdGraphNode*> GraphNodes;
+		Graph->GetNodesOfClass<UEdGraphNode>(GraphNodes);
+		OutNodes.Append(GraphNodes);
+	}
+}
+
+bool TryFindAliasForGuid(const UAnimBlueprint* AnimBlueprint, const FGuid& Guid, FString& OutAlias)
+{
+	TArray<UEdGraphNode*> Nodes;
+	GetAnimationGraphNodes(AnimBlueprint, Nodes);
+	for (const UEdGraphNode* Node : Nodes)
+	{
+		if (!Node || Node->NodeGuid != Guid)
+		{
+			continue;
+		}
+		if (TryGetManagedNodeAlias(Node, OutAlias))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool TryResolveNodeAlias(const UAnimBlueprint* AnimBlueprint, const FString& NodeAlias, FGuid& OutGuid)
+{
+	OutGuid.Invalidate();
+
+	TArray<UEdGraphNode*> Nodes;
+	GetAnimationGraphNodes(AnimBlueprint, Nodes);
+	for (const UEdGraphNode* Node : Nodes)
+	{
+		FString ExistingAlias;
+		if (!TryGetManagedNodeAlias(Node, ExistingAlias) || ExistingAlias != NodeAlias)
+		{
+			continue;
+		}
+		if (OutGuid.IsValid() && OutGuid != Node->NodeGuid)
+		{
+			OutGuid.Invalidate();
+			return false;
+		}
+		OutGuid = Node->NodeGuid;
+	}
+
+	if (OutGuid.IsValid())
+	{
+		return true;
+	}
+
+	const FAssetDocumentGraphSpec RootGraph = MakeRootAnimGraphSpec();
+	const FAssetDocumentNodeSpec NodeSpec = MakeNodeSpecForAlias(NodeAlias);
+	const FGuid DeterministicGuid = FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(RootGraph, NodeSpec);
+	for (const UEdGraphNode* Node : Nodes)
+	{
+		if (Node && Node->NodeGuid == DeterministicGuid)
+		{
+			OutGuid = DeterministicGuid;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 TSharedPtr<FJsonValue> MakeAssetRefValue(const UObject* Object)
 {
 	if (!Object)
@@ -51,12 +183,34 @@ TSharedPtr<FJsonValue> MakeAssetRefValue(const UObject* Object)
 	return MakeShared<FJsonValueObject>(AssetRef);
 }
 
-TSharedRef<FJsonObject> MakeOverrideObject(const FAnimParentNodeAssetOverride& Override)
+TSharedRef<FJsonObject> MakeEvidenceObject(const FGuid& ParentNodeGuid)
+{
+	TSharedRef<FJsonObject> Evidence = MakeShared<FJsonObject>();
+	Evidence->SetStringField(TEXT("ParentNodeGuid"), GuidToIdentity(ParentNodeGuid));
+	return Evidence;
+}
+
+TSharedRef<FJsonObject> MakeOverrideObject(const FParsedParentAssetOverride& Parsed)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetStringField(TEXT("ParentNodeGuid"), GuidToIdentity(Override.ParentNodeGuid));
-	Object->SetField(TEXT("NewAsset"), MakeAssetRefValue(Override.NewAsset));
+	if (Parsed.bHasNodeAlias)
+	{
+		Object->SetStringField(TEXT("Node"), Parsed.NodeAlias);
+		Object->SetObjectField(TEXT("Evidence"), MakeEvidenceObject(Parsed.Override.ParentNodeGuid));
+	}
+	else
+	{
+		Object->SetStringField(TEXT("ParentNodeGuid"), GuidToIdentity(Parsed.Override.ParentNodeGuid));
+	}
+	Object->SetField(TEXT("NewAsset"), MakeAssetRefValue(Parsed.Override.NewAsset));
 	return Object;
+}
+
+TSharedRef<FJsonObject> MakeOverrideObject(const FAnimParentNodeAssetOverride& Override)
+{
+	FParsedParentAssetOverride Parsed;
+	Parsed.Override = Override;
+	return MakeOverrideObject(Parsed);
 }
 
 FAssetDocumentCapabilityResult ResolveAnimationAssetRef(
@@ -106,12 +260,13 @@ FAssetDocumentCapabilityResult ResolveAnimationAssetRef(
 FAssetDocumentCapabilityResult ValidateOverrideObject(
 	const TSharedPtr<FJsonObject>& Object,
 	int32 Index,
+	const UAnimBlueprint* AnimBlueprint,
+	bool bAllowUnmaterializedNodeAlias,
 	TSet<FGuid>& SeenGuids,
-	FGuid& OutGuid,
-	UAnimationAsset*& OutAsset)
+	TSet<FString>& SeenAliases,
+	FParsedParentAssetOverride& OutOverride)
 {
-	OutGuid.Invalidate();
-	OutAsset = nullptr;
+	OutOverride = FParsedParentAssetOverride();
 	if (!Object.IsValid())
 	{
 		return Failure(
@@ -122,7 +277,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
 	{
-		if (Pair.Key != TEXT("ParentNodeGuid") && Pair.Key != TEXT("NewAsset"))
+		if (Pair.Key != TEXT("Node") && Pair.Key != TEXT("ParentNodeGuid") && Pair.Key != TEXT("NewAsset") && Pair.Key != TEXT("Evidence"))
 		{
 			return Failure(
 				FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/%s"), Index, *Escape(Pair.Key)),
@@ -131,34 +286,90 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 		}
 	}
 
-	FString GuidString;
-	if (!Object->TryGetStringField(TEXT("ParentNodeGuid"), GuidString) || !ParseGuidIdentity(GuidString, OutGuid))
+	FString NodeAlias;
+	if (Object->TryGetStringField(TEXT("Node"), NodeAlias) && !NodeAlias.TrimStartAndEnd().IsEmpty())
 	{
-		return Failure(
-			FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
-			TEXT("InvalidParentNodeGuid"),
-			TEXT("ParentAssetOverrides.ParentNodeGuid must be a GUID string"));
+		OutOverride.NodeAlias = NodeAlias.TrimStartAndEnd();
+		OutOverride.bHasNodeAlias = true;
+		if (!AnimBlueprint || !TryResolveNodeAlias(AnimBlueprint, OutOverride.NodeAlias, OutOverride.Override.ParentNodeGuid))
+		{
+			if (bAllowUnmaterializedNodeAlias || !AnimBlueprint)
+			{
+				const FAssetDocumentGraphSpec RootGraph = MakeRootAnimGraphSpec();
+				const FAssetDocumentNodeSpec NodeSpec = MakeNodeSpecForAlias(OutOverride.NodeAlias);
+				OutOverride.Override.ParentNodeGuid =
+					FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(RootGraph, NodeSpec);
+			}
+			else
+			{
+				return Failure(
+					FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias)),
+					TEXT("UnknownParentOverrideNode"),
+					FString::Printf(TEXT("ParentAssetOverrides.Node '%s' does not resolve to an authored animation graph node."), *OutOverride.NodeAlias));
+			}
+		}
+		if (SeenAliases.Contains(OutOverride.NodeAlias))
+		{
+			return Failure(
+				FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias)),
+				TEXT("DuplicateParentAssetOverrideNode"),
+				FString::Printf(TEXT("Duplicate ParentAssetOverrides node identity '%s'"), *OutOverride.NodeAlias));
+		}
+		SeenAliases.Add(OutOverride.NodeAlias);
+	}
+	else
+	{
+		FString GuidString;
+		if (!Object->TryGetStringField(TEXT("ParentNodeGuid"), GuidString) || !ParseGuidIdentity(GuidString, OutOverride.Override.ParentNodeGuid))
+		{
+			const TSharedPtr<FJsonObject>* Evidence = nullptr;
+			if (Object->TryGetObjectField(TEXT("Evidence"), Evidence) && Evidence && Evidence->IsValid())
+			{
+				(*Evidence)->TryGetStringField(TEXT("ParentNodeGuid"), GuidString);
+			}
+		}
+		if (!OutOverride.Override.ParentNodeGuid.IsValid() && !ParseGuidIdentity(GuidString, OutOverride.Override.ParentNodeGuid))
+		{
+			return Failure(
+				FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
+				TEXT("InvalidParentNodeGuid"),
+				TEXT("ParentAssetOverrides.ParentNodeGuid must be a GUID string when Node is not authored"));
+		}
 	}
 
-	if (SeenGuids.Contains(OutGuid))
+	if (SeenGuids.Contains(OutOverride.Override.ParentNodeGuid))
 	{
 		return Failure(
-			FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
+			OutOverride.bHasNodeAlias
+				? FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias))
+				: FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
 			TEXT("DuplicateParentAssetOverrideGuid"),
-			FString::Printf(TEXT("Duplicate ParentAssetOverrides identity '%s'"), *GuidToIdentity(OutGuid)));
+			FString::Printf(TEXT("Duplicate ParentAssetOverrides identity '%s'"), *GuidToIdentity(OutOverride.Override.ParentNodeGuid)));
 	}
-	SeenGuids.Add(OutGuid);
+	SeenGuids.Add(OutOverride.Override.ParentNodeGuid);
 
-	return ResolveAnimationAssetRef(
+	UAnimationAsset* Asset = nullptr;
+	const FString Identity = OutOverride.Identity();
+	const FAssetDocumentCapabilityResult AssetResult = ResolveAnimationAssetRef(
 		Object->TryGetField(TEXT("NewAsset")),
-		FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/NewAsset"), *GuidToIdentity(OutGuid)),
-		OutAsset);
+		FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/NewAsset"), *Escape(Identity)),
+		Asset);
+	if (!AssetResult.bSuccess)
+	{
+		return AssetResult;
+	}
+	OutOverride.Override.NewAsset = Asset;
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ParseDesiredOverrides(
 	const TSharedPtr<FJsonValue>& DesiredValue,
+	const UAnimBlueprint* AnimBlueprint,
+	bool bAllowUnmaterializedNodeAlias,
+	TArray<FParsedParentAssetOverride>& OutParsedOverrides,
 	TArray<FAnimParentNodeAssetOverride>& OutOverrides)
 {
+	OutParsedOverrides.Reset();
 	OutOverrides.Reset();
 	if (!DesiredValue.IsValid() || DesiredValue->Type == EJson::Null)
 	{
@@ -179,30 +390,59 @@ FAssetDocumentCapabilityResult ParseDesiredOverrides(
 	}
 
 	TSet<FGuid> SeenGuids;
+	TSet<FString> SeenAliases;
 	const TArray<TSharedPtr<FJsonValue>>& Values = DesiredValue->AsArray();
 	for (int32 Index = 0; Index < Values.Num(); ++Index)
 	{
 		const TSharedPtr<FJsonObject> Object = Values[Index].IsValid() ? Values[Index]->AsObject() : nullptr;
-		FGuid Guid;
-		UAnimationAsset* Asset = nullptr;
-		const FAssetDocumentCapabilityResult Result = ValidateOverrideObject(Object, Index, SeenGuids, Guid, Asset);
+		FParsedParentAssetOverride ParsedOverride;
+		const FAssetDocumentCapabilityResult Result =
+			ValidateOverrideObject(Object, Index, AnimBlueprint, bAllowUnmaterializedNodeAlias, SeenGuids, SeenAliases, ParsedOverride);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		OutOverrides.Add(FAnimParentNodeAssetOverride(Guid, Asset));
+		OutParsedOverrides.Add(ParsedOverride);
+		OutOverrides.Add(ParsedOverride.Override);
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Parsed AnimBlueprint ParentAssetOverrides"));
 }
 
-TArray<TSharedPtr<FJsonValue>> MakeOverrideArray(const TArray<FAnimParentNodeAssetOverride>& Overrides)
+FAssetDocumentCapabilityResult ParseDesiredOverrides(
+	const TSharedPtr<FJsonValue>& DesiredValue,
+	const UAnimBlueprint* AnimBlueprint,
+	bool bAllowUnmaterializedNodeAlias,
+	TArray<FAnimParentNodeAssetOverride>& OutOverrides)
+{
+	TArray<FParsedParentAssetOverride> Ignored;
+	return ParseDesiredOverrides(DesiredValue, AnimBlueprint, bAllowUnmaterializedNodeAlias, Ignored, OutOverrides);
+}
+
+FParsedParentAssetOverride MakeParsedCurrentOverride(
+	const UAnimBlueprint* AnimBlueprint,
+	const FAnimParentNodeAssetOverride& Override)
+{
+	FParsedParentAssetOverride Parsed;
+	Parsed.Override = Override;
+	FString Alias;
+	if (TryFindAliasForGuid(AnimBlueprint, Override.ParentNodeGuid, Alias))
+	{
+		Parsed.NodeAlias = Alias;
+		Parsed.bHasNodeAlias = true;
+	}
+	return Parsed;
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeOverrideArray(
+	const UAnimBlueprint* AnimBlueprint,
+	const TArray<FAnimParentNodeAssetOverride>& Overrides)
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
 	Values.Reserve(Overrides.Num());
 	for (const FAnimParentNodeAssetOverride& Override : Overrides)
 	{
-		Values.Add(MakeShared<FJsonValueObject>(MakeOverrideObject(Override)));
+		Values.Add(MakeShared<FJsonValueObject>(MakeOverrideObject(MakeParsedCurrentOverride(AnimBlueprint, Override))));
 	}
 	return Values;
 }
@@ -254,16 +494,24 @@ TSharedRef<FJsonObject> FAssetDocumentAnimParentAssetOverrideRegionAdapter::GetS
 {
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
 	Schema->SetStringField(TEXT("Kind"), TEXT("AnimParentAssetOverrideIdentityArray"));
-	Schema->SetStringField(TEXT("Shape"), TEXT("array<{ParentNodeGuid:guid, NewAsset:AssetRef<UAnimationAsset>}>"));
+	Schema->SetStringField(TEXT("Shape"), TEXT("array<{Node?:graphNodeId, ParentNodeGuid?:guid, NewAsset:AssetRef<UAnimationAsset>, Evidence?:{ParentNodeGuid:guid}}>"));
 	return Schema;
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapter::ValidateRegion(
-	const FAssetDocumentRegionContext&,
+	const FAssetDocumentRegionContext& Context,
 	const TSharedPtr<FJsonValue>& DesiredValue) const
 {
 	TArray<FAnimParentNodeAssetOverride> Overrides;
-	return ParseDesiredOverrides(DesiredValue, Overrides);
+	return ParseDesiredOverrides(DesiredValue, Cast<UAnimBlueprint>(Context.Asset), !Context.Asset, Overrides);
+}
+
+FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapter::PreflightRegion(
+	FAssetDocumentRegionContext& Context,
+	const TSharedPtr<FJsonValue>& DesiredValue) const
+{
+	TArray<FAnimParentNodeAssetOverride> Overrides;
+	return ParseDesiredOverrides(DesiredValue, Cast<UAnimBlueprint>(Context.Asset), true, Overrides);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapter::ApplyRegion(
@@ -273,13 +521,13 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 {
 	bOutChanged = false;
 	TArray<FAnimParentNodeAssetOverride> DesiredOverrides;
-	const FAssetDocumentCapabilityResult Result = ParseDesiredOverrides(DesiredValue, DesiredOverrides);
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	const FAssetDocumentCapabilityResult Result = ParseDesiredOverrides(DesiredValue, AnimBlueprint, false, DesiredOverrides);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
 	if (!AnimBlueprint)
 	{
 		return Result;
@@ -299,7 +547,9 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 	TSharedPtr<FJsonValue>& OutCurrentValue) const
 {
 	const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
-	OutCurrentValue = MakeShared<FJsonValueArray>(MakeOverrideArray(AnimBlueprint ? AnimBlueprint->ParentAssetOverrides : TArray<FAnimParentNodeAssetOverride>()));
+	OutCurrentValue = MakeShared<FJsonValueArray>(MakeOverrideArray(
+		AnimBlueprint,
+		AnimBlueprint ? AnimBlueprint->ParentAssetOverrides : TArray<FAnimParentNodeAssetOverride>()));
 	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted AnimBlueprint ParentAssetOverrides"));
 }
 
@@ -308,24 +558,31 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
+	const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
+	TArray<FParsedParentAssetOverride> ParsedDesiredOverrides;
 	TArray<FAnimParentNodeAssetOverride> DesiredOverrides;
-	const FAssetDocumentCapabilityResult Result = ParseDesiredOverrides(DesiredValue, DesiredOverrides);
+	const FAssetDocumentCapabilityResult Result = ParseDesiredOverrides(
+		DesiredValue,
+		AnimBlueprint,
+		false,
+		ParsedDesiredOverrides,
+		DesiredOverrides);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
-	const UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Context.Asset);
 	const TArray<FAnimParentNodeAssetOverride> CurrentOverrides = AnimBlueprint
 		? AnimBlueprint->ParentAssetOverrides
 		: TArray<FAnimParentNodeAssetOverride>();
 	const TMap<FGuid, FAnimParentNodeAssetOverride> CurrentByGuid = MakeOverrideMap(CurrentOverrides);
 	const TMap<FGuid, FAnimParentNodeAssetOverride> DesiredByGuid = MakeOverrideMap(DesiredOverrides);
 
-	for (const FAnimParentNodeAssetOverride& DesiredOverride : DesiredOverrides)
+	for (const FParsedParentAssetOverride& ParsedDesiredOverride : ParsedDesiredOverrides)
 	{
+		const FAnimParentNodeAssetOverride& DesiredOverride = ParsedDesiredOverride.Override;
 		const FAnimParentNodeAssetOverride* CurrentOverride = CurrentByGuid.Find(DesiredOverride.ParentNodeGuid);
-		const FString Path = OverridePath(GuidToIdentity(DesiredOverride.ParentNodeGuid));
+		const FString Path = OverridePath(ParsedDesiredOverride.Identity());
 		if (!CurrentOverride)
 		{
 			FAssetDocumentJsonRegionUtils::AddDiffEntry(
@@ -333,7 +590,7 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 				Path,
 				TEXT("added"),
 				MakeShared<FJsonValueNull>(),
-				MakeShared<FJsonValueObject>(MakeOverrideObject(DesiredOverride)));
+				MakeShared<FJsonValueObject>(MakeOverrideObject(ParsedDesiredOverride)));
 			continue;
 		}
 
@@ -341,10 +598,10 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 		{
 			FAssetDocumentJsonRegionUtils::AddDiffEntry(
 				OutDiffEntries,
-				Path,
+				FString::Printf(TEXT("%s/NewAsset"), *Path),
 				TEXT("changed"),
-				MakeShared<FJsonValueObject>(MakeOverrideObject(*CurrentOverride)),
-				MakeShared<FJsonValueObject>(MakeOverrideObject(DesiredOverride)));
+				MakeAssetRefValue(CurrentOverride->NewAsset),
+				MakeAssetRefValue(DesiredOverride.NewAsset));
 		}
 	}
 
@@ -357,9 +614,9 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimParentAssetOverrideRegionAdapte
 
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			OverridePath(GuidToIdentity(CurrentOverride.ParentNodeGuid)),
+			OverridePath(MakeParsedCurrentOverride(AnimBlueprint, CurrentOverride).Identity()),
 			TEXT("removed"),
-			MakeShared<FJsonValueObject>(MakeOverrideObject(CurrentOverride)),
+			MakeShared<FJsonValueObject>(MakeOverrideObject(MakeParsedCurrentOverride(AnimBlueprint, CurrentOverride))),
 			MakeShared<FJsonValueNull>());
 	}
 

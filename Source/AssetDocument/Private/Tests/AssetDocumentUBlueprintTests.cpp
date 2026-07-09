@@ -569,10 +569,22 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("UbergraphPages uses graph canonicalizer"), UbergraphPolicy->CanonicalizerHookName, FName(TEXT("UBlueprintGraph")));
 	}
+	const FAssetDocumentRegionPolicy* FunctionGraphsPolicy = FindPolicyByRegionId(Policies, TEXT("Body.FunctionGraphs"));
+	const FAssetDocumentRegionPolicy* MacroGraphsPolicy = FindPolicyByRegionId(Policies, TEXT("Body.MacroGraphs"));
+	TestNotNull(TEXT("FunctionGraphs has region policy"), FunctionGraphsPolicy);
+	TestNotNull(TEXT("MacroGraphs has region policy"), MacroGraphsPolicy);
+	if (FunctionGraphsPolicy)
+	{
+		TestEqual(TEXT("FunctionGraphs uses graph canonicalizer"), FunctionGraphsPolicy->CanonicalizerHookName, FName(TEXT("UBlueprintGraph")));
+		TestEqual(TEXT("FunctionGraphs is no longer deferred"), FunctionGraphsPolicy->ExplicitDeleteValues.Num(), 0);
+	}
+	if (MacroGraphsPolicy)
+	{
+		TestEqual(TEXT("MacroGraphs uses graph canonicalizer"), MacroGraphsPolicy->CanonicalizerHookName, FName(TEXT("UBlueprintGraph")));
+		TestEqual(TEXT("MacroGraphs is no longer deferred"), MacroGraphsPolicy->ExplicitDeleteValues.Num(), 0);
+	}
 
 	const TArray<FName> DeferredGraphRegionIds = {
-		TEXT("Body.FunctionGraphs"),
-		TEXT("Body.MacroGraphs"),
 		TEXT("Body.Timelines"),
 	};
 	for (const FName& DeferredGraphRegionId : DeferredGraphRegionIds)
@@ -621,7 +633,7 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	ValidEmptyBody->SetArrayField(TEXT("FunctionGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("MacroGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("Timelines"), {});
-	TestTrue(TEXT("Empty protected regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
+	TestTrue(TEXT("Empty graph/timeline regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
 
 	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs"), TEXT("Timelines")})
 	{
@@ -629,7 +641,7 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 		NullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
 		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
 		TestTrue(
-			FString::Printf(TEXT("Null %s passes deferred region validation"), *DeferredRegion),
+			FString::Printf(TEXT("Null %s passes graph/timeline region validation"), *DeferredRegion),
 			Capability.Validate(CapabilityContext, MakeBodyValue(NullBody)).bSuccess);
 	}
 
@@ -655,8 +667,6 @@ bool FAssetDocumentUBlueprintUnsupportedGraphProtectionTest::RunTest(const FStri
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	const TArray<FString> ProtectedRegions = {
-		TEXT("FunctionGraphs"),
-		TEXT("MacroGraphs"),
 		TEXT("Timelines"),
 	};
 

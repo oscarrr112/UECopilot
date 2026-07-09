@@ -6,10 +6,10 @@
 
 #include "CoreMinimal.h"
 
-class FAssetDocumentAnimParentAssetOverrideRegionAdapter final : public IAssetDocumentRegionAdapter
+class FAssetDocumentAnimLayerRegionAdapter final : public IAssetDocumentRegionAdapter
 {
 public:
-	explicit FAssetDocumentAnimParentAssetOverrideRegionAdapter(FName InAdapterName);
+	explicit FAssetDocumentAnimLayerRegionAdapter(FName InAdapterName);
 
 	virtual FName GetName() const override;
 	virtual bool SupportsRegion(const FAssetDocumentRegionContext& Context) const override;
@@ -17,10 +17,6 @@ public:
 
 	virtual FAssetDocumentCapabilityResult ValidateRegion(
 		const FAssetDocumentRegionContext& Context,
-		const TSharedPtr<FJsonValue>& DesiredValue) const override;
-
-	virtual FAssetDocumentCapabilityResult PreflightRegion(
-		FAssetDocumentRegionContext& Context,
 		const TSharedPtr<FJsonValue>& DesiredValue) const override;
 
 	virtual FAssetDocumentCapabilityResult ApplyRegion(

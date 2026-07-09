@@ -1010,11 +1010,11 @@ bool FAssetDocumentUBlueprintGraphValidationPreservesMultipleParserDiagnosticsTe
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedFunctionGraphsTest,
-	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.RejectsUnsupportedFunctionGraphs",
+	FAssetDocumentUBlueprintGraphValidationRejectsInvalidFunctionGraphsTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.RejectsInvalidFunctionGraphs",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedFunctionGraphsTest::RunTest(const FString&)
+bool FAssetDocumentUBlueprintGraphValidationRejectsInvalidFunctionGraphsTest::RunTest(const FString&)
 {
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
@@ -1023,17 +1023,17 @@ bool FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedFunctionGraphsTest
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(
 		Context,
 		MakeBodyValue(MakeBodyWithRegion(TEXT("FunctionGraphs"), {MakeShared<FJsonObject>()})));
-	TestFalse(TEXT("FunctionGraphs remains unsupported"), Result.bSuccess);
-	TestTrue(TEXT("FunctionGraphs diagnostic remains protected"), ResultHasDiagnostic(Result, TEXT("/Body/FunctionGraphs"), TEXT("UnsupportedUBlueprintRegion")));
+	TestFalse(TEXT("FunctionGraphs rejects invalid graph shape"), Result.bSuccess);
+	TestTrue(TEXT("FunctionGraphs reports graph parser diagnostic"), ResultHasDiagnosticCode(Result, TEXT("MissingGraphName")));
 	return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedMacroGraphsTest,
-	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.RejectsUnsupportedMacroGraphs",
+	FAssetDocumentUBlueprintGraphValidationRejectsInvalidMacroGraphsTest,
+	"AssetFactory.AssetDocument.UBlueprint.GraphValidation.RejectsInvalidMacroGraphs",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedMacroGraphsTest::RunTest(const FString&)
+bool FAssetDocumentUBlueprintGraphValidationRejectsInvalidMacroGraphsTest::RunTest(const FString&)
 {
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
@@ -1042,8 +1042,8 @@ bool FAssetDocumentUBlueprintGraphValidationRejectsUnsupportedMacroGraphsTest::R
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(
 		Context,
 		MakeBodyValue(MakeBodyWithRegion(TEXT("MacroGraphs"), {MakeShared<FJsonObject>()})));
-	TestFalse(TEXT("MacroGraphs remains unsupported"), Result.bSuccess);
-	TestTrue(TEXT("MacroGraphs diagnostic remains protected"), ResultHasDiagnostic(Result, TEXT("/Body/MacroGraphs"), TEXT("UnsupportedUBlueprintRegion")));
+	TestFalse(TEXT("MacroGraphs rejects invalid graph shape"), Result.bSuccess);
+	TestTrue(TEXT("MacroGraphs reports graph parser diagnostic"), ResultHasDiagnosticCode(Result, TEXT("MissingGraphName")));
 	return true;
 }
 

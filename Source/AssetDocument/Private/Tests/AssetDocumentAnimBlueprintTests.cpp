@@ -3,13 +3,25 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "AssetDocumentService.h"
+#include "Graphs/AssetDocumentAnimationGraphRuntime.h"
+#include "Graphs/AssetDocumentGraphTypes.h"
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimationAsset.h"
 #include "Animation/Skeleton.h"
+#include "AnimationStateMachineGraph.h"
+#include "AnimationTransitionGraph.h"
+#include "AnimGraphNode_StateMachineBase.h"
+#include "AnimGraphNode_TransitionResult.h"
+#include "AnimStateNode.h"
+#include "AnimStateNodeBase.h"
+#include "AnimStateTransitionNode.h"
 #include "Dom/JsonObject.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
@@ -60,23 +72,94 @@ TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredRegion(const TCHAR* RegionNam
 	return MakeShared<FJsonValueObject>(Body);
 }
 
-TArray<TSharedPtr<FJsonValue>> MakeCanonicalAnimGraphArray()
+TSharedRef<FJsonObject> MakeCanonicalAnimGraphObject()
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Graph->SetArrayField(TEXT("Nodes"), {});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
+	return Region;
+}
+
+TSharedRef<FJsonObject> MakeEmptyGraphRegionObject()
+{
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {});
+	return Region;
+}
+
+TSharedRef<FJsonObject> MakeAnimLayerGraph(const TCHAR* LayerName)
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), LayerName);
+	Graph->SetStringField(TEXT("Name"), LayerName);
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimLayer"));
+	Graph->SetArrayField(TEXT("Nodes"), {});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeAnimLayerGraphWithSequencePlayer(const TCHAR* LayerName)
+{
+	TSharedRef<FJsonObject> Graph = MakeAnimLayerGraph(LayerName);
+
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), TEXT("LayerIdlePlayer"));
+	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 120.0);
+	Position->SetNumberField(TEXT("Y"), 40.0);
+	Node->SetObjectField(TEXT("Position"), Position);
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeAnimLayerGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedRef<FJsonObject>& Graph : Graphs)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Graph));
+	}
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), Values);
+	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithAnimLayerGraphs(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimLayers"), MakeAnimLayerGraphRegion(Graphs));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TArray<TSharedPtr<FJsonValue>> MakeLegacyAnimGraphArray()
 {
 	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
 	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
 	Graph->SetArrayField(TEXT("Nodes"), {});
-
-	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
-	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
-	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
 	return {MakeShared<FJsonValueObject>(Graph)};
 }
 
 TSharedRef<FJsonValue> MakeBodyWithCanonicalAnimGraph()
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
+	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithLegacyAnimGraphArray()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetArrayField(TEXT("AnimGraph"), MakeLegacyAnimGraphArray());
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -85,18 +168,155 @@ TSharedRef<FJsonValue> MakeBodyWithUnsupportedAnimGraphNode()
 	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetStringField(TEXT("Id"), TEXT("IdlePlayer"));
 	Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
-
-	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
-	Graph->SetStringField(TEXT("Name"), TEXT("AnimGraph"));
-	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_DoesNotExist"));
 
 	TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
-	OutputPose->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
-	OutputPose->SetStringField(TEXT("Pin"), TEXT("Result"));
-	Graph->SetObjectField(TEXT("OutputPose"), OutputPose);
+	OutputPose->SetStringField(TEXT("Node"), TEXT("IdlePlayer"));
+	OutputPose->SetStringField(TEXT("Pin"), TEXT("Pose"));
+	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+	Metadata->SetObjectField(TEXT("OutputPose"), OutputPose);
+
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Graph->SetObjectField(TEXT("Metadata"), Metadata);
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
 
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetArrayField(TEXT("AnimGraph"), {MakeShared<FJsonValueObject>(Graph)});
+	Body->SetObjectField(TEXT("AnimGraph"), Region);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonValue> MakeBodyWithAnimGraphSubgraph()
+{
+	TSharedRef<FJsonObject> Region = MakeCanonicalAnimGraphObject();
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	Region->TryGetArrayField(TEXT("Graphs"), Graphs);
+	TSharedPtr<FJsonObject> RootGraph = Graphs && Graphs->Num() == 1 && (*Graphs)[0].IsValid()
+		? (*Graphs)[0]->AsObject()
+		: nullptr;
+
+	TSharedRef<FJsonObject> Subgraph = MakeShared<FJsonObject>();
+	Subgraph->SetStringField(TEXT("Id"), TEXT("NestedPose"));
+	Subgraph->SetStringField(TEXT("Kind"), TEXT("StatePose"));
+	Subgraph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	Subgraph->SetArrayField(TEXT("Nodes"), {});
+	Subgraph->SetArrayField(TEXT("Links"), {});
+	Subgraph->SetArrayField(TEXT("Subgraphs"), {});
+	if (RootGraph.IsValid())
+	{
+		RootGraph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(Subgraph)});
+	}
+
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimGraph"), Region);
+	return MakeShared<FJsonValueObject>(Body);
+}
+
+TSharedRef<FJsonObject> MakeAnimGraphWithSequencePlayer(
+	const TCHAR* NodeId,
+	bool bIncludeOutputPose = true,
+	const FString& SequenceAssetPath = FString(),
+	bool bIncludeKind = true)
+{
+	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), NodeId);
+	if (bIncludeKind)
+	{
+		Node->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+	}
+	Node->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	if (!SequenceAssetPath.IsEmpty())
+	{
+		TSharedRef<FJsonObject> AnimNodeFields = MakeShared<FJsonObject>();
+		AnimNodeFields->SetStringField(TEXT("Sequence"), SequenceAssetPath);
+		TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+		Fields->SetObjectField(TEXT("Node"), AnimNodeFields);
+		Node->SetObjectField(TEXT("Fields"), Fields);
+	}
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 120.0);
+	Position->SetNumberField(TEXT("Y"), 40.0);
+	Node->SetObjectField(TEXT("Position"), Position);
+
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), TEXT("AnimGraph"));
+	Graph->SetStringField(TEXT("Kind"), TEXT("AnimGraph"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	if (bIncludeOutputPose)
+	{
+		TSharedRef<FJsonObject> OutputPose = MakeShared<FJsonObject>();
+		OutputPose->SetStringField(TEXT("Node"), NodeId);
+		OutputPose->SetStringField(TEXT("Pin"), TEXT("Pose"));
+		TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+		Metadata->SetObjectField(TEXT("OutputPose"), OutputPose);
+		Graph->SetObjectField(TEXT("Metadata"), Metadata);
+	}
+	Graph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(Node)});
+	Graph->SetArrayField(TEXT("Links"), {});
+	Graph->SetArrayField(TEXT("Subgraphs"), {});
+
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), {MakeShared<FJsonValueObject>(Graph)});
+	return Region;
+}
+
+TSharedRef<FJsonObject> MakeAnimGraphWithTwoSequencePlayers(
+	const TCHAR* FirstNodeId,
+	const TCHAR* SecondNodeId,
+	const TCHAR* OutputPoseNodeId,
+	const FString& SequenceAssetPath = FString())
+{
+	TSharedRef<FJsonObject> Region = MakeAnimGraphWithSequencePlayer(FirstNodeId, true, SequenceAssetPath);
+
+	const TSharedPtr<FJsonObject> Graph = Region->GetArrayField(TEXT("Graphs"))[0]->AsObject();
+	TArray<TSharedPtr<FJsonValue>> Nodes = Graph->GetArrayField(TEXT("Nodes"));
+	const TSharedRef<FJsonObject> SecondNode = MakeShared<FJsonObject>();
+	SecondNode->SetStringField(TEXT("Id"), SecondNodeId);
+	SecondNode->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	if (!SequenceAssetPath.IsEmpty())
+	{
+		TSharedRef<FJsonObject> AnimNodeFields = MakeShared<FJsonObject>();
+		AnimNodeFields->SetStringField(TEXT("Sequence"), SequenceAssetPath);
+		TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+		Fields->SetObjectField(TEXT("Node"), AnimNodeFields);
+		SecondNode->SetObjectField(TEXT("Fields"), Fields);
+	}
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), 360.0);
+	Position->SetNumberField(TEXT("Y"), 40.0);
+	SecondNode->SetObjectField(TEXT("Position"), Position);
+	Nodes.Add(MakeShared<FJsonValueObject>(SecondNode));
+	Graph->SetArrayField(TEXT("Nodes"), Nodes);
+
+	TSharedPtr<FJsonObject> Metadata = Graph->GetObjectField(TEXT("Metadata"));
+	TSharedPtr<FJsonObject> OutputPose = Metadata->GetObjectField(TEXT("OutputPose"));
+	OutputPose->SetStringField(TEXT("Node"), OutputPoseNodeId);
+	return Region;
+}
+
+TSharedRef<FJsonObject> MakeAnimGraphWithOutputPosePin(
+	const TCHAR* NodeId,
+	const TCHAR* PinName)
+{
+	TSharedRef<FJsonObject> Region = MakeAnimGraphWithSequencePlayer(NodeId);
+	TSharedPtr<FJsonObject> Graph = Region->GetArrayField(TEXT("Graphs"))[0]->AsObject();
+	TSharedPtr<FJsonObject> Metadata = Graph->GetObjectField(TEXT("Metadata"));
+	TSharedPtr<FJsonObject> OutputPose = Metadata->GetObjectField(TEXT("OutputPose"));
+	OutputPose->SetStringField(TEXT("Pin"), PinName);
+	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithAnimGraphSequencePlayerMissingOutputPose()
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), false));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -192,6 +412,190 @@ TSharedRef<FJsonValue> MakeBodyWithStateMachines(std::initializer_list<TSharedPt
 	return MakeShared<FJsonValueObject>(Body);
 }
 
+TSharedRef<FJsonObject> MakeStateMachineGraph(
+	const TCHAR* Id,
+	bool bDuplicateState = false,
+	bool bUnknownEndpoint = false)
+{
+	TSharedRef<FJsonObject> Graph = MakeShared<FJsonObject>();
+	Graph->SetStringField(TEXT("Id"), Id);
+	Graph->SetStringField(TEXT("Kind"), TEXT("StateMachine"));
+	Graph->SetField(TEXT("Owner"), MakeShared<FJsonValueNull>());
+	TSharedRef<FJsonObject> GraphPosition = MakeShared<FJsonObject>();
+	GraphPosition->SetNumberField(TEXT("X"), 0.0);
+	GraphPosition->SetNumberField(TEXT("Y"), 0.0);
+	Graph->SetObjectField(TEXT("Position"), GraphPosition);
+
+	TSharedRef<FJsonObject> Metadata = MakeShared<FJsonObject>();
+	Metadata->SetStringField(TEXT("EntryState"), TEXT("Idle"));
+	Graph->SetObjectField(TEXT("Metadata"), Metadata);
+
+	auto MakeNode = [](const TCHAR* NodeId, const TCHAR* Kind, const TCHAR* ClassPath, double X, double Y)
+	{
+		TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
+		Node->SetStringField(TEXT("Id"), NodeId);
+		Node->SetStringField(TEXT("Kind"), Kind);
+		Node->SetStringField(TEXT("Class"), ClassPath);
+		TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+		Position->SetNumberField(TEXT("X"), X);
+		Position->SetNumberField(TEXT("Y"), Y);
+		Node->SetObjectField(TEXT("Position"), Position);
+		return Node;
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(TEXT("Idle"), TEXT("State"), TEXT("/Script/AnimGraph.AnimStateNode"), 0, 0)));
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(bDuplicateState ? TEXT("Idle") : TEXT("Run"), TEXT("State"), TEXT("/Script/AnimGraph.AnimStateNode"), 240, 0)));
+	Nodes.Add(MakeShared<FJsonValueObject>(MakeNode(TEXT("IdleToRun"), TEXT("Transition"), TEXT("/Script/AnimGraph.AnimStateTransitionNode"), 120, 0)));
+	Graph->SetArrayField(TEXT("Nodes"), Nodes);
+
+	auto MakeLink = [](const TCHAR* FromNode, const TCHAR* FromPin, const TCHAR* ToNode, const TCHAR* ToPin)
+	{
+		TSharedRef<FJsonObject> From = MakeShared<FJsonObject>();
+		From->SetStringField(TEXT("Node"), FromNode);
+		From->SetStringField(TEXT("Pin"), FromPin);
+		TSharedRef<FJsonObject> To = MakeShared<FJsonObject>();
+		To->SetStringField(TEXT("Node"), ToNode);
+		To->SetStringField(TEXT("Pin"), ToPin);
+		TSharedRef<FJsonObject> Link = MakeShared<FJsonObject>();
+		Link->SetObjectField(TEXT("From"), From);
+		Link->SetObjectField(TEXT("To"), To);
+		return Link;
+	};
+
+	TArray<TSharedPtr<FJsonValue>> Links;
+	Links.Add(MakeShared<FJsonValueObject>(MakeLink(TEXT("Idle"), TEXT("Out"), TEXT("IdleToRun"), TEXT("In"))));
+	Links.Add(MakeShared<FJsonValueObject>(MakeLink(TEXT("IdleToRun"), TEXT("Out"), bUnknownEndpoint ? TEXT("Missing") : TEXT("Run"), TEXT("In"))));
+	Graph->SetArrayField(TEXT("Links"), Links);
+
+	TSharedRef<FJsonObject> RuleGraph = MakeShared<FJsonObject>();
+	RuleGraph->SetStringField(TEXT("Id"), TEXT("CanStartRunning"));
+	RuleGraph->SetStringField(TEXT("Kind"), TEXT("TransitionRule"));
+	TSharedRef<FJsonObject> Owner = MakeShared<FJsonObject>();
+	Owner->SetStringField(TEXT("Transition"), TEXT("IdleToRun"));
+	RuleGraph->SetObjectField(TEXT("Owner"), Owner);
+	TSharedRef<FJsonObject> RuleResult = MakeShared<FJsonObject>();
+	RuleResult->SetField(TEXT("Node"), MakeShared<FJsonValueNull>());
+	RuleResult->SetStringField(TEXT("Pin"), TEXT("CanEnterTransition"));
+	TSharedRef<FJsonObject> RuleMetadata = MakeShared<FJsonObject>();
+	RuleMetadata->SetObjectField(TEXT("Result"), RuleResult);
+	RuleGraph->SetObjectField(TEXT("Metadata"), RuleMetadata);
+	RuleGraph->SetArrayField(TEXT("Nodes"), {});
+	RuleGraph->SetArrayField(TEXT("Links"), {});
+	RuleGraph->SetArrayField(TEXT("Subgraphs"), {});
+	TSharedRef<FJsonObject> StatePoseGraph = MakeShared<FJsonObject>();
+	StatePoseGraph->SetStringField(TEXT("Id"), TEXT("IdlePose"));
+	StatePoseGraph->SetStringField(TEXT("Kind"), TEXT("StatePose"));
+	TSharedRef<FJsonObject> StatePoseOwner = MakeShared<FJsonObject>();
+	StatePoseOwner->SetStringField(TEXT("State"), TEXT("Idle"));
+	StatePoseGraph->SetObjectField(TEXT("Owner"), StatePoseOwner);
+	StatePoseGraph->SetArrayField(TEXT("Nodes"), {});
+	StatePoseGraph->SetArrayField(TEXT("Links"), {});
+	StatePoseGraph->SetArrayField(TEXT("Subgraphs"), {});
+
+	Graph->SetArrayField(TEXT("Subgraphs"), {MakeShared<FJsonValueObject>(StatePoseGraph), MakeShared<FJsonValueObject>(RuleGraph)});
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeStateMachineGraphAtPosition(const TCHAR* Id, double X, double Y)
+{
+	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id);
+	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), X);
+	Position->SetNumberField(TEXT("Y"), Y);
+	Graph->SetObjectField(TEXT("Position"), Position);
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeStateMachineGraphWithBrokenStatePoseField(const TCHAR* Id)
+{
+	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id);
+	Graph->GetObjectField(TEXT("Metadata"))->SetStringField(TEXT("EntryState"), TEXT("Run"));
+
+	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
+	if (Graph->TryGetArrayField(TEXT("Subgraphs"), Subgraphs) && Subgraphs)
+	{
+		for (const TSharedPtr<FJsonValue>& SubgraphValue : *Subgraphs)
+		{
+			const TSharedPtr<FJsonObject> Subgraph = SubgraphValue.IsValid() ? SubgraphValue->AsObject() : nullptr;
+			FString Kind;
+			if (!Subgraph.IsValid() || !Subgraph->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("StatePose"))
+			{
+				continue;
+			}
+
+			Subgraph->SetStringField(TEXT("Id"), TEXT("BrokenPose"));
+			TSharedRef<FJsonObject> BadNode = MakeShared<FJsonObject>();
+			BadNode->SetStringField(TEXT("Id"), TEXT("BrokenPosePlayer"));
+			BadNode->SetStringField(TEXT("Kind"), TEXT("SequencePlayer"));
+			BadNode->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+			TSharedRef<FJsonObject> Fields = MakeShared<FJsonObject>();
+			Fields->SetBoolField(TEXT("DefinitelyMissingProperty"), true);
+			BadNode->SetObjectField(TEXT("Fields"), Fields);
+			Subgraph->SetArrayField(TEXT("Nodes"), {MakeShared<FJsonValueObject>(BadNode)});
+			break;
+		}
+	}
+
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeStateMachineGraphWithBrokenBodyMutation(
+	const TCHAR* Id,
+	bool bBadEntryState,
+	bool bUnknownEndpoint)
+{
+	TSharedRef<FJsonObject> Graph = MakeStateMachineGraph(Id, false, bUnknownEndpoint);
+	Graph->GetObjectField(TEXT("Metadata"))->SetStringField(
+		TEXT("EntryState"),
+		bBadEntryState ? TEXT("MissingEntry") : TEXT("Run"));
+
+	TArray<TSharedPtr<FJsonValue>> Nodes = Graph->GetArrayField(TEXT("Nodes"));
+	for (const TSharedPtr<FJsonValue>& NodeValue : Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		FString NodeId;
+		if (Node.IsValid() && Node->TryGetStringField(TEXT("Id"), NodeId) && NodeId == TEXT("Idle"))
+		{
+			TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
+			Position->SetNumberField(TEXT("X"), 999.0);
+			Position->SetNumberField(TEXT("Y"), 333.0);
+			Node->SetObjectField(TEXT("Position"), Position);
+		}
+	}
+
+	TSharedRef<FJsonObject> WalkNode = MakeShared<FJsonObject>();
+	WalkNode->SetStringField(TEXT("Id"), TEXT("Walk"));
+	WalkNode->SetStringField(TEXT("Kind"), TEXT("State"));
+	WalkNode->SetStringField(TEXT("Class"), TEXT("/Script/AnimGraph.AnimStateNode"));
+	TSharedRef<FJsonObject> WalkPosition = MakeShared<FJsonObject>();
+	WalkPosition->SetNumberField(TEXT("X"), 480.0);
+	WalkPosition->SetNumberField(TEXT("Y"), 120.0);
+	WalkNode->SetObjectField(TEXT("Position"), WalkPosition);
+	Nodes.Add(MakeShared<FJsonValueObject>(WalkNode));
+	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+	return Graph;
+}
+
+TSharedRef<FJsonObject> MakeStateMachinesGraphRegion(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TArray<TSharedPtr<FJsonValue>> Values;
+	for (const TSharedRef<FJsonObject>& Graph : Graphs)
+	{
+		Values.Add(MakeShared<FJsonValueObject>(Graph));
+	}
+	TSharedRef<FJsonObject> Region = MakeShared<FJsonObject>();
+	Region->SetArrayField(TEXT("Graphs"), Values);
+	return Region;
+}
+
+TSharedRef<FJsonValue> MakeBodyWithStateMachineGraphs(std::initializer_list<TSharedRef<FJsonObject>> Graphs)
+{
+	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetObjectField(TEXT("StateMachines"), MakeStateMachinesGraphRegion(Graphs));
+	return MakeShared<FJsonValueObject>(Body);
+}
+
 TSharedRef<FJsonValue> MakeBodyWithTransitionGraphs(std::initializer_list<TSharedPtr<FJsonObject>> Graphs)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
@@ -226,6 +630,17 @@ TSharedPtr<FJsonObject> MakeParentAssetOverride(const FString& ParentNodeGuid, c
 	return Override;
 }
 
+TSharedPtr<FJsonObject> MakeParentAssetOverrideByNode(const FString& Node, const FString& AssetPath)
+{
+	TSharedPtr<FJsonObject> Override = MakeShared<FJsonObject>();
+	Override->SetStringField(TEXT("Node"), Node);
+	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
+	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
+	AssetRef->SetStringField(TEXT("Path"), AssetPath);
+	Override->SetObjectField(TEXT("NewAsset"), AssetRef);
+	return Override;
+}
+
 TArray<TSharedPtr<FJsonValue>> MakeParentAssetOverrideArray(std::initializer_list<TSharedPtr<FJsonObject>> Overrides)
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
@@ -241,6 +656,16 @@ TSharedRef<FJsonValue> MakeBodyWithParentAssetOverrides(std::initializer_list<TS
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), MakeParentAssetOverrideArray(Overrides));
 	return MakeShared<FJsonValueObject>(Body);
+}
+
+FGuid MakeExpectedManagedAnimGraphNodeGuid(const FString& NodeId)
+{
+	FAssetDocumentGraphSpec Graph;
+	Graph.Id = TEXT("AnimGraph");
+	Graph.Kind = TEXT("AnimGraph");
+	FAssetDocumentNodeSpec Node;
+	Node.Id = NodeId;
+	return FAssetDocumentAnimationGraphRuntime::MakeManagedNodeGuid(Graph, Node);
 }
 
 TSharedRef<FJsonValue> MakeBodyWithNonEmptyDeferredObjectRegion(const TCHAR* RegionName)
@@ -457,10 +882,12 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Body->SetArrayField(TEXT("Variables"), {});
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetArrayField(TEXT("UbergraphPages"), {});
-	Body->SetArrayField(TEXT("AnimGraph"), {});
-	Body->SetArrayField(TEXT("StateMachines"), {});
+	Body->SetArrayField(TEXT("FunctionGraphs"), {});
+	Body->SetArrayField(TEXT("MacroGraphs"), {});
+	Body->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
+	Body->SetObjectField(TEXT("StateMachines"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("TransitionGraphs"), {});
-	Body->SetArrayField(TEXT("AnimLayers"), {});
+	Body->SetObjectField(TEXT("AnimLayers"), MakeEmptyGraphRegionObject());
 	Body->SetArrayField(TEXT("ParentAssetOverrides"), {});
 	Document->SetObjectField(TEXT("Body"), Body);
 	return Document;
@@ -546,6 +973,14 @@ bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& 
 	});
 }
 
+bool HasDiagnostic(const FAssetDocumentResult& Result, const FString& Path, const FString& Code)
+{
+	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Path == Path && Diagnostic.Code == Code;
+	});
+}
+
 bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath)
 {
 	return DiffEntries.ContainsByPredicate([&ExpectedPath](const TSharedPtr<FJsonValue>& EntryValue)
@@ -553,6 +988,31 @@ bool HasDiffPath(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FStrin
 		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
 		FString Path;
 		return Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path == ExpectedPath;
+	});
+}
+
+bool HasDiffStatus(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedStatus)
+{
+	return DiffEntries.ContainsByPredicate([&ExpectedStatus](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Status;
+		return Entry.IsValid() && Entry->TryGetStringField(TEXT("status"), Status) && Status == ExpectedStatus;
+	});
+}
+
+bool HasDiffNullField(const TArray<TSharedPtr<FJsonValue>>& DiffEntries, const FString& ExpectedPath, const FString& FieldName)
+{
+	return DiffEntries.ContainsByPredicate([&ExpectedPath, &FieldName](const TSharedPtr<FJsonValue>& EntryValue)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Path;
+		const TSharedPtr<FJsonValue> FieldValue = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
+		return Entry.IsValid()
+			&& Entry->TryGetStringField(TEXT("path"), Path)
+			&& Path == ExpectedPath
+			&& FieldValue.IsValid()
+			&& FieldValue->Type == EJson::Null;
 	});
 }
 
@@ -574,6 +1034,698 @@ bool HasArrayFieldCount(const TSharedPtr<FJsonObject>& Object, const FString& Fi
 {
 	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
 	return Object.IsValid() && Object->TryGetArrayField(FieldName, Values) && Values && Values->Num() == ExpectedCount;
+}
+
+bool HasCanonicalAnimGraphObject(const TSharedPtr<FJsonObject>& Body)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs || Graphs->Num() != 1)
+	{
+		return false;
+	}
+
+	const TSharedPtr<FJsonObject> RootGraph = (*Graphs)[0].IsValid() ? (*Graphs)[0]->AsObject() : nullptr;
+	FString Id;
+	FString Kind;
+	return RootGraph.IsValid()
+		&& RootGraph->TryGetStringField(TEXT("Id"), Id)
+		&& RootGraph->TryGetStringField(TEXT("Kind"), Kind)
+		&& Id == TEXT("AnimGraph")
+		&& Kind == TEXT("AnimGraph");
+}
+
+bool HasAnimGraphNode(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+		{
+			const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+			FString NodeId;
+			if (Node.IsValid()
+				&& Node->TryGetStringField(TEXT("Id"), NodeId)
+				&& NodeId == ExpectedNodeId)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+bool HasAnimGraphNodePosition(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId, double ExpectedX, double ExpectedY)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return false;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		const TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+		{
+			continue;
+		}
+
+		for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+		{
+			const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject>* Position = nullptr;
+			FString NodeId;
+			double X = 0.0;
+			double Y = 0.0;
+			if (Node.IsValid()
+				&& Node->TryGetStringField(TEXT("Id"), NodeId)
+				&& NodeId == ExpectedNodeId
+				&& Node->TryGetObjectField(TEXT("Position"), Position)
+				&& Position
+				&& (*Position)->TryGetNumberField(TEXT("X"), X)
+				&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+				&& FMath::IsNearlyEqual(X, ExpectedX)
+				&& FMath::IsNearlyEqual(Y, ExpectedY))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+TSharedPtr<FJsonObject> GetExtractedRootAnimGraph(const TSharedPtr<FJsonObject>& Body)
+{
+	const TSharedPtr<FJsonObject>* AnimGraph = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("AnimGraph"), AnimGraph) || !AnimGraph || !AnimGraph->IsValid())
+	{
+		return nullptr;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*AnimGraph)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		FString Id;
+		if (Graph.IsValid() && Graph->TryGetStringField(TEXT("Id"), Id) && Id == TEXT("AnimGraph"))
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+bool HasAnimGraphOutputPose(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId, const FString& ExpectedPin)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedRootAnimGraph(Body);
+	const TSharedPtr<FJsonObject>* Metadata = nullptr;
+	const TSharedPtr<FJsonObject>* OutputPose = nullptr;
+	FString NodeId;
+	FString Pin;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("Metadata"), Metadata)
+		&& Metadata
+		&& (*Metadata)->TryGetObjectField(TEXT("OutputPose"), OutputPose)
+		&& OutputPose
+		&& (*OutputPose)->TryGetStringField(TEXT("Node"), NodeId)
+		&& (*OutputPose)->TryGetStringField(TEXT("Pin"), Pin)
+		&& NodeId == ExpectedNodeId
+		&& Pin == ExpectedPin;
+}
+
+bool HasAnimGraphNodeSequenceField(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedNodeId, const FString& ExpectedSequencePath)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedRootAnimGraph(Body);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Fields = nullptr;
+		const TSharedPtr<FJsonObject>* AnimNodeFields = nullptr;
+		FString NodeId;
+		FString SequencePath;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId
+			&& Node->TryGetObjectField(TEXT("Fields"), Fields)
+			&& Fields
+			&& (*Fields)->TryGetObjectField(TEXT("Node"), AnimNodeFields)
+			&& AnimNodeFields
+			&& (*AnimNodeFields)->TryGetStringField(TEXT("Sequence"), SequencePath)
+			&& SequencePath == ExpectedSequencePath)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HasAnimGraphSkippedOutputPose(const TSharedPtr<FJsonObject>& Body)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedRootAnimGraph(Body);
+	const TSharedPtr<FJsonObject>* Skipped = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* OutputPose = nullptr;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("_Skipped"), Skipped)
+		&& Skipped
+		&& (*Skipped)->TryGetArrayField(TEXT("OutputPose"), OutputPose)
+		&& OutputPose
+		&& OutputPose->Num() > 0;
+}
+
+TSharedPtr<FJsonObject> GetExtractedStateMachineGraph(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedGraphId)
+{
+	const TSharedPtr<FJsonObject>* StateMachines = nullptr;
+	if (!Body.IsValid() || !Body->TryGetObjectField(TEXT("StateMachines"), StateMachines) || !StateMachines || !StateMachines->IsValid())
+	{
+		return nullptr;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Graphs = nullptr;
+	if (!(*StateMachines)->TryGetArrayField(TEXT("Graphs"), Graphs) || !Graphs)
+	{
+		return nullptr;
+	}
+
+	for (const TSharedPtr<FJsonValue>& GraphValue : *Graphs)
+	{
+		TSharedPtr<FJsonObject> Graph = GraphValue.IsValid() ? GraphValue->AsObject() : nullptr;
+		FString Id;
+		if (Graph.IsValid() && Graph->TryGetStringField(TEXT("Id"), Id) && Id == ExpectedGraphId)
+		{
+			return Graph;
+		}
+	}
+	return nullptr;
+}
+
+bool HasStateMachineEntryState(const TSharedPtr<FJsonObject>& Body, const FString& ExpectedGraphId, const FString& ExpectedEntryState)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TSharedPtr<FJsonObject>* Metadata = nullptr;
+	FString EntryState;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("Metadata"), Metadata)
+		&& Metadata
+		&& (*Metadata)->TryGetStringField(TEXT("EntryState"), EntryState)
+		&& EntryState == ExpectedEntryState;
+}
+
+bool HasStateMachineGraphPosition(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	double ExpectedX,
+	double ExpectedY)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TSharedPtr<FJsonObject>* Position = nullptr;
+	double X = 0.0;
+	double Y = 0.0;
+	return Graph.IsValid()
+		&& Graph->TryGetObjectField(TEXT("Position"), Position)
+		&& Position
+		&& (*Position)->TryGetNumberField(TEXT("X"), X)
+		&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+		&& FMath::IsNearlyEqual(X, ExpectedX)
+		&& FMath::IsNearlyEqual(Y, ExpectedY);
+}
+
+bool HasStateMachineNodePosition(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedNodeId,
+	double ExpectedX,
+	double ExpectedY)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Position = nullptr;
+		FString NodeId;
+		double X = 0.0;
+		double Y = 0.0;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId
+			&& Node->TryGetObjectField(TEXT("Position"), Position)
+			&& Position
+			&& (*Position)->TryGetNumberField(TEXT("X"), X)
+			&& (*Position)->TryGetNumberField(TEXT("Y"), Y)
+			&& FMath::IsNearlyEqual(X, ExpectedX)
+			&& FMath::IsNearlyEqual(Y, ExpectedY))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool HasStateMachineNode(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedNodeId)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Nodes"), Nodes) || !Nodes)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+	{
+		const TSharedPtr<FJsonObject> Node = NodeValue.IsValid() ? NodeValue->AsObject() : nullptr;
+		FString NodeId;
+		if (Node.IsValid()
+			&& Node->TryGetStringField(TEXT("Id"), NodeId)
+			&& NodeId == ExpectedNodeId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HasStateMachineLink(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedFromNode,
+	const FString& ExpectedToNode)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Links = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Links"), Links) || !Links)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& LinkValue : *Links)
+	{
+		const TSharedPtr<FJsonObject> Link = LinkValue.IsValid() ? LinkValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* From = nullptr;
+		const TSharedPtr<FJsonObject>* To = nullptr;
+		FString FromNode;
+		FString ToNode;
+		if (Link.IsValid()
+			&& Link->TryGetObjectField(TEXT("From"), From)
+			&& From
+			&& (*From)->TryGetStringField(TEXT("Node"), FromNode)
+			&& Link->TryGetObjectField(TEXT("To"), To)
+			&& To
+			&& (*To)->TryGetStringField(TEXT("Node"), ToNode)
+			&& FromNode == ExpectedFromNode
+			&& ToNode == ExpectedToNode)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HasStateMachineSubgraph(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedSubgraphId,
+	const FString& ExpectedKind,
+	const FString& OwnerField,
+	const FString& ExpectedOwner)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Subgraphs"), Subgraphs) || !Subgraphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& SubgraphValue : *Subgraphs)
+	{
+		const TSharedPtr<FJsonObject> Subgraph = SubgraphValue.IsValid() ? SubgraphValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Owner = nullptr;
+		FString Id;
+		FString Kind;
+		FString OwnerValue;
+		if (Subgraph.IsValid()
+			&& Subgraph->TryGetStringField(TEXT("Id"), Id)
+			&& Subgraph->TryGetStringField(TEXT("Kind"), Kind)
+			&& Id == ExpectedSubgraphId
+			&& Kind == ExpectedKind
+			&& Subgraph->TryGetObjectField(TEXT("Owner"), Owner)
+			&& Owner
+			&& (*Owner)->TryGetStringField(OwnerField, OwnerValue)
+			&& OwnerValue == ExpectedOwner)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool HasStateMachineSubgraphMetadataResultPin(
+	const TSharedPtr<FJsonObject>& Body,
+	const FString& ExpectedGraphId,
+	const FString& ExpectedSubgraphId,
+	const FString& ExpectedPin)
+{
+	const TSharedPtr<FJsonObject> Graph = GetExtractedStateMachineGraph(Body, ExpectedGraphId);
+	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
+	if (!Graph.IsValid() || !Graph->TryGetArrayField(TEXT("Subgraphs"), Subgraphs) || !Subgraphs)
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& SubgraphValue : *Subgraphs)
+	{
+		const TSharedPtr<FJsonObject> Subgraph = SubgraphValue.IsValid() ? SubgraphValue->AsObject() : nullptr;
+		const TSharedPtr<FJsonObject>* Metadata = nullptr;
+		const TSharedPtr<FJsonObject>* Result = nullptr;
+		FString Id;
+		FString Pin;
+		if (Subgraph.IsValid()
+			&& Subgraph->TryGetStringField(TEXT("Id"), Id)
+			&& Id == ExpectedSubgraphId
+			&& Subgraph->TryGetObjectField(TEXT("Metadata"), Metadata)
+			&& Metadata
+			&& (*Metadata)->TryGetObjectField(TEXT("Result"), Result)
+			&& Result
+			&& (*Result)->TryGetStringField(TEXT("Pin"), Pin)
+			&& Pin == ExpectedPin)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+UEdGraph* FindAnimBlueprintAnimGraph(UAnimBlueprint* AnimBlueprint)
+{
+	if (!AnimBlueprint)
+	{
+		return nullptr;
+	}
+	for (UEdGraph* Graph : AnimBlueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == FName(TEXT("AnimGraph")))
+		{
+			return Graph;
+		}
+	}
+	return FindObject<UEdGraph>(AnimBlueprint, TEXT("AnimGraph"));
+}
+
+UAnimationStateMachineGraph* FindStateMachineGraph(
+	UAnimBlueprint* AnimBlueprint,
+	const FString& ExpectedGraphId)
+{
+	UEdGraph* RootGraph = FindAnimBlueprintAnimGraph(AnimBlueprint);
+	if (!RootGraph)
+	{
+		return nullptr;
+	}
+
+	TArray<UAnimGraphNode_StateMachineBase*> StateMachineNodes;
+	RootGraph->GetNodesOfClass<UAnimGraphNode_StateMachineBase>(StateMachineNodes);
+	for (UAnimGraphNode_StateMachineBase* StateMachineNode : StateMachineNodes)
+	{
+		UAnimationStateMachineGraph* StateMachineGraph =
+			StateMachineNode ? StateMachineNode->EditorStateMachineGraph : nullptr;
+		if (StateMachineGraph && StateMachineGraph->GetName() == ExpectedGraphId)
+		{
+			return StateMachineGraph;
+		}
+	}
+	return nullptr;
+}
+
+UAnimationTransitionGraph* FindTransitionRuleGraph(
+	UAnimBlueprint* AnimBlueprint,
+	const FString& ExpectedStateMachineId,
+	const FString& ExpectedTransitionId)
+{
+	UAnimationStateMachineGraph* StateMachineGraph =
+		FindStateMachineGraph(AnimBlueprint, ExpectedStateMachineId);
+	if (!StateMachineGraph)
+	{
+		return nullptr;
+	}
+
+	for (UEdGraphNode* Node : StateMachineGraph->Nodes)
+	{
+		UAnimStateTransitionNode* TransitionNode = Cast<UAnimStateTransitionNode>(Node);
+		if (TransitionNode && TransitionNode->GetStateName() == ExpectedTransitionId)
+		{
+			return Cast<UAnimationTransitionGraph>(TransitionNode->GetBoundGraph());
+		}
+	}
+	return nullptr;
+}
+
+int32 CountTransitionResultNodes(UAnimationTransitionGraph* TransitionGraph)
+{
+	int32 Count = 0;
+	if (!TransitionGraph)
+	{
+		return Count;
+	}
+
+	for (UEdGraphNode* Node : TransitionGraph->Nodes)
+	{
+		if (Cast<UAnimGraphNode_TransitionResult>(Node))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+UEdGraphNode* FindManagedAnimGraphNode(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	UEdGraph* Graph = FindAnimBlueprintAnimGraph(AnimBlueprint);
+	if (!Graph)
+	{
+		return nullptr;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		FString ParsedNodeId;
+		if (Node && FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(Node->GetFName(), ParsedNodeId) && ParsedNodeId == NodeId)
+		{
+			return Node;
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindNamedPin(UEdGraphNode* Node, const TCHAR* PinName, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == Direction && Pin->PinName == PinName)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindFirstPin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == Direction)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindResultPosePin(UAnimBlueprint* AnimBlueprint)
+{
+	UEdGraph* Graph = FindAnimBlueprintAnimGraph(AnimBlueprint);
+	UClass* ResultClass = LoadClass<UEdGraphNode>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_Root"));
+	if (!Graph || !ResultClass)
+	{
+		return nullptr;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (Node && Node->IsA(ResultClass))
+		{
+			return FindNamedPin(Node, TEXT("Result"), EGPD_Input);
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindManagedPoseOutputPin(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	return FindNamedPin(FindManagedAnimGraphNode(AnimBlueprint, NodeId), TEXT("Pose"), EGPD_Output);
+}
+
+bool IsResultLinkedToManagedNode(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	UEdGraphPin* ResultPin = FindResultPosePin(AnimBlueprint);
+	return OutputPin && ResultPin && OutputPin->LinkedTo.Contains(ResultPin) && ResultPin->LinkedTo.Contains(OutputPin);
+}
+
+int32 CountResultManagedOutputLinks(UAnimBlueprint* AnimBlueprint)
+{
+	int32 Count = 0;
+	UEdGraphPin* ResultPin = FindResultPosePin(AnimBlueprint);
+	if (!ResultPin)
+	{
+		return Count;
+	}
+	for (UEdGraphPin* LinkedPin : ResultPin->LinkedTo)
+	{
+		const UEdGraphNode* LinkedNode = LinkedPin ? LinkedPin->GetOwningNode() : nullptr;
+		FString ParsedNodeId;
+		if (LinkedNode
+			&& LinkedPin->Direction == EGPD_Output
+			&& FAssetDocumentAnimationGraphRuntime::TryParseManagedNodeObjectName(LinkedNode->GetFName(), ParsedNodeId))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+bool AddDirectResultPoseLink(UAnimBlueprint* AnimBlueprint, const FString& NodeId)
+{
+	UEdGraphNode* Node = FindManagedAnimGraphNode(AnimBlueprint, NodeId);
+	UEdGraphPin* OutputPin = FindNamedPin(Node, TEXT("Pose"), EGPD_Output);
+	UEdGraphPin* ResultPin = FindResultPosePin(AnimBlueprint);
+	if (!OutputPin || !ResultPin)
+	{
+		return false;
+	}
+	if (!OutputPin->LinkedTo.Contains(ResultPin))
+	{
+		OutputPin->MakeLinkTo(ResultPin);
+	}
+	return OutputPin->LinkedTo.Contains(ResultPin);
+}
+
+bool AddSyntheticPoseInputLink(UAnimBlueprint* AnimBlueprint, const FString& NodeId, UEdGraphPin*& OutInputPin)
+{
+	OutInputPin = nullptr;
+	UEdGraph* Graph = FindAnimBlueprintAnimGraph(AnimBlueprint);
+	UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	UClass* ConsumerClass = LoadClass<UEdGraphNode>(nullptr, TEXT("/Script/AnimGraph.AnimGraphNode_SaveCachedPose"));
+	if (!Graph || !OutputPin || !ConsumerClass)
+	{
+		return false;
+	}
+
+	UEdGraphNode* SyntheticNode = NewObject<UEdGraphNode>(Graph, ConsumerClass, NAME_None, RF_Transactional);
+	if (!SyntheticNode)
+	{
+		return false;
+	}
+	SyntheticNode->CreateNewGuid();
+	Graph->AddNode(SyntheticNode, false, false);
+	SyntheticNode->AllocateDefaultPins();
+	OutInputPin = FindNamedPin(SyntheticNode, TEXT("Pose"), EGPD_Input);
+	if (!OutInputPin)
+	{
+		OutInputPin = FindFirstPin(SyntheticNode, EGPD_Input);
+	}
+	if (!OutInputPin)
+	{
+		return false;
+	}
+	if (!OutputPin->LinkedTo.Contains(OutInputPin))
+	{
+		OutputPin->MakeLinkTo(OutInputPin);
+	}
+	return OutputPin->LinkedTo.Contains(OutInputPin) && OutInputPin->LinkedTo.Contains(OutputPin);
+}
+
+bool HasPoseOutputLink(UAnimBlueprint* AnimBlueprint, const FString& NodeId, const UEdGraphPin* ExpectedLinkedPin)
+{
+	const UEdGraphPin* OutputPin = FindManagedPoseOutputPin(AnimBlueprint, NodeId);
+	return OutputPin && ExpectedLinkedPin && OutputPin->LinkedTo.Contains(ExpectedLinkedPin);
+}
+
+bool AllDiffEntriesUnchanged(const TArray<TSharedPtr<FJsonValue>>& DiffEntries)
+{
+	if (DiffEntries.IsEmpty())
+	{
+		return false;
+	}
+
+	for (const TSharedPtr<FJsonValue>& EntryValue : DiffEntries)
+	{
+		const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+		FString Status;
+		if (!Entry.IsValid() || !Entry->TryGetStringField(TEXT("status"), Status) || Status != TEXT("unchanged"))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 const FAssetDocumentRegionPolicy* FindPolicy(const TArray<FAssetDocumentRegionPolicy>& Policies, const TCHAR* RegionId)
@@ -625,6 +1777,8 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestTrue(TEXT("Body keys include Variables"), HasBodyKey(BodyKeys, TEXT("Variables")));
 	TestTrue(TEXT("Body keys include ClassDefaults"), HasBodyKey(BodyKeys, TEXT("ClassDefaults")));
 	TestTrue(TEXT("Body keys include UbergraphPages"), HasBodyKey(BodyKeys, TEXT("UbergraphPages")));
+	TestTrue(TEXT("Body keys include FunctionGraphs"), HasBodyKey(BodyKeys, TEXT("FunctionGraphs")));
+	TestTrue(TEXT("Body keys include MacroGraphs"), HasBodyKey(BodyKeys, TEXT("MacroGraphs")));
 	TestTrue(TEXT("Body keys include AnimGraph"), HasBodyKey(BodyKeys, TEXT("AnimGraph")));
 	TestTrue(TEXT("Body keys include StateMachines"), HasBodyKey(BodyKeys, TEXT("StateMachines")));
 	TestTrue(TEXT("Body keys include TransitionGraphs"), HasBodyKey(BodyKeys, TEXT("TransitionGraphs")));
@@ -644,12 +1798,16 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Policy includes Body.Variables"), FindPolicy(Policies, TEXT("Body.Variables")));
 	TestNotNull(TEXT("Policy includes Body.ClassDefaults"), FindPolicy(Policies, TEXT("Body.ClassDefaults")));
 	TestNotNull(TEXT("Policy includes Body.UbergraphPages"), FindPolicy(Policies, TEXT("Body.UbergraphPages")));
+	const FAssetDocumentRegionPolicy* FunctionGraphsPolicy = FindPolicy(Policies, TEXT("Body.FunctionGraphs"));
+	const FAssetDocumentRegionPolicy* MacroGraphsPolicy = FindPolicy(Policies, TEXT("Body.MacroGraphs"));
 	const FAssetDocumentRegionPolicy* AnimGraphPolicy = FindPolicy(Policies, TEXT("Body.AnimGraph"));
 	const FAssetDocumentRegionPolicy* StateMachinesPolicy = FindPolicy(Policies, TEXT("Body.StateMachines"));
 	const FAssetDocumentRegionPolicy* TransitionGraphsPolicy = FindPolicy(Policies, TEXT("Body.TransitionGraphs"));
 	const FAssetDocumentRegionPolicy* AnimLayersPolicy = FindPolicy(Policies, TEXT("Body.AnimLayers"));
 	const FAssetDocumentRegionPolicy* ParentAssetOverridesPolicy = FindPolicy(Policies, TEXT("Body.ParentAssetOverrides"));
 	TestNotNull(TEXT("Policy includes Body.AnimGraph"), AnimGraphPolicy);
+	TestNotNull(TEXT("Policy includes Body.FunctionGraphs"), FunctionGraphsPolicy);
+	TestNotNull(TEXT("Policy includes Body.MacroGraphs"), MacroGraphsPolicy);
 	TestNotNull(TEXT("Policy includes Body.StateMachines"), StateMachinesPolicy);
 	TestNotNull(TEXT("Policy includes Body.TransitionGraphs"), TransitionGraphsPolicy);
 	TestNotNull(TEXT("Policy includes Body.AnimLayers"), AnimLayersPolicy);
@@ -657,6 +1815,14 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	if (AnimGraphPolicy)
 	{
 		TestEqual(TEXT("AnimGraph policy is no longer deferred/null-gated"), AnimGraphPolicy->ExplicitDeleteValues.Num(), 0);
+	}
+	if (FunctionGraphsPolicy)
+	{
+		TestEqual(TEXT("FunctionGraphs policy is no longer deferred/null-gated"), FunctionGraphsPolicy->ExplicitDeleteValues.Num(), 0);
+	}
+	if (MacroGraphsPolicy)
+	{
+		TestEqual(TEXT("MacroGraphs policy is no longer deferred/null-gated"), MacroGraphsPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (StateMachinesPolicy)
 	{
@@ -668,7 +1834,7 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 	}
 	if (AnimLayersPolicy)
 	{
-		TestTrue(TEXT("AnimLayers policy is deferred/null-gated"), AnimLayersPolicy->ExplicitDeleteValues.Num() > 0);
+		TestEqual(TEXT("AnimLayers policy is no longer deferred/null-gated"), AnimLayersPolicy->ExplicitDeleteValues.Num(), 0);
 	}
 	if (ParentAssetOverridesPolicy)
 	{
@@ -683,25 +1849,8 @@ bool FAssetDocumentAnimBlueprintProfileShapeTest::RunTest(const FString&)
 		Context.AssetClass = UAnimBlueprint::StaticClass();
 		TestTrue(TEXT("Empty Body validates"), BodyAdapter->Validate(Context, MakeEmptyBodyValue()).bSuccess);
 
-		for (const TCHAR* DeferredKey : {
-			TEXT("AnimLayers"),
-		})
-		{
-			const FAssetDocumentCapabilityResult Result = BodyAdapter->Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
-			TestFalse(FString::Printf(TEXT("Body.%s rejects non-empty deferred content"), DeferredKey), Result.bSuccess);
-			TestTrue(FString::Printf(TEXT("Body.%s reports a diagnostic"), DeferredKey), Result.Diagnostics.Num() > 0);
-			if (Result.Diagnostics.Num() > 0)
-			{
-				TestEqual(
-					FString::Printf(TEXT("Body.%s diagnostic path"), DeferredKey),
-					Result.Diagnostics[0].Path,
-					FString::Printf(TEXT("/Body/%s"), DeferredKey));
-				TestEqual(
-					FString::Printf(TEXT("Body.%s diagnostic code"), DeferredKey),
-					Result.Diagnostics[0].Code,
-					FString(TEXT("UnsupportedAnimBlueprintRegion")));
-			}
-		}
+		TestTrue(TEXT("Empty AnimLayers graph region validates"),
+			BodyAdapter->Validate(Context, MakeBodyWithAnimLayerGraphs({})).bSuccess);
 	}
 
 	return true;
@@ -718,68 +1867,47 @@ bool FAssetDocumentAnimBlueprintDeferredGraphGatesTest::RunTest(const FString&)
 	Context.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	for (const TCHAR* DeferredKey : {
-		TEXT("AnimLayers"),
-	})
-	{
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts null while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithNullRegion(DeferredKey)).bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts empty array while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(DeferredKey)).bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s accepts empty object while deferred"), DeferredKey),
-			Capability.Validate(Context, MakeBodyWithEmptyObjectRegion(DeferredKey)).bSuccess);
+	const FAssetDocumentCapabilityResult LegacyAnimGraphResult =
+		Capability.Validate(Context, MakeBodyWithLegacyAnimGraphArray());
+	TestFalse(TEXT("Body.AnimGraph rejects legacy array shape"), LegacyAnimGraphResult.bSuccess);
+	TestTrue(
+		TEXT("Legacy AnimGraph array reports recursive schema diagnostic"),
+		HasDiagnostic(LegacyAnimGraphResult, TEXT("/Body/AnimGraph"), TEXT("InvalidAnimGraphRegionType")));
 
-		const FAssetDocumentCapabilityResult NonEmptyResult =
-			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredRegion(DeferredKey));
-		const FString ExpectedPath = FString::Printf(TEXT("/Body/%s"), DeferredKey);
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects non-empty authored value while deferred"), DeferredKey),
-			NonEmptyResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion at exact path"), DeferredKey),
-			HasDiagnostic(NonEmptyResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
+	TestTrue(
+		TEXT("Body.StateMachines accepts non-empty recursive graph schema"),
+		Capability.Validate(Context, MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))})).bSuccess);
 
-		const FAssetDocumentCapabilityResult NonEmptyObjectResult =
-			Capability.Validate(Context, MakeBodyWithNonEmptyDeferredObjectRegion(DeferredKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects non-empty object while deferred"), DeferredKey),
-			NonEmptyObjectResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for non-empty object"), DeferredKey),
-			HasDiagnostic(NonEmptyObjectResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
+	TestTrue(
+		TEXT("Body.AnimLayers accepts non-empty recursive graph region"),
+		Capability.Validate(Context, MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraph(TEXT("UpperBodyLayer"))})).bSuccess);
 
-		const FAssetDocumentCapabilityResult ScalarResult =
-			Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(DeferredKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s rejects scalar value while deferred"), DeferredKey),
-			ScalarResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnsupportedAnimBlueprintRegion for scalar"), DeferredKey),
-			HasDiagnostic(ScalarResult, ExpectedPath, TEXT("UnsupportedAnimBlueprintRegion")));
-	}
+	TestFalse(
+		TEXT("Body.AnimLayers rejects null because it is no longer deferred"),
+		Capability.Validate(Context, MakeBodyWithNullRegion(TEXT("AnimLayers"))).bSuccess);
+	TestFalse(
+		TEXT("Body.AnimLayers rejects legacy empty array because it is a graph object region"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("AnimLayers"))).bSuccess);
+	TestFalse(
+		TEXT("Body.AnimLayers rejects scalar values"),
+		Capability.Validate(Context, MakeBodyWithScalarDeferredRegion(TEXT("AnimLayers"))).bSuccess);
+
+	const FAssetDocumentCapabilityResult ObsoleteTransitionGraphsResult =
+		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
+	TestFalse(TEXT("Body.TransitionGraphs rejects obsolete authored side-list shape"), ObsoleteTransitionGraphsResult.bSuccess);
+	TestTrue(
+		TEXT("Obsolete TransitionGraphs side-list reports explicit boundary"),
+		HasDiagnostic(ObsoleteTransitionGraphsResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
 
 	const FAssetDocumentCapabilityResult UnknownKeyResult = Capability.Validate(Context, MakeBodyWithUnknownKey());
 	TestFalse(TEXT("Unknown Body key rejects"), UnknownKeyResult.bSuccess);
 	TestTrue(
 		TEXT("Unknown Body key reports UnknownBodyKey"),
 		HasDiagnostic(UnknownKeyResult, TEXT("/Body/UnexpectedGraph"), TEXT("UnknownBodyKey")));
-	for (const TCHAR* UnknownBlueprintGraphKey : {TEXT("FunctionGraphs"), TEXT("MacroGraphs")})
-	{
-		const FAssetDocumentCapabilityResult UnknownBlueprintGraphResult =
-			Capability.Validate(Context, MakeBodyWithUnknownKey(UnknownBlueprintGraphKey));
-		TestFalse(
-			FString::Printf(TEXT("Body.%s remains outside the ABP profile"), UnknownBlueprintGraphKey),
-			UnknownBlueprintGraphResult.bSuccess);
-		TestTrue(
-			FString::Printf(TEXT("Body.%s reports UnknownBodyKey"), UnknownBlueprintGraphKey),
-			HasDiagnostic(
-				UnknownBlueprintGraphResult,
-				FString::Printf(TEXT("/Body/%s"), UnknownBlueprintGraphKey),
-				TEXT("UnknownBodyKey")));
-	}
+	TestTrue(TEXT("FunctionGraphs empty region validates through Blueprint common graph adapter"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("FunctionGraphs"))).bSuccess);
+	TestTrue(TEXT("MacroGraphs empty region validates through Blueprint common graph adapter"),
+		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("MacroGraphs"))).bSuccess);
 
 	return true;
 }
@@ -795,30 +1923,81 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	TestTrue(TEXT("Canonical root-only AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
+	TestTrue(TEXT("Canonical recursive AnimGraph validates"), Capability.Validate(ValidationContext, MakeBodyWithCanonicalAnimGraph()).bSuccess);
+
+	const FString TutorialIdleAnimationPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
+	TSharedRef<FJsonObject> SequencePlayerValidateBody = MakeShared<FJsonObject>();
+	SequencePlayerValidateBody->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath));
+	const FAssetDocumentCapabilityResult SequencePlayerValidateResult =
+		Capability.Validate(ValidationContext, MakeShared<FJsonValueObject>(SequencePlayerValidateBody));
+	if (!SequencePlayerValidateResult.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("SequencePlayer AnimGraph validate failed: %s"), *SequencePlayerValidateResult.Message));
+	}
+	TestTrue(TEXT("AnimGraph authored nodes validate without an existing asset instance"), SequencePlayerValidateResult.bSuccess);
+
+	const FAssetDocumentCapabilityResult LegacyArrayResult =
+		Capability.Validate(ValidationContext, MakeBodyWithLegacyAnimGraphArray());
+	TestFalse(TEXT("Legacy AnimGraph array rejects under recursive schema"), LegacyArrayResult.bSuccess);
+	TestTrue(
+		TEXT("Legacy array diagnostic uses AnimGraph region path"),
+		HasDiagnostic(LegacyArrayResult, TEXT("/Body/AnimGraph"), TEXT("InvalidAnimGraphRegionType")));
 
 	const FAssetDocumentCapabilityResult UnsupportedNodeResult =
 		Capability.Validate(ValidationContext, MakeBodyWithUnsupportedAnimGraphNode());
 	TestFalse(TEXT("Unsupported AnimGraph node rejects"), UnsupportedNodeResult.bSuccess);
 	TestTrue(
 		TEXT("Unsupported node diagnostic uses semantic AnimGraph path"),
-		HasDiagnostic(UnsupportedNodeResult, TEXT("/Body/AnimGraph/AnimGraph/Nodes/0"), TEXT("UnsupportedAnimGraphNode")));
+		HasDiagnostic(
+			UnsupportedNodeResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Nodes/IdlePlayer/Class"),
+			TEXT("UnspawnableGraphNodeClass")));
+
+	const FAssetDocumentCapabilityResult MissingOutputPoseResult =
+		Capability.Validate(ValidationContext, MakeBodyWithAnimGraphSequencePlayerMissingOutputPose());
+	TestFalse(TEXT("Managed AnimGraph node requires explicit output pose"), MissingOutputPoseResult.bSuccess);
+	TestTrue(
+		TEXT("Missing output pose diagnostic uses root graph path"),
+		HasDiagnostic(
+			MissingOutputPoseResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph"),
+			TEXT("MissingAnimGraphOutputPose")));
 
 	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
-	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
-	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("AnimGraph"), MakeCanonicalAnimGraphArray());
-
 	FAssetDocumentService Service;
+
+	const FString BadTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_Bad_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	TSharedRef<FJsonObject> BadDocument = MakeAnimBlueprintApplyDocument(BadTarget);
+	BadDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeBodyWithUnsupportedAnimGraphNode()->AsObject()->GetObjectField(TEXT("AnimGraph")));
+	FAssetDocumentApplyRequest BadRequest;
+	BadRequest.Document = BadDocument;
+	BadRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadApplyResult = Service.Apply(BadRequest);
+	TestFalse(TEXT("Unsupported AnimGraph node apply rejects before mutation"), BadApplyResult.IsSuccess());
+	TestTrue(
+		TEXT("Unsupported apply diagnostic keeps Body.AnimGraph semantic path"),
+		HasDiagnostic(
+			BadApplyResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph/Nodes/IdlePlayer/Class"),
+			TEXT("UnspawnableGraphNodeClass")));
+
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	Document->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeCanonicalAnimGraphObject());
+
 	FAssetDocumentApplyRequest Request;
 	Request.Document = Document;
 	Request.bSaveAsset = false;
 	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
 	if (!ApplyResult.IsSuccess())
 	{
-		AddError(FString::Printf(TEXT("AnimGraph pilot apply failed: %s"), *ApplyResult.Message));
+		AddError(FString::Printf(TEXT("AnimGraph recursive apply failed: %s"), *ApplyResult.Message));
 	}
-	TestTrue(TEXT("Root-only AnimGraph apply succeeds"), ApplyResult.IsSuccess());
+	TestTrue(TEXT("Recursive AnimGraph apply succeeds"), ApplyResult.IsSuccess());
 
 	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
 	TestNotNull(TEXT("Created AnimBlueprint loads"), AnimBlueprint);
@@ -829,13 +2008,274 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
 	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(Context, ExtractedBody);
 	TestTrue(TEXT("AnimGraph extract succeeds"), ExtractResult.bSuccess);
-	TestTrue(TEXT("Extract includes canonical root-only AnimGraph"), HasArrayFieldCount(ExtractedBody, TEXT("AnimGraph"), 1));
+	TestTrue(TEXT("Extract includes canonical recursive AnimGraph"), HasCanonicalAnimGraphObject(ExtractedBody));
 
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
 		Capability.Diff(Context, MakeBodyWithCanonicalAnimGraph(), DiffEntries);
 	TestTrue(TEXT("AnimGraph diff succeeds"), DiffResult.bSuccess);
-	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/AnimGraph")));
+	TestTrue(TEXT("AnimGraph diff uses semantic graph path"), HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph")));
+
+	DiffEntries.Reset();
+	const FAssetDocumentCapabilityResult SubgraphDiffResult =
+		Capability.Diff(Context, MakeBodyWithAnimGraphSubgraph(), DiffEntries);
+	TestTrue(TEXT("AnimGraph subgraph diff succeeds"), SubgraphDiffResult.bSuccess);
+	TestTrue(
+		TEXT("AnimGraph subgraph diff uses semantic subgraph path"),
+		HasDiffPath(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose")));
+	TestTrue(
+		TEXT("AnimGraph subgraph missing current is serialized as null"),
+		HasDiffNullField(DiffEntries, TEXT("/Body/AnimGraph/Graphs/AnimGraph/Subgraphs/NestedPose"), TEXT("current")));
+
+	const FString TutorialSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+	const FString TutorialPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+	const FString MissingOutputPoseTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_MissingOutput_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString MissingOutputPoseObjectPath = FString::Printf(TEXT("%s.%s"), *MissingOutputPoseTarget, *FPackageName::GetLongPackageAssetName(MissingOutputPoseTarget));
+	TSharedRef<FJsonObject> MissingOutputPoseDocument = MakeAnimBlueprintApplyDocument(
+		MissingOutputPoseTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	MissingOutputPoseDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), false, TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest MissingOutputPoseRequest;
+	MissingOutputPoseRequest.Document = MissingOutputPoseDocument;
+	MissingOutputPoseRequest.bSaveAsset = false;
+	const FAssetDocumentResult MissingOutputPoseApplyResult = Service.Apply(MissingOutputPoseRequest);
+	TestFalse(TEXT("Missing OutputPose apply rejects before graph mutation"), MissingOutputPoseApplyResult.IsSuccess());
+	TestTrue(
+		TEXT("Missing OutputPose apply reports AnimGraph path"),
+		HasDiagnostic(
+			MissingOutputPoseApplyResult,
+			TEXT("/Body/AnimGraph/Graphs/AnimGraph"),
+			TEXT("MissingAnimGraphOutputPose")));
+	if (UAnimBlueprint* MissingOutputPoseAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *MissingOutputPoseObjectPath))
+	{
+		TestNull(
+			TEXT("Missing OutputPose apply does not materialize managed node"),
+			FindManagedAnimGraphNode(MissingOutputPoseAnimBlueprint, TEXT("IdlePlayer")));
+	}
+
+	const FString ManagedNodeTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraphNode_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ManagedNodeObjectPath = FString::Printf(TEXT("%s.%s"), *ManagedNodeTarget, *FPackageName::GetLongPackageAssetName(ManagedNodeTarget));
+	TSharedRef<FJsonObject> ManagedNodeDocument = MakeAnimBlueprintApplyDocument(
+		ManagedNodeTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	ManagedNodeDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath));
+
+	FAssetDocumentApplyRequest ManagedNodeRequest;
+	ManagedNodeRequest.Document = ManagedNodeDocument;
+	ManagedNodeRequest.bSaveAsset = false;
+	const FAssetDocumentResult ManagedNodeApplyResult = Service.Apply(ManagedNodeRequest);
+	if (!ManagedNodeApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Managed AnimGraph node apply failed: %s"), *ManagedNodeApplyResult.Message));
+	}
+	TestTrue(TEXT("Managed AnimGraph node apply succeeds"), ManagedNodeApplyResult.IsSuccess());
+
+	UAnimBlueprint* ManagedNodeAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ManagedNodeObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint with managed AnimGraph node loads"), ManagedNodeAnimBlueprint);
+	FAssetDocumentCapabilityContext ManagedNodeContext;
+	ManagedNodeContext.Asset = ManagedNodeAnimBlueprint;
+	ManagedNodeContext.AssetClass = UAnimBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> ManagedNodeExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ManagedNodeExtractResult = Capability.Extract(ManagedNodeContext, ManagedNodeExtractedBody);
+	TestTrue(TEXT("Managed AnimGraph node extract succeeds"), ManagedNodeExtractResult.bSuccess);
+	TestTrue(TEXT("Managed AnimGraph node extracts by authored identity"), HasAnimGraphNode(ManagedNodeExtractedBody, TEXT("IdlePlayer")));
+	TestTrue(
+		TEXT("Managed AnimGraph node extracts authored position"),
+		HasAnimGraphNodePosition(ManagedNodeExtractedBody, TEXT("IdlePlayer"), 120.0, 40.0));
+	TestTrue(
+		TEXT("Managed AnimGraph node extracts output pose"),
+		HasAnimGraphOutputPose(ManagedNodeExtractedBody, TEXT("IdlePlayer"), TEXT("Pose")));
+	TestTrue(
+		TEXT("Managed AnimGraph node extracts authored reflection fields"),
+		HasAnimGraphNodeSequenceField(ManagedNodeExtractedBody, TEXT("IdlePlayer"), TutorialIdleAnimationPath));
+
+	TArray<TSharedPtr<FJsonValue>> ManagedNodeDiffEntries;
+	TSharedRef<FJsonObject> ManagedNodeDiffBody = MakeShared<FJsonObject>();
+	ManagedNodeDiffBody->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, TutorialIdleAnimationPath, false));
+	const FAssetDocumentCapabilityResult ManagedNodeDiffResult =
+		Capability.Diff(
+			ManagedNodeContext,
+			MakeShared<FJsonValueObject>(ManagedNodeDiffBody),
+			ManagedNodeDiffEntries);
+	if (!ManagedNodeDiffResult.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("Managed AnimGraph node diff failed: %s"), *ManagedNodeDiffResult.Message));
+	}
+	TestTrue(TEXT("Managed AnimGraph node diff succeeds"), ManagedNodeDiffResult.bSuccess);
+	TestTrue(TEXT("Managed AnimGraph node diff is unchanged after apply/extract"), AllDiffEntriesUnchanged(ManagedNodeDiffEntries));
+
+	TArray<TSharedPtr<FJsonValue>> ManagedNodeFieldDiffEntries;
+	TSharedRef<FJsonObject> ManagedNodeFieldDiffBody = MakeShared<FJsonObject>();
+	ManagedNodeFieldDiffBody->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(
+			TEXT("IdlePlayer"),
+			true,
+			TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Walk_Fwd.Tutorial_Walk_Fwd"),
+			false));
+	const FAssetDocumentCapabilityResult ManagedNodeFieldDiffResult =
+		Capability.Diff(
+			ManagedNodeContext,
+			MakeShared<FJsonValueObject>(ManagedNodeFieldDiffBody),
+			ManagedNodeFieldDiffEntries);
+	if (!ManagedNodeFieldDiffResult.bSuccess)
+	{
+		AddError(FString::Printf(TEXT("Managed AnimGraph node field diff failed: %s"), *ManagedNodeFieldDiffResult.Message));
+	}
+	TestTrue(TEXT("Managed AnimGraph node field diff succeeds"), ManagedNodeFieldDiffResult.bSuccess);
+	TestFalse(TEXT("Managed AnimGraph node field diff is not normalized away"), AllDiffEntriesUnchanged(ManagedNodeFieldDiffEntries));
+
+	TSharedRef<FJsonObject> InvalidPinDocument = MakeAnimBlueprintApplyDocument(
+		ManagedNodeTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	InvalidPinDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithOutputPosePin(TEXT("IdlePlayer"), TEXT("MissingPose")));
+	FAssetDocumentApplyRequest InvalidPinRequest;
+	InvalidPinRequest.Document = InvalidPinDocument;
+	InvalidPinRequest.bSaveAsset = false;
+	const FAssetDocumentResult InvalidPinApplyResult = Service.Apply(InvalidPinRequest);
+	TestFalse(TEXT("Invalid OutputPose pin apply rejects"), InvalidPinApplyResult.IsSuccess());
+	TestEqual(TEXT("Invalid OutputPose pin keeps one managed result link"), CountResultManagedOutputLinks(ManagedNodeAnimBlueprint), 1);
+	TSharedRef<FJsonObject> InvalidPinExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult InvalidPinExtractResult = Capability.Extract(ManagedNodeContext, InvalidPinExtractedBody);
+	TestTrue(TEXT("Invalid OutputPose pin rollback extract succeeds"), InvalidPinExtractResult.bSuccess);
+	TestTrue(
+		TEXT("Invalid OutputPose pin rollback preserves previous output pose"),
+		HasAnimGraphOutputPose(InvalidPinExtractedBody, TEXT("IdlePlayer"), TEXT("Pose")));
+
+	TSharedRef<FJsonObject> ReplacementDocument = MakeAnimBlueprintApplyDocument(
+		ManagedNodeTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	ReplacementDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithSequencePlayer(TEXT("WalkPlayer"), true, TutorialIdleAnimationPath, false));
+	FAssetDocumentApplyRequest ReplacementRequest;
+	ReplacementRequest.Document = ReplacementDocument;
+	ReplacementRequest.bSaveAsset = false;
+	const FAssetDocumentResult ReplacementApplyResult = Service.Apply(ReplacementRequest);
+	if (!ReplacementApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Replacement OutputPose apply failed: %s"), *ReplacementApplyResult.Message));
+	}
+	TestTrue(TEXT("Replacement OutputPose apply succeeds"), ReplacementApplyResult.IsSuccess());
+	TestEqual(TEXT("Replacement OutputPose keeps one managed result link"), CountResultManagedOutputLinks(ManagedNodeAnimBlueprint), 1);
+	TSharedRef<FJsonObject> ReplacementExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ReplacementExtractResult = Capability.Extract(ManagedNodeContext, ReplacementExtractedBody);
+	TestTrue(TEXT("Replacement OutputPose extract succeeds"), ReplacementExtractResult.bSuccess);
+	TestTrue(
+		TEXT("Replacement OutputPose is extracted from the new managed node"),
+		HasAnimGraphOutputPose(ReplacementExtractedBody, TEXT("WalkPlayer"), TEXT("Pose")));
+
+	const FString RollbackMutationTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_RollbackMutation_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString RollbackMutationObjectPath = FString::Printf(TEXT("%s.%s"), *RollbackMutationTarget, *FPackageName::GetLongPackageAssetName(RollbackMutationTarget));
+	TSharedRef<FJsonObject> RollbackMutationDocument = MakeAnimBlueprintApplyDocument(
+		RollbackMutationTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	RollbackMutationDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithTwoSequencePlayers(TEXT("IdlePlayer"), TEXT("WalkPlayer"), TEXT("WalkPlayer"), TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest RollbackMutationRequest;
+	RollbackMutationRequest.Document = RollbackMutationDocument;
+	RollbackMutationRequest.bSaveAsset = false;
+	const FAssetDocumentResult RollbackMutationApplyResult = Service.Apply(RollbackMutationRequest);
+	if (!RollbackMutationApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Rollback mutation setup apply failed: %s"), *RollbackMutationApplyResult.Message));
+	}
+	TestTrue(TEXT("Rollback mutation setup apply succeeds"), RollbackMutationApplyResult.IsSuccess());
+	UAnimBlueprint* RollbackMutationAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *RollbackMutationObjectPath);
+	TestNotNull(TEXT("Rollback mutation AnimBlueprint loads"), RollbackMutationAnimBlueprint);
+	TestTrue(
+		TEXT("Rollback mutation starts with old result link"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("WalkPlayer")));
+	UEdGraphPin* ExtraInputPin = nullptr;
+	TestTrue(
+		TEXT("Rollback mutation setup creates extra authored output link"),
+		AddSyntheticPoseInputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
+	TestTrue(
+		TEXT("Rollback mutation setup keeps extra authored output link"),
+		HasPoseOutputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
+
+	TSharedRef<FJsonObject> RollbackMutationSwitchDocument = MakeAnimBlueprintApplyDocument(
+		RollbackMutationTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	RollbackMutationSwitchDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithTwoSequencePlayers(TEXT("IdlePlayer"), TEXT("WalkPlayer"), TEXT("IdlePlayer"), TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest RollbackMutationSwitchRequest;
+	RollbackMutationSwitchRequest.Document = RollbackMutationSwitchDocument;
+	RollbackMutationSwitchRequest.bSaveAsset = false;
+	const FAssetDocumentResult RollbackMutationSwitchResult = Service.Apply(RollbackMutationSwitchRequest);
+	TestFalse(
+		TEXT("OutputPose repair rejects schema side effect on output links"),
+		RollbackMutationSwitchResult.IsSuccess());
+	TestTrue(
+		TEXT("OutputPose repair rollback preserves old result link after mutation failure"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("WalkPlayer")));
+	TestFalse(
+		TEXT("OutputPose repair rollback does not keep requested failed result link"),
+		IsResultLinkedToManagedNode(RollbackMutationAnimBlueprint, TEXT("IdlePlayer")));
+	TestTrue(
+		TEXT("OutputPose repair rollback preserves extra authored output link"),
+		HasPoseOutputLink(RollbackMutationAnimBlueprint, TEXT("IdlePlayer"), ExtraInputPin));
+
+	const FString MultiLinkTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_AnimGraph_MultiLink_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString MultiLinkObjectPath = FString::Printf(TEXT("%s.%s"), *MultiLinkTarget, *FPackageName::GetLongPackageAssetName(MultiLinkTarget));
+	TSharedRef<FJsonObject> MultiLinkDocument = MakeAnimBlueprintApplyDocument(
+		MultiLinkTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	MultiLinkDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("AnimGraph"),
+		MakeAnimGraphWithTwoSequencePlayers(TEXT("IdlePlayer"), TEXT("RunPlayer"), TEXT("IdlePlayer"), TutorialIdleAnimationPath));
+	FAssetDocumentApplyRequest MultiLinkRequest;
+	MultiLinkRequest.Document = MultiLinkDocument;
+	MultiLinkRequest.bSaveAsset = false;
+	const FAssetDocumentResult MultiLinkApplyResult = Service.Apply(MultiLinkRequest);
+	if (!MultiLinkApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("Multi-link AnimGraph apply failed: %s"), *MultiLinkApplyResult.Message));
+	}
+	TestTrue(TEXT("Multi-link AnimGraph setup apply succeeds"), MultiLinkApplyResult.IsSuccess());
+	UAnimBlueprint* MultiLinkAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *MultiLinkObjectPath);
+	TestNotNull(TEXT("Multi-link AnimBlueprint loads"), MultiLinkAnimBlueprint);
+	TestTrue(TEXT("Second managed result link can be injected"), AddDirectResultPoseLink(MultiLinkAnimBlueprint, TEXT("RunPlayer")));
+	TestTrue(TEXT("Injected graph has multiple managed result links"), CountResultManagedOutputLinks(MultiLinkAnimBlueprint) > 1);
+
+	FAssetDocumentCapabilityContext MultiLinkContext;
+	MultiLinkContext.Asset = MultiLinkAnimBlueprint;
+	MultiLinkContext.AssetClass = UAnimBlueprint::StaticClass();
+	TSharedRef<FJsonObject> MultiLinkExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult MultiLinkExtractResult = Capability.Extract(MultiLinkContext, MultiLinkExtractedBody);
+	TestTrue(TEXT("Multi result link AnimGraph extract succeeds"), MultiLinkExtractResult.bSuccess);
+	TestFalse(
+		TEXT("Multi result link extract does not randomly choose OutputPose"),
+		HasAnimGraphOutputPose(MultiLinkExtractedBody, TEXT("IdlePlayer"), TEXT("Pose"))
+			|| HasAnimGraphOutputPose(MultiLinkExtractedBody, TEXT("RunPlayer"), TEXT("Pose")));
+	TestTrue(
+		TEXT("Multi result link extract reports skipped OutputPose"),
+		HasAnimGraphSkippedOutputPose(MultiLinkExtractedBody));
 
 	return true;
 }
@@ -852,47 +2292,186 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
 	TestTrue(
-		TEXT("StateMachines accepts empty compatibility value"),
-		Capability.Validate(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines"))).bSuccess);
+		TEXT("StateMachines accepts empty recursive graph region"),
+		Capability.Validate(Context, MakeBodyWithStateMachineGraphs({})).bSuccess);
 
 	const FAssetDocumentCapabilityResult AuthoredStateMachineResult =
 		Capability.Validate(
 			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("Run"))},
-					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
-	TestFalse(TEXT("StateMachines rejects non-empty authored identity data until materialization exists"), AuthoredStateMachineResult.bSuccess);
-	TestTrue(
-		TEXT("StateMachines non-empty diagnostic uses region path"),
-		HasDiagnostic(AuthoredStateMachineResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+			MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"))}));
+	TestTrue(TEXT("StateMachines validates authored recursive graph data"), AuthoredStateMachineResult.bSuccess);
 
 	const FAssetDocumentCapabilityResult DuplicateStateResult =
 		Capability.Validate(
 			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle")), MakeStateMachineState(TEXT("idle"))},
-					{})}));
-	TestFalse(TEXT("StateMachines still rejects duplicate authored input through deferred boundary"), DuplicateStateResult.bSuccess);
-	TestTrue(
-		TEXT("Duplicate state is not silently accepted"),
-		HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+			MakeBodyWithStateMachineGraphs({MakeStateMachineGraph(TEXT("Locomotion"), true)}));
+	TestFalse(TEXT("StateMachines rejects duplicate graph node identities"), DuplicateStateResult.bSuccess);
+	TestTrue(TEXT("Duplicate state is not silently accepted"), HasDiagnostic(DuplicateStateResult, TEXT("/Body/StateMachines/Graphs/0/Nodes/1/Id"), TEXT("DuplicateGraphNodeId")));
 
-	const FAssetDocumentCapabilityResult UnknownEndpointResult =
-		Capability.Validate(
-			Context,
-			MakeBodyWithStateMachines({
-				MakeStateMachine(
-					TEXT("Locomotion"),
-					{MakeStateMachineState(TEXT("Idle"))},
-					{MakeStateMachineTransition(TEXT("IdleToRun"), TEXT("Idle"), TEXT("Run"))})}));
-	TestFalse(TEXT("StateMachines rejects transitions while materialization is deferred"), UnknownEndpointResult.bSuccess);
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString ObjectPath = FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
+	TSharedRef<FJsonObject> Document = MakeAnimBlueprintApplyDocument(Target);
+	Document->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraph(TEXT("Locomotion"))}));
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = false;
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("StateMachines recursive apply failed: %s"), *ApplyResult.Message));
+	}
+	TestTrue(TEXT("StateMachines recursive apply succeeds"), ApplyResult.IsSuccess());
+
+	UAnimBlueprint* AnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *ObjectPath);
+	TestNotNull(TEXT("Created AnimBlueprint with state machine loads"), AnimBlueprint);
+	FAssetDocumentCapabilityContext AssetContext;
+	AssetContext.Asset = AnimBlueprint;
+	AssetContext.AssetClass = UAnimBlueprint::StaticClass();
+
+	TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult ExtractResult = Capability.Extract(AssetContext, ExtractedBody);
+	TestTrue(TEXT("StateMachines extract succeeds"), ExtractResult.bSuccess);
+	const TSharedPtr<FJsonObject>* ExtractedStateMachines = nullptr;
 	TestTrue(
-		TEXT("Unknown endpoint is not silently accepted"),
-		HasDiagnostic(UnknownEndpointResult, TEXT("/Body/StateMachines"), TEXT("UnsupportedAnimBlueprintRegion")));
+		TEXT("Extract includes recursive StateMachines object"),
+		ExtractedBody->TryGetObjectField(TEXT("StateMachines"), ExtractedStateMachines)
+			&& ExtractedStateMachines
+			&& (*ExtractedStateMachines)->HasTypedField<EJson::Array>(TEXT("Graphs")));
+	TestTrue(
+		TEXT("StateMachines extract preserves EntryState metadata"),
+		HasStateMachineEntryState(ExtractedBody, TEXT("Locomotion"), TEXT("Idle")));
+	TestTrue(
+		TEXT("StateMachines extract preserves state position"),
+		HasStateMachineNodePosition(ExtractedBody, TEXT("Locomotion"), TEXT("Idle"), 0.0, 0.0));
+	TestTrue(
+		TEXT("StateMachines extract preserves transition position"),
+		HasStateMachineNodePosition(ExtractedBody, TEXT("Locomotion"), TEXT("IdleToRun"), 120.0, 0.0));
+	TestTrue(
+		TEXT("StateMachines extract includes state-owned StatePose subgraph"),
+		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+	TestTrue(
+		TEXT("StateMachines extract includes transition-owned TransitionRule subgraph"),
+		HasStateMachineSubgraph(ExtractedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+	TestTrue(
+		TEXT("TransitionRule extract includes result pin metadata"),
+		HasStateMachineSubgraphMetadataResultPin(ExtractedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("CanEnterTransition")));
+
+	UAnimationTransitionGraph* IdleToRunGraph =
+		FindTransitionRuleGraph(AnimBlueprint, TEXT("Locomotion"), TEXT("IdleToRun"));
+	TestNotNull(TEXT("Applied transition rule graph exists"), IdleToRunGraph);
+	const int32 TransitionResultCountBeforeExtract = CountTransitionResultNodes(IdleToRunGraph);
+	TestTrue(TEXT("Applied transition rule has a result node"), TransitionResultCountBeforeExtract > 0);
+	if (IdleToRunGraph)
+	{
+		IdleToRunGraph->MyResultNode = nullptr;
+	}
+	TSharedRef<FJsonObject> StaleResultExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult StaleResultExtract =
+		Capability.Extract(AssetContext, StaleResultExtractedBody);
+	TestTrue(TEXT("StateMachines extract with stale transition result pointer succeeds"), StaleResultExtract.bSuccess);
+	TestEqual(
+		TEXT("StateMachines extract does not create duplicate transition result nodes"),
+		CountTransitionResultNodes(IdleToRunGraph),
+		TransitionResultCountBeforeExtract);
+	TestNull(
+		TEXT("StateMachines extract does not repair transition result pointer"),
+		IdleToRunGraph ? IdleToRunGraph->MyResultNode.Get() : nullptr);
+
+	TSharedRef<FJsonObject> BrokenSubgraphDocument = MakeAnimBlueprintApplyDocument(Target);
+	BrokenSubgraphDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraphWithBrokenStatePoseField(TEXT("Locomotion"))}));
+	FAssetDocumentApplyRequest BrokenSubgraphRequest;
+	BrokenSubgraphRequest.Document = BrokenSubgraphDocument;
+	BrokenSubgraphRequest.bSaveAsset = false;
+	const FAssetDocumentResult BrokenSubgraphResult = Service.Apply(BrokenSubgraphRequest);
+	TestFalse(TEXT("StateMachines apply rejects invalid subgraph field on existing asset"), BrokenSubgraphResult.IsSuccess());
+	TSharedRef<FJsonObject> BrokenRollbackExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult BrokenRollbackExtract =
+		Capability.Extract(AssetContext, BrokenRollbackExtractedBody);
+	TestTrue(TEXT("StateMachines extract after failed subgraph apply succeeds"), BrokenRollbackExtract.bSuccess);
+	TestTrue(
+		TEXT("Failed subgraph apply preserves previous EntryState"),
+		HasStateMachineEntryState(BrokenRollbackExtractedBody, TEXT("Locomotion"), TEXT("Idle")));
+	TestTrue(
+		TEXT("Failed subgraph apply preserves previous StatePose subgraph identity"),
+		HasStateMachineSubgraph(BrokenRollbackExtractedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+	TestFalse(
+		TEXT("Failed subgraph apply does not leave new StatePose subgraph identity"),
+		HasStateMachineSubgraph(BrokenRollbackExtractedBody, TEXT("Locomotion"), TEXT("BrokenPose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+
+	auto AssertBaselineStateMachinePreserved = [this, &Capability, &AssetContext](const TCHAR* ContextLabel)
+	{
+		TSharedRef<FJsonObject> PreservedBody = MakeShared<FJsonObject>();
+		const FAssetDocumentCapabilityResult ExtractAfterFailure =
+			Capability.Extract(AssetContext, PreservedBody);
+		TestTrue(
+			FString::Printf(TEXT("%s extract succeeds"), ContextLabel),
+			ExtractAfterFailure.bSuccess);
+		TestTrue(
+			FString::Printf(TEXT("%s preserves EntryState"), ContextLabel),
+			HasStateMachineEntryState(PreservedBody, TEXT("Locomotion"), TEXT("Idle")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves Idle position"), ContextLabel),
+			HasStateMachineNodePosition(PreservedBody, TEXT("Locomotion"), TEXT("Idle"), 0.0, 0.0));
+		TestFalse(
+			FString::Printf(TEXT("%s does not leave new state node"), ContextLabel),
+			HasStateMachineNode(PreservedBody, TEXT("Locomotion"), TEXT("Walk")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves transition incoming link"), ContextLabel),
+			HasStateMachineLink(PreservedBody, TEXT("Locomotion"), TEXT("Idle"), TEXT("IdleToRun")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves transition outgoing link"), ContextLabel),
+			HasStateMachineLink(PreservedBody, TEXT("Locomotion"), TEXT("IdleToRun"), TEXT("Run")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves StatePose subgraph identity"), ContextLabel),
+			HasStateMachineSubgraph(PreservedBody, TEXT("Locomotion"), TEXT("IdlePose"), TEXT("StatePose"), TEXT("State"), TEXT("Idle")));
+		TestTrue(
+			FString::Printf(TEXT("%s preserves TransitionRule subgraph identity"), ContextLabel),
+			HasStateMachineSubgraph(PreservedBody, TEXT("Locomotion"), TEXT("CanStartRunning"), TEXT("TransitionRule"), TEXT("Transition"), TEXT("IdleToRun")));
+	};
+
+	TSharedRef<FJsonObject> BadEntryDocument = MakeAnimBlueprintApplyDocument(Target);
+	BadEntryDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraphWithBrokenBodyMutation(TEXT("Locomotion"), true, false)}));
+	FAssetDocumentApplyRequest BadEntryRequest;
+	BadEntryRequest.Document = BadEntryDocument;
+	BadEntryRequest.bSaveAsset = false;
+	const FAssetDocumentResult BadEntryResult = Service.Apply(BadEntryRequest);
+	TestFalse(TEXT("StateMachines apply rejects bad EntryState on existing asset"), BadEntryResult.IsSuccess());
+	AssertBaselineStateMachinePreserved(TEXT("Bad EntryState apply"));
+
+	TSharedRef<FJsonObject> ExistingMissingTargetDocument = MakeAnimBlueprintApplyDocument(Target);
+	ExistingMissingTargetDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraphWithBrokenBodyMutation(TEXT("Locomotion"), false, true)}));
+	FAssetDocumentApplyRequest ExistingMissingTargetRequest;
+	ExistingMissingTargetRequest.Document = ExistingMissingTargetDocument;
+	ExistingMissingTargetRequest.bSaveAsset = false;
+	const FAssetDocumentResult ExistingMissingTargetResult = Service.Apply(ExistingMissingTargetRequest);
+	TestFalse(TEXT("StateMachines apply rejects missing transition target on existing asset"), ExistingMissingTargetResult.IsSuccess());
+	AssertBaselineStateMachinePreserved(TEXT("Missing target apply"));
+
+	const FString MissingTargetTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_StateMachines_MissingTarget_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	TSharedRef<FJsonObject> MissingTargetDocument = MakeAnimBlueprintApplyDocument(MissingTargetTarget);
+	MissingTargetDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({MakeStateMachineGraph(TEXT("Locomotion"), false, true)}));
+	FAssetDocumentApplyRequest MissingTargetRequest;
+	MissingTargetRequest.Document = MissingTargetDocument;
+	MissingTargetRequest.bSaveAsset = false;
+	const FAssetDocumentResult MissingTargetResult = Service.Apply(MissingTargetRequest);
+	TestFalse(TEXT("StateMachines apply rejects missing transition target"), MissingTargetResult.IsSuccess());
+	TestTrue(
+		TEXT("Missing transition target reports exact link endpoint path"),
+		HasDiagnostic(
+			MissingTargetResult,
+			TEXT("/Body/StateMachines/Graphs/Locomotion/Links/IdleToRun.Out->Missing.In/To/Node"),
+			TEXT("UnknownStateMachineLinkEndpoint")));
 
 	TestTrue(
 		TEXT("TransitionGraphs accepts empty compatibility value"),
@@ -928,11 +2507,35 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 			TEXT("/Body/TransitionGraphs"),
 			TEXT("UnsupportedAnimBlueprintRegion")));
 
+	TSharedRef<FJsonObject> RepositionedGraph = MakeStateMachineGraphAtPosition(TEXT("Locomotion"), 320.0, 80.0);
+	TSharedRef<FJsonObject> RepositionDocument = MakeAnimBlueprintApplyDocument(Target);
+	RepositionDocument->GetObjectField(TEXT("Body"))->SetObjectField(
+		TEXT("StateMachines"),
+		MakeStateMachinesGraphRegion({RepositionedGraph}));
+	FAssetDocumentApplyRequest RepositionRequest;
+	RepositionRequest.Document = RepositionDocument;
+	RepositionRequest.bSaveAsset = false;
+	const FAssetDocumentResult RepositionResult = Service.Apply(RepositionRequest);
+	if (!RepositionResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("StateMachines root position reapply failed: %s"), *RepositionResult.Message));
+	}
+	TestTrue(TEXT("StateMachines root position reapply succeeds"), RepositionResult.IsSuccess());
+	TSharedRef<FJsonObject> RepositionExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult RepositionExtractResult =
+		Capability.Extract(AssetContext, RepositionExtractedBody);
+	TestTrue(TEXT("StateMachines root position reapply extract succeeds"), RepositionExtractResult.bSuccess);
+	TestTrue(
+		TEXT("StateMachines root position reapply roundtrips graph position"),
+		HasStateMachineGraphPosition(RepositionExtractedBody, TEXT("Locomotion"), 320.0, 80.0));
+
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
-		Capability.Diff(Context, MakeBodyWithEmptyArrayRegion(TEXT("StateMachines")), DiffEntries);
+		Capability.Diff(AssetContext, MakeBodyWithStateMachineGraphs({RepositionedGraph}), DiffEntries);
 	TestTrue(TEXT("StateMachines and TransitionGraphs diff succeeds"), DiffResult.bSuccess);
-	TestEqual(TEXT("Empty StateMachines diff has no authored entries"), DiffEntries.Num(), 0);
+	TestFalse(TEXT("StateMachines diff does not report changed entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("changed")));
+	TestFalse(TEXT("StateMachines diff does not report extra entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("extra")));
+	TestFalse(TEXT("StateMachines diff does not report missing entries after apply/extract"), HasDiffStatus(DiffEntries, TEXT("missing")));
 
 	return true;
 }
@@ -945,6 +2548,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(const FString&)
 {
 	const FString AnimationAssetPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Idle.Tutorial_Idle");
+	const FString TutorialSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+	const FString TutorialPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
 	const FString ParentGuidA = TEXT("01234567-89ab-cdef-0123-456789abcdef");
 	const FString ParentGuidB = TEXT("11111111-2222-3333-4444-555555555555");
 
@@ -952,12 +2557,16 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	ValidationContext.AssetClass = UAnimBlueprint::StaticClass();
 	const FAnimBlueprintAssetDocumentCapability Capability;
 
-	const FAssetDocumentCapabilityResult AnimLayersResult =
-		Capability.Validate(ValidationContext, MakeBodyWithNonEmptyDeferredRegion(TEXT("AnimLayers")));
-	TestFalse(TEXT("AnimLayers remains outside regular AnimBlueprint exact-profile authoring"), AnimLayersResult.bSuccess);
 	TestTrue(
-		TEXT("AnimLayers boundary reports deferred diagnostic"),
-		HasDiagnostic(AnimLayersResult, TEXT("/Body/AnimLayers"), TEXT("UnsupportedAnimBlueprintRegion")));
+		TEXT("AnimLayers validates a non-empty recursive graph region"),
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraph(TEXT("UpperBodyLayer"))})).bSuccess);
+	TestTrue(
+		TEXT("AnimLayers authored nodes validate without an existing asset instance"),
+		Capability.Validate(
+			ValidationContext,
+			MakeBodyWithAnimLayerGraphs({MakeAnimLayerGraphWithSequencePlayer(TEXT("UpperBodyLayer"))})).bSuccess);
 
 	TestTrue(
 		TEXT("ParentAssetOverrides validates stable guid identity array"),
@@ -1070,6 +2679,104 @@ bool FAssetDocumentAnimBlueprintAnimLayersAndParentAssetOverridesTest::RunTest(c
 	TestTrue(
 		TEXT("ParentAssetOverrides diff uses guid identity path"),
 		HasDiffPath(DiffEntries, TEXT("/Body/ParentAssetOverrides/11111111-2222-3333-4444-555555555555")));
+
+	const FString AliasTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/ABP_AD_OverrideAlias_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	const FString AliasObjectPath = FString::Printf(TEXT("%s.%s"), *AliasTarget, *FPackageName::GetLongPackageAssetName(AliasTarget));
+	TSharedRef<FJsonObject> AliasDocument = MakeAnimBlueprintApplyDocument(
+		AliasTarget,
+		TEXT("/Script/Engine.AnimInstance"),
+		TutorialSkeletonPath,
+		TutorialPreviewMeshPath);
+	AliasDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("AnimGraph"), MakeAnimGraphWithSequencePlayer(TEXT("IdlePlayer"), true, AnimationAssetPath));
+	AliasDocument->GetObjectField(TEXT("Body"))->SetArrayField(
+		TEXT("ParentAssetOverrides"),
+		MakeParentAssetOverrideArray({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AnimationAssetPath)}));
+
+	FAssetDocumentApplyRequest AliasRequest;
+	AliasRequest.Document = AliasDocument;
+	AliasRequest.bSaveAsset = false;
+	const FAssetDocumentResult AliasApplyResult = Service.Apply(AliasRequest);
+	if (!AliasApplyResult.IsSuccess())
+	{
+		AddError(FString::Printf(TEXT("ParentAssetOverrides node alias apply failed: %s"), *AliasApplyResult.Message));
+	}
+	TestTrue(TEXT("ParentAssetOverrides node alias apply succeeds"), AliasApplyResult.IsSuccess());
+
+	UAnimBlueprint* AliasAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *AliasObjectPath);
+	TestNotNull(TEXT("Alias AnimBlueprint loads"), AliasAnimBlueprint);
+	const FGuid ExpectedIdlePlayerGuid = MakeExpectedManagedAnimGraphNodeGuid(TEXT("IdlePlayer"));
+	if (AliasAnimBlueprint && ExpectedAsset)
+	{
+		USkeleton* ExpectedAliasSkeleton = ExpectedAsset->GetSkeleton();
+		TestNotNull(TEXT("Alias override animation asset skeleton loads"), ExpectedAliasSkeleton);
+		TestEqual(TEXT("Alias AnimBlueprint target skeleton matches override animation skeleton"), AliasAnimBlueprint->TargetSkeleton.Get(), ExpectedAliasSkeleton);
+		TestEqual(TEXT("One node alias parent asset override applied"), AliasAnimBlueprint->ParentAssetOverrides.Num(), 1);
+		if (AliasAnimBlueprint->ParentAssetOverrides.Num() == 1)
+		{
+			TestEqual(TEXT("Node alias resolves to managed AnimGraph node guid"), AliasAnimBlueprint->ParentAssetOverrides[0].ParentNodeGuid, ExpectedIdlePlayerGuid);
+			TestEqual(TEXT("Node alias NewAsset is applied"), AliasAnimBlueprint->ParentAssetOverrides[0].NewAsset.Get(), ExpectedAsset);
+		}
+	}
+
+	FAssetDocumentCapabilityContext AliasContext;
+	AliasContext.Asset = AliasAnimBlueprint;
+	AliasContext.AssetClass = UAnimBlueprint::StaticClass();
+	TSharedRef<FJsonObject> AliasExtractedBody = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult AliasExtractResult = Capability.Extract(AliasContext, AliasExtractedBody);
+	TestTrue(TEXT("ParentAssetOverrides alias extract succeeds"), AliasExtractResult.bSuccess);
+	TestTrue(TEXT("Alias extract includes one parent asset override"), HasArrayFieldCount(AliasExtractedBody, TEXT("ParentAssetOverrides"), 1));
+	const TArray<TSharedPtr<FJsonValue>>* AliasExtractedOverrides = nullptr;
+	if (AliasExtractedBody->TryGetArrayField(TEXT("ParentAssetOverrides"), AliasExtractedOverrides) && AliasExtractedOverrides && AliasExtractedOverrides->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> AliasExtractedOverride = (*AliasExtractedOverrides)[0]->AsObject();
+		TestTrue(TEXT("Alias extracted parent override is object"), AliasExtractedOverride.IsValid());
+		if (AliasExtractedOverride.IsValid())
+		{
+			FString ExtractedNode;
+			TestTrue(TEXT("Extracted parent override Node is present"), AliasExtractedOverride->TryGetStringField(TEXT("Node"), ExtractedNode));
+			TestEqual(TEXT("Extracted parent override Node roundtrips"), ExtractedNode, FString(TEXT("IdlePlayer")));
+			const TSharedPtr<FJsonObject>* Evidence = nullptr;
+			TestTrue(TEXT("Extracted parent override Evidence is present"), AliasExtractedOverride->TryGetObjectField(TEXT("Evidence"), Evidence));
+			if (Evidence && Evidence->IsValid())
+			{
+				FString EvidenceGuid;
+				TestTrue(TEXT("Extracted Evidence.ParentNodeGuid is present"), (*Evidence)->TryGetStringField(TEXT("ParentNodeGuid"), EvidenceGuid));
+				TestEqual(TEXT("Extracted Evidence.ParentNodeGuid is stable"), EvidenceGuid, ExpectedIdlePlayerGuid.ToString(EGuidFormats::DigitsWithHyphensLower));
+			}
+		}
+	}
+
+	TArray<TSharedPtr<FJsonValue>> AliasNoOpDiffEntries;
+	const FAssetDocumentCapabilityResult AliasNoOpDiffResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AnimationAssetPath)}),
+			AliasNoOpDiffEntries);
+	TestTrue(TEXT("ParentAssetOverrides alias no-op diff succeeds"), AliasNoOpDiffResult.bSuccess);
+	TestTrue(TEXT("ParentAssetOverrides alias diff is unchanged after apply"), AliasNoOpDiffEntries.IsEmpty() || AllDiffEntriesUnchanged(AliasNoOpDiffEntries));
+
+	TArray<TSharedPtr<FJsonValue>> UnknownAliasDiffEntries;
+	const FAssetDocumentCapabilityResult UnknownAliasResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("MissingPlayer"), AnimationAssetPath)}),
+			UnknownAliasDiffEntries);
+	TestFalse(TEXT("ParentAssetOverrides rejects unresolved node alias"), UnknownAliasResult.bSuccess);
+	TestTrue(
+		TEXT("Unresolved node alias diagnostic uses semantic alias path"),
+		HasDiagnostic(UnknownAliasResult, TEXT("/Body/ParentAssetOverrides/MissingPlayer/Node"), TEXT("UnknownParentOverrideNode")));
+
+	TArray<TSharedPtr<FJsonValue>> AliasAssetDiffEntries;
+	const FString AlternateAnimationAssetPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/Tutorial_Walk_Fwd.Tutorial_Walk_Fwd");
+	const FAssetDocumentCapabilityResult AliasAssetDiffResult =
+		Capability.Diff(
+			AliasContext,
+			MakeBodyWithParentAssetOverrides({MakeParentAssetOverrideByNode(TEXT("IdlePlayer"), AlternateAnimationAssetPath)}),
+			AliasAssetDiffEntries);
+	TestTrue(TEXT("ParentAssetOverrides alias diff succeeds"), AliasAssetDiffResult.bSuccess);
+	TestTrue(
+		TEXT("ParentAssetOverrides diff uses node identity path for asset changes"),
+		HasDiffPath(AliasAssetDiffEntries, TEXT("/Body/ParentAssetOverrides/IdlePlayer/NewAsset")));
 
 	return true;
 }
