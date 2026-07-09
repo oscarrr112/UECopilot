@@ -2479,7 +2479,7 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 
 	const FAssetDocumentCapabilityResult AuthoredTransitionGraphResult =
 		Capability.Validate(Context, MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"))}));
-	TestFalse(TEXT("TransitionGraphs rejects non-empty root-only data until materialization exists"), AuthoredTransitionGraphResult.bSuccess);
+	TestFalse(TEXT("TransitionGraphs rejects obsolete non-empty side-list data"), AuthoredTransitionGraphResult.bSuccess);
 	TestTrue(
 		TEXT("TransitionGraphs non-empty diagnostic uses region path"),
 		HasDiagnostic(AuthoredTransitionGraphResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
@@ -2490,7 +2490,7 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 			MakeBodyWithTransitionGraphs({
 				MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun")),
 				MakeTransitionGraph(TEXT("locomotion"), TEXT("idletorun"))}));
-	TestFalse(TEXT("TransitionGraphs rejects duplicate authored input through deferred boundary"), DuplicateTransitionGraphResult.bSuccess);
+	TestFalse(TEXT("TransitionGraphs rejects duplicate obsolete side-list input"), DuplicateTransitionGraphResult.bSuccess);
 	TestTrue(
 		TEXT("Duplicate transition graph is not silently accepted"),
 		HasDiagnostic(DuplicateTransitionGraphResult, TEXT("/Body/TransitionGraphs"), TEXT("UnsupportedAnimBlueprintRegion")));
@@ -2499,7 +2499,7 @@ bool FAssetDocumentAnimBlueprintStateMachinesTest::RunTest(const FString&)
 		Capability.Validate(
 			Context,
 			MakeBodyWithTransitionGraphs({MakeTransitionGraph(TEXT("Locomotion"), TEXT("IdleToRun"), true)}));
-	TestFalse(TEXT("TransitionGraphs rejects authored rule nodes while materialization is deferred"), UnsupportedRuleNodeResult.bSuccess);
+	TestFalse(TEXT("TransitionGraphs rejects authored rule nodes in obsolete side-list shape"), UnsupportedRuleNodeResult.bSuccess);
 	TestTrue(
 		TEXT("Unsupported transition graph node is not silently accepted"),
 		HasDiagnostic(

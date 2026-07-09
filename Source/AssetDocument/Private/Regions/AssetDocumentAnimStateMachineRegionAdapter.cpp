@@ -489,7 +489,7 @@ FAssetDocumentCapabilityResult ValidateTransitionGraphsValue(const TSharedPtr<FJ
 		return Failure(
 			TEXT("/Body/TransitionGraphs"),
 			TEXT("UnsupportedAnimBlueprintRegion"),
-			TEXT("Body.TransitionGraphs authoring is deferred until transition rule graph materialization is supported"));
+			TEXT("Body.TransitionGraphs is an obsolete side-list shape; author transition rule graphs as Body.StateMachines subgraphs."));
 	}
 	for (int32 GraphIndex = 0; GraphIndex < Graphs.Num(); ++GraphIndex)
 	{
