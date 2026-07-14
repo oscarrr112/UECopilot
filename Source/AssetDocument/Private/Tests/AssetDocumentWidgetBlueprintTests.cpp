@@ -203,14 +203,14 @@ TSharedPtr<FJsonObject> MakeWidgetTree(TSharedPtr<FJsonObject> RootWidget)
 	return WidgetTree;
 }
 
-FString MakeObjectPathFromTarget(const FString& Target)
+FString WidgetBlueprintTestMakeObjectPathFromTarget(const FString& Target)
 {
 	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 }
 
 UWidgetBlueprint* LoadWidgetBlueprintForTarget(const FString& Target)
 {
-	return LoadObject<UWidgetBlueprint>(nullptr, *MakeObjectPathFromTarget(Target));
+	return LoadObject<UWidgetBlueprint>(nullptr, *WidgetBlueprintTestMakeObjectPathFromTarget(Target));
 }
 
 bool WidgetTestResultHasDiagnosticCode(const FAssetDocumentResult& Result, const FString& ExpectedCode)

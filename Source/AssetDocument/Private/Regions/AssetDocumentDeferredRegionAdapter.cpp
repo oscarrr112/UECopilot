@@ -6,7 +6,7 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString DeferredRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -38,7 +38,7 @@ FAssetDocumentCapabilityResult InvalidTypeFailure(
 	const FString& ExpectedShape)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(
-		RegionPath(Context),
+		DeferredRegionPath(Context),
 		TEXT("InvalidBodySectionType"),
 		FString::Printf(TEXT("%s must be %s when authored"), *RegionBodyPath(Context), *ExpectedShape));
 }
@@ -51,7 +51,7 @@ FAssetDocumentCapabilityResult UnsupportedRegionFailure(
 	const FString FailureMessage = Message.IsEmpty()
 		? FString::Printf(TEXT("%s is declared but deferred and cannot be non-empty yet"), *RegionBodyPath(Context))
 		: Message;
-	return FAssetDocumentJsonRegionUtils::Failure(RegionPath(Context), Code, FailureMessage);
+	return FAssetDocumentJsonRegionUtils::Failure(DeferredRegionPath(Context), Code, FailureMessage);
 }
 
 TSharedPtr<FJsonValue> MakeDeclaredDefault(const FAssetDocumentRegionContext& Context)
@@ -177,7 +177,7 @@ FAssetDocumentCapabilityResult FAssetDocumentDeferredRegionAdapter::ValidateRegi
 	}
 
 	return FAssetDocumentJsonRegionUtils::Failure(
-		RegionPath(Context),
+		DeferredRegionPath(Context),
 		TEXT("UnsupportedRegionAdapter"),
 		FString::Printf(TEXT("Adapter %s does not support region %s"), *GetName().ToString(), *Context.RegionId.ToString()));
 }
@@ -227,7 +227,7 @@ FAssetDocumentCapabilityResult FAssetDocumentDeferredRegionAdapter::DiffRegion(
 	{
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Context),
+			DeferredRegionPath(Context),
 			TEXT("changed"),
 			CurrentValue,
 			DesiredValue);

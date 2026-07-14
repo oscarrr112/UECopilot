@@ -14,7 +14,7 @@ FString MakeDefaultPath(const FAssetDocumentIdentityArrayDiffOptions& Options, c
 		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(PathToken));
 }
 
-TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
+TSharedPtr<FJsonValue> IdentityArrayCloneJsonValue(const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid() || Value->Type == EJson::Null || Value->Type == EJson::None)
 	{
@@ -34,7 +34,7 @@ TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
 			TArray<TSharedPtr<FJsonValue>> ClonedArray;
 			for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
 			{
-				ClonedArray.Add(CloneJsonValue(Item));
+				ClonedArray.Add(IdentityArrayCloneJsonValue(Item));
 			}
 			return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
 		}
@@ -49,7 +49,7 @@ TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
 			TSharedRef<FJsonObject> ClonedObject = MakeShared<FJsonObject>();
 			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
 			{
-				ClonedObject->SetField(Pair.Key, CloneJsonValue(Pair.Value));
+				ClonedObject->SetField(Pair.Key, IdentityArrayCloneJsonValue(Pair.Value));
 			}
 			return MakeShared<FJsonValueObject>(ClonedObject);
 		}
@@ -100,8 +100,8 @@ void AddIdentityDiffEntry(
 	{
 		Entry->SetStringField(TEXT("change"), Change);
 	}
-	Entry->SetField(TEXT("current"), CloneJsonValue(Current));
-	Entry->SetField(TEXT("desired"), CloneJsonValue(Desired));
+	Entry->SetField(TEXT("current"), IdentityArrayCloneJsonValue(Current));
+	Entry->SetField(TEXT("desired"), IdentityArrayCloneJsonValue(Desired));
 	Entries.Add(MakeShared<FJsonValueObject>(Entry));
 }
 

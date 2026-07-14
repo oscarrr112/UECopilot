@@ -68,7 +68,7 @@ TSharedPtr<FJsonObject> MakeMontageDocument(const FString& Target)
 	return Document;
 }
 
-TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
+TSharedPtr<FJsonObject> AnimMontageMakeAssetRef(const FString& Path)
 {
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
@@ -92,7 +92,7 @@ TSharedPtr<FJsonObject> MakeDefinitionRef(const FString& Id)
 	return Fragment;
 }
 
-TSharedPtr<FJsonObject> MakeClassRef(const FString& ClassPath)
+TSharedPtr<FJsonObject> AnimMontageMakeClassRef(const FString& ClassPath)
 {
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -318,11 +318,11 @@ TSharedPtr<FJsonObject> MakeStructuredMontageDocument(const FString& Target, con
 {
 	TSharedPtr<FJsonObject> Document = MakeMontageDocument(Target);
 	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
-	Body->SetObjectField(TEXT("Skeleton"), MakeAssetRef(TestSkeletonPath));
-	Body->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	Body->SetObjectField(TEXT("Skeleton"), AnimMontageMakeAssetRef(TestSkeletonPath));
+	Body->SetObjectField(TEXT("PreviewMesh"), AnimMontageMakeAssetRef(TestPreviewMeshPath));
 
 	TSharedPtr<FJsonObject> Segment = MakeShared<FJsonObject>();
-	Segment->SetObjectField(TEXT("AnimReference"), MakeAssetRef(AnimReferencePath));
+	Segment->SetObjectField(TEXT("AnimReference"), AnimMontageMakeAssetRef(AnimReferencePath));
 	Segment->SetNumberField(TEXT("StartPos"), 0.0);
 	Segment->SetNumberField(TEXT("AnimStartTime"), 0.0);
 	Segment->SetNumberField(TEXT("AnimEndTime"), 0.25);
@@ -445,12 +445,12 @@ void SetScalarRegions(TSharedPtr<FJsonObject> Document, const FString& PreviewBa
 	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
 
 	TSharedPtr<FJsonObject> References = MakeShared<FJsonObject>();
-	References->SetObjectField(TEXT("Skeleton"), MakeAssetRef(TestSkeletonPath));
+	References->SetObjectField(TEXT("Skeleton"), AnimMontageMakeAssetRef(TestSkeletonPath));
 	Body->SetObjectField(TEXT("References"), References);
 
 	TSharedPtr<FJsonObject> Preview = MakeShared<FJsonObject>();
-	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
-	Preview->SetObjectField(TEXT("PreviewBasePose"), MakeAssetRef(PreviewBasePosePath));
+	Preview->SetObjectField(TEXT("PreviewMesh"), AnimMontageMakeAssetRef(TestPreviewMeshPath));
+	Preview->SetObjectField(TEXT("PreviewBasePose"), AnimMontageMakeAssetRef(PreviewBasePosePath));
 	Body->SetObjectField(TEXT("Preview"), Preview);
 
 	TSharedPtr<FJsonObject> Sync = MakeShared<FJsonObject>();
@@ -919,7 +919,7 @@ void AddNotifyStateEvent(UAnimMontage* Montage, UAnimNotifyState* NotifyState, F
 	Montage->Notifies.Add(Event);
 }
 
-bool HasDiagnostic(const FAssetDocumentResult& Result, const FString& Path, const FString& Code)
+bool AnimMontageHasDiagnostic(const FAssetDocumentResult& Result, const FString& Path, const FString& Code)
 {
 	for (const FAssetDocumentDiagnostic& Diagnostic : Result.Diagnostics)
 	{
@@ -1064,7 +1064,7 @@ bool ExpectInvalidValidate(
 	const bool bRejected = Test->TestFalse(FString::Printf(TEXT("%s: validate rejects invalid Body"), *CaseName), Result.IsSuccess());
 	const bool bDiagnostic = Test->TestTrue(
 		FString::Printf(TEXT("%s: validate reports expected diagnostic"), *CaseName),
-		HasDiagnostic(Result, ExpectedPath, ExpectedCode));
+		AnimMontageHasDiagnostic(Result, ExpectedPath, ExpectedCode));
 	return bRejected && bDiagnostic;
 }
 }
@@ -1628,7 +1628,7 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 	DuplicateApplyDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Curves"), DuplicateCurves);
 	const FAssetDocumentResult DuplicateApplyResult = ApplyDocument(DuplicateApplyDocument);
 	TestFalse(TEXT("Duplicate curve apply is rejected before production mutation"), DuplicateApplyResult.IsSuccess());
-	TestTrue(TEXT("Duplicate curve apply reports DuplicateCurveName"), HasDiagnostic(DuplicateApplyResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
+	TestTrue(TEXT("Duplicate curve apply reports DuplicateCurveName"), AnimMontageHasDiagnostic(DuplicateApplyResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
 	const FFloatCurve* CurveAfterDuplicateApply = Montage->GetDataModel() ? Montage->GetDataModel()->FindFloatCurve(CurveId) : nullptr;
 	TestNotNull(TEXT("Original curve remains after duplicate curve apply failure"), CurveAfterDuplicateApply);
 	if (CurveAfterDuplicateApply)
@@ -1650,7 +1650,7 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 	MissingCurveApplyDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("TimeStretch"), MissingCurveTimeStretch);
 	const FAssetDocumentResult MissingCurveApplyResult = ApplyDocument(MissingCurveApplyDocument);
 	TestFalse(TEXT("Missing time stretch curve apply is rejected before production mutation"), MissingCurveApplyResult.IsSuccess());
-	TestTrue(TEXT("Missing time stretch curve apply reports MissingTimeStretchCurve"), HasDiagnostic(MissingCurveApplyResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
+	TestTrue(TEXT("Missing time stretch curve apply reports MissingTimeStretchCurve"), AnimMontageHasDiagnostic(MissingCurveApplyResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
 	TestEqual(TEXT("TimeStretchCurveName remains after missing curve apply failure"), Montage->TimeStretchCurveName, CurveName);
 	TestNotNull(TEXT("Original curve remains after missing time stretch curve apply failure"), Montage->GetDataModel() ? Montage->GetDataModel()->FindFloatCurve(CurveId) : nullptr);
 
@@ -1672,7 +1672,7 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 	MissingCurveWithEarlierRegionsDocument->GetObjectField(TEXT("Body"))->SetObjectField(TEXT("TimeStretch"), EarlierTimeStretch);
 	const FAssetDocumentResult MissingCurveWithEarlierRegionsResult = ApplyDocument(MissingCurveWithEarlierRegionsDocument);
 	TestFalse(TEXT("Missing time stretch curve rejects before earlier region mutation"), MissingCurveWithEarlierRegionsResult.IsSuccess());
-	TestTrue(TEXT("Missing time stretch curve with earlier regions reports MissingTimeStretchCurve"), HasDiagnostic(MissingCurveWithEarlierRegionsResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
+	TestTrue(TEXT("Missing time stretch curve with earlier regions reports MissingTimeStretchCurve"), AnimMontageHasDiagnostic(MissingCurveWithEarlierRegionsResult, TEXT("/Body/TimeStretch/TimeStretchCurveName"), TEXT("MissingTimeStretchCurve")));
 	TestEqual(TEXT("SyncGroup remains after invalid time stretch preflight"), Montage->SyncGroup, OriginalSyncGroup);
 	TestEqual(TEXT("RootMotion translation remains after invalid time stretch preflight"), Montage->bEnableRootMotionTranslation, bOriginalRootMotionTranslation);
 	TestEqual(TEXT("RootMotion rotation remains after invalid time stretch preflight"), Montage->bEnableRootMotionRotation, bOriginalRootMotionRotation);
@@ -1682,7 +1682,7 @@ bool FAssetDocumentAnimMontageCurvesAndTimeStretchTest::RunTest(const FString& P
 	Controller.SetCurveFlags(CurveId, AACF_Disabled, false);
 	const FAssetDocumentResult UnsupportedFlagsExtractResult = Service.Extract(ExtractRequest);
 	TestFalse(TEXT("Extract rejects unsupported curve flags"), UnsupportedFlagsExtractResult.IsSuccess());
-	TestTrue(TEXT("Extract reports UnsupportedCurveFlags"), HasDiagnostic(UnsupportedFlagsExtractResult, TEXT("/Body/Curves/0/Flags"), TEXT("UnsupportedCurveFlags")));
+	TestTrue(TEXT("Extract reports UnsupportedCurveFlags"), AnimMontageHasDiagnostic(UnsupportedFlagsExtractResult, TEXT("/Body/Curves/0/Flags"), TEXT("UnsupportedCurveFlags")));
 
 	return bAllCasesPassed;
 }
@@ -1822,7 +1822,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	TestFalse(TEXT("Unknown section metadata target is rejected"), UnknownSectionResult.IsSuccess());
 	TestTrue(
 		TEXT("Unknown section metadata target reports UnknownSectionMetadataTarget"),
-		HasDiagnostic(UnknownSectionResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
+		AnimMontageHasDiagnostic(UnknownSectionResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
 
 	const int32 OriginalAssetMetadataCount = Montage->GetMetaData().Num();
 	const int32 OriginalStartSectionMetadataCount = Montage->CompositeSections[0].GetMetaData().Num();
@@ -1840,7 +1840,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	TestFalse(TEXT("Unknown section metadata target apply is rejected"), InvalidApplyResult.IsSuccess());
 	TestTrue(
 		TEXT("Unknown section metadata target apply reports UnknownSectionMetadataTarget"),
-		HasDiagnostic(InvalidApplyResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
+		AnimMontageHasDiagnostic(InvalidApplyResult, TEXT("/Body/SectionMetadata/Missing"), TEXT("UnknownSectionMetadataTarget")));
 	TestEqual(TEXT("Asset metadata unchanged after failed metadata apply"), Montage->GetMetaData().Num(), OriginalAssetMetadataCount);
 	TestEqual(TEXT("Start section metadata unchanged after failed metadata apply"), Montage->CompositeSections[0].GetMetaData().Num(), OriginalStartSectionMetadataCount);
 	TestEqual(TEXT("End section metadata unchanged after failed metadata apply"), Montage->CompositeSections[1].GetMetaData().Num(), OriginalEndSectionMetadataCount);
@@ -1855,7 +1855,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	MissingClassDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingClassMetadata);
 	const FAssetDocumentResult MissingClassResult = ValidateDocument(MissingClassDocument);
 	TestFalse(TEXT("Metadata EmbeddedObject missing Class is rejected"), MissingClassResult.IsSuccess());
-	TestTrue(TEXT("Metadata EmbeddedObject missing Class reports diagnostic"), HasDiagnostic(MissingClassResult, TEXT("/Body/Metadata/0"), TEXT("missing-embeddedobject-class")));
+	TestTrue(TEXT("Metadata EmbeddedObject missing Class reports diagnostic"), AnimMontageHasDiagnostic(MissingClassResult, TEXT("/Body/Metadata/0"), TEXT("missing-embeddedobject-class")));
 
 	TSharedPtr<FJsonObject> MissingDefinitionIdDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataMissingDefinitionId")), AnimSequence->GetPathName());
 	TSharedPtr<FJsonObject> MissingDefinitionIdObject = MakeShared<FJsonObject>();
@@ -1865,7 +1865,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	MissingDefinitionIdDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingDefinitionIdMetadata);
 	const FAssetDocumentResult MissingDefinitionIdResult = ValidateDocument(MissingDefinitionIdDocument);
 	TestFalse(TEXT("Metadata DefinitionRef missing Id is rejected"), MissingDefinitionIdResult.IsSuccess());
-	TestTrue(TEXT("Metadata DefinitionRef missing Id reports diagnostic"), HasDiagnostic(MissingDefinitionIdResult, TEXT("/Body/Metadata/0"), TEXT("missing-definitionref-id")));
+	TestTrue(TEXT("Metadata DefinitionRef missing Id reports diagnostic"), AnimMontageHasDiagnostic(MissingDefinitionIdResult, TEXT("/Body/Metadata/0"), TEXT("missing-definitionref-id")));
 
 	TSharedPtr<FJsonObject> MissingDefinitionDocument = MakeStructuredMontageDocument(MakeUniqueMontageTarget(TEXT("AM_MetadataMissingDefinition")), AnimSequence->GetPathName());
 	TArray<TSharedPtr<FJsonValue>> MissingDefinitionMetadata;
@@ -1873,7 +1873,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	MissingDefinitionDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), MissingDefinitionMetadata);
 	const FAssetDocumentResult MissingDefinitionResult = ValidateDocument(MissingDefinitionDocument);
 	TestFalse(TEXT("Metadata DefinitionRef missing target is rejected"), MissingDefinitionResult.IsSuccess());
-	TestTrue(TEXT("Metadata DefinitionRef missing target reports diagnostic"), HasDiagnostic(MissingDefinitionResult, TEXT("/Body/Metadata/0"), TEXT("definitionref-missing-id")));
+	TestTrue(TEXT("Metadata DefinitionRef missing target reports diagnostic"), AnimMontageHasDiagnostic(MissingDefinitionResult, TEXT("/Body/Metadata/0"), TEXT("definitionref-missing-id")));
 
 	const FAssetDocumentResult WrongDefinitionBaseResult = ValidateDocument(MakeDefinitionRefDocument(
 		MakeUniqueMontageTarget(TEXT("AM_MetadataWrongDefinitionBase")),
@@ -1881,7 +1881,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 		TEXT("WrongBase"),
 		MakeEmbeddedObjectRef(TestConcreteNotifyClassPath)));
 	TestFalse(TEXT("Metadata DefinitionRef to non-UAnimMetaData is rejected"), WrongDefinitionBaseResult.IsSuccess());
-	TestTrue(TEXT("Metadata DefinitionRef to non-UAnimMetaData reports diagnostic"), HasDiagnostic(WrongDefinitionBaseResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestTrue(TEXT("Metadata DefinitionRef to non-UAnimMetaData reports diagnostic"), AnimMontageHasDiagnostic(WrongDefinitionBaseResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
 
 	const int32 BeforeCompileFailureAssetMetadataCount = Montage->GetMetaData().Num();
 	const int32 BeforeCompileFailureStartSectionMetadataCount = Montage->CompositeSections[0].GetMetaData().Num();
@@ -1898,7 +1898,7 @@ bool FAssetDocumentAnimMontageMetadataRegionsTest::RunTest(const FString& Parame
 	CompileFailureDocument->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Metadata"), CompileFailureMetadata);
 	const FAssetDocumentResult CompileFailureResult = ApplyDocument(CompileFailureDocument);
 	TestFalse(TEXT("Metadata compile failure apply is rejected"), CompileFailureResult.IsSuccess());
-	TestTrue(TEXT("Metadata compile failure reports preflight diagnostic"), HasDiagnostic(CompileFailureResult, TEXT("/Body/Metadata/1"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Metadata compile failure reports preflight diagnostic"), AnimMontageHasDiagnostic(CompileFailureResult, TEXT("/Body/Metadata/1"), TEXT("embeddedobject-preflight-failed")));
 	TestEqual(TEXT("Asset metadata unchanged after metadata compile failure"), Montage->GetMetaData().Num(), BeforeCompileFailureAssetMetadataCount);
 	TestEqual(TEXT("Start section metadata unchanged after metadata compile failure"), Montage->CompositeSections[0].GetMetaData().Num(), BeforeCompileFailureStartSectionMetadataCount);
 	TestEqual(TEXT("End section metadata unchanged after metadata compile failure"), Montage->CompositeSections[1].GetMetaData().Num(), BeforeCompileFailureEndSectionMetadataCount);
@@ -2153,8 +2153,8 @@ bool FAssetDocumentAnimMontageScalarRegionValidationTest::RunTest(const FString&
 	bAllCasesPassed &= TestFalse(TEXT("Apply rejects wrong PreviewBasePose asset type"), WrongTypeResult.IsSuccess());
 	bAllCasesPassed &= TestTrue(
 		TEXT("Apply reports PreviewBasePose asset type diagnostic"),
-		HasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("assetref-base-class-mismatch"))
-			|| HasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("InvalidObjectReference")));
+		AnimMontageHasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("assetref-base-class-mismatch"))
+			|| AnimMontageHasDiagnostic(WrongTypeResult, TEXT("/Body/Preview/PreviewBasePose"), TEXT("InvalidObjectReference")));
 
 	return bAllCasesPassed;
 }
@@ -2586,7 +2586,7 @@ bool FAssetDocumentSidecarSyncAcceptAssetRegeneratesManagedRegionTest::RunTest(c
 	TSharedPtr<FJsonObject> SidecarDocument = ExtractResult.Payload;
 	SidecarDocument->SetStringField(TEXT("ManualTopLevelField"), TEXT("keep-me"));
 	SidecarDocument->SetObjectField(TEXT("Definitions"), MakeShared<FJsonObject>());
-	SidecarDocument->GetObjectField(TEXT("Definitions"))->SetObjectField(TEXT("ManualDefinition"), MakeAssetRef(TestSkeletonPath));
+	SidecarDocument->GetObjectField(TEXT("Definitions"))->SetObjectField(TEXT("ManualDefinition"), AnimMontageMakeAssetRef(TestSkeletonPath));
 	SidecarDocument->GetObjectField(TEXT("Properties"))->SetStringField(TEXT("ManualProperty"), TEXT("preserve"));
 
 	TArray<TSharedPtr<FJsonValue>> AuthoredCompositeSections;
@@ -3449,7 +3449,7 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 		TArray<TSharedPtr<FJsonValue>> Notifies;
 		Notifies.Add(MakeShared<FJsonValueObject>(MakeNotifyPlacement(
 			0.10,
-			MakeClassRef(TestConcreteNotifyClassPath))));
+			AnimMontageMakeClassRef(TestConcreteNotifyClassPath))));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Notifies"), Notifies);
 	}, TEXT("/Body/Notifies[0]/Object"), TEXT("InvalidNotifyObjectFragment"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("NotifyState direct ClassRef"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
@@ -3458,7 +3458,7 @@ bool FAssetDocumentAnimMontageRejectsSemanticInvalidBodyTest::RunTest(const FStr
 		NotifyStates.Add(MakeShared<FJsonValueObject>(MakeNotifyStatePlacement(
 			0.12,
 			0.05,
-			MakeClassRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState")))));
+			AnimMontageMakeClassRef(TEXT("/Script/AssetFactory.AssetFactoryNamedAnimNotifyState")))));
 		Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("NotifyStates"), NotifyStates);
 	}, TEXT("/Body/NotifyStates[0]/Object"), TEXT("InvalidNotifyObjectFragment"));
 	bAllCasesPassed &= ExpectInvalidValidate(this, TEXT("Notify non-object placement"), AnimReferencePath, [](TSharedPtr<FJsonObject> Document)
@@ -3534,7 +3534,7 @@ bool FAssetDocumentAnimMontageApplyFailureDoesNotMutateExistingTest::RunTest(con
 
 	const FAssetDocumentResult InvalidResult = ApplyDocument(InvalidDocument);
 	TestFalse(TEXT("Invalid patch fails"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Invalid patch reports AnimEndTime diagnostic"), HasDiagnostic(InvalidResult, TEXT("/Body/SlotAnimTracks/0/AnimTrack/AnimSegments/0/AnimEndTime"), TEXT("InvalidAnimEndTime")));
+	TestTrue(TEXT("Invalid patch reports AnimEndTime diagnostic"), AnimMontageHasDiagnostic(InvalidResult, TEXT("/Body/SlotAnimTracks/0/AnimTrack/AnimSegments/0/AnimEndTime"), TEXT("InvalidAnimEndTime")));
 
 	TestEqual(TEXT("Skeleton is unchanged after failed patch"), Montage->GetSkeleton(), OriginalSkeleton);
 	TestEqual(TEXT("Preview mesh is unchanged after failed patch"), Montage->GetPreviewMesh(), OriginalPreviewMesh);
@@ -3596,7 +3596,7 @@ bool FAssetDocumentAnimMontageApplyPreflightDoesNotCreateEmbeddedObjectsTest::Ru
 
 	const FAssetDocumentResult InvalidResult = ApplyDocument(InvalidDocument);
 	TestFalse(TEXT("Invalid patch fails"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Invalid patch reports NextSectionName diagnostic"), HasDiagnostic(InvalidResult, TEXT("/Body/CompositeSections/0/NextSectionName"), TEXT("InvalidNextSectionName")));
+	TestTrue(TEXT("Invalid patch reports NextSectionName diagnostic"), AnimMontageHasDiagnostic(InvalidResult, TEXT("/Body/CompositeSections/0/NextSectionName"), TEXT("InvalidNextSectionName")));
 
 	TestEqual(TEXT("Preflight does not create direct child objects under production montage"), CountDirectObjectsWithOuter(Montage), OriginalDirectObjectCount);
 	TestEqual(TEXT("Reflected property is unchanged after failed Body preflight"), RateScaleProperty->GetPropertyValue_InContainer(Montage), OriginalRateScale);
@@ -3626,7 +3626,7 @@ bool FAssetDocumentAnimMontageApplyFailureCleansNewAssetTest::RunTest(const FStr
 
 	const FAssetDocumentResult Result = ApplyDocument(Document);
 	TestFalse(TEXT("Invalid new AnimMontage apply fails"), Result.IsSuccess());
-	TestTrue(TEXT("Invalid new apply reports AnimPlayRate diagnostic"), HasDiagnostic(Result, TEXT("/Body/SlotAnimTracks/0/AnimTrack/AnimSegments/0/AnimPlayRate"), TEXT("InvalidAnimPlayRate")));
+	TestTrue(TEXT("Invalid new apply reports AnimPlayRate diagnostic"), AnimMontageHasDiagnostic(Result, TEXT("/Body/SlotAnimTracks/0/AnimTrack/AnimSegments/0/AnimPlayRate"), TEXT("InvalidAnimPlayRate")));
 	TestNull(TEXT("Failed new AnimMontage apply does not leave a loadable asset"), LoadObject<UAnimMontage>(nullptr, *MakeObjectPathFromTarget(Target)));
 
 	return true;
@@ -3649,9 +3649,9 @@ bool FAssetDocumentAnimMontageApplyDefinitionRefBodyTest::RunTest(const FString&
 	const FString Target = MakeUniqueMontageTarget(TEXT("AM_DefinitionRefBody"));
 	TSharedPtr<FJsonObject> Document = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	TSharedPtr<FJsonObject> Definitions = Document->GetObjectField(TEXT("Definitions"));
-	Definitions->SetObjectField(TEXT("SkeletonAsset"), MakeAssetRef(TestSkeletonPath));
-	Definitions->SetObjectField(TEXT("PreviewMeshAsset"), MakeAssetRef(TestPreviewMeshPath));
-	Definitions->SetObjectField(TEXT("AnimAsset"), MakeAssetRef(AnimSequence->GetPathName()));
+	Definitions->SetObjectField(TEXT("SkeletonAsset"), AnimMontageMakeAssetRef(TestSkeletonPath));
+	Definitions->SetObjectField(TEXT("PreviewMeshAsset"), AnimMontageMakeAssetRef(TestPreviewMeshPath));
+	Definitions->SetObjectField(TEXT("AnimAsset"), AnimMontageMakeAssetRef(AnimSequence->GetPathName()));
 
 	TSharedPtr<FJsonObject> Body = Document->GetObjectField(TEXT("Body"));
 	Body->SetObjectField(TEXT("Skeleton"), MakeDefinitionRef(TEXT("SkeletonAsset")));
@@ -3709,9 +3709,9 @@ bool FAssetDocumentAnimMontageDiffTreatsDefinitionRefAsUnchangedTest::RunTest(co
 
 	TSharedPtr<FJsonObject> DesiredDocument = MakeStructuredMontageDocument(Target, AnimSequence->GetPathName());
 	TSharedPtr<FJsonObject> Definitions = DesiredDocument->GetObjectField(TEXT("Definitions"));
-	Definitions->SetObjectField(TEXT("SkeletonAsset"), MakeAssetRef(TestSkeletonPath));
-	Definitions->SetObjectField(TEXT("PreviewMeshAsset"), MakeAssetRef(TestPreviewMeshPath));
-	Definitions->SetObjectField(TEXT("AnimAsset"), MakeAssetRef(AnimSequence->GetPathName()));
+	Definitions->SetObjectField(TEXT("SkeletonAsset"), AnimMontageMakeAssetRef(TestSkeletonPath));
+	Definitions->SetObjectField(TEXT("PreviewMeshAsset"), AnimMontageMakeAssetRef(TestPreviewMeshPath));
+	Definitions->SetObjectField(TEXT("AnimAsset"), AnimMontageMakeAssetRef(AnimSequence->GetPathName()));
 
 	TSharedPtr<FJsonObject> Body = DesiredDocument->GetObjectField(TEXT("Body"));
 	Body->SetObjectField(TEXT("Skeleton"), MakeDefinitionRef(TEXT("SkeletonAsset")));
@@ -4214,7 +4214,7 @@ bool FAssetDocumentAnimMontageRejectsBodyWithoutProfileTest::RunTest(const FStri
 
 	const FAssetDocumentResult Result = ValidateDocument(Document);
 	TestFalse(TEXT("Validate rejects Body when class has no profile"), Result.IsSuccess());
-	TestTrue(TEXT("Validate reports MissingProfile at Body"), HasDiagnostic(Result, TEXT("/Body"), TEXT("MissingProfile")));
+	TestTrue(TEXT("Validate reports MissingProfile at Body"), AnimMontageHasDiagnostic(Result, TEXT("/Body"), TEXT("MissingProfile")));
 
 	return true;
 }
@@ -4231,7 +4231,7 @@ bool FAssetDocumentAnimMontageRejectsNonObjectBodyTest::RunTest(const FString& P
 
 	const FAssetDocumentResult Result = ValidateDocument(Document);
 	TestFalse(TEXT("Validate rejects non-object Body"), Result.IsSuccess());
-	TestTrue(TEXT("Validate reports InvalidBodyType at Body"), HasDiagnostic(Result, TEXT("/Body"), TEXT("InvalidBodyType")));
+	TestTrue(TEXT("Validate reports InvalidBodyType at Body"), AnimMontageHasDiagnostic(Result, TEXT("/Body"), TEXT("InvalidBodyType")));
 
 	return true;
 }
@@ -4259,7 +4259,7 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 
 		const FAssetDocumentResult Result = ValidateDocument(Document);
 		TestFalse(FString::Printf(TEXT("Validate rejects non-array %s"), *Section), Result.IsSuccess());
-		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
+		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), AnimMontageHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
 	}
 
 	const TArray<FString> ObjectSections = {
@@ -4279,7 +4279,7 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 
 		const FAssetDocumentResult Result = ValidateDocument(Document);
 		TestFalse(FString::Printf(TEXT("Validate rejects non-object %s"), *Section), Result.IsSuccess());
-		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
+		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), AnimMontageHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
 	}
 
 	{
@@ -4292,7 +4292,7 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 		TestFalse(TEXT("Validate rejects non-array SectionMetadata.Start"), Result.IsSuccess());
 		TestTrue(
 			TEXT("Validate reports InvalidBodySectionType for non-array SectionMetadata.Start"),
-			HasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start"), TEXT("InvalidBodySectionType")));
+			AnimMontageHasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start"), TEXT("InvalidBodySectionType")));
 	}
 
 	{
@@ -4307,7 +4307,7 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 		TestFalse(TEXT("Validate rejects non-object SectionMetadata.Start entry"), Result.IsSuccess());
 		TestTrue(
 			TEXT("Validate reports InvalidBodySectionType for non-object SectionMetadata.Start entry"),
-			HasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start/0"), TEXT("InvalidBodySectionType")));
+			AnimMontageHasDiagnostic(Result, TEXT("/Body/SectionMetadata/Start/0"), TEXT("InvalidBodySectionType")));
 	}
 
 	for (const FString& Section : {FString(TEXT("Skeleton")), FString(TEXT("PreviewMesh"))})
@@ -4317,7 +4317,7 @@ bool FAssetDocumentAnimMontageRejectsInvalidBodySectionTypesTest::RunTest(const 
 
 		const FAssetDocumentResult Result = ValidateDocument(Document);
 		TestFalse(FString::Printf(TEXT("Validate rejects string %s"), *Section), Result.IsSuccess());
-		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), HasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
+		TestTrue(FString::Printf(TEXT("Validate reports InvalidBodySectionType for %s"), *Section), AnimMontageHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Section), TEXT("InvalidBodySectionType")));
 	}
 
 	return true;

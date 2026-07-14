@@ -98,7 +98,7 @@ bool IsObjectReferenceProperty(const FProperty* Property)
 		&& (CastField<FObjectPropertyBase>(Property) || CastField<FSoftObjectProperty>(Property));
 }
 
-TSharedPtr<FJsonObject> MakeReferenceObject(const FString& Kind, const FString& Path)
+TSharedPtr<FJsonObject> ReflectedPropertyMakeReferenceObject(const FString& Kind, const FString& Path)
 {
 	TSharedPtr<FJsonObject> Ref = MakeShared<FJsonObject>();
 	Ref->SetStringField(TEXT("Kind"), Kind);
@@ -324,7 +324,7 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 	{
 		const FSoftObjectPtr* SoftPtr = static_cast<const FSoftObjectPtr*>(ValuePtr);
 		return SoftPtr && !SoftPtr->IsNull()
-			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("ClassRef"), SoftPtr->ToSoftObjectPath().ToString())))
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(ReflectedPropertyMakeReferenceObject(TEXT("ClassRef"), SoftPtr->ToSoftObjectPath().ToString())))
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 
@@ -332,7 +332,7 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 	{
 		UClass* ClassValue = Cast<UClass>(ClassProperty->GetObjectPropertyValue(ValuePtr));
 		return ClassValue
-			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("ClassRef"), ClassValue->GetPathName())))
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(ReflectedPropertyMakeReferenceObject(TEXT("ClassRef"), ClassValue->GetPathName())))
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 
@@ -341,7 +341,7 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 	{
 		UClass* ClassValue = Cast<UClass>(ObjectProperty->GetObjectPropertyValue(ValuePtr));
 		return ClassValue
-			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("ClassRef"), ClassValue->GetPathName())))
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(ReflectedPropertyMakeReferenceObject(TEXT("ClassRef"), ClassValue->GetPathName())))
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 
@@ -349,7 +349,7 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 	{
 		const FSoftObjectPtr* SoftPtr = static_cast<const FSoftObjectPtr*>(ValuePtr);
 		return SoftPtr && !SoftPtr->IsNull()
-			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("AssetRef"), SoftPtr->ToSoftObjectPath().ToString())))
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(ReflectedPropertyMakeReferenceObject(TEXT("AssetRef"), SoftPtr->ToSoftObjectPath().ToString())))
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 
@@ -357,7 +357,7 @@ TSharedPtr<FJsonValue> ExtractReferenceProperty(FProperty* Property, const void*
 	{
 		UObject* ObjectValue = ObjectProperty->GetObjectPropertyValue(ValuePtr);
 		return ObjectValue
-			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(MakeReferenceObject(TEXT("AssetRef"), ObjectValue->GetPathName())))
+			? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(ReflectedPropertyMakeReferenceObject(TEXT("AssetRef"), ObjectValue->GetPathName())))
 			: StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
 	}
 

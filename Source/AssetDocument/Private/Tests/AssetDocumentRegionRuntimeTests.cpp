@@ -443,7 +443,7 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesPreflightTest::RunTest(con
 
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Preflight(
 		Context,
-		MakeArrayValue({}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({}),
 		Adapter);
 
 	TestTrue(TEXT("Preflight succeeds through wrapper"), Result.bSuccess);
@@ -465,7 +465,7 @@ bool FAssetDocumentRegionRuntimeWidgetWrapperDelegatesExtractTest::RunTest(const
 		TSharedPtr<FJsonValue>& OutCurrentValue)
 	{
 		++ExtractCalls;
-		OutCurrentValue = MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Animation"))});
+		OutCurrentValue = AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Animation"))});
 		return FAssetDocumentCapabilityResult::Success(TEXT("extracted widget region"));
 	};
 	FWidgetBlueprintAnimationRegionAdapter Adapter(MoveTemp(Hooks));
@@ -1087,7 +1087,7 @@ bool FAssetDocumentRegionRuntimeJsonUtilsRequireArrayTest::RunTest(const FString
 {
 	TArray<TSharedPtr<FJsonValue>> OutArray;
 	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireArrayValue(
-		MakeArrayValue({MakeShared<FJsonValueString>(TEXT("A"))}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeShared<FJsonValueString>(TEXT("A"))}),
 		TEXT("/Body/Curves"),
 		OutArray);
 	TestTrue(TEXT("Array value succeeds"), Result.bSuccess);
@@ -1404,7 +1404,7 @@ bool FAssetDocumentRegionRuntimeDeferredRegionAcceptsEmptyArrayTest::RunTest(con
 		MakeRuntimeContext(TEXT("Body.FunctionGraphs"), TEXT("/Body/FunctionGraphs"), &Policy);
 
 	const FAssetDocumentCapabilityResult Result =
-		FAssetDocumentRegionRuntime::Validate(Context, MakeArrayValue({}), Adapter);
+		FAssetDocumentRegionRuntime::Validate(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({}), Adapter);
 
 	TestTrue(TEXT("Deferred empty array succeeds"), Result.bSuccess);
 	return true;
@@ -1445,7 +1445,7 @@ bool FAssetDocumentRegionRuntimeDeferredRegionRejectsNonEmptyArrayTest::RunTest(
 
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
 		Context,
-		MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Graph"))}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeShared<FJsonValueString>(TEXT("Graph"))}),
 		Adapter);
 
 	TestFalse(TEXT("Deferred non-empty array fails"), Result.bSuccess);
@@ -1712,7 +1712,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRequiresUniqueIdentityTest::RunTest(co
 
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
 		Context,
-		MakeArrayValue({MakeObjectValue(First), MakeObjectValue(Second)}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(First), MakeObjectValue(Second)}),
 		Adapter);
 
 	TestFalse(TEXT("Duplicate named array identity fails"), Result.bSuccess);
@@ -1745,7 +1745,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRejectsNormalizedDuplicateIdentityTest
 
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Validate(
 		Context,
-		MakeArrayValue({MakeObjectValue(First), MakeObjectValue(Second)}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(First), MakeObjectValue(Second)}),
 		Adapter);
 
 	TestFalse(TEXT("Normalized duplicate named array identity fails"), Result.bSuccess);
@@ -1769,7 +1769,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayRejectsMissingIdentityTest::RunTest(co
 	Track->SetNumberField(TEXT("Index"), 0.0);
 
 	const FAssetDocumentCapabilityResult Result =
-		FAssetDocumentRegionRuntime::Validate(Context, MakeArrayValue({MakeObjectValue(Track)}), Adapter);
+		FAssetDocumentRegionRuntime::Validate(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(Track)}), Adapter);
 
 	TestFalse(TEXT("Missing identity field fails"), Result.bSuccess);
 	TestDiagnostic(this, TEXT("Missing identity"), Result, TEXT("/Body/NotifyTracks/0/Name"), TEXT("MissingNamedArrayIdentity"));
@@ -1847,7 +1847,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayPreservesAuthoredApplyOrderWhenConfigu
 	bool bChanged = false;
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Apply(
 		Context,
-		MakeArrayValue({MakeObjectValue(BetaDesired), MakeObjectValue(AlphaDesired)}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(BetaDesired), MakeObjectValue(AlphaDesired)}),
 		Adapter,
 		bChanged);
 
@@ -1887,7 +1887,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayNoopApplyCanReturnUnchangedTest::RunTe
 	bool bChanged = true;
 	const FAssetDocumentCapabilityResult Result = FAssetDocumentRegionRuntime::Apply(
 		Context,
-		MakeArrayValue({MakeObjectValue(Track)}),
+		AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(Track)}),
 		Adapter,
 		bChanged);
 
@@ -1910,7 +1910,7 @@ bool FAssetDocumentRegionRuntimeNamedArrayMissingLifecycleHooksFailFastTest::Run
 		MakeRuntimeContext(TEXT("NotifyTracks"), TEXT("/Body/NotifyTracks"), &Policy);
 	TSharedRef<FJsonObject> Track = MakeShared<FJsonObject>();
 	Track->SetStringField(TEXT("Name"), TEXT("Default"));
-	const TSharedPtr<FJsonValue> Desired = MakeArrayValue({MakeObjectValue(Track)});
+	const TSharedPtr<FJsonValue> Desired = AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(Track)});
 
 	bool bChanged = true;
 	FAssetDocumentCapabilityResult Result =
@@ -3597,7 +3597,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayRejectsInvalidShapeTest::RunTest(co
 	TArray<TSharedPtr<FJsonValue>> InvalidEntries;
 	InvalidEntries.Add(MakeShared<FJsonValueString>(TEXT("not an object")));
 	const FAssetDocumentCapabilityResult NonObjectEntryResult =
-		Adapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(InvalidEntries)));
+		Adapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(InvalidEntries)));
 	TestFalse(TEXT("Non-object entry fails"), NonObjectEntryResult.bSuccess);
 	TestEqual(TEXT("Non-object entry failure code"), NonObjectEntryResult.Diagnostics.Num() > 0 ? NonObjectEntryResult.Diagnostics[0].Code : FString(), FString(TEXT("InvalidFragmentArrayEntryType")));
 	TestEqual(TEXT("Non-object entry failure path"), NonObjectEntryResult.Diagnostics.Num() > 0 ? NonObjectEntryResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments/0")));
@@ -3653,13 +3653,13 @@ bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const 
 	TArray<TSharedPtr<FJsonValue>> ValidEntries;
 	ValidEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
 	const FAssetDocumentCapabilityResult ValidateResult =
-		Adapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(ValidEntries)));
+		Adapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(ValidEntries)));
 	TestTrue(TEXT("Validate succeeds"), ValidateResult.bSuccess);
 	TestTrue(TEXT("Validate receives entry index and pointer"), bValidateSawEntry);
 
 	bool bChanged = false;
 	const FAssetDocumentCapabilityResult ApplyResult =
-		Adapter.ApplyRegion(Context, MakeArrayValue({}), bChanged);
+		Adapter.ApplyRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({}), bChanged);
 	TestTrue(TEXT("Apply succeeds for empty array"), ApplyResult.bSuccess);
 	TestTrue(TEXT("Empty array reaches apply hook"), bApplySawEmptyArray);
 	TestTrue(TEXT("Apply hook can set changed"), bChanged);
@@ -3679,7 +3679,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const 
 	TArray<TSharedPtr<FJsonValue>> FailingEntries;
 	FailingEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
 	const FAssetDocumentCapabilityResult FailureResult =
-		FailingAdapter.ValidateRegion(Context, MakeArrayValue(MoveTemp(FailingEntries)));
+		FailingAdapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(FailingEntries)));
 	TestFalse(TEXT("Hook failure fails"), FailureResult.bSuccess);
 	TestEqual(TEXT("Hook failure code propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Code : FString(), FString(TEXT("FragmentHookFailed")));
 	TestEqual(TEXT("Hook failure path propagates"), FailureResult.Diagnostics.Num() > 0 ? FailureResult.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestFragments/0/Kind")));
@@ -3713,7 +3713,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const 
 	ApplyValidationEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
 	bool bApplyValidationChanged = true;
 	const FAssetDocumentCapabilityResult ApplyValidationResult =
-		ApplyValidationAdapter.ApplyRegion(Context, MakeArrayValue(MoveTemp(ApplyValidationEntries)), bApplyValidationChanged);
+		ApplyValidationAdapter.ApplyRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(ApplyValidationEntries)), bApplyValidationChanged);
 	TestFalse(TEXT("Apply validation failure fails"), ApplyValidationResult.bSuccess);
 	TestFalse(TEXT("Apply validation failure does not call apply hook"), bApplyCalledAfterFailedValidate);
 	TestFalse(TEXT("Apply validation failure resets changed"), bApplyValidationChanged);
@@ -3747,7 +3747,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayDispatchesHooksTest::RunTest(const 
 	TArray<TSharedPtr<FJsonValue>> PreflightValidationEntries;
 	PreflightValidationEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("EmbeddedObject"))));
 	const FAssetDocumentCapabilityResult PreflightValidationResult =
-		PreflightValidationAdapter.PreflightRegion(Context, MakeArrayValue(MoveTemp(PreflightValidationEntries)));
+		PreflightValidationAdapter.PreflightRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(PreflightValidationEntries)));
 	TestFalse(TEXT("Preflight validation failure fails"), PreflightValidationResult.bSuccess);
 	TestTrue(TEXT("Preflight without hook still runs validate"), bPreflightValidateCalled);
 	TestEqual(
@@ -3810,7 +3810,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(
 	DesiredEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("Desired"))));
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult =
-		Adapter.DiffRegion(Context, MakeArrayValue(MoveTemp(DesiredEntries)), DiffEntries);
+		Adapter.DiffRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(DesiredEntries)), DiffEntries);
 	TestTrue(TEXT("Default diff succeeds"), DiffResult.bSuccess);
 	TestEqual(TEXT("Default diff emits one entry"), DiffEntries.Num(), 1);
 	TestEqual(TEXT("Default diff path"), GetDiffEntryPath(DiffEntries, 0), FString(TEXT("/Body/TestFragments")));
@@ -3842,7 +3842,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(
 	DiffValidationDesiredEntries.Add(MakeShared<FJsonValueObject>(MakeTestFragment(TEXT("Desired"))));
 	TArray<TSharedPtr<FJsonValue>> FailedValidationDiffEntries;
 	const FAssetDocumentCapabilityResult FailedValidationDiffResult =
-		DiffValidationAdapter.DiffRegion(Context, MakeArrayValue(MoveTemp(DiffValidationDesiredEntries)), FailedValidationDiffEntries);
+		DiffValidationAdapter.DiffRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(DiffValidationDesiredEntries)), FailedValidationDiffEntries);
 	TestFalse(TEXT("Diff validation failure fails"), FailedValidationDiffResult.bSuccess);
 	TestFalse(TEXT("Diff validation failure does not call diff hook"), bDiffCalledAfterFailedValidate);
 	TestEqual(
@@ -3862,7 +3862,7 @@ bool FAssetDocumentRegionRuntimeFragmentArrayExtractAndDefaultDiffTest::RunTest(
 	FAssetDocumentFragmentArrayRegionAdapter MissingHookAdapter(MoveTemp(MissingConfig), {});
 
 	TArray<TSharedPtr<FJsonValue>> EmptyDesired;
-	const TSharedPtr<FJsonValue> EmptyArrayValue = MakeArrayValue(MoveTemp(EmptyDesired));
+	const TSharedPtr<FJsonValue> EmptyArrayValue = AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(EmptyDesired));
 	const FAssetDocumentCapabilityResult MissingValidateResult =
 		MissingHookAdapter.ValidateRegion(Context, EmptyArrayValue);
 	TestFalse(TEXT("Missing validate hook fails"), MissingValidateResult.bSuccess);
@@ -4076,7 +4076,7 @@ bool FAssetDocumentTimelinePlacementRegionAdapterDelegatesLifecycleTest::RunTest
 	Entry->SetNumberField(TEXT("Time"), 1.0);
 	TArray<TSharedPtr<FJsonValue>> DesiredValues;
 	DesiredValues.Add(MakeShared<FJsonValueObject>(Entry));
-	const TSharedPtr<FJsonValue> Desired = MakeArrayValue(MoveTemp(DesiredValues));
+	const TSharedPtr<FJsonValue> Desired = AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(DesiredValues));
 
 	TestTrue(TEXT("Adapter supports configured region"), Adapter.SupportsRegion(Context));
 	TestTrue(TEXT("Validate succeeds"), Adapter.ValidateRegion(Context, Desired).bSuccess);
@@ -4139,7 +4139,7 @@ bool FAssetDocumentTimelinePlacementRegionAdapterResolvesTracksTest::RunTest(con
 	Entry->SetStringField(TEXT("TrackName"), TEXT("Action"));
 	TArray<TSharedPtr<FJsonValue>> DesiredValues;
 	DesiredValues.Add(MakeShared<FJsonValueObject>(Entry));
-	const TSharedPtr<FJsonValue> Desired = MakeArrayValue(MoveTemp(DesiredValues));
+	const TSharedPtr<FJsonValue> Desired = AssetDocumentRegionRuntimeTest::MakeArrayValue(MoveTemp(DesiredValues));
 
 	int32 ResolverCalls = 0;
 	FAssetDocumentTimelineTrackResolver Resolver;
@@ -4328,7 +4328,7 @@ bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest
 
 	auto ValidateSingle = [&Adapter, &Context](const TSharedRef<FJsonObject>& Entry)
 	{
-		return Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(Entry)}));
+		return Adapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(Entry)}));
 	};
 
 	TSharedRef<FJsonObject> Entry = MakeValidEntry();
@@ -4385,7 +4385,7 @@ bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest
 	TSharedRef<FJsonObject> SecondBad = MakeValidEntry();
 	SecondBad->RemoveField(TEXT("Semantic"));
 	const int32 ValidateCallsBeforeDuplicateBadEntries = ValidateCalls;
-	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstBad), MakeObjectValue(SecondBad)}));
+	Result = Adapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(FirstBad), MakeObjectValue(SecondBad)}));
 	TestFalse(TEXT("Duplicate key runs before semantic hook"), Result.bSuccess);
 	TestEqual(TEXT("Duplicate key is not preempted by semantic failure"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
 	TestEqual(TEXT("Duplicate key reports second repeated entry"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
@@ -4394,14 +4394,14 @@ bool FAssetDocumentTimelinePlacementRegionAdapterValidationCoverageTest::RunTest
 	TSharedRef<FJsonObject> FirstDuplicate = MakeValidEntry();
 	TSharedRef<FJsonObject> SecondDuplicate = MakeValidEntry();
 	const int32 ValidateCallsBeforeDuplicateValidEntries = ValidateCalls;
-	Result = Adapter.ValidateRegion(Context, MakeArrayValue({MakeObjectValue(FirstDuplicate), MakeObjectValue(SecondDuplicate)}));
+	Result = Adapter.ValidateRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({MakeObjectValue(FirstDuplicate), MakeObjectValue(SecondDuplicate)}));
 	TestFalse(TEXT("Duplicate key still fails before semantic validation"), Result.bSuccess);
 	TestEqual(TEXT("Duplicate diagnostic code before semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Code : FString(), FString(TEXT("DuplicateTimelinePlacementKey")));
 	TestEqual(TEXT("Duplicate diagnostic path before semantic validation"), Result.Diagnostics.Num() > 0 ? Result.Diagnostics[0].Path : FString(), FString(TEXT("/Body/TestTimeline/1")));
 	TestEqual(TEXT("Duplicate valid entries do not call semantic hook"), ValidateCalls, ValidateCallsBeforeDuplicateValidEntries);
 
 	bool bChanged = false;
-	Result = Adapter.ApplyRegion(Context, MakeArrayValue({}), bChanged);
+	Result = Adapter.ApplyRegion(Context, AssetDocumentRegionRuntimeTest::MakeArrayValue({}), bChanged);
 	TestTrue(TEXT("Explicit empty array apply succeeds"), Result.bSuccess);
 	TestTrue(TEXT("Explicit empty array can clear/default region"), bChanged);
 

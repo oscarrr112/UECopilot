@@ -56,27 +56,27 @@ FString EditorLayoutRegionPath(const FAssetDocumentRegionContext& Context)
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
 
-FString JoinPath(const FString& Path, const FString& Token)
+FString EditorLayoutJoinPath(const FString& Path, const FString& Token)
 {
 	return FString::Printf(TEXT("%s/%s"), *Path, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Token));
 }
 
-FString JoinPath(const FString& Path, int32 Index)
+FString EditorLayoutJoinPath(const FString& Path, int32 Index)
 {
 	return FString::Printf(TEXT("%s/%d"), *Path, Index);
 }
 
 FString NodePath(const FString& LayoutPath, const FString& NodeId)
 {
-	return JoinPath(JoinPath(LayoutPath, NodesField), NodeId);
+	return EditorLayoutJoinPath(EditorLayoutJoinPath(LayoutPath, NodesField), NodeId);
 }
 
 FString CommentPath(const FString& LayoutPath, const FString& Id)
 {
-	return JoinPath(JoinPath(LayoutPath, CommentsField), Id);
+	return EditorLayoutJoinPath(EditorLayoutJoinPath(LayoutPath, CommentsField), Id);
 }
 
-FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
+FAssetDocumentCapabilityResult EditorLayoutFailure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(Path, Code, Message);
 }
@@ -99,7 +99,7 @@ FAssetDocumentCapabilityResult ReadIntegerField(
 	double Number = 0.0;
 	if (!Object->TryGetNumberField(FieldName, Number) || !IsIntegralFinite(Number))
 	{
-		return Failure(Path, Code, FString::Printf(TEXT("%s must be an int32 number"), *FieldName));
+		return EditorLayoutFailure(Path, Code, FString::Printf(TEXT("%s must be an int32 number"), *FieldName));
 	}
 	OutValue = static_cast<int32>(Number);
 	return FAssetDocumentCapabilityResult::Success();
@@ -112,12 +112,12 @@ FAssetDocumentCapabilityResult ReadVector2Object(
 	int32& OutX,
 	int32& OutY)
 {
-	FAssetDocumentCapabilityResult Result = ReadIntegerField(Object, XField, JoinPath(Path, XField), Code, OutX);
+	FAssetDocumentCapabilityResult Result = ReadIntegerField(Object, XField, EditorLayoutJoinPath(Path, XField), Code, OutX);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
-	return ReadIntegerField(Object, YField, JoinPath(Path, YField), Code, OutY);
+	return ReadIntegerField(Object, YField, EditorLayoutJoinPath(Path, YField), Code, OutY);
 }
 
 FAssetDocumentCapabilityResult RequireObjectField(
@@ -130,7 +130,7 @@ FAssetDocumentCapabilityResult RequireObjectField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (!FieldValue.IsValid() || FieldValue->Type != EJson::Object || !FieldValue->AsObject().IsValid())
 	{
-		return Failure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
+		return EditorLayoutFailure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
 	}
 
 	OutObject = FieldValue->AsObject();
@@ -148,15 +148,15 @@ FAssetDocumentCapabilityResult ReadColor(
 	double A = 1.0;
 	if (!Object->TryGetNumberField(TEXT("R"), R) || !Object->TryGetNumberField(TEXT("G"), G) || !Object->TryGetNumberField(TEXT("B"), B))
 	{
-		return Failure(Path, TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color requires numeric R, G, and B fields"));
+		return EditorLayoutFailure(Path, TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color requires numeric R, G, and B fields"));
 	}
 	if (Object->HasField(TEXT("A")) && !Object->TryGetNumberField(TEXT("A"), A))
 	{
-		return Failure(JoinPath(Path, TEXT("A")), TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color.A must be numeric"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(Path, TEXT("A")), TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color.A must be numeric"));
 	}
 	if (!FMath::IsFinite(R) || !FMath::IsFinite(G) || !FMath::IsFinite(B) || !FMath::IsFinite(A))
 	{
-		return Failure(Path, TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color fields must be finite"));
+		return EditorLayoutFailure(Path, TEXT("InvalidEditorLayoutCommentColor"), TEXT("Comment Color fields must be finite"));
 	}
 	OutColor = FLinearColor(static_cast<float>(R), static_cast<float>(G), static_cast<float>(B), static_cast<float>(A));
 	return FAssetDocumentCapabilityResult::Success();
@@ -172,8 +172,8 @@ FAssetDocumentCapabilityResult RejectUnknownFields(
 	{
 		if (!AllowedFields.Contains(Field.Key))
 		{
-			return Failure(
-				JoinPath(Path, Field.Key),
+			return EditorLayoutFailure(
+				EditorLayoutJoinPath(Path, Field.Key),
 				Code,
 				FString::Printf(TEXT("Unsupported editor layout field %s"), *Field.Key));
 		}
@@ -191,11 +191,11 @@ FAssetDocumentCapabilityResult ParseLayoutNode(
 	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, IndexPath, Object);
 	if (!Result.bSuccess)
 	{
-		return Failure(IndexPath, TEXT("InvalidEditorLayoutNode"), TEXT("EditorLayout Nodes entries must be objects"));
+		return EditorLayoutFailure(IndexPath, TEXT("InvalidEditorLayoutNode"), TEXT("EditorLayout Nodes entries must be objects"));
 	}
 
 	FString NodeId;
-	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, NodeIdField, JoinPath(IndexPath, NodeIdField), NodeId, TEXT("MissingEditorLayoutNodeId"));
+	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, NodeIdField, EditorLayoutJoinPath(IndexPath, NodeIdField), NodeId, TEXT("MissingEditorLayoutNodeId"));
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -203,7 +203,7 @@ FAssetDocumentCapabilityResult ParseLayoutNode(
 	NodeId.TrimStartAndEndInline();
 	if (NodeId.IsEmpty())
 	{
-		return Failure(JoinPath(IndexPath, NodeIdField), TEXT("MissingEditorLayoutNodeId"), TEXT("EditorLayout NodeId must not be empty"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(IndexPath, NodeIdField), TEXT("MissingEditorLayoutNodeId"), TEXT("EditorLayout NodeId must not be empty"));
 	}
 
 	OutSpec.NodeId = NodeId;
@@ -216,12 +216,12 @@ FAssetDocumentCapabilityResult ParseLayoutNode(
 	}
 
 	TSharedPtr<FJsonObject> Position;
-	Result = RequireObjectField(Object.ToSharedRef(), PositionField, JoinPath(OutSpec.Path, PositionField), Position, TEXT("InvalidEditorLayoutPosition"));
+	Result = RequireObjectField(Object.ToSharedRef(), PositionField, EditorLayoutJoinPath(OutSpec.Path, PositionField), Position, TEXT("InvalidEditorLayoutPosition"));
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
-	return ReadVector2Object(Position.ToSharedRef(), JoinPath(OutSpec.Path, PositionField), TEXT("InvalidEditorLayoutPosition"), OutSpec.X, OutSpec.Y);
+	return ReadVector2Object(Position.ToSharedRef(), EditorLayoutJoinPath(OutSpec.Path, PositionField), TEXT("InvalidEditorLayoutPosition"), OutSpec.X, OutSpec.Y);
 }
 
 FAssetDocumentCapabilityResult ParseLayoutComment(
@@ -234,11 +234,11 @@ FAssetDocumentCapabilityResult ParseLayoutComment(
 	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, IndexPath, Object);
 	if (!Result.bSuccess)
 	{
-		return Failure(IndexPath, TEXT("InvalidEditorLayoutComment"), TEXT("EditorLayout Comments entries must be objects"));
+		return EditorLayoutFailure(IndexPath, TEXT("InvalidEditorLayoutComment"), TEXT("EditorLayout Comments entries must be objects"));
 	}
 
 	FString Id;
-	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, IdField, JoinPath(IndexPath, IdField), Id, TEXT("MissingEditorLayoutCommentId"));
+	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, IdField, EditorLayoutJoinPath(IndexPath, IdField), Id, TEXT("MissingEditorLayoutCommentId"));
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -246,14 +246,14 @@ FAssetDocumentCapabilityResult ParseLayoutComment(
 	Id.TrimStartAndEndInline();
 	if (Id.IsEmpty())
 	{
-		return Failure(JoinPath(IndexPath, IdField), TEXT("MissingEditorLayoutCommentId"), TEXT("EditorLayout Comment Id must not be empty"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(IndexPath, IdField), TEXT("MissingEditorLayoutCommentId"), TEXT("EditorLayout Comment Id must not be empty"));
 	}
 
 	OutSpec.Id = Id;
 	OutSpec.Path = CommentPath(LayoutPath, Id);
 	if (!FGuid::Parse(Id, OutSpec.Guid))
 	{
-		return Failure(JoinPath(OutSpec.Path, IdField), TEXT("InvalidEditorLayoutCommentId"), TEXT("EditorLayout Comment Id must be a stable GUID string"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(OutSpec.Path, IdField), TEXT("InvalidEditorLayoutCommentId"), TEXT("EditorLayout Comment Id must be a stable GUID string"));
 	}
 
 	Result = RejectUnknownFields(Object.ToSharedRef(), OutSpec.Path, {IdField, TextField, PositionField, SizeField, ColorField}, TEXT("UnsupportedEditorLayoutCommentField"));
@@ -262,49 +262,49 @@ FAssetDocumentCapabilityResult ParseLayoutComment(
 		return Result;
 	}
 
-	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, TextField, JoinPath(OutSpec.Path, TextField), OutSpec.Text, TEXT("InvalidEditorLayoutComment"));
+	Result = FAssetDocumentJsonRegionUtils::RequireStringField(Object, TextField, EditorLayoutJoinPath(OutSpec.Path, TextField), OutSpec.Text, TEXT("InvalidEditorLayoutComment"));
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
 	TSharedPtr<FJsonObject> Position;
-	Result = RequireObjectField(Object.ToSharedRef(), PositionField, JoinPath(OutSpec.Path, PositionField), Position, TEXT("InvalidEditorLayoutCommentPosition"));
+	Result = RequireObjectField(Object.ToSharedRef(), PositionField, EditorLayoutJoinPath(OutSpec.Path, PositionField), Position, TEXT("InvalidEditorLayoutCommentPosition"));
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
-	Result = ReadVector2Object(Position.ToSharedRef(), JoinPath(OutSpec.Path, PositionField), TEXT("InvalidEditorLayoutCommentPosition"), OutSpec.X, OutSpec.Y);
+	Result = ReadVector2Object(Position.ToSharedRef(), EditorLayoutJoinPath(OutSpec.Path, PositionField), TEXT("InvalidEditorLayoutCommentPosition"), OutSpec.X, OutSpec.Y);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 
 	TSharedPtr<FJsonObject> Size;
-	Result = RequireObjectField(Object.ToSharedRef(), SizeField, JoinPath(OutSpec.Path, SizeField), Size, TEXT("InvalidEditorLayoutCommentSize"));
+	Result = RequireObjectField(Object.ToSharedRef(), SizeField, EditorLayoutJoinPath(OutSpec.Path, SizeField), Size, TEXT("InvalidEditorLayoutCommentSize"));
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
-	Result = ReadVector2Object(Size.ToSharedRef(), JoinPath(OutSpec.Path, SizeField), TEXT("InvalidEditorLayoutCommentSize"), OutSpec.Width, OutSpec.Height);
+	Result = ReadVector2Object(Size.ToSharedRef(), EditorLayoutJoinPath(OutSpec.Path, SizeField), TEXT("InvalidEditorLayoutCommentSize"), OutSpec.Width, OutSpec.Height);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 	if (OutSpec.Width <= 0 || OutSpec.Height <= 0)
 	{
-		return Failure(JoinPath(OutSpec.Path, SizeField), TEXT("InvalidEditorLayoutCommentSize"), TEXT("EditorLayout Comment Size must be positive"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(OutSpec.Path, SizeField), TEXT("InvalidEditorLayoutCommentSize"), TEXT("EditorLayout Comment Size must be positive"));
 	}
 
 	if (Object->HasField(ColorField))
 	{
 		TSharedPtr<FJsonObject> Color;
-		Result = RequireObjectField(Object.ToSharedRef(), ColorField, JoinPath(OutSpec.Path, ColorField), Color, TEXT("InvalidEditorLayoutCommentColor"));
+		Result = RequireObjectField(Object.ToSharedRef(), ColorField, EditorLayoutJoinPath(OutSpec.Path, ColorField), Color, TEXT("InvalidEditorLayoutCommentColor"));
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		Result = ReadColor(Color.ToSharedRef(), JoinPath(OutSpec.Path, ColorField), OutSpec.Color);
+		Result = ReadColor(Color.ToSharedRef(), EditorLayoutJoinPath(OutSpec.Path, ColorField), OutSpec.Color);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -343,14 +343,14 @@ FAssetDocumentCapabilityResult ParseLayout(
 		for (int32 Index = 0; Index < Nodes->Num(); ++Index)
 		{
 			FEditorLayoutNodeSpec NodeSpec;
-			Result = ParseLayoutNode((*Nodes)[Index], JoinPath(JoinPath(LayoutPath, NodesField), Index), LayoutPath, NodeSpec);
+			Result = ParseLayoutNode((*Nodes)[Index], EditorLayoutJoinPath(EditorLayoutJoinPath(LayoutPath, NodesField), Index), LayoutPath, NodeSpec);
 			if (!Result.bSuccess)
 			{
 				return Result;
 			}
 			if (SeenNodeIds.Contains(NodeSpec.NodeId))
 			{
-				return Failure(NodeSpec.Path, TEXT("DuplicateEditorLayoutNode"), TEXT("Duplicate EditorLayout node id"));
+				return EditorLayoutFailure(NodeSpec.Path, TEXT("DuplicateEditorLayoutNode"), TEXT("Duplicate EditorLayout node id"));
 			}
 			SeenNodeIds.Add(NodeSpec.NodeId);
 			OutSpec.Nodes.Add(MoveTemp(NodeSpec));
@@ -358,7 +358,7 @@ FAssetDocumentCapabilityResult ParseLayout(
 	}
 	else if (OutSpec.bHasNodes)
 	{
-		return Failure(JoinPath(LayoutPath, NodesField), TEXT("InvalidEditorLayoutNodes"), TEXT("EditorLayout Nodes must be an array"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(LayoutPath, NodesField), TEXT("InvalidEditorLayoutNodes"), TEXT("EditorLayout Nodes must be an array"));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Comments = nullptr;
@@ -369,14 +369,14 @@ FAssetDocumentCapabilityResult ParseLayout(
 		for (int32 Index = 0; Index < Comments->Num(); ++Index)
 		{
 			FEditorLayoutCommentSpec CommentSpec;
-			Result = ParseLayoutComment((*Comments)[Index], JoinPath(JoinPath(LayoutPath, CommentsField), Index), LayoutPath, CommentSpec);
+			Result = ParseLayoutComment((*Comments)[Index], EditorLayoutJoinPath(EditorLayoutJoinPath(LayoutPath, CommentsField), Index), LayoutPath, CommentSpec);
 			if (!Result.bSuccess)
 			{
 				return Result;
 			}
 			if (SeenCommentIds.Contains(CommentSpec.Id))
 			{
-				return Failure(CommentSpec.Path, TEXT("DuplicateEditorLayoutComment"), TEXT("Duplicate EditorLayout comment id"));
+				return EditorLayoutFailure(CommentSpec.Path, TEXT("DuplicateEditorLayoutComment"), TEXT("Duplicate EditorLayout comment id"));
 			}
 			SeenCommentIds.Add(CommentSpec.Id);
 			OutSpec.Comments.Add(MoveTemp(CommentSpec));
@@ -384,7 +384,7 @@ FAssetDocumentCapabilityResult ParseLayout(
 	}
 	else if (OutSpec.bHasComments)
 	{
-		return Failure(JoinPath(LayoutPath, CommentsField), TEXT("InvalidEditorLayoutComments"), TEXT("EditorLayout Comments must be an array"));
+		return EditorLayoutFailure(EditorLayoutJoinPath(LayoutPath, CommentsField), TEXT("InvalidEditorLayoutComments"), TEXT("EditorLayout Comments must be an array"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("Parsed EditorLayout"));
@@ -625,7 +625,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::Validate
 	{
 		if (!SemanticNodeIds.Contains(Node.NodeId))
 		{
-			return Failure(Node.Path, TEXT("UnknownEditorLayoutNode"), FString::Printf(TEXT("EditorLayout node '%s' does not reference an existing semantic node"), *Node.NodeId));
+			return EditorLayoutFailure(Node.Path, TEXT("UnknownEditorLayoutNode"), FString::Printf(TEXT("EditorLayout node '%s' does not reference an existing semantic node"), *Node.NodeId));
 		}
 	}
 
@@ -680,7 +680,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	FAssetDocumentEditorLayoutGraphState GraphState;
 	if (!Hooks.PrepareGraphForApply)
 	{
-		return Failure(EditorLayoutRegionPath(Context), TEXT("InvalidEditorLayoutAdapterConfig"), TEXT("EditorLayout adapter requires a graph apply hook"));
+		return EditorLayoutFailure(EditorLayoutRegionPath(Context), TEXT("InvalidEditorLayoutAdapterConfig"), TEXT("EditorLayout adapter requires a graph apply hook"));
 	}
 	Result = Hooks.PrepareGraphForApply(Context, GraphState);
 	if (!Result.bSuccess)
@@ -689,7 +689,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	}
 	if (!GraphState.Graph)
 	{
-		return Failure(EditorLayoutRegionPath(Context), TEXT("MissingEditorLayoutGraph"), TEXT("EditorLayout apply requires an editor graph"));
+		return EditorLayoutFailure(EditorLayoutRegionPath(Context), TEXT("MissingEditorLayoutGraph"), TEXT("EditorLayout apply requires an editor graph"));
 	}
 
 	for (const FEditorLayoutNodeSpec& Node : Spec.Nodes)
@@ -697,7 +697,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 		UEdGraphNode* GraphNode = GraphState.NodesById.FindRef(Node.NodeId);
 		if (!GraphNode)
 		{
-			return Failure(Node.Path, TEXT("UnknownEditorLayoutNode"), FString::Printf(TEXT("EditorLayout node '%s' does not reference an existing semantic node"), *Node.NodeId));
+			return EditorLayoutFailure(Node.Path, TEXT("UnknownEditorLayoutNode"), FString::Printf(TEXT("EditorLayout node '%s' does not reference an existing semantic node"), *Node.NodeId));
 		}
 		if (GraphNode->NodePosX != Node.X || GraphNode->NodePosY != Node.Y)
 		{

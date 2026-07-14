@@ -43,12 +43,12 @@ const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocume
 	return nullptr;
 }
 
-TSharedRef<FJsonValue> MakeBodyValue(const TSharedRef<FJsonObject>& Body)
+TSharedRef<FJsonValue> UBlueprintTestMakeBodyValue(const TSharedRef<FJsonObject>& Body)
 {
 	return StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(Body));
 }
 
-TSharedRef<FJsonObject> MakeActorParentClassRef()
+TSharedRef<FJsonObject> UBlueprintTestMakeActorParentClassRef()
 {
 	TSharedRef<FJsonObject> ParentClass = MakeShared<FJsonObject>();
 	ParentClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -226,7 +226,7 @@ bool HasBlueprintVariable(const UBlueprint* Blueprint, FName Name)
 	});
 }
 
-UBlueprint* CreateTransientActorBlueprint(const TCHAR* NamePrefix)
+UBlueprint* UBlueprintTestCreateTransientActorBlueprint(const TCHAR* NamePrefix)
 {
 	const FName BlueprintName(*FString::Printf(TEXT("%s_%s"), NamePrefix, *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
@@ -244,7 +244,7 @@ UBlueprint* CreateTransientActorBlueprint(const TCHAR* NamePrefix)
 }
 
 template <typename NodeType>
-NodeType* AddK2Node(UEdGraph* Graph, int32 X, int32 Y)
+NodeType* UBlueprintTestAddK2Node(UEdGraph* Graph, int32 X, int32 Y)
 {
 	NodeType* Node = Graph ? NewObject<NodeType>(Graph) : nullptr;
 	if (!Node)
@@ -258,9 +258,9 @@ NodeType* AddK2Node(UEdGraph* Graph, int32 X, int32 Y)
 	return Node;
 }
 
-UK2Node_IfThenElse* AddUnsupportedBranchNode(UEdGraph* Graph, int32 X, int32 Y)
+UK2Node_IfThenElse* UBlueprintTestAddUnsupportedBranchNode(UEdGraph* Graph, int32 X, int32 Y)
 {
-	UK2Node_IfThenElse* Node = AddK2Node<UK2Node_IfThenElse>(Graph, X, Y);
+	UK2Node_IfThenElse* Node = UBlueprintTestAddK2Node<UK2Node_IfThenElse>(Graph, X, Y);
 	if (Node)
 	{
 		Node->AllocateDefaultPins();
@@ -268,7 +268,7 @@ UK2Node_IfThenElse* AddUnsupportedBranchNode(UEdGraph* Graph, int32 X, int32 Y)
 	return Node;
 }
 
-bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
+bool UBlueprintTestResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -276,7 +276,7 @@ bool ResultHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FSt
 	});
 }
 
-bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& Code)
+bool UBlueprintTestResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -284,7 +284,7 @@ bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const
 	});
 }
 
-bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& Code)
+bool UBlueprintTestResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -628,29 +628,29 @@ bool FAssetDocumentUBlueprintProfileTest::RunTest(const FString&)
 	CapabilityContext.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> ValidEmptyBody = MakeShared<FJsonObject>();
-	ValidEmptyBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	ValidEmptyBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	ValidEmptyBody->SetArrayField(TEXT("UbergraphPages"), {});
 	ValidEmptyBody->SetArrayField(TEXT("FunctionGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("MacroGraphs"), {});
 	ValidEmptyBody->SetArrayField(TEXT("Timelines"), {});
-	TestTrue(TEXT("Empty graph/timeline regions pass validation"), Capability.Validate(CapabilityContext, MakeBodyValue(ValidEmptyBody)).bSuccess);
+	TestTrue(TEXT("Empty graph/timeline regions pass validation"), Capability.Validate(CapabilityContext, UBlueprintTestMakeBodyValue(ValidEmptyBody)).bSuccess);
 
 	for (const FString& DeferredRegion : {TEXT("FunctionGraphs"), TEXT("MacroGraphs"), TEXT("Timelines")})
 	{
 		TSharedRef<FJsonObject> NullBody = MakeShared<FJsonObject>();
-		NullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+		NullBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 		NullBody->SetField(DeferredRegion, MakeShared<FJsonValueNull>());
 		TestTrue(
 			FString::Printf(TEXT("Null %s passes graph/timeline region validation"), *DeferredRegion),
-			Capability.Validate(CapabilityContext, MakeBodyValue(NullBody)).bSuccess);
+			Capability.Validate(CapabilityContext, UBlueprintTestMakeBodyValue(NullBody)).bSuccess);
 	}
 
 	TSharedRef<FJsonObject> UnknownBody = MakeShared<FJsonObject>();
-	UnknownBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	UnknownBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	UnknownBody->SetObjectField(TEXT("UnexpectedSection"), MakeShared<FJsonObject>());
-	const FAssetDocumentCapabilityResult UnknownResult = Capability.Validate(CapabilityContext, MakeBodyValue(UnknownBody));
+	const FAssetDocumentCapabilityResult UnknownResult = Capability.Validate(CapabilityContext, UBlueprintTestMakeBodyValue(UnknownBody));
 	TestFalse(TEXT("Unknown Body key fails validation"), UnknownResult.bSuccess);
-	TestTrue(TEXT("Unknown Body key diagnostic is precise"), ResultHasDiagnostic(UnknownResult, TEXT("/Body/UnexpectedSection"), TEXT("UnknownBodyKey")));
+	TestTrue(TEXT("Unknown Body key diagnostic is precise"), UBlueprintTestResultHasDiagnostic(UnknownResult, TEXT("/Body/UnexpectedSection"), TEXT("UnknownBodyKey")));
 
 	return true;
 }
@@ -673,15 +673,15 @@ bool FAssetDocumentUBlueprintUnsupportedGraphProtectionTest::RunTest(const FStri
 	for (const FString& Region : ProtectedRegions)
 	{
 		TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-		Body->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+		Body->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 		TArray<TSharedPtr<FJsonValue>> Values;
 		Values.Add(MakeShared<FJsonValueObject>(MakeShared<FJsonObject>()));
 		Body->SetArrayField(Region, Values);
 
-		const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
+		const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, UBlueprintTestMakeBodyValue(Body));
 		TestFalse(FString::Printf(TEXT("Non-empty %s fails validation"), *Region), Result.bSuccess);
 		TestTrue(FString::Printf(TEXT("%s failure mentions unsupported region"), *Region), Result.Message.Contains(Region));
-		TestTrue(FString::Printf(TEXT("%s diagnostic is precise"), *Region), ResultHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Region), TEXT("UnsupportedUBlueprintRegion")));
+		TestTrue(FString::Printf(TEXT("%s diagnostic is precise"), *Region), UBlueprintTestResultHasDiagnostic(Result, FString::Printf(TEXT("/Body/%s"), *Region), TEXT("UnsupportedUBlueprintRegion")));
 	}
 
 	return true;
@@ -1223,9 +1223,9 @@ bool FAssetDocumentUBlueprintOwnedSCSComponentsValidationAndDiffTest::RunTest(co
 
 	const FAssetDocumentCapabilityResult InvalidResult = Capability.Validate(
 		ValidationContext,
-		MakeBodyValue(LoadBlueprintDocumentBody(InvalidDocument).ToSharedRef()));
+		UBlueprintTestMakeBodyValue(LoadBlueprintDocumentBody(InvalidDocument).ToSharedRef()));
 	TestFalse(TEXT("OwnedSCS component with non-Actor parent fails validation"), InvalidResult.bSuccess);
-	const bool bHasExpectedInvalidParentDiagnostic = ResultHasDiagnostic(InvalidResult, TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
+	const bool bHasExpectedInvalidParentDiagnostic = UBlueprintTestResultHasDiagnostic(InvalidResult, TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	if (!bHasExpectedInvalidParentDiagnostic)
 	{
 		for (const FAssetDocumentDiagnostic& Diagnostic : InvalidResult.Diagnostics)
@@ -1298,7 +1298,7 @@ bool FAssetDocumentUBlueprintOwnedSCSComponentsValidationAndDiffTest::RunTest(co
 		}
 
 		TArray<TSharedPtr<FJsonValue>> DiffEntries;
-		const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(Document).ToSharedRef()), DiffEntries);
+		const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(Context, UBlueprintTestMakeBodyValue(LoadBlueprintDocumentBody(Document).ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Component diff succeeds"), DiffResult.bSuccess);
 		TSharedPtr<FJsonObject> SensorDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components/Self:Sensor"));
 		TestTrue(TEXT("Component diff includes Sensor"), SensorDiff.IsValid());
@@ -1369,19 +1369,19 @@ bool FAssetDocumentUBlueprintInvalidAuthoritativeArraysTest::RunTest(const FStri
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> InterfaceObjectBody = MakeShared<FJsonObject>();
-	InterfaceObjectBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InterfaceObjectBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	InterfaceObjectBody->SetObjectField(TEXT("ImplementedInterfaces"), MakeShared<FJsonObject>());
-	TestFalse(TEXT("ImplementedInterfaces object fails validation"), Capability.Validate(Context, MakeBodyValue(InterfaceObjectBody)).bSuccess);
+	TestFalse(TEXT("ImplementedInterfaces object fails validation"), Capability.Validate(Context, UBlueprintTestMakeBodyValue(InterfaceObjectBody)).bSuccess);
 
 	TSharedRef<FJsonObject> InterfaceStringBody = MakeShared<FJsonObject>();
-	InterfaceStringBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InterfaceStringBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	InterfaceStringBody->SetStringField(TEXT("ImplementedInterfaces"), TEXT("not an array"));
-	TestFalse(TEXT("ImplementedInterfaces string fails validation"), Capability.Validate(Context, MakeBodyValue(InterfaceStringBody)).bSuccess);
+	TestFalse(TEXT("ImplementedInterfaces string fails validation"), Capability.Validate(Context, UBlueprintTestMakeBodyValue(InterfaceStringBody)).bSuccess);
 
 	TSharedRef<FJsonObject> InterfaceNullBody = MakeShared<FJsonObject>();
-	InterfaceNullBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InterfaceNullBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	InterfaceNullBody->SetField(TEXT("ImplementedInterfaces"), MakeShared<FJsonValueNull>());
-	TestFalse(TEXT("ImplementedInterfaces null fails validation"), Capability.Validate(Context, MakeBodyValue(InterfaceNullBody)).bSuccess);
+	TestFalse(TEXT("ImplementedInterfaces null fails validation"), Capability.Validate(Context, UBlueprintTestMakeBodyValue(InterfaceNullBody)).bSuccess);
 
 	return true;
 }
@@ -1483,7 +1483,7 @@ bool FAssetDocumentUBlueprintInheritedSCSOverrideTest::RunTest(const FString&)
 
 		TArray<TSharedPtr<FJsonValue>> DiffEntries;
 		const FAssetDocumentCapabilityResult DiffResult =
-			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(ChildOverrideRequest.Document).ToSharedRef()), DiffEntries);
+			Capability.Diff(Context, UBlueprintTestMakeBodyValue(LoadBlueprintDocumentBody(ChildOverrideRequest.Document).ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Inherited component diff succeeds"), DiffResult.bSuccess);
 		TSharedPtr<FJsonObject> InheritedDiff = FindDiffEntryByPath(DiffEntries, FString::Printf(TEXT("/Body/Components/%s:ParentSensor"), *ParentGeneratedClassPath));
 		TestNotNull(TEXT("Inherited component diff includes override path"), InheritedDiff.Get());
@@ -1582,7 +1582,7 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 
 		TArray<TSharedPtr<FJsonValue>> DiffEntries;
 		const FAssetDocumentCapabilityResult DiffResult =
-			Capability.Diff(Context, MakeBodyValue(LoadBlueprintDocumentBody(OverrideRequest.Document).ToSharedRef()), DiffEntries);
+			Capability.Diff(Context, UBlueprintTestMakeBodyValue(LoadBlueprintDocumentBody(OverrideRequest.Document).ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Native component diff succeeds"), DiffResult.bSuccess);
 		TSharedPtr<FJsonObject> NativeDiff = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
 		TestNotNull(TEXT("Native component diff includes alias path"), NativeDiff.Get());
@@ -1601,7 +1601,7 @@ bool FAssetDocumentUBlueprintNativeComponentOverrideTest::RunTest(const FString&
 		TSharedPtr<FJsonObject> ObjectNameBody = LoadBlueprintDocumentBody(ObjectNameDocument);
 
 		TArray<TSharedPtr<FJsonValue>> ObjectNameDiffEntries;
-		const FAssetDocumentCapabilityResult ObjectNameDiffResult = Capability.Diff(Context, MakeBodyValue(ObjectNameBody.ToSharedRef()), ObjectNameDiffEntries);
+		const FAssetDocumentCapabilityResult ObjectNameDiffResult = Capability.Diff(Context, UBlueprintTestMakeBodyValue(ObjectNameBody.ToSharedRef()), ObjectNameDiffEntries);
 		TestTrue(TEXT("Native object-name component diff succeeds"), ObjectNameDiffResult.bSuccess);
 		TSharedPtr<FJsonObject> ObjectNameNativeDiff =
 			FindDiffEntryByPath(ObjectNameDiffEntries, TEXT("/Body/Components//Script/Engine.Character:CharacterMovement"));
@@ -1710,20 +1710,20 @@ bool FAssetDocumentUBlueprintInheritedNativeAttachRootUnsupportedTest::RunTest(c
 	TSharedRef<FJsonObject> NativeBody = MakeShared<FJsonObject>();
 	NativeBody->SetObjectField(TEXT("ParentClass"), MakeClassRef(TEXT("/Script/Engine.Character")));
 	NativeBody->SetArrayField(TEXT("Components"), MakeComponentArray({NativeWithAttach}));
-	const FAssetDocumentCapabilityResult NativeResult = Capability.Validate(Context, MakeBodyValue(NativeBody));
+	const FAssetDocumentCapabilityResult NativeResult = Capability.Validate(Context, UBlueprintTestMakeBodyValue(NativeBody));
 	TestFalse(TEXT("Native component AttachTo fails validation"), NativeResult.bSuccess);
-	TestTrue(TEXT("Native AttachTo uses unsupported attach/root diagnostic"), ResultHasDiagnosticCode(NativeResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
+	TestTrue(TEXT("Native AttachTo uses unsupported attach/root diagnostic"), UBlueprintTestResultHasDiagnosticCode(NativeResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
 
 	TSharedPtr<FJsonObject> InheritedWithRoot = MakeReferencedComponent(TEXT("Inherited"), TEXT("ParentSensor"), TEXT("/Game/AssetDocumentTests/BP_UnresolvedParent.BP_UnresolvedParent_C"));
 	InheritedWithRoot->SetStringField(TEXT("Class"), TEXT("/Script/Engine.SphereComponent"));
 	InheritedWithRoot->SetBoolField(TEXT("Root"), true);
 
 	TSharedRef<FJsonObject> InheritedBody = MakeShared<FJsonObject>();
-	InheritedBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InheritedBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	InheritedBody->SetArrayField(TEXT("Components"), MakeComponentArray({InheritedWithRoot}));
-	const FAssetDocumentCapabilityResult InheritedResult = Capability.Validate(Context, MakeBodyValue(InheritedBody));
+	const FAssetDocumentCapabilityResult InheritedResult = Capability.Validate(Context, UBlueprintTestMakeBodyValue(InheritedBody));
 	TestFalse(TEXT("Inherited component Root fails validation"), InheritedResult.bSuccess);
-	TestTrue(TEXT("Inherited Root uses unsupported attach/root diagnostic"), ResultHasDiagnosticCode(InheritedResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
+	TestTrue(TEXT("Inherited Root uses unsupported attach/root diagnostic"), UBlueprintTestResultHasDiagnosticCode(InheritedResult, TEXT("UnsupportedInheritedComponentAttachRoot")));
 
 	return true;
 }
@@ -1865,7 +1865,7 @@ bool FAssetDocumentUBlueprintApplyFailureRollsBackTest::RunTest(const FString&)
 	BadRequest.bSaveAsset = false;
 	const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
 	TestFalse(TEXT("Invalid default apply fails after mutation"), BadResult.IsSuccess());
-	TestTrue(TEXT("Failure comes from default sync after mutation"), ResultHasDiagnostic(BadResult, TEXT("InvalidVariableDefaultValue")));
+	TestTrue(TEXT("Failure comes from default sync after mutation"), UBlueprintTestResultHasDiagnostic(BadResult, TEXT("InvalidVariableDefaultValue")));
 
 	UBlueprint* Blueprint = LoadBlueprintForTarget(Target);
 	TestNotNull(TEXT("Blueprint still exists after rollback failure"), Blueprint);
@@ -1935,7 +1935,7 @@ bool FAssetDocumentUBlueprintVariableMetadataAuthoritativeTest::RunTest(const FS
 			TArray<TSharedPtr<FJsonValue>>{});
 		TSharedPtr<FJsonObject> DesiredBody = LoadBlueprintDocumentBody(DesiredDocument);
 		check(DesiredBody.IsValid());
-		const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(DiffContext, MakeBodyValue(DesiredBody.ToSharedRef()), DiffEntries);
+		const FAssetDocumentCapabilityResult DiffResult = Capability.Diff(DiffContext, UBlueprintTestMakeBodyValue(DesiredBody.ToSharedRef()), DiffEntries);
 		TestTrue(TEXT("Metadata-cleared diff succeeds"), DiffResult.bSuccess);
 		if (TSharedPtr<FJsonObject> Entry = FindDiffEntryByPath(DiffEntries, TEXT("/Body/Variables/Health")))
 		{
@@ -1971,9 +1971,9 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	Context.AssetClass = UBlueprint::StaticClass();
 
 	TSharedRef<FJsonObject> ParentOnlyBody = MakeShared<FJsonObject>();
-	ParentOnlyBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	ParentOnlyBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	TArray<TSharedPtr<FJsonValue>> ParentOnlyDiffEntries;
-	const FAssetDocumentCapabilityResult ParentOnlyDiffResult = Capability.Diff(Context, MakeBodyValue(ParentOnlyBody), ParentOnlyDiffEntries);
+	const FAssetDocumentCapabilityResult ParentOnlyDiffResult = Capability.Diff(Context, UBlueprintTestMakeBodyValue(ParentOnlyBody), ParentOnlyDiffEntries);
 	TestTrue(TEXT("Parent-only diff succeeds"), ParentOnlyDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> HealthDiff = FindDiffEntryByPath(ParentOnlyDiffEntries, TEXT("/Body/Variables/Health"));
 	TestTrue(TEXT("Omitted Variables region reports existing variable as extra"), HealthDiff.IsValid());
@@ -1987,11 +1987,11 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	}
 
 	TSharedRef<FJsonObject> ChangedVariableBody = MakeShared<FJsonObject>();
-	ChangedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	ChangedVariableBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	ChangedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("125.0"))}));
 	TArray<TSharedPtr<FJsonValue>> ChangedVariableDiffEntries;
 	const FAssetDocumentCapabilityResult ChangedVariableDiffResult =
-		Capability.Diff(Context, MakeBodyValue(ChangedVariableBody), ChangedVariableDiffEntries);
+		Capability.Diff(Context, UBlueprintTestMakeBodyValue(ChangedVariableBody), ChangedVariableDiffEntries);
 	TestTrue(TEXT("Matched changed variable diff succeeds"), ChangedVariableDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> ChangedHealthDiff = FindDiffEntryByPath(ChangedVariableDiffEntries, TEXT("/Body/Variables/Health"));
 	TestTrue(TEXT("Changed variable uses semantic path"), ChangedHealthDiff.IsValid());
@@ -2006,11 +2006,11 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	}
 
 	TSharedRef<FJsonObject> MatchedVariableBody = MakeShared<FJsonObject>();
-	MatchedVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	MatchedVariableBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	MatchedVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("100.0"))}));
 	TArray<TSharedPtr<FJsonValue>> MatchedVariableDiffEntries;
 	const FAssetDocumentCapabilityResult MatchedVariableDiffResult =
-		Capability.Diff(Context, MakeBodyValue(MatchedVariableBody), MatchedVariableDiffEntries);
+		Capability.Diff(Context, UBlueprintTestMakeBodyValue(MatchedVariableBody), MatchedVariableDiffEntries);
 	TestTrue(TEXT("Matched unchanged variable diff succeeds"), MatchedVariableDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> MatchedHealthDiff = FindDiffEntryByPath(MatchedVariableDiffEntries, TEXT("/Body/Variables/Health"));
 	TestTrue(TEXT("Matched unchanged variable uses semantic path"), MatchedHealthDiff.IsValid());
@@ -2022,11 +2022,11 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	}
 
 	TSharedRef<FJsonObject> CaseVariantVariableBody = MakeShared<FJsonObject>();
-	CaseVariantVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	CaseVariantVariableBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	CaseVariantVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("health"), TEXT("100.0"))}));
 	TArray<TSharedPtr<FJsonValue>> CaseVariantVariableDiffEntries;
 	const FAssetDocumentCapabilityResult CaseVariantVariableDiffResult =
-		Capability.Diff(Context, MakeBodyValue(CaseVariantVariableBody), CaseVariantVariableDiffEntries);
+		Capability.Diff(Context, UBlueprintTestMakeBodyValue(CaseVariantVariableBody), CaseVariantVariableDiffEntries);
 	TestTrue(TEXT("Case-variant variable diff succeeds"), CaseVariantVariableDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> CaseVariantHealthDiff = FindDiffEntryByPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/Health"));
 	TestTrue(TEXT("Case-variant variable keeps current semantic path"), CaseVariantHealthDiff.IsValid());
@@ -2041,11 +2041,11 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 		FindDiffEntryByExactPath(CaseVariantVariableDiffEntries, TEXT("/Body/Variables/health")).IsValid());
 
 	TSharedRef<FJsonObject> DesiredVariableBody = MakeShared<FJsonObject>();
-	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	DesiredVariableBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	DesiredVariableBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("NewScore"), TEXT("7.0"))}));
 	TArray<TSharedPtr<FJsonValue>> DesiredVariableDiffEntries;
 	const FAssetDocumentCapabilityResult DesiredVariableDiffResult =
-		Capability.Diff(Context, MakeBodyValue(DesiredVariableBody), DesiredVariableDiffEntries);
+		Capability.Diff(Context, UBlueprintTestMakeBodyValue(DesiredVariableBody), DesiredVariableDiffEntries);
 	TestTrue(TEXT("Desired-only variable diff succeeds"), DesiredVariableDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> NewVariableDiff = FindDiffEntryByPath(DesiredVariableDiffEntries, TEXT("/Body/Variables/NewScore"));
 	TestTrue(TEXT("Desired-only variable uses semantic path"), NewVariableDiff.IsValid());
@@ -2065,10 +2065,10 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 	DesiredInterfaces.Add(MakeShared<FJsonValueObject>(InterfaceEntry));
 
 	TSharedRef<FJsonObject> InterfaceBody = MakeShared<FJsonObject>();
-	InterfaceBody->SetObjectField(TEXT("ParentClass"), MakeActorParentClassRef());
+	InterfaceBody->SetObjectField(TEXT("ParentClass"), UBlueprintTestMakeActorParentClassRef());
 	InterfaceBody->SetArrayField(TEXT("ImplementedInterfaces"), DesiredInterfaces);
 	TArray<TSharedPtr<FJsonValue>> InterfaceDiffEntries;
-	const FAssetDocumentCapabilityResult InterfaceDiffResult = Capability.Diff(Context, MakeBodyValue(InterfaceBody), InterfaceDiffEntries);
+	const FAssetDocumentCapabilityResult InterfaceDiffResult = Capability.Diff(Context, UBlueprintTestMakeBodyValue(InterfaceBody), InterfaceDiffEntries);
 	TestTrue(TEXT("Interface diff succeeds"), InterfaceDiffResult.bSuccess);
 	TSharedPtr<FJsonObject> InterfaceDiff = FindDiffEntryByPath(InterfaceDiffEntries, TEXT("/Body/ImplementedInterfaces//Script/Engine.ActorSoundParameterInterface"));
 	TestTrue(TEXT("Missing desired interface is reported"), InterfaceDiff.IsValid());
@@ -2090,7 +2090,7 @@ bool FAssetDocumentUBlueprintDiffExplicitRegionsTest::RunTest(const FString&)
 
 		TArray<TSharedPtr<FJsonValue>> MatchedInterfaceDiffEntries;
 		const FAssetDocumentCapabilityResult MatchedInterfaceDiffResult =
-			Capability.Diff(Context, MakeBodyValue(InterfaceBody), MatchedInterfaceDiffEntries);
+			Capability.Diff(Context, UBlueprintTestMakeBodyValue(InterfaceBody), MatchedInterfaceDiffEntries);
 		TestTrue(TEXT("Matched interface diff succeeds"), MatchedInterfaceDiffResult.bSuccess);
 		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
 			FindDiffEntryByPath(MatchedInterfaceDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
@@ -2112,7 +2112,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const FString&)
 {
-	UBlueprint* Blueprint = CreateTransientActorBlueprint(TEXT("BP_ExtractSkippedEvidence"));
+	UBlueprint* Blueprint = UBlueprintTestCreateTransientActorBlueprint(TEXT("BP_ExtractSkippedEvidence"));
 	TestNotNull(TEXT("Transient actor Blueprint is created"), Blueprint);
 	UEdGraph* Graph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
 	TestNotNull(TEXT("Transient actor Blueprint has an EventGraph"), Graph);
@@ -2127,7 +2127,7 @@ bool FAssetDocumentUBlueprintExtractSkipsUnsupportedPinTypesTest::RunTest(const 
 	Scores.VarType.PinCategory = UEdGraphSchema_K2::PC_Int;
 	Scores.VarType.ContainerType = EPinContainerType::Array;
 	Blueprint->NewVariables.Add(Scores);
-	AddUnsupportedBranchNode(Graph, 320, 0);
+	UBlueprintTestAddUnsupportedBranchNode(Graph, 320, 0);
 
 	const FUBlueprintAssetDocumentCapability Capability;
 	FAssetDocumentCapabilityContext Context;
