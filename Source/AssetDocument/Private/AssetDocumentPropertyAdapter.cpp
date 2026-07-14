@@ -145,7 +145,10 @@ TSharedPtr<FJsonValue> FAssetDocumentPropertyAdapter::ExtractPropertyValue(FProp
 	return FPropertySetterUtils::ExtractPropertyToJson(Property, ValuePtr);
 }
 
-TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(UObject* Object, bool bSkipDefaults)
+TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(
+	UObject* Object,
+	bool bSkipDefaults,
+	const TSet<FName>* ExcludedPropertyNames)
 {
 	if (!Object)
 	{
@@ -159,7 +162,8 @@ TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::ExtractWritableProperties
 	for (TFieldIterator<FProperty> PropertyIt(ObjectClass); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
-		if (!IsWritableProperty(Property))
+		if ((ExcludedPropertyNames && ExcludedPropertyNames->Contains(Property->GetFName()))
+			|| !IsWritableProperty(Property))
 		{
 			continue;
 		}
@@ -184,7 +188,10 @@ TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::ExtractWritableProperties
 	return PropertiesJson;
 }
 
-TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(UClass* Class, UObject* CurrentObject)
+TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(
+	UClass* Class,
+	UObject* CurrentObject,
+	const TSet<FName>* ExcludedPropertyNames)
 {
 	if (!Class)
 	{
@@ -212,6 +219,10 @@ TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(UClass*
 	{
 		FProperty* Property = *PropertyIt;
 		const FString PropertyName = Property->GetName();
+		if (ExcludedPropertyNames && ExcludedPropertyNames->Contains(Property->GetFName()))
+		{
+			continue;
+		}
 
 		auto AddSkipped = [&SkippedRows, &PropertyName](const FString& Reason)
 		{

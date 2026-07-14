@@ -6,6 +6,7 @@
 #include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
+#include "AssetDocumentManagedPropertyPartition.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
@@ -788,6 +789,15 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 		Properties = *PropertiesPtr;
 	}
 
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+	const FAssetDocumentCapabilityResult ManagedPropertyResult =
+		FAssetDocumentManagedPropertyPartition::ValidateTopLevelProperties(ProfileResolution.ExactProfile.Get(), Properties);
+	if (!ManagedPropertyResult.bSuccess)
+	{
+		return MakeCapabilityValidationFailure(ManagedPropertyResult, Target, NormalizedFilePath);
+	}
+
 	if (Document->HasField(TEXT("Body")))
 	{
 		TSharedPtr<FJsonValue> BodyValue = Document->TryGetField(TEXT("Body"));
@@ -796,7 +806,6 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 			return MakeFailure(TEXT("Body is required when present"));
 		}
 
-		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
 		if (!ProfileResolution.ExactProfile.IsValid())
 		{
 			FAssetDocumentResult Result = MakeFailure(FString::Printf(TEXT("Body is not supported for class '%s'"), *ResolvedClass->GetPathName()));
@@ -1140,6 +1149,15 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		Properties = *PropertiesPtr;
 	}
 
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
+	const FAssetDocumentCapabilityResult ManagedPropertyResult =
+		FAssetDocumentManagedPropertyPartition::ValidateTopLevelProperties(ProfileResolution.ExactProfile.Get(), Properties);
+	if (!ManagedPropertyResult.bSuccess)
+	{
+		return MakeCapabilityValidationFailure(ManagedPropertyResult, Target, NormalizedSourceDocumentPath);
+	}
+
 	FAssetDocumentPropertyApplyResult PreflightResult = FAssetDocumentPropertyAdapter::PreflightProperties(ResolvedClass, Properties);
 	if (!PreflightResult.bSuccess)
 	{
@@ -1201,7 +1219,6 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			return Result;
 		}
 
-		const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
 		if (!ProfileResolution.ExactProfile.IsValid())
 		{
 			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
@@ -1416,7 +1433,13 @@ FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectR
 		return ResolveResult;
 	}
 
-	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(ResolvedTarget.Class, ResolvedTarget.Asset);
+	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(GetProfileRegistry(), ResolvedTarget.Class);
+	const TSet<FName> ManagedPropertyNames =
+		FAssetDocumentManagedPropertyPartition::CollectTopLevelPropertyNames(ProfileResolution.ExactProfile.Get());
+	TSharedPtr<FJsonObject> Payload = FAssetDocumentPropertyAdapter::InspectProperties(
+		ResolvedTarget.Class,
+		ResolvedTarget.Asset,
+		&ManagedPropertyNames);
 	if (!Payload.IsValid())
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(TEXT("Failed to inspect reflected properties"));
@@ -1550,8 +1573,15 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 		return Result;
 	}
 
+	const FAssetDocumentProfileResolution ProfileResolution =
+		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
+	const TSet<FName> ManagedPropertyNames =
+		FAssetDocumentManagedPropertyPartition::CollectTopLevelPropertyNames(ProfileResolution.ExactProfile.Get());
 	const bool bSkipDefaults = Request.bDiffOnly && !Request.bIncludeAllWritable;
-	TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(Asset, bSkipDefaults);
+	TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(
+		Asset,
+		bSkipDefaults,
+		&ManagedPropertyNames);
 	if (!Properties.IsValid())
 	{
 		Properties = MakeShared<FJsonObject>();
@@ -1565,7 +1595,6 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 	Document->SetStringField(TEXT("Action"), TEXT("CreateOrUpdate"));
 	Document->SetObjectField(TEXT("Properties"), Properties);
 
-	const FAssetDocumentProfileResolution ProfileResolution = ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), Asset->GetClass());
 	if (ProfileResolution.ExactProfile.IsValid())
 	{
 		if (const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body")))
