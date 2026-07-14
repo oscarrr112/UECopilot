@@ -2,9 +2,13 @@
   "mcpServers": {
     "ue-copilot": {
       "command": "node",
-      "args": ["--watch", "E:/GameDev/PluginsWarehouse/Plugins/UECopilot/MCP/dist/index.js"],
+      "args": ["/Volumes/External/Unreal/Projects/UECopilotWorktrees/dev-environment/MCP/dist/index.js"],
       "env": {
-        "UE_API_BASE": "http://localhost:8559"
+        "UE_API_BASE": "http://127.0.0.1:8559",
+        "UE_MCP_PYTHON": "python3",
+        "UE_MCP_SIDECAR_SCRIPT": "/Volumes/External/Unreal/Projects/UECopilotWorktrees/dev-environment/MCP/assetfactory_mcp_server.py",
+        "UE_EDITOR_CMD": "/Volumes/External/Unreal/Engines/UnrealEngine/Engine/Binaries/Mac/UnrealEditor-Cmd",
+        "UE_PROJECT_PATH": "/Volumes/External/Unreal/Projects/AssetFactorySandbox/AssetFactorySandbox.uproject"
       }
     }
   }
