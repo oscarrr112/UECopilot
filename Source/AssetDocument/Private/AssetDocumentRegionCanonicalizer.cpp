@@ -269,6 +269,167 @@ void NormalizeEmptyGeneratedContainers(const TSharedPtr<FJsonValue>& Value)
 	}
 }
 
+bool IsBehaviorTreeGeneratedEmptyArrayField(const FString& FieldName, const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return false;
+	}
+
+	if ((FieldName == TEXT("Services")
+		|| FieldName == TEXT("Children")
+		|| FieldName == TEXT("Decorators")
+		|| FieldName == TEXT("DecoratorLogic")
+		|| FieldName == TEXT("RootDecorators")
+		|| FieldName == TEXT("RootDecoratorLogic"))
+		&& Value->Type == EJson::Array
+		&& Value->AsArray().Num() == 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+		{
+			NormalizeBehaviorTreePostApplyValue(Entry);
+		}
+		return;
+	}
+
+	if (Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TArray<FString> FieldNames;
+	Object->Values.GenerateKeyArray(FieldNames);
+
+	TArray<FString> FieldsToRemove;
+	for (const FString& FieldName : FieldNames)
+	{
+		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (!FieldValue || !FieldValue->IsValid())
+		{
+			continue;
+		}
+
+		NormalizeBehaviorTreePostApplyValue(*FieldValue);
+		if (IsBehaviorTreeGeneratedEmptyArrayField(FieldName, *FieldValue))
+		{
+			FieldsToRemove.Add(FieldName);
+		}
+	}
+
+	for (const FString& FieldName : FieldsToRemove)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+double NormalizeEditorLayoutNumber(double Value)
+{
+	if (FMath::IsNearlyEqual(Value, FMath::RoundToDouble(Value), 0.000001))
+	{
+		return FMath::RoundToDouble(Value);
+	}
+	return FMath::RoundToDouble(Value * 1000000.0) / 1000000.0;
+}
+
+FString GetObjectFieldStringOrEmpty(const TSharedPtr<FJsonValue>& Value, const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject> Object = Value.IsValid() && Value->Type == EJson::Object ? Value->AsObject() : nullptr;
+	if (!Object.IsValid())
+	{
+		return FString();
+	}
+	FString FieldValue;
+	Object->TryGetStringField(FieldName, FieldValue);
+	return FieldValue;
+}
+
+void SortObjectArrayByField(const TSharedPtr<FJsonObject>& Object, const FString& ArrayField, const FString& SortField)
+{
+	const TArray<TSharedPtr<FJsonValue>>* ExistingArray = nullptr;
+	if (!Object.IsValid() || !Object->TryGetArrayField(ArrayField, ExistingArray) || !ExistingArray)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> SortedArray = *ExistingArray;
+	SortedArray.Sort([&SortField](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return GetObjectFieldStringOrEmpty(Left, SortField) < GetObjectFieldStringOrEmpty(Right, SortField);
+	});
+	Object->SetArrayField(ArrayField, MoveTemp(SortedArray));
+}
+
+void NormalizeEditorLayoutValue(const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Value.IsValid())
+	{
+		return;
+	}
+
+	if (Value->Type == EJson::Array)
+	{
+		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
+		{
+			NormalizeEditorLayoutValue(Entry);
+		}
+		return;
+	}
+
+	if (Value->Type != EJson::Object)
+	{
+		return;
+	}
+
+	const TSharedPtr<FJsonObject> Object = Value->AsObject();
+	if (!Object.IsValid())
+	{
+		return;
+	}
+
+	TArray<FString> FieldNames;
+	Object->Values.GenerateKeyArray(FieldNames);
+	for (const FString& FieldName : FieldNames)
+	{
+		TSharedPtr<FJsonValue>* FieldValue = Object->Values.Find(FieldName);
+		if (!FieldValue || !FieldValue->IsValid())
+		{
+			continue;
+		}
+
+		if ((*FieldValue)->Type == EJson::Number)
+		{
+			Object->SetNumberField(FieldName, NormalizeEditorLayoutNumber((*FieldValue)->AsNumber()));
+			continue;
+		}
+
+		NormalizeEditorLayoutValue(*FieldValue);
+	}
+
+	SortObjectArrayByField(Object, TEXT("Nodes"), TEXT("NodeId"));
+	SortObjectArrayByField(Object, TEXT("Comments"), TEXT("Id"));
+}
+
 FString GetManagedPropertyLeafName(const FString& PropertyPath)
 {
 	FString LeafName = PropertyPath;
@@ -1036,6 +1197,62 @@ const IAssetDocumentRegionCanonicalizationStrategy& GetWidgetBlueprintAnimations
 	return Strategy;
 }
 
+class FAssetDocumentBehaviorTreePostApplyCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
+{
+public:
+	virtual TSharedPtr<FJsonValue> CanonicalizeForHash(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = GetIdentityStrategy().CanonicalizeForHash(Context, RegionValue);
+		NormalizeBehaviorTreePostApplyValue(CanonicalValue);
+		return CanonicalValue;
+	}
+
+	virtual TSharedPtr<FJsonValue> CanonicalizeForSidecarWriteback(
+		const FAssetDocumentRegionCanonicalizeContext&,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = CloneJsonValuePreservingShape(RegionValue);
+		NormalizeBehaviorTreePostApplyValue(CanonicalValue);
+		return CanonicalValue;
+	}
+};
+
+const IAssetDocumentRegionCanonicalizationStrategy& GetBehaviorTreePostApplyStrategy()
+{
+	static FAssetDocumentBehaviorTreePostApplyCanonicalizationStrategy Strategy;
+	return Strategy;
+}
+
+class FAssetDocumentEditorLayoutCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
+{
+public:
+	virtual TSharedPtr<FJsonValue> CanonicalizeForHash(
+		const FAssetDocumentRegionCanonicalizeContext& Context,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = GetIdentityStrategy().CanonicalizeForHash(Context, RegionValue);
+		NormalizeEditorLayoutValue(CanonicalValue);
+		return CanonicalValue;
+	}
+
+	virtual TSharedPtr<FJsonValue> CanonicalizeForSidecarWriteback(
+		const FAssetDocumentRegionCanonicalizeContext&,
+		const TSharedPtr<FJsonValue>& RegionValue) const override
+	{
+		TSharedPtr<FJsonValue> CanonicalValue = CloneJsonValuePreservingShape(RegionValue);
+		NormalizeEditorLayoutValue(CanonicalValue);
+		return CanonicalValue;
+	}
+};
+
+const IAssetDocumentRegionCanonicalizationStrategy& GetEditorLayoutStrategy()
+{
+	static FAssetDocumentEditorLayoutCanonicalizationStrategy Strategy;
+	return Strategy;
+}
+
 class FAssetDocumentAnimSequencePostApplyCanonicalizationStrategy final : public IAssetDocumentRegionCanonicalizationStrategy
 {
 public:
@@ -1078,6 +1295,8 @@ const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*>& GetBuilt
 {
 	static const TMap<FName, const IAssetDocumentRegionCanonicalizationStrategy*> Strategies = {
 		{FName(TEXT("AnimSequencePostApply")), &GetAnimSequencePostApplyStrategy()},
+		{FName(TEXT("BehaviorTreePostApply")), &GetBehaviorTreePostApplyStrategy()},
+		{FName(TEXT("EditorLayout")), &GetEditorLayoutStrategy()},
 		{FName(TEXT("UBlueprintGraph")), &GetUBlueprintGraphStrategy()},
 		{FName(TEXT("WidgetBlueprintAnimations")), &GetWidgetBlueprintAnimationsStrategy()},
 		{FName(TEXT("WidgetBlueprintWidgetVariableGuids")), &GetWidgetBlueprintWidgetVariableGuidsStrategy()},

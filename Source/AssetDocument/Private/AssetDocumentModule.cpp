@@ -9,6 +9,8 @@
 #include "Profiles/AnimBlueprintAssetDocumentProfile.h"
 #include "Profiles/AnimMontageAssetDocumentProfile.h"
 #include "Profiles/AnimSequenceAssetDocumentProfile.h"
+#include "Profiles/BehaviorTreeAssetDocumentProfile.h"
+#include "Profiles/BlackboardDataAssetDocumentProfile.h"
 #include "Profiles/UBlueprintAssetDocumentProfile.h"
 #include "Profiles/WidgetBlueprintAssetDocumentProfile.h"
 
@@ -23,6 +25,8 @@ void FAssetDocumentModule::StartupModule()
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimBlueprintAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimMontageAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FAnimSequenceAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FBlackboardDataAssetDocumentProfile>());
+	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FBehaviorTreeAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FUBlueprintAssetDocumentProfile>());
 	FAssetDocumentService::GetProfileRegistry().Register(MakeShared<FWidgetBlueprintAssetDocumentProfile>());
 	Service = MakeShared<FAssetDocumentService>();
