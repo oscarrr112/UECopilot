@@ -5,10 +5,16 @@
 #include "AssetDocumentProfile.h"
 #include "AssetDocumentRegion.h"
 
+class UBlackboardData;
+
 class FBlackboardDataAssetDocumentCapability final : public IAssetDocumentCapability
 {
 public:
 	static TArray<FName> GetCanonicalBodyKeys();
+
+#if WITH_DEV_AUTOMATION_TESTS
+	static void FailNextLiveApplyAfterMutationForTest(TFunction<void(UBlackboardData*)> BeforeFailure = {});
+#endif
 
 	virtual FName GetName() const override;
 	virtual TArray<FName> GetInternalAdapterNames() const override;

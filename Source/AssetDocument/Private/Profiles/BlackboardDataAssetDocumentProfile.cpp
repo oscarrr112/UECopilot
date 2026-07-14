@@ -10,10 +10,17 @@
 
 #include "BehaviorTree/BlackboardData.h"
 #include "Dom/JsonValue.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectHash.h"
 #include "Misc/PackageName.h"
 
 namespace
 {
+#if WITH_DEV_AUTOMATION_TESTS
+bool bBlackboardFailNextLiveApplyAfterMutationForTest = false;
+TFunction<void(UBlackboardData*)> BlackboardBeforeForcedLiveApplyFailureForTest;
+#endif
+
 FString BlackboardRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
@@ -238,6 +245,68 @@ FAssetDocumentCapabilityResult ValidateBlackboardDesiredInheritance(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated Blackboard parent and local key inheritance"));
 }
 
+TSet<UObject*> SnapshotBlackboardOwnedObjects(UBlackboardData* Blackboard)
+{
+	TSet<UObject*> OwnedObjects;
+	if (Blackboard)
+	{
+		ForEachObjectWithOuter(Blackboard, [&OwnedObjects](UObject* Object)
+		{
+			OwnedObjects.Add(Object);
+		}, true);
+	}
+	return OwnedObjects;
+}
+
+bool MoveNewBlackboardOwnedObjectsToTransient(
+	UBlackboardData* Blackboard,
+	const TSet<UObject*>& OriginalOwnedObjects)
+{
+	if (!Blackboard)
+	{
+		return true;
+	}
+
+	TSet<UObject*> NewOwnedObjects;
+	ForEachObjectWithOuter(Blackboard, [&OriginalOwnedObjects, &NewOwnedObjects](UObject* Object)
+	{
+		if (Object && !OriginalOwnedObjects.Contains(Object))
+		{
+			NewOwnedObjects.Add(Object);
+		}
+	}, true);
+
+	TArray<UObject*> NewOwnedRoots;
+	for (UObject* Object : NewOwnedObjects)
+	{
+		if (Object && !NewOwnedObjects.Contains(Object->GetOuter()))
+		{
+			NewOwnedRoots.Add(Object);
+		}
+	}
+	bool bCleanupSucceeded = true;
+	for (UObject* Object : NewOwnedRoots)
+	{
+		const FName TransientName = MakeUniqueObjectName(GetTransientPackage(), Object->GetClass(), Object->GetFName());
+		Object->SetFlags(RF_Transient);
+		Object->ClearFlags(RF_Public | RF_Standalone);
+		bCleanupSucceeded &= Object->Rename(
+			*TransientName.ToString(),
+			GetTransientPackage(),
+			REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+	}
+
+	const TSet<UObject*> RemainingOwnedObjects = SnapshotBlackboardOwnedObjects(Blackboard);
+	for (UObject* Object : RemainingOwnedObjects)
+	{
+		if (!OriginalOwnedObjects.Contains(Object))
+		{
+			bCleanupSucceeded = false;
+		}
+	}
+	return bCleanupSucceeded;
+}
+
 TSharedPtr<FJsonValue> BlackboardMakeAssetRefValue(const UBlackboardData* Blackboard)
 {
 	if (!Blackboard)
@@ -331,6 +400,7 @@ public:
 				Blackboard->UpdateParentKeys();
 				Blackboard->UpdateKeyIDs();
 				Blackboard->UpdateIfHasSynchronizedKeys();
+				Blackboard->PropagateKeyChangesToDerivedBlackboardAssets();
 				Blackboard->MarkPackageDirty();
 			}
 		}
@@ -496,11 +566,45 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 	}
 
 	UBlackboardData* Blackboard = Cast<UBlackboardData>(Context.Asset);
+	if (Blackboard && !Context.bIsDryRun)
+	{
+		const FName StagingName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			UBlackboardData::StaticClass(),
+			TEXT("AssetDocumentBlackboardStaging"));
+		UBlackboardData* StagingBlackboard = DuplicateObject<UBlackboardData>(
+			Blackboard,
+			GetTransientPackage(),
+			StagingName);
+		if (!StagingBlackboard)
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				TEXT("/Body"),
+				TEXT("BlackboardStagingFailed"),
+				TEXT("Failed to create transient BlackboardData staging asset"));
+		}
+		StagingBlackboard->SetFlags(RF_Transient);
+		FAssetDocumentCapabilityContext StagingContext = Context;
+		StagingContext.Asset = StagingBlackboard;
+		StagingContext.bIsDryRun = false;
+		TSet<FName> StagedRegions;
+		Result = BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+			[&StagingContext, &BodyJson, &StagedRegions](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
+			{
+				return Dispatcher.ApplyBody(StagingContext, BodyJson, StagedRegions);
+			}));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
 	UBlackboardData* OriginalParent = Blackboard ? Blackboard->Parent.Get() : nullptr;
 	const TArray<FBlackboardEntry> OriginalKeys = Blackboard ? Blackboard->Keys : TArray<FBlackboardEntry>();
 #if WITH_EDITORONLY_DATA
 	const TArray<FBlackboardEntry> OriginalParentKeys = Blackboard ? Blackboard->ParentKeys : TArray<FBlackboardEntry>();
 #endif
+	const TSet<UObject*> OriginalOwnedObjects = SnapshotBlackboardOwnedObjects(Blackboard);
 	UPackage* Package = Blackboard ? Blackboard->GetOutermost() : nullptr;
 	const bool bWasDirty = Package && Package->IsDirty();
 
@@ -510,6 +614,22 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 		{
 			return Dispatcher.ApplyBody(Context, BodyJson, AppliedRegions);
 		}));
+#if WITH_DEV_AUTOMATION_TESTS
+	if (Result.bSuccess && Blackboard && bBlackboardFailNextLiveApplyAfterMutationForTest)
+	{
+		bBlackboardFailNextLiveApplyAfterMutationForTest = false;
+		TFunction<void(UBlackboardData*)> BeforeFailure = MoveTemp(BlackboardBeforeForcedLiveApplyFailureForTest);
+		BlackboardBeforeForcedLiveApplyFailureForTest = {};
+		if (BeforeFailure)
+		{
+			BeforeFailure(Blackboard);
+		}
+		Result = FAssetDocumentJsonRegionUtils::Failure(
+			TEXT("/Body"),
+			TEXT("ForcedBlackboardLiveApplyFailure"),
+			TEXT("Forced BlackboardData live apply failure for automation coverage"));
+	}
+#endif
 	if (!Result.bSuccess && Blackboard)
 	{
 		Blackboard->Parent = OriginalParent;
@@ -520,6 +640,15 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 		Blackboard->UpdateKeyIDs();
 		Blackboard->UpdateIfHasSynchronizedKeys();
 		UBlackboardData::OnUpdateKeys.Broadcast(Blackboard);
+		Blackboard->PropagateKeyChangesToDerivedBlackboardAssets();
+		if (!MoveNewBlackboardOwnedObjectsToTransient(Blackboard, OriginalOwnedObjects))
+		{
+			FAssetDocumentDiagnostic CleanupDiagnostic;
+			CleanupDiagnostic.Path = TEXT("/Body");
+			CleanupDiagnostic.Code = TEXT("BlackboardRollbackCleanupFailed");
+			CleanupDiagnostic.Message = TEXT("BlackboardData rollback could not detach every newly owned UObject");
+			Result.Diagnostics.Add(MoveTemp(CleanupDiagnostic));
+		}
 		if (Package && !bWasDirty)
 		{
 			Package->SetDirtyFlag(false);
@@ -527,6 +656,15 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 	}
 	return Result;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+void FBlackboardDataAssetDocumentCapability::FailNextLiveApplyAfterMutationForTest(
+	TFunction<void(UBlackboardData*)> BeforeFailure)
+{
+	bBlackboardFailNextLiveApplyAfterMutationForTest = true;
+	BlackboardBeforeForcedLiveApplyFailureForTest = MoveTemp(BeforeFailure);
+}
+#endif
 
 FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const
 {

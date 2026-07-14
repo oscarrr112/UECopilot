@@ -436,6 +436,47 @@ int32 CountBlackboardKeyTypeChildren(UBlackboardData* Blackboard)
 	return Count;
 }
 
+bool BlackboardHasCachedParentKey(const UBlackboardData* Blackboard, const FName KeyName)
+{
+#if WITH_EDITORONLY_DATA
+	return Blackboard && Blackboard->ParentKeys.ContainsByPredicate([KeyName](const FBlackboardEntry& Entry)
+	{
+		return Entry.EntryName == KeyName;
+	});
+#else
+	return false;
+#endif
+}
+
+TSet<UObject*> CollectBlackboardOwnedObjects(UBlackboardData* Blackboard)
+{
+	TSet<UObject*> OwnedObjects;
+	if (Blackboard)
+	{
+		ForEachObjectWithOuter(Blackboard, [&OwnedObjects](UObject* Object)
+		{
+			OwnedObjects.Add(Object);
+		}, true);
+	}
+	return OwnedObjects;
+}
+
+bool HaveSameObjectPointers(const TSet<UObject*>& Left, const TSet<UObject*>& Right)
+{
+	if (Left.Num() != Right.Num())
+	{
+		return false;
+	}
+	for (UObject* Object : Left)
+	{
+		if (!Right.Contains(Object))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 bool ExpectRepeatedApplyPreservesSingleKeyObject(
 	FAutomationTestBase& Test,
 	const FString& Target,
@@ -2485,6 +2526,180 @@ bool FAssetDocumentBlackboardDataProductionStagingRollbackTest::RunTest(const FS
 		TestEqual(TEXT("Stable key object identity remains unchanged"), AuthoredKeys[0]->KeyType.Get(), OriginalKeyObject);
 		TestEqual(TEXT("Stable key default remains unchanged"), CastChecked<UBlackboardKeyType_Int>(AuthoredKeys[0]->KeyType)->DefaultValue, OriginalDefault);
 	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataProductionParentChangeRefreshesDerivedCachesTest,
+	"AssetFactory.AssetDocument.BlackboardData.Production.ParentChangeRefreshesLoadedDerivedCaches",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataProductionParentChangeRefreshesDerivedCachesTest::RunTest(const FString&)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString ParentATarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentRefresh_A_%s"), *Suffix);
+	const FString ParentBTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentRefresh_B_%s"), *Suffix);
+	const FString Target = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentRefresh_Target_%s"), *Suffix);
+	const FString DerivedTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentRefresh_Derived_%s"), *Suffix);
+
+	TSharedRef<FJsonObject> SyncedParentKey = BlackboardTestMakeBlackboardKeyJson(TEXT("ParentBSynced"), TEXT("Bool"));
+	SyncedParentKey->SetBoolField(TEXT("bInstanceSynced"), true);
+	FAssetDocumentService Service;
+	TestTrue(TEXT("Parent A fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		ParentATarget,
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("ParentAOnly"), TEXT("Bool"))})))).IsSuccess());
+	TestTrue(TEXT("Parent B fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		ParentBTarget,
+		BlackboardTestMakeBlackboardDataBody(nullptr, {
+			BlackboardTestMakeBlackboardKeyJson(TEXT("ParentBOnly"), TEXT("Bool")),
+			SyncedParentKey,
+		})))).IsSuccess());
+	TestTrue(TEXT("Target fixture applies with Parent A"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		Target,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(ParentATarget),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("TargetLocal"), TEXT("Int"))})))).IsSuccess());
+	TestTrue(TEXT("Derived fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		DerivedTarget,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(Target),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("DerivedLocal"), TEXT("Float"))})))).IsSuccess());
+
+	UBlackboardData* TargetBlackboard = LoadBlackboardForTarget(Target);
+	UBlackboardData* DerivedBlackboard = LoadBlackboardForTarget(DerivedTarget);
+	TestNotNull(TEXT("Target fixture loads"), TargetBlackboard);
+	TestNotNull(TEXT("Derived fixture loads"), DerivedBlackboard);
+	if (!TargetBlackboard || !DerivedBlackboard)
+	{
+		return false;
+	}
+	TestTrue(TEXT("Derived initially caches Parent A key"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentAOnly")));
+	TestFalse(TEXT("Derived initially has no synchronized keys"), DerivedBlackboard->HasSynchronizedKeys());
+	const int32 OriginalFirstKeyId = static_cast<int32>(DerivedBlackboard->GetFirstKeyID());
+
+	const FAssetDocumentResult ChangeResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		Target,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(ParentBTarget),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("TargetLocal"), TEXT("Int"))}))));
+	TestTrue(TEXT("Parent A to Parent B update applies"), ChangeResult.IsSuccess());
+	TestTrue(TEXT("Target now references Parent B"), TargetBlackboard->Parent.Get() == LoadBlackboardForTarget(ParentBTarget));
+	TestTrue(TEXT("Parent B changes the inherited key count"), OriginalFirstKeyId != TargetBlackboard->GetNumKeys());
+	TestEqual(
+		TEXT("Derived FirstKeyID refreshes from updated target"),
+		static_cast<int32>(DerivedBlackboard->GetFirstKeyID()),
+		TargetBlackboard->GetNumKeys());
+	TestFalse(TEXT("Derived no longer caches Parent A key"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentAOnly")));
+	TestTrue(TEXT("Derived caches Parent B key"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentBOnly")));
+	TestTrue(TEXT("Derived caches synchronized state from Parent B"), DerivedBlackboard->HasSynchronizedKeys());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBlackboardDataProductionParentFailureIsAtomicTest,
+	"AssetFactory.AssetDocument.BlackboardData.Production.ParentFailureRestoresDerivedCachesAndOwnedObjects",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBlackboardDataProductionParentFailureIsAtomicTest::RunTest(const FString&)
+{
+	const FString Suffix = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString ParentATarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentFailure_A_%s"), *Suffix);
+	const FString ParentBTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentFailure_B_%s"), *Suffix);
+	const FString RollbackTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentFailure_Target_%s"), *Suffix);
+	const FString DerivedTarget = FString::Printf(TEXT("/Game/AssetDocumentTests/BB_AD_ParentFailure_Derived_%s"), *Suffix);
+
+	TSharedRef<FJsonObject> SyncedParentKey = BlackboardTestMakeBlackboardKeyJson(TEXT("ParentBSynced"), TEXT("Bool"));
+	SyncedParentKey->SetBoolField(TEXT("bInstanceSynced"), true);
+	FAssetDocumentService Service;
+	TestTrue(TEXT("Rollback Parent A fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		ParentATarget,
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("ParentAOnly"), TEXT("Bool"))})))).IsSuccess());
+	TestTrue(TEXT("Rollback Parent B fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		ParentBTarget,
+		BlackboardTestMakeBlackboardDataBody(nullptr, {
+			BlackboardTestMakeBlackboardKeyJson(TEXT("ParentBOne"), TEXT("Bool")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("ParentBTwo"), TEXT("Int")),
+			SyncedParentKey,
+		})))).IsSuccess());
+	TestTrue(TEXT("Rollback target fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		RollbackTarget,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(ParentATarget),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("Stable"), TEXT("Int"))})))).IsSuccess());
+	TestTrue(TEXT("Rollback derived fixture applies"), Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		DerivedTarget,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(RollbackTarget),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("DerivedLocal"), TEXT("Float"))})))).IsSuccess());
+
+	UBlackboardData* RollbackBlackboard = LoadBlackboardForTarget(RollbackTarget);
+	UBlackboardData* DerivedBlackboard = LoadBlackboardForTarget(DerivedTarget);
+	TestNotNull(TEXT("Rollback target loads"), RollbackBlackboard);
+	TestNotNull(TEXT("Rollback derived loads"), DerivedBlackboard);
+	if (!RollbackBlackboard || !DerivedBlackboard)
+	{
+		return false;
+	}
+
+	const int32 OriginalDerivedFirstKeyId = static_cast<int32>(DerivedBlackboard->GetFirstKeyID());
+	TestTrue(TEXT("Rollback derived initially caches Parent A"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentAOnly")));
+	TestFalse(TEXT("Rollback derived initially has no synchronized keys"), DerivedBlackboard->HasSynchronizedKeys());
+	UPackage* RollbackPackage = RollbackBlackboard->GetOutermost();
+	if (RollbackPackage)
+	{
+		RollbackPackage->SetDirtyFlag(false);
+	}
+	const TSet<UObject*> OwnedObjectsBefore = CollectBlackboardOwnedObjects(RollbackBlackboard);
+	UObject* InjectedNestedObject = nullptr;
+	UObject* InjectedNestedGrandchild = nullptr;
+	FBlackboardDataAssetDocumentCapability::FailNextLiveApplyAfterMutationForTest(
+		[&InjectedNestedObject, &InjectedNestedGrandchild](UBlackboardData* MutatedBlackboard)
+		{
+			const FBlackboardEntry* NewEntry = MutatedBlackboard->Keys.FindByPredicate([](const FBlackboardEntry& Entry)
+			{
+				return Entry.EntryName == TEXT("NewLocal");
+			});
+			if (NewEntry && NewEntry->KeyType)
+			{
+				InjectedNestedObject = NewObject<UBlackboardKeyType_Object>(NewEntry->KeyType);
+				InjectedNestedGrandchild = NewObject<UBlackboardKeyType_Int>(InjectedNestedObject);
+			}
+		});
+
+	const FAssetDocumentResult RollbackResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
+		RollbackTarget,
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(ParentBTarget),
+			{
+				BlackboardTestMakeBlackboardKeyJson(TEXT("Stable"), TEXT("Float")),
+				BlackboardTestMakeBlackboardKeyJson(TEXT("NewLocal"), TEXT("Object"), TEXT("/Script/Engine.Actor")),
+			}))));
+	TestFalse(TEXT("Forced post-mutation failure rejects Parent A to Parent B"), RollbackResult.IsSuccess());
+	TestTrue(TEXT("Forced failure reports the automation failure"), BlackboardTestResultHasDiagnostic(
+		RollbackResult,
+		TEXT("ForcedBlackboardLiveApplyFailure"),
+		TEXT("/Body")));
+	TestTrue(TEXT("Target Parent rolls back to A"), RollbackBlackboard->Parent.Get() == LoadBlackboardForTarget(ParentATarget));
+	TestEqual(
+		TEXT("Derived FirstKeyID rolls back with target"),
+		static_cast<int32>(DerivedBlackboard->GetFirstKeyID()),
+		RollbackBlackboard->GetNumKeys());
+	TestEqual(
+		TEXT("Derived FirstKeyID returns to its original value"),
+		static_cast<int32>(DerivedBlackboard->GetFirstKeyID()),
+		OriginalDerivedFirstKeyId);
+	TestTrue(TEXT("Derived ParentKeys roll back to Parent A"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentAOnly")));
+	TestFalse(TEXT("Derived ParentKeys do not retain Parent B"), BlackboardHasCachedParentKey(DerivedBlackboard, TEXT("ParentBOne")));
+	TestFalse(TEXT("Derived synchronized state rolls back"), DerivedBlackboard->HasSynchronizedKeys());
+	TestNotNull(TEXT("Forced failure injected a nested owned object"), InjectedNestedObject);
+	TestNotNull(TEXT("Forced failure injected a recursively nested owned grandchild"), InjectedNestedGrandchild);
+	TestTrue(TEXT("Forced failure restores clean package state"), !RollbackPackage || !RollbackPackage->IsDirty());
+	const TSet<UObject*> OwnedObjectsAfter = CollectBlackboardOwnedObjects(RollbackBlackboard);
+	TestTrue(
+		TEXT("Live rollback restores the exact recursive Blackboard-owned UObject set"),
+		HaveSameObjectPointers(OwnedObjectsBefore, OwnedObjectsAfter));
+	TestFalse(TEXT("Nested object is detached from the Blackboard subtree"), OwnedObjectsAfter.Contains(InjectedNestedObject));
+	TestFalse(TEXT("Nested grandchild is detached from the Blackboard subtree"), OwnedObjectsAfter.Contains(InjectedNestedGrandchild));
 	return true;
 }
 
