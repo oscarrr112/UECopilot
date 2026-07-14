@@ -439,6 +439,17 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 
 FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path);
 FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property, const TSharedPtr<FJsonValue>& Value, const FString& Path);
+bool RequiresCustomStructApply(FProperty* Property, const TSharedPtr<FJsonValue>& Value);
+FAssetDocumentCapabilityResult ApplyPropertyValueWithCustomFields(
+	FProperty* Property,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path);
+FAssetDocumentCapabilityResult ApplyScriptStructPropertiesWithCustomFields(
+	UScriptStruct* ScriptStruct,
+	void* ValuePtr,
+	const TSharedRef<FJsonObject>& Properties,
+	const FString& Path);
 
 UScriptStruct* ResolveInstancedScriptStruct(const FString& StructPath)
 {
@@ -735,22 +746,24 @@ FAssetDocumentCapabilityResult ApplyInstancedStructValue(
 	}
 
 	FInstancedStruct Prepared;
-	Prepared.InitializeAs(ScriptStruct);
-	TSharedPtr<FJsonObject> NormalizedProperties = MakeShared<FJsonObject>();
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : StructProperties->Values)
+	if (Destination->GetScriptStruct() == ScriptStruct)
 	{
-		FProperty* FieldProperty = FindFProperty<FProperty>(ScriptStruct, *Pair.Key);
-		NormalizedProperties->SetField(
-			Pair.Key,
-			FieldProperty ? NormalizeAuthoredValueForSetter(FieldProperty, Pair.Value) : Pair.Value);
+		Prepared = *Destination;
+	}
+	else
+	{
+		Prepared.InitializeAs(ScriptStruct);
 	}
 
-	if (!FPropertySetterUtils::SetStructFromJson(
+	const FString PropertiesPath = ReflectedPropertyJoinPath(Path, TEXT("Properties"));
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyScriptStructPropertiesWithCustomFields(
 		ScriptStruct,
 		Prepared.GetMutableMemory(),
-		MakeShared<FJsonValueObject>(NormalizedProperties)))
+		StructProperties.ToSharedRef(),
+		PropertiesPath);
+	if (!ApplyResult.bSuccess)
 	{
-		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Failed to apply FInstancedStruct value of type '%s'"), *ScriptStruct->GetPathName()));
+		return ApplyResult;
 	}
 
 	*Destination = MoveTemp(Prepared);
@@ -759,30 +772,369 @@ FAssetDocumentCapabilityResult ApplyInstancedStructValue(
 
 bool RequiresCustomStructApply(FProperty* Property, const TSharedPtr<FJsonValue>& Value)
 {
-	FStructProperty* StructProperty = CastField<FStructProperty>(Property);
-	if (!StructProperty || !Value.IsValid())
+	if (!Property || !Value.IsValid())
 	{
 		return false;
-	}
-	if (IsBlackboardKeySelectorProperty(StructProperty) || IsInstancedStructProperty(StructProperty))
-	{
-		return true;
 	}
 
-	const TSharedPtr<FJsonObject>* StructObject = nullptr;
-	if (!Value->TryGetObject(StructObject) || !StructObject || !StructObject->IsValid())
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 	{
-		return false;
-	}
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
-	{
-		if (FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
-			RequiresCustomStructApply(FieldProperty, Pair.Value))
+		if (IsBlackboardKeySelectorProperty(StructProperty) || IsInstancedStructProperty(StructProperty))
 		{
 			return true;
 		}
+
+		const TSharedPtr<FJsonObject>* StructObject = nullptr;
+		if (!Value->TryGetObject(StructObject) || !StructObject || !StructObject->IsValid())
+		{
+			return false;
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
+		{
+			if (FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
+				RequiresCustomStructApply(FieldProperty, Pair.Value))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+		if (!Value->TryGetArray(ArrayValues))
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& ElementValue : *ArrayValues)
+		{
+			if (RequiresCustomStructApply(ArrayProperty->Inner, ElementValue))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		const TSharedPtr<FJsonObject>* MapObject = nullptr;
+		if (!Value->TryGetObject(MapObject) || !MapObject || !MapObject->IsValid())
+		{
+			return false;
+		}
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*MapObject)->Values)
+		{
+			if (RequiresCustomStructApply(MapProperty->ValueProp, Pair.Value))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+		if (!Value->TryGetArray(SetValues))
+		{
+			return false;
+		}
+		for (const TSharedPtr<FJsonValue>& ElementValue : *SetValues)
+		{
+			if (RequiresCustomStructApply(SetProperty->ElementProp, ElementValue))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+class FScopedPropertyValue
+{
+public:
+	explicit FScopedPropertyValue(FProperty* InProperty)
+		: Property(InProperty)
+	{
+		if (Property)
+		{
+			Data = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
+			Property->InitializeValue(Data);
+		}
+	}
+
+	~FScopedPropertyValue()
+	{
+		if (Property && Data)
+		{
+			Property->DestroyValue(Data);
+			FMemory::Free(Data);
+		}
+	}
+
+	void* Get() const { return Data; }
+
+private:
+	FProperty* Property = nullptr;
+	void* Data = nullptr;
+};
+
+bool TrySetMapKeyFromString(FProperty* KeyProperty, void* KeyPtr, const FString& KeyString)
+{
+	if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(KeyProperty))
+	{
+		UEnum* Enum = EnumProperty->GetEnum();
+		int64 EnumValue = Enum ? Enum->GetValueByNameString(KeyString) : INDEX_NONE;
+		if (Enum && EnumValue == INDEX_NONE)
+		{
+			EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + KeyString);
+		}
+		if (EnumValue != INDEX_NONE)
+		{
+			EnumProperty->GetUnderlyingProperty()->SetIntPropertyValue(KeyPtr, EnumValue);
+			return true;
+		}
+		return false;
+	}
+	if (FByteProperty* ByteProperty = CastField<FByteProperty>(KeyProperty))
+	{
+		if (UEnum* Enum = ByteProperty->Enum)
+		{
+			int64 EnumValue = Enum->GetValueByNameString(KeyString);
+			if (EnumValue == INDEX_NONE)
+			{
+				EnumValue = Enum->GetValueByNameString(Enum->GetName() + TEXT("::") + KeyString);
+			}
+			if (EnumValue == INDEX_NONE)
+			{
+				return false;
+			}
+			ByteProperty->SetIntPropertyValue(KeyPtr, EnumValue);
+			return true;
+		}
+
+		if (KeyString.IsEmpty() || KeyString.TrimStartAndEnd() != KeyString)
+		{
+			return false;
+		}
+		TCHAR* End = nullptr;
+		const TCHAR* Start = *KeyString;
+		const int64 ParsedValue = FCString::Strtoi64(Start, &End, 10);
+		if (End == Start || !End || *End != TEXT('\0') || ParsedValue < 0 || ParsedValue > MAX_uint8)
+		{
+			return false;
+		}
+		ByteProperty->SetIntPropertyValue(KeyPtr, ParsedValue);
+		return true;
+	}
+	if (FStrProperty* StringProperty = CastField<FStrProperty>(KeyProperty))
+	{
+		StringProperty->SetPropertyValue(KeyPtr, KeyString);
+		return true;
+	}
+	if (FNameProperty* NameProperty = CastField<FNameProperty>(KeyProperty))
+	{
+		NameProperty->SetPropertyValue(KeyPtr, FName(*KeyString));
+		return true;
 	}
 	return false;
+}
+
+FAssetDocumentCapabilityResult ApplyArrayValueWithCustomFields(
+	FArrayProperty* ArrayProperty,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path)
+{
+	const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
+	if (!ArrayProperty || !ValuePtr || !Value.IsValid() || !Value->TryGetArray(ArrayValues))
+	{
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Array value must be an array"));
+	}
+
+	FScopedPropertyValue Prepared(ArrayProperty);
+	FScriptArrayHelper ArrayHelper(ArrayProperty, Prepared.Get());
+	ArrayHelper.AddValues(ArrayValues->Num());
+	for (int32 Index = 0; Index < ArrayValues->Num(); ++Index)
+	{
+		const FAssetDocumentCapabilityResult ElementResult = ApplyPropertyValueWithCustomFields(
+			ArrayProperty->Inner,
+			ArrayHelper.GetRawPtr(Index),
+			(*ArrayValues)[Index],
+			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
+		if (!ElementResult.bSuccess)
+		{
+			return ElementResult;
+		}
+	}
+
+	ArrayProperty->CopyCompleteValue(ValuePtr, Prepared.Get());
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyMapValueWithCustomFields(
+	FMapProperty* MapProperty,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path)
+{
+	const TSharedPtr<FJsonObject>* MapObject = nullptr;
+	if (!MapProperty || !ValuePtr || !Value.IsValid()
+		|| !Value->TryGetObject(MapObject) || !MapObject || !MapObject->IsValid())
+	{
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Map value must be an object"));
+	}
+
+	FScopedPropertyValue Prepared(MapProperty);
+	FScriptMapHelper MapHelper(MapProperty, Prepared.Get());
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*MapObject)->Values)
+	{
+		const int32 Index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
+		if (!TrySetMapKeyFromString(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index), Pair.Key))
+		{
+			return ReflectedPropertyFailure(
+				ReflectedPropertyJoinPath(Path, Pair.Key),
+				TEXT("InvalidMapKey"),
+				FString::Printf(TEXT("Map key '%s' is invalid for property '%s'"), *Pair.Key, *MapProperty->GetName()));
+		}
+		// This staged map starts empty and only appends, so all earlier indices are valid even
+		// before Rehash() makes the hash table queryable.
+		for (int32 ExistingIndex = 0; ExistingIndex < Index; ++ExistingIndex)
+		{
+			if (MapProperty->KeyProp->Identical(
+					MapHelper.GetKeyPtr(ExistingIndex),
+					MapHelper.GetKeyPtr(Index),
+					PPF_None))
+			{
+				return ReflectedPropertyFailure(
+					ReflectedPropertyJoinPath(Path, Pair.Key),
+					TEXT("DuplicateMapKey"),
+					FString::Printf(TEXT("Map key '%s' collides with another authored key"), *Pair.Key));
+			}
+		}
+
+		const FAssetDocumentCapabilityResult ValueResult = ApplyPropertyValueWithCustomFields(
+			MapProperty->ValueProp,
+			MapHelper.GetValuePtr(Index),
+			Pair.Value,
+			ReflectedPropertyJoinPath(Path, Pair.Key));
+		if (!ValueResult.bSuccess)
+		{
+			return ValueResult;
+		}
+	}
+	MapHelper.Rehash();
+
+	MapProperty->CopyCompleteValue(ValuePtr, Prepared.Get());
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplySetValueWithCustomFields(
+	FSetProperty* SetProperty,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path)
+{
+	const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
+	if (!SetProperty || !ValuePtr || !Value.IsValid() || !Value->TryGetArray(SetValues))
+	{
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Set value must be an array"));
+	}
+
+	FScopedPropertyValue Prepared(SetProperty);
+	FScriptSetHelper SetHelper(SetProperty, Prepared.Get());
+	for (int32 Index = 0; Index < SetValues->Num(); ++Index)
+	{
+		const int32 SetIndex = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
+		const FAssetDocumentCapabilityResult ElementResult = ApplyPropertyValueWithCustomFields(
+			SetProperty->ElementProp,
+			SetHelper.GetElementPtr(SetIndex),
+			(*SetValues)[Index],
+			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
+		if (!ElementResult.bSuccess)
+		{
+			return ElementResult;
+		}
+		// This staged set starts empty and only appends, so all earlier indices are valid even
+		// before Rehash() makes the hash table queryable.
+		for (int32 ExistingIndex = 0; ExistingIndex < SetIndex; ++ExistingIndex)
+		{
+			if (SetProperty->ElementProp->Identical(
+					SetHelper.GetElementPtr(ExistingIndex),
+					SetHelper.GetElementPtr(SetIndex),
+					PPF_None))
+			{
+				return ReflectedPropertyFailure(
+					ReflectedPropertyJoinPath(Path, FString::FromInt(Index)),
+					TEXT("DuplicateSetElement"),
+					TEXT("Set element duplicates another authored element"));
+			}
+		}
+	}
+	SetHelper.Rehash();
+
+	SetProperty->CopyCompleteValue(ValuePtr, Prepared.Get());
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ApplyScriptStructPropertiesWithCustomFields(
+	UScriptStruct* ScriptStruct,
+	void* ValuePtr,
+	const TSharedRef<FJsonObject>& Properties,
+	const FString& Path)
+{
+	if (!ScriptStruct || !ValuePtr)
+	{
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Script struct and destination are required"));
+	}
+
+	FStructOnScope Prepared(ScriptStruct);
+	ScriptStruct->CopyScriptStruct(Prepared.GetStructMemory(), ValuePtr);
+	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
+	{
+		FProperty* FieldProperty = FindFProperty<FProperty>(ScriptStruct, *Pair.Key);
+		if (!FieldProperty)
+		{
+			return ReflectedPropertyFailure(
+				ReflectedPropertyJoinPath(Path, Pair.Key),
+				TEXT("UnknownProperty"),
+				FString::Printf(TEXT("Struct field '%s' does not exist"), *Pair.Key));
+		}
+
+		const FString FieldPath = ReflectedPropertyJoinPath(Path, Pair.Key);
+		if (RequiresCustomStructApply(FieldProperty, Pair.Value))
+		{
+			const FAssetDocumentCapabilityResult FieldResult = ApplyPropertyValueWithCustomFields(
+				FieldProperty,
+				FieldProperty->ContainerPtrToValuePtr<void>(Prepared.GetStructMemory()),
+				Pair.Value,
+				FieldPath);
+			if (!FieldResult.bSuccess)
+			{
+				return FieldResult;
+			}
+			continue;
+		}
+
+		TSharedPtr<FJsonObject> SingleField = MakeShared<FJsonObject>();
+		SingleField->SetField(Pair.Key, NormalizeAuthoredValueForSetter(FieldProperty, Pair.Value));
+		if (!FPropertySetterUtils::SetStructFromJson(
+			ScriptStruct,
+			Prepared.GetStructMemory(),
+			MakeShared<FJsonValueObject>(SingleField)))
+		{
+			return ReflectedPropertyFailure(
+				FieldPath,
+				TEXT("InvalidPropertyValue"),
+				FString::Printf(TEXT("Failed to set struct field '%s'"), *Pair.Key));
+		}
+	}
+
+	ScriptStruct->CopyScriptStruct(ValuePtr, Prepared.GetStructMemory());
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ApplyStructValueWithCustomFields(
@@ -814,51 +1166,39 @@ FAssetDocumentCapabilityResult ApplyStructValueWithCustomFields(
 			Path);
 	}
 
-	FStructOnScope Prepared(StructProperty->Struct);
-	StructProperty->Struct->CopyScriptStruct(Prepared.GetStructMemory(), ValuePtr);
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
+	return ApplyScriptStructPropertiesWithCustomFields(
+		StructProperty->Struct,
+		ValuePtr,
+		(*StructObject).ToSharedRef(),
+		Path);
+}
+
+FAssetDocumentCapabilityResult ApplyPropertyValueWithCustomFields(
+	FProperty* Property,
+	void* ValuePtr,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path)
+{
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
 	{
-		FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
-		if (!FieldProperty)
-		{
-			return ReflectedPropertyFailure(
-				ReflectedPropertyJoinPath(Path, Pair.Key),
-				TEXT("UnknownProperty"),
-				FString::Printf(TEXT("Struct field '%s' does not exist"), *Pair.Key));
-		}
-
-		const FString FieldPath = ReflectedPropertyJoinPath(Path, Pair.Key);
-		if (RequiresCustomStructApply(FieldProperty, Pair.Value))
-		{
-			FStructProperty* FieldStructProperty = CastFieldChecked<FStructProperty>(FieldProperty);
-			const FAssetDocumentCapabilityResult FieldResult = ApplyStructValueWithCustomFields(
-				FieldStructProperty,
-				FieldProperty->ContainerPtrToValuePtr<void>(Prepared.GetStructMemory()),
-				Pair.Value,
-				FieldPath);
-			if (!FieldResult.bSuccess)
-			{
-				return FieldResult;
-			}
-			continue;
-		}
-
-		TSharedPtr<FJsonObject> SingleField = MakeShared<FJsonObject>();
-		SingleField->SetField(Pair.Key, NormalizeAuthoredValueForSetter(FieldProperty, Pair.Value));
-		if (!FPropertySetterUtils::SetStructFromJson(
-			StructProperty->Struct,
-			Prepared.GetStructMemory(),
-			MakeShared<FJsonValueObject>(SingleField)))
-		{
-			return ReflectedPropertyFailure(
-				FieldPath,
-				TEXT("InvalidPropertyValue"),
-				FString::Printf(TEXT("Failed to set struct field '%s'"), *Pair.Key));
-		}
+		return ApplyStructValueWithCustomFields(StructProperty, ValuePtr, Value, Path);
 	}
-
-	StructProperty->Struct->CopyScriptStruct(ValuePtr, Prepared.GetStructMemory());
-	return FAssetDocumentCapabilityResult::Success();
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		return ApplyArrayValueWithCustomFields(ArrayProperty, ValuePtr, Value, Path);
+	}
+	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		return ApplyMapValueWithCustomFields(MapProperty, ValuePtr, Value, Path);
+	}
+	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		return ApplySetValueWithCustomFields(SetProperty, ValuePtr, Value, Path);
+	}
+	return ReflectedPropertyFailure(
+		Path,
+		TEXT("InvalidProperty"),
+		TEXT("Custom reflected-property apply requires a struct or container property"));
 }
 
 FAssetDocumentCapabilityResult ExtractInstancedStructValue(
@@ -1188,8 +1528,7 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 			return SupportedResult;
 		}
 
-		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property);
-			RequiresCustomStructApply(StructProperty, Pair.Value))
+		if (RequiresCustomStructApply(Property, Pair.Value))
 		{
 			UObject* TargetObject = Object;
 			TStrongObjectPtr<UObject> Duplicate;
@@ -1202,11 +1541,10 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 					return ReflectedPropertyFailure(Path, TEXT("PreflightFailed"), TEXT("Failed to create property validation duplicate"));
 				}
 				Property = FindFProperty<FProperty>(TargetObject->GetClass(), *Pair.Key);
-				StructProperty = CastField<FStructProperty>(Property);
 			}
 
-			const FAssetDocumentCapabilityResult ApplyResult = ApplyStructValueWithCustomFields(
-				StructProperty,
+			const FAssetDocumentCapabilityResult ApplyResult = ApplyPropertyValueWithCustomFields(
+				Property,
 				Property->ContainerPtrToValuePtr<void>(TargetObject),
 				Pair.Value,
 				PropertyPath);

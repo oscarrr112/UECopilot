@@ -35,7 +35,8 @@ public class AssetDocument : ModuleRules
 			"UMG",
 			"UMGEditor",
 			"MovieScene",
-			"MovieSceneTracks"
+			"MovieSceneTracks",
+			"StructUtils"
 		});
 	}
 }
