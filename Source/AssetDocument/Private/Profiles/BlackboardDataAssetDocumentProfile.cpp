@@ -6,6 +6,7 @@
 #include "AssetDocumentJsonRegionUtils.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "Regions/AssetDocumentBlackboardKeyRegionAdapter.h"
+#include "Regions/AssetDocumentBlackboardKeySchemaUtils.h"
 
 #include "BehaviorTree/BlackboardData.h"
 #include "Dom/JsonValue.h"
@@ -157,6 +158,86 @@ FAssetDocumentCapabilityResult ValidateBlackboardParentChain(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BlackboardData parent chain"));
 }
 
+FAssetDocumentCapabilityResult ValidateBlackboardDesiredInheritance(
+	const FAssetDocumentCapabilityContext& Context,
+	const TSharedRef<FJsonValue>& BodyJson)
+{
+	const TSharedPtr<FJsonObject> Body = BodyJson->AsObject();
+	if (!Body.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Blackboard body shape is validated by dispatcher"));
+	}
+
+	UBlackboardData* DesiredParent = Cast<UBlackboardData>(Context.Asset) ? Cast<UBlackboardData>(Context.Asset)->Parent.Get() : nullptr;
+	if (Body->HasField(TEXT("Parent")))
+	{
+		FAssetDocumentCapabilityResult ParentResult = ResolveBlackboardAssetRef(
+			Body->TryGetField(TEXT("Parent")),
+			TEXT("/Body/Parent"),
+			DesiredParent);
+		if (!ParentResult.bSuccess)
+		{
+			return ParentResult;
+		}
+	}
+
+	const FString TargetObjectPath = BlackboardNormalizeObjectPath(Context.TargetAssetPath);
+	TSet<const UBlackboardData*> Visited;
+	TSet<FName> ParentKeyNames;
+	for (const UBlackboardData* Current = DesiredParent; Current; Current = Current->Parent.Get())
+	{
+		if (Visited.Contains(Current) ||
+			(Current == Context.Asset) ||
+			(!TargetObjectPath.IsEmpty() && Current->GetPathName() == TargetObjectPath))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				TEXT("/Body/Parent"),
+				TEXT("BlackboardParentCycle"),
+				TEXT("Blackboard Parent cannot reference the target or contain a cycle"));
+		}
+		Visited.Add(Current);
+		for (const FBlackboardEntry& Entry : Current->Keys)
+		{
+			ParentKeyNames.Add(Entry.EntryName);
+		}
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+	if (!Body->TryGetArrayField(TEXT("Keys"), Keys) || !Keys)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No desired local keys to validate against parent"));
+	}
+	for (int32 Index = 0; Index < Keys->Num(); ++Index)
+	{
+		const TSharedPtr<FJsonObject> KeyObject = (*Keys)[Index].IsValid() ? (*Keys)[Index]->AsObject() : nullptr;
+		if (!KeyObject.IsValid())
+		{
+			continue;
+		}
+		FAssetDocumentBlackboardKeySpec Spec;
+		const FString IndexPath = FString::Printf(TEXT("/Body/Keys/%d"), Index);
+		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
+			KeyObject.ToSharedRef(),
+			IndexPath,
+			Spec);
+		if (!ParseResult.bSuccess)
+		{
+			return ParseResult;
+		}
+		if (ParentKeyNames.Contains(Spec.Name))
+		{
+			return FAssetDocumentJsonRegionUtils::Failure(
+				FString::Printf(
+					TEXT("/Body/Keys/%s/Name"),
+					*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Spec.Name.ToString())),
+				TEXT("BlackboardKeyShadowsParent"),
+				FString::Printf(TEXT("Local key '%s' shadows a parent key"), *Spec.Name.ToString()));
+		}
+	}
+
+	return FAssetDocumentCapabilityResult::Success(TEXT("Validated Blackboard parent and local key inheritance"));
+}
+
 TSharedPtr<FJsonValue> BlackboardMakeAssetRefValue(const UBlackboardData* Blackboard)
 {
 	if (!Blackboard)
@@ -247,6 +328,9 @@ public:
 			Blackboard->Parent = Parent;
 			if (bOutChanged)
 			{
+				Blackboard->UpdateParentKeys();
+				Blackboard->UpdateKeyIDs();
+				Blackboard->UpdateIfHasSynchronizedKeys();
 				Blackboard->MarkPackageDirty();
 			}
 		}
@@ -386,11 +470,16 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Validate(
 	{
 		return Result;
 	}
-	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	Result = BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &BodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.ValidateBody(Context, BodyJson);
 		}));
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	return ValidateBlackboardDesiredInheritance(Context, BodyJson);
 }
 
 FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
@@ -400,13 +489,43 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 	{
 		return Result;
 	}
+	Result = ValidateBlackboardDesiredInheritance(Context, BodyJson);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+
+	UBlackboardData* Blackboard = Cast<UBlackboardData>(Context.Asset);
+	UBlackboardData* OriginalParent = Blackboard ? Blackboard->Parent.Get() : nullptr;
+	const TArray<FBlackboardEntry> OriginalKeys = Blackboard ? Blackboard->Keys : TArray<FBlackboardEntry>();
+#if WITH_EDITORONLY_DATA
+	const TArray<FBlackboardEntry> OriginalParentKeys = Blackboard ? Blackboard->ParentKeys : TArray<FBlackboardEntry>();
+#endif
+	UPackage* Package = Blackboard ? Blackboard->GetOutermost() : nullptr;
+	const bool bWasDirty = Package && Package->IsDirty();
 
 	TSet<FName> AppliedRegions;
-	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	Result = BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &BodyJson, &AppliedRegions](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.ApplyBody(Context, BodyJson, AppliedRegions);
 		}));
+	if (!Result.bSuccess && Blackboard)
+	{
+		Blackboard->Parent = OriginalParent;
+		Blackboard->Keys = OriginalKeys;
+#if WITH_EDITORONLY_DATA
+		Blackboard->ParentKeys = OriginalParentKeys;
+#endif
+		Blackboard->UpdateKeyIDs();
+		Blackboard->UpdateIfHasSynchronizedKeys();
+		UBlackboardData::OnUpdateKeys.Broadcast(Blackboard);
+		if (Package && !bWasDirty)
+		{
+			Package->SetDirtyFlag(false);
+		}
+	}
+	return Result;
 }
 
 FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Extract(const FAssetDocumentCapabilityContext& Context, TSharedRef<FJsonObject>& OutBodyJson) const
@@ -429,6 +548,11 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Diff(
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
 	FAssetDocumentCapabilityResult Result = ValidateBlackboardDataContext(Context);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	Result = ValidateBlackboardDesiredInheritance(Context, DesiredJson);
 	if (!Result.bSuccess)
 	{
 		return Result;

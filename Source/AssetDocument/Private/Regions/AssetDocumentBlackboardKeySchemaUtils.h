@@ -18,7 +18,9 @@ struct FAssetDocumentBlackboardKeySpec
 	TSoftClassPtr<UObject> BaseClass;
 	TSoftObjectPtr<UObject> Enum;
 	FString Description;
+	FName Category;
 	bool bInstanceSynced = false;
+	TSharedPtr<FJsonObject> KeyTypeProperties;
 	TSharedPtr<FJsonObject> CanonicalJson;
 };
 
@@ -69,6 +71,16 @@ public:
 		const FAssetDocumentBlackboardKeySpec& Spec,
 		const FString& Path);
 
+	static FAssetDocumentCapabilityResult ApplyKeyTypeProperties(
+		UBlackboardKeyType* KeyType,
+		const FAssetDocumentBlackboardKeySpec& Spec,
+		const FString& Path);
+
+	static FAssetDocumentCapabilityResult ExtractKeyTypeProperties(
+		UBlackboardKeyType* KeyType,
+		TSharedRef<FJsonObject>& OutProperties,
+		const FString& Path);
+
 	static FAssetDocumentCapabilityResult ValidateUniqueLocalKeys(
 		const TArray<FAssetDocumentBlackboardKeySpec>& Specs,
 		const FString& KeysPath);
@@ -82,5 +94,8 @@ public:
 		FName KeyName,
 		FAssetDocumentBlackboardKeyLookupEntry& OutEntry);
 
-	static TSharedRef<FJsonObject> ExtractKey(const FBlackboardEntry& Entry);
+	static FAssetDocumentCapabilityResult ExtractKey(
+		const FBlackboardEntry& Entry,
+		const FString& Path,
+		TSharedPtr<FJsonObject>& OutJson);
 };

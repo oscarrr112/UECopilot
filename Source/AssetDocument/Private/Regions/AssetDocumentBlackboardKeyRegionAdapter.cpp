@@ -10,6 +10,7 @@
 #include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "BehaviorTree/BlackboardData.h"
+#include "GameFramework/Actor.h"
 
 namespace
 {
@@ -76,6 +77,52 @@ struct FResolvedBlackboardKeySpec
 	FAssetDocumentBlackboardResolvedKeyMetadata Metadata;
 	FString Path;
 };
+
+bool IsEngineDerivedSelfKey(const FBlackboardEntry& Entry)
+{
+	const UBlackboardKeyType_Object* ObjectKey = Cast<UBlackboardKeyType_Object>(Entry.KeyType);
+	return Entry.EntryName == FBlackboard::KeySelf
+		&& ObjectKey
+		&& ObjectKey->GetClass() == UBlackboardKeyType_Object::StaticClass()
+		&& ObjectKey->BaseClass == AActor::StaticClass()
+		&& ObjectKey->DefaultValue == nullptr
+		&& Entry.EntryDescription.IsEmpty()
+		&& Entry.EntryCategory.IsNone()
+		&& !Entry.bInstanceSynced;
+}
+
+FAssetDocumentCapabilityResult ExtractAuthoredKeys(
+	const UBlackboardData* Blackboard,
+	const FString& Path,
+	TArray<TSharedRef<FJsonObject>>& OutElements)
+{
+	if (!Blackboard)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted empty authored blackboard keys"));
+	}
+
+	for (const FBlackboardEntry& Entry : Blackboard->Keys)
+	{
+		if (!IsEngineDerivedSelfKey(Entry))
+		{
+			TSharedPtr<FJsonObject> ExtractedKey;
+			const FString KeyPath = FString::Printf(
+				TEXT("%s/%s"),
+				*Path,
+				*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Entry.EntryName.ToString()));
+			const FAssetDocumentCapabilityResult Result = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(
+				Entry,
+				KeyPath,
+				ExtractedKey);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			OutElements.Add(ExtractedKey.ToSharedRef());
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Extracted authored blackboard keys"));
+}
 
 FAssetDocumentCapabilityResult ResolveKeySpecs(
 	const FAssetDocumentRegionContext& Context,
@@ -153,11 +200,20 @@ FAssetDocumentCapabilityResult BuildBlackboardEntry(
 	}
 
 	ApplyResolvedMetadataToKeyType(KeyType, Metadata);
+	const FAssetDocumentCapabilityResult PropertiesResult = FAssetDocumentBlackboardKeySchemaUtils::ApplyKeyTypeProperties(
+		KeyType,
+		Spec,
+		Path);
+	if (!PropertiesResult.bSuccess)
+	{
+		return PropertiesResult;
+	}
 
 	OutEntry = FBlackboardEntry();
 	OutEntry.EntryName = Spec.Name;
 	OutEntry.KeyType = KeyType;
 	OutEntry.EntryDescription = Spec.Description;
+	OutEntry.EntryCategory = Spec.Category;
 	OutEntry.bInstanceSynced = Spec.bInstanceSynced;
 	return FAssetDocumentCapabilityResult::Success(TEXT("Built blackboard key entry"));
 }
@@ -170,6 +226,7 @@ FBlackboardEntry MakeBlackboardEntryFromResolvedSpec(
 	Entry.EntryName = ResolvedSpec.Spec.Name;
 	Entry.KeyType = KeyType;
 	Entry.EntryDescription = ResolvedSpec.Spec.Description;
+	Entry.EntryCategory = ResolvedSpec.Spec.Category;
 	Entry.bInstanceSynced = ResolvedSpec.Spec.bInstanceSynced;
 	return Entry;
 }
@@ -192,8 +249,18 @@ FAssetDocumentCapabilityResult BuildSemanticKeyJson(
 	}
 
 	ApplyResolvedMetadataToKeyType(KeyType, ResolvedSpec.Metadata);
-	OutJson = FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(MakeBlackboardEntryFromResolvedSpec(KeyType, ResolvedSpec));
-	return FAssetDocumentCapabilityResult::Success(TEXT("Built semantic blackboard key JSON"));
+	const FAssetDocumentCapabilityResult PropertiesResult = FAssetDocumentBlackboardKeySchemaUtils::ApplyKeyTypeProperties(
+		KeyType,
+		ResolvedSpec.Spec,
+		ResolvedSpec.Path);
+	if (!PropertiesResult.bSuccess)
+	{
+		return PropertiesResult;
+	}
+	return FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(
+		MakeBlackboardEntryFromResolvedSpec(KeyType, ResolvedSpec),
+		ResolvedSpec.Path,
+		OutJson);
 }
 
 TSharedPtr<FJsonValue> MakeObjectValue(const TSharedRef<FJsonObject>& Object)
@@ -304,9 +371,10 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		}
 
 		TArray<TSharedRef<FJsonObject>> CurrentElements;
-		for (const FBlackboardEntry& Entry : Blackboard->Keys)
+		Result = ExtractAuthoredKeys(Blackboard, RegionPath(Context), CurrentElements);
+		if (!Result.bSuccess)
 		{
-			CurrentElements.Add(FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(Entry));
+			return Result;
 		}
 		TArray<TSharedRef<FJsonObject>> DesiredElements;
 		for (const FResolvedBlackboardKeySpec& ResolvedSpec : ResolvedSpecs)
@@ -345,6 +413,10 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		}
 
 		Blackboard->Keys = MoveTemp(NewEntries);
+		Blackboard->UpdateParentKeys();
+		Blackboard->UpdateKeyIDs();
+		Blackboard->UpdateIfHasSynchronizedKeys();
+		Blackboard->PropagateKeyChangesToDerivedBlackboardAssets();
 		Blackboard->MarkPackageDirty();
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied blackboard keys"));
 	};
@@ -360,11 +432,7 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 				TEXT("Blackboard key extract requires UBlackboardData asset"));
 		}
 
-		for (const FBlackboardEntry& Entry : Blackboard->Keys)
-		{
-			OutElements.Add(FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(Entry));
-		}
-		return FAssetDocumentCapabilityResult::Success(TEXT("Extracted blackboard keys"));
+		return ExtractAuthoredKeys(Blackboard, RegionPath(Context), OutElements);
 	};
 
 	Hooks.DiffElements = [](
@@ -389,9 +457,10 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		}
 
 		TArray<TSharedRef<FJsonObject>> CurrentElements;
-		for (const FBlackboardEntry& Entry : Blackboard->Keys)
+		Result = ExtractAuthoredKeys(Blackboard, RegionPath(Context), CurrentElements);
+		if (!Result.bSuccess)
 		{
-			CurrentElements.Add(FAssetDocumentBlackboardKeySchemaUtils::ExtractKey(Entry));
+			return Result;
 		}
 
 		TMap<FString, TSharedRef<FJsonObject>> CurrentByName = MakeKeyMap(CurrentElements);
