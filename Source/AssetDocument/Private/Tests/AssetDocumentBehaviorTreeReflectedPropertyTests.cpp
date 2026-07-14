@@ -8,8 +8,10 @@
 #include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Struct.h"
 #include "BehaviorTree/Tasks/BTTask_MoveTo.h"
+#include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "GameFramework/Actor.h"
 #include "Misc/AutomationTest.h"
 #include "StructUtils/InstancedStruct.h"
 #include "UObject/UnrealType.h"
@@ -483,6 +485,150 @@ bool FAssetDocumentBehaviorTreeCustomStructContainerRoundTripTest::RunTest(const
 		TEXT("invalid byte map key reports exact diagnostic"),
 		HasDiagnostic(InvalidByteMapResult, TEXT("/Properties/ByteMapValues/12garbage"), TEXT("InvalidMapKey")));
 	TestEqual(TEXT("invalid byte map failure preserves original map"), Source->ByteMapValues.Num(), 0);
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeNativeClassReferenceTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ReflectedPropertyRuntime.NativeClassReference",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeNativeClassReferenceTest::RunTest(const FString&)
+{
+	UBTTask_SetKeyValueClass* Task = NewObject<UBTTask_SetKeyValueClass>(GetTransientPackage());
+	TestNotNull(TEXT("native ClassRef test task exists"), Task);
+	if (!Task)
+	{
+		return false;
+	}
+
+	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
+	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	ClassRef->SetStringField(TEXT("Path"), AActor::StaticClass()->GetPathName());
+	TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetObjectField(TEXT("BaseClass"), ClassRef);
+
+	const FAssetDocumentCapabilityResult ApplyResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Task, Properties, TEXT("/Properties"));
+	TestTrue(TEXT("native ClassRef applies without generated-class probing"), ApplyResult.bSuccess);
+
+	FClassProperty* BaseClassProperty = FindFProperty<FClassProperty>(Task->GetClass(), TEXT("BaseClass"));
+	TestNotNull(TEXT("native ClassRef property exists"), BaseClassProperty);
+	if (BaseClassProperty)
+	{
+		TestEqual(
+			TEXT("native ClassRef resolves the exact script class"),
+			Cast<UClass>(BaseClassProperty->GetObjectPropertyValue_InContainer(Task)),
+			AActor::StaticClass());
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreePlainContainerValidationAndAtomicityTest,
+	"AssetFactory.AssetDocument.BehaviorTree.ReflectedPropertyRuntime.PlainContainerValidationAndAtomicity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreePlainContainerValidationAndAtomicityTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentBehaviorTreeReflectedPropertyTests;
+
+	UAssetDocumentReflectedPropertyTestObject* Object =
+		NewObject<UAssetDocumentReflectedPropertyTestObject>(GetTransientPackage());
+	TestNotNull(TEXT("plain-container test object exists"), Object);
+	if (!Object)
+	{
+		return false;
+	}
+
+	Object->PlainByteMapValues.Add(7, 7.0f);
+	Object->PlainNameSetValues.Add(FName(TEXT("Sentinel")));
+
+	auto TestOriginalMapPreserved = [this, Object](const TCHAR* Context)
+	{
+		TestEqual(*FString::Printf(TEXT("%s preserves map count"), Context), Object->PlainByteMapValues.Num(), 1);
+		const float* OriginalValue = Object->PlainByteMapValues.Find(7);
+		TestNotNull(*FString::Printf(TEXT("%s preserves map key"), Context), OriginalValue);
+		if (OriginalValue)
+		{
+			TestEqual(*FString::Printf(TEXT("%s preserves map value"), Context), *OriginalValue, 7.0f);
+		}
+	};
+
+	auto TestOriginalSetPreserved = [this, Object](const TCHAR* Context)
+	{
+		TestEqual(*FString::Printf(TEXT("%s preserves set count"), Context), Object->PlainNameSetValues.Num(), 1);
+		TestTrue(
+			*FString::Printf(TEXT("%s preserves set element"), Context),
+			Object->PlainNameSetValues.Contains(FName(TEXT("Sentinel"))));
+	};
+
+	TSharedRef<FJsonObject> DuplicateMap = MakeShared<FJsonObject>();
+	DuplicateMap->SetNumberField(TEXT("1"), 1.0);
+	DuplicateMap->SetNumberField(TEXT("01"), 2.0);
+	TSharedRef<FJsonObject> DuplicateMapProperties = MakeShared<FJsonObject>();
+	DuplicateMapProperties->SetObjectField(TEXT("PlainByteMapValues"), DuplicateMap);
+	const FAssetDocumentCapabilityResult DuplicateMapResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Object, DuplicateMapProperties, TEXT("/Properties"));
+	TestFalse(TEXT("plain byte map rejects semantic duplicate keys"), DuplicateMapResult.bSuccess);
+	TestTrue(
+		TEXT("plain byte map duplicate reports exact diagnostic"),
+		HasDiagnostic(DuplicateMapResult, TEXT("/Properties/PlainByteMapValues/1"), TEXT("DuplicateMapKey"))
+			|| HasDiagnostic(DuplicateMapResult, TEXT("/Properties/PlainByteMapValues/01"), TEXT("DuplicateMapKey")));
+	TestOriginalMapPreserved(TEXT("duplicate map failure"));
+
+	TSharedRef<FJsonObject> InvalidMap = MakeShared<FJsonObject>();
+	InvalidMap->SetNumberField(TEXT("12garbage"), 12.0);
+	TSharedRef<FJsonObject> InvalidMapProperties = MakeShared<FJsonObject>();
+	InvalidMapProperties->SetObjectField(TEXT("PlainByteMapValues"), InvalidMap);
+	const FAssetDocumentCapabilityResult InvalidMapResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Object, InvalidMapProperties, TEXT("/Properties"));
+	TestFalse(TEXT("plain byte map rejects non-canonical numeric keys"), InvalidMapResult.bSuccess);
+	TestTrue(
+		TEXT("plain byte map invalid key reports exact diagnostic"),
+		HasDiagnostic(InvalidMapResult, TEXT("/Properties/PlainByteMapValues/12garbage"), TEXT("InvalidMapKey")));
+	TestOriginalMapPreserved(TEXT("invalid map failure"));
+
+	TSharedRef<FJsonObject> LateFailingMap = MakeShared<FJsonObject>();
+	LateFailingMap->SetNumberField(TEXT("1"), 1.0);
+	LateFailingMap->SetStringField(TEXT("2"), TEXT("NotANumber"));
+	TSharedRef<FJsonObject> LateFailingMapProperties = MakeShared<FJsonObject>();
+	LateFailingMapProperties->SetObjectField(TEXT("PlainByteMapValues"), LateFailingMap);
+	const FAssetDocumentCapabilityResult LateMapResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Object, LateFailingMapProperties, TEXT("/Properties"));
+	TestFalse(TEXT("plain byte map rejects a late invalid value"), LateMapResult.bSuccess);
+	TestTrue(
+		TEXT("plain byte map late failure reports the value path"),
+		HasDiagnostic(LateMapResult, TEXT("/Properties/PlainByteMapValues/2"), TEXT("InvalidPropertyValue")));
+	TestOriginalMapPreserved(TEXT("late map failure"));
+
+	TArray<TSharedPtr<FJsonValue>> DuplicateSet;
+	DuplicateSet.Add(MakeShared<FJsonValueString>(TEXT("Duplicate")));
+	DuplicateSet.Add(MakeShared<FJsonValueString>(TEXT("Duplicate")));
+	TSharedRef<FJsonObject> DuplicateSetProperties = MakeShared<FJsonObject>();
+	DuplicateSetProperties->SetArrayField(TEXT("PlainNameSetValues"), MoveTemp(DuplicateSet));
+	const FAssetDocumentCapabilityResult DuplicateSetResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Object, DuplicateSetProperties, TEXT("/Properties"));
+	TestFalse(TEXT("plain name set rejects duplicate elements"), DuplicateSetResult.bSuccess);
+	TestTrue(
+		TEXT("plain name set duplicate reports exact diagnostic"),
+		HasDiagnostic(DuplicateSetResult, TEXT("/Properties/PlainNameSetValues/1"), TEXT("DuplicateSetElement")));
+	TestOriginalSetPreserved(TEXT("duplicate set failure"));
+
+	TArray<TSharedPtr<FJsonValue>> LateFailingSet;
+	LateFailingSet.Add(MakeShared<FJsonValueString>(TEXT("Valid")));
+	LateFailingSet.Add(MakeShared<FJsonValueNull>());
+	TSharedRef<FJsonObject> LateFailingSetProperties = MakeShared<FJsonObject>();
+	LateFailingSetProperties->SetArrayField(TEXT("PlainNameSetValues"), MoveTemp(LateFailingSet));
+	const FAssetDocumentCapabilityResult LateSetResult =
+		FAssetDocumentReflectedPropertyUtils::ApplyProperties(Object, LateFailingSetProperties, TEXT("/Properties"));
+	TestFalse(TEXT("plain name set rejects a late invalid element"), LateSetResult.bSuccess);
+	TestTrue(
+		TEXT("plain name set late failure reports the element path"),
+		HasDiagnostic(LateSetResult, TEXT("/Properties/PlainNameSetValues/1"), TEXT("InvalidPropertyValue")));
+	TestOriginalSetPreserved(TEXT("late set failure"));
 
 	return true;
 }

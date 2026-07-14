@@ -242,6 +242,17 @@ public:
 	 */
 	static bool SetStructFromJson(UScriptStruct* Struct, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue);
 
+	/**
+	 * Set a detached property value at an explicit address.
+	 * Use this for prepared container elements or struct fields that do not have a UObject container address.
+	 */
+	static bool SetDetachedPropertyValueFromJson(
+		FProperty* Property,
+		void* ValuePtr,
+		TSharedPtr<FJsonValue> JsonValue,
+		UObject* OwnerObject = nullptr,
+		const FString& PropertyPath = FString());
+
 	//~ Generic struct parser template — replaces all explicit Parse* helpers
 
 	/** Parse any struct from a JSON value */

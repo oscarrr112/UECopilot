@@ -72,5 +72,11 @@ public:
 	TMap<uint8, FAssetDocumentReflectedPropertyNestedTestValue> ByteMapValues;
 
 	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TMap<uint8, float> PlainByteMapValues;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
 	TSet<FAssetDocumentReflectedPropertyNestedTestValue> SetValues;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TSet<FName> PlainNameSetValues;
 };

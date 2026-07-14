@@ -444,12 +444,14 @@ FAssetDocumentCapabilityResult ApplyPropertyValueWithCustomFields(
 	FProperty* Property,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path);
+	const FString& Path,
+	UObject* OwnerObject);
 FAssetDocumentCapabilityResult ApplyScriptStructPropertiesWithCustomFields(
 	UScriptStruct* ScriptStruct,
 	void* ValuePtr,
 	const TSharedRef<FJsonObject>& Properties,
-	const FString& Path);
+	const FString& Path,
+	UObject* OwnerObject);
 
 UScriptStruct* ResolveInstancedScriptStruct(const FString& StructPath)
 {
@@ -723,7 +725,8 @@ FAssetDocumentCapabilityResult ApplyInstancedStructValue(
 	FStructProperty* Property,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	if (!Property || !IsInstancedStructProperty(Property) || !ValuePtr)
 	{
@@ -760,7 +763,8 @@ FAssetDocumentCapabilityResult ApplyInstancedStructValue(
 		ScriptStruct,
 		Prepared.GetMutableMemory(),
 		StructProperties.ToSharedRef(),
-		PropertiesPath);
+		PropertiesPath,
+		OwnerObject);
 	if (!ApplyResult.bSuccess)
 	{
 		return ApplyResult;
@@ -851,6 +855,24 @@ bool RequiresCustomStructApply(FProperty* Property, const TSharedPtr<FJsonValue>
 	}
 
 	return false;
+}
+
+bool RequiresStagedPropertyApply(FProperty* Property, const TSharedPtr<FJsonValue>& Value)
+{
+	if (!Property || !Value.IsValid())
+	{
+		return false;
+	}
+	if (CastField<FArrayProperty>(Property)
+		|| CastField<FMapProperty>(Property)
+		|| CastField<FSetProperty>(Property)
+		|| RequiresCustomStructApply(Property, Value))
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> StructObject;
+	return CastField<FStructProperty>(Property) && TryGetJsonObject(Value, StructObject);
 }
 
 class FScopedPropertyValue
@@ -947,7 +969,8 @@ FAssetDocumentCapabilityResult ApplyArrayValueWithCustomFields(
 	FArrayProperty* ArrayProperty,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	const TArray<TSharedPtr<FJsonValue>>* ArrayValues = nullptr;
 	if (!ArrayProperty || !ValuePtr || !Value.IsValid() || !Value->TryGetArray(ArrayValues))
@@ -964,7 +987,8 @@ FAssetDocumentCapabilityResult ApplyArrayValueWithCustomFields(
 			ArrayProperty->Inner,
 			ArrayHelper.GetRawPtr(Index),
 			(*ArrayValues)[Index],
-			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
+			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)),
+			OwnerObject);
 		if (!ElementResult.bSuccess)
 		{
 			return ElementResult;
@@ -979,7 +1003,8 @@ FAssetDocumentCapabilityResult ApplyMapValueWithCustomFields(
 	FMapProperty* MapProperty,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	const TSharedPtr<FJsonObject>* MapObject = nullptr;
 	if (!MapProperty || !ValuePtr || !Value.IsValid()
@@ -1020,7 +1045,8 @@ FAssetDocumentCapabilityResult ApplyMapValueWithCustomFields(
 			MapProperty->ValueProp,
 			MapHelper.GetValuePtr(Index),
 			Pair.Value,
-			ReflectedPropertyJoinPath(Path, Pair.Key));
+			ReflectedPropertyJoinPath(Path, Pair.Key),
+			OwnerObject);
 		if (!ValueResult.bSuccess)
 		{
 			return ValueResult;
@@ -1036,7 +1062,8 @@ FAssetDocumentCapabilityResult ApplySetValueWithCustomFields(
 	FSetProperty* SetProperty,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	const TArray<TSharedPtr<FJsonValue>>* SetValues = nullptr;
 	if (!SetProperty || !ValuePtr || !Value.IsValid() || !Value->TryGetArray(SetValues))
@@ -1053,7 +1080,8 @@ FAssetDocumentCapabilityResult ApplySetValueWithCustomFields(
 			SetProperty->ElementProp,
 			SetHelper.GetElementPtr(SetIndex),
 			(*SetValues)[Index],
-			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
+			ReflectedPropertyJoinPath(Path, FString::FromInt(Index)),
+			OwnerObject);
 		if (!ElementResult.bSuccess)
 		{
 			return ElementResult;
@@ -1084,7 +1112,8 @@ FAssetDocumentCapabilityResult ApplyScriptStructPropertiesWithCustomFields(
 	UScriptStruct* ScriptStruct,
 	void* ValuePtr,
 	const TSharedRef<FJsonObject>& Properties,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	if (!ScriptStruct || !ValuePtr)
 	{
@@ -1105,31 +1134,15 @@ FAssetDocumentCapabilityResult ApplyScriptStructPropertiesWithCustomFields(
 		}
 
 		const FString FieldPath = ReflectedPropertyJoinPath(Path, Pair.Key);
-		if (RequiresCustomStructApply(FieldProperty, Pair.Value))
+		const FAssetDocumentCapabilityResult FieldResult = ApplyPropertyValueWithCustomFields(
+			FieldProperty,
+			FieldProperty->ContainerPtrToValuePtr<void>(Prepared.GetStructMemory()),
+			Pair.Value,
+			FieldPath,
+			OwnerObject);
+		if (!FieldResult.bSuccess)
 		{
-			const FAssetDocumentCapabilityResult FieldResult = ApplyPropertyValueWithCustomFields(
-				FieldProperty,
-				FieldProperty->ContainerPtrToValuePtr<void>(Prepared.GetStructMemory()),
-				Pair.Value,
-				FieldPath);
-			if (!FieldResult.bSuccess)
-			{
-				return FieldResult;
-			}
-			continue;
-		}
-
-		TSharedPtr<FJsonObject> SingleField = MakeShared<FJsonObject>();
-		SingleField->SetField(Pair.Key, NormalizeAuthoredValueForSetter(FieldProperty, Pair.Value));
-		if (!FPropertySetterUtils::SetStructFromJson(
-			ScriptStruct,
-			Prepared.GetStructMemory(),
-			MakeShared<FJsonValueObject>(SingleField)))
-		{
-			return ReflectedPropertyFailure(
-				FieldPath,
-				TEXT("InvalidPropertyValue"),
-				FString::Printf(TEXT("Failed to set struct field '%s'"), *Pair.Key));
+			return FieldResult;
 		}
 	}
 
@@ -1141,7 +1154,8 @@ FAssetDocumentCapabilityResult ApplyStructValueWithCustomFields(
 	FStructProperty* StructProperty,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
 	if (!StructProperty || !ValuePtr || !Value.IsValid())
 	{
@@ -1149,7 +1163,7 @@ FAssetDocumentCapabilityResult ApplyStructValueWithCustomFields(
 	}
 	if (IsInstancedStructProperty(StructProperty))
 	{
-		return ApplyInstancedStructValue(StructProperty, ValuePtr, Value, Path);
+		return ApplyInstancedStructValue(StructProperty, ValuePtr, Value, Path, OwnerObject);
 	}
 
 	const TSharedPtr<FJsonObject>* StructObject = nullptr;
@@ -1170,35 +1184,45 @@ FAssetDocumentCapabilityResult ApplyStructValueWithCustomFields(
 		StructProperty->Struct,
 		ValuePtr,
 		(*StructObject).ToSharedRef(),
-		Path);
+		Path,
+		OwnerObject);
 }
 
 FAssetDocumentCapabilityResult ApplyPropertyValueWithCustomFields(
 	FProperty* Property,
 	void* ValuePtr,
 	const TSharedPtr<FJsonValue>& Value,
-	const FString& Path)
+	const FString& Path,
+	UObject* OwnerObject)
 {
-	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+		StructProperty && RequiresStagedPropertyApply(StructProperty, Value))
 	{
-		return ApplyStructValueWithCustomFields(StructProperty, ValuePtr, Value, Path);
+		return ApplyStructValueWithCustomFields(StructProperty, ValuePtr, Value, Path, OwnerObject);
 	}
 	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 	{
-		return ApplyArrayValueWithCustomFields(ArrayProperty, ValuePtr, Value, Path);
+		return ApplyArrayValueWithCustomFields(ArrayProperty, ValuePtr, Value, Path, OwnerObject);
 	}
 	if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
 	{
-		return ApplyMapValueWithCustomFields(MapProperty, ValuePtr, Value, Path);
+		return ApplyMapValueWithCustomFields(MapProperty, ValuePtr, Value, Path, OwnerObject);
 	}
 	if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
 	{
-		return ApplySetValueWithCustomFields(SetProperty, ValuePtr, Value, Path);
+		return ApplySetValueWithCustomFields(SetProperty, ValuePtr, Value, Path, OwnerObject);
 	}
-	return ReflectedPropertyFailure(
-		Path,
-		TEXT("InvalidProperty"),
-		TEXT("Custom reflected-property apply requires a struct or container property"));
+
+	const TSharedPtr<FJsonValue> NormalizedValue = NormalizeAuthoredValueForSetter(Property, Value);
+	if (!Property || !ValuePtr || !NormalizedValue.IsValid()
+		|| !FPropertySetterUtils::SetDetachedPropertyValueFromJson(Property, ValuePtr, NormalizedValue, OwnerObject, Path))
+	{
+		return ReflectedPropertyFailure(
+			Path,
+			TEXT("InvalidPropertyValue"),
+			FString::Printf(TEXT("Failed to set property value '%s'"), Property ? *Property->GetName() : TEXT("None")));
+	}
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ExtractInstancedStructValue(
@@ -1528,7 +1552,7 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 			return SupportedResult;
 		}
 
-		if (RequiresCustomStructApply(Property, Pair.Value))
+		if (RequiresStagedPropertyApply(Property, Pair.Value))
 		{
 			UObject* TargetObject = Object;
 			TStrongObjectPtr<UObject> Duplicate;
@@ -1547,7 +1571,8 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 				Property,
 				Property->ContainerPtrToValuePtr<void>(TargetObject),
 				Pair.Value,
-				PropertyPath);
+				PropertyPath,
+				TargetObject);
 			if (!ApplyResult.bSuccess)
 			{
 				return ApplyResult;

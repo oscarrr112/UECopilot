@@ -38,6 +38,30 @@ FString MakeMapPropertyPath(const FString& BasePath, const FString& Key)
 {
 	return FString::Printf(TEXT("%s[%s]"), *BasePath, *Key);
 }
+
+UClass* FindOrLoadClassAtExactPath(const FString& ClassPath)
+{
+	if (UClass* FoundClass = FindObject<UClass>(nullptr, *ClassPath))
+	{
+		return FoundClass;
+	}
+	return LoadClass<UObject>(nullptr, *ClassPath, {}, LOAD_NoWarn);
+}
+
+UClass* ResolveClassPropertyPath(const FString& ClassPath)
+{
+	if (UClass* ExactClass = FindOrLoadClassAtExactPath(ClassPath))
+	{
+		return ExactClass;
+	}
+
+	const bool bIsContentPath = ClassPath.StartsWith(TEXT("/")) && !ClassPath.StartsWith(TEXT("/Script/"));
+	if (bIsContentPath && !ClassPath.EndsWith(TEXT("_C")))
+	{
+		return FindOrLoadClassAtExactPath(ClassPath + TEXT("_C"));
+	}
+	return nullptr;
+}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1025,17 +1049,7 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 		FString ClassPath;
 		if (JsonValue->TryGetString(ClassPath))
 		{
-			// Inline class loading logic (cannot call SetClassProperty which uses ContainerPtrToValuePtr)
-			FString FullClassPath = ClassPath;
-			if (!FullClassPath.EndsWith(TEXT("_C")))
-			{
-				FullClassPath += TEXT("_C");
-			}
-			UClass* LoadedClass = LoadClass<UObject>(nullptr, *FullClassPath);
-			if (!LoadedClass)
-			{
-				LoadedClass = LoadClass<UObject>(nullptr, *ClassPath);
-			}
+			UClass* LoadedClass = ResolveClassPropertyPath(ClassPath);
 			if (LoadedClass)
 			{
 				UClass* MetaClass = ClassProp->MetaClass;
@@ -1255,6 +1269,16 @@ bool FPropertySetterUtils::SetPropertyValueFromJson(FProperty* Property, void* V
 	UE_LOG(LogAssetFactory, Warning, TEXT("SetPropertyValueFromJson: unsupported property type '%s' (%s) at '%s'"),
 		*Property->GetName(), *Property->GetClass()->GetName(), *EffectivePath);
 	return false;
+}
+
+bool FPropertySetterUtils::SetDetachedPropertyValueFromJson(
+	FProperty* Property,
+	void* ValuePtr,
+	TSharedPtr<FJsonValue> JsonValue,
+	UObject* OwnerObject,
+	const FString& PropertyPath)
+{
+	return SetPropertyValueFromJson(Property, ValuePtr, MoveTemp(JsonValue), OwnerObject, PropertyPath);
 }
 
 bool FPropertySetterUtils::SetPropertyValueInternal(UObject* Object, FProperty* Property, void* ValuePtr, TSharedPtr<FJsonValue> JsonValue, const FString& PropertyPath)
@@ -2070,21 +2094,7 @@ bool FPropertySetterUtils::SetClassProperty(UObject* Object, FClassProperty* Pro
 
 	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(Object);
 
-	// Try to load the class
-	FString FullClassPath = ClassPath;
-
-	// If it's a Blueprint path, try to load the generated class
-	if (!FullClassPath.EndsWith(TEXT("_C")))
-	{
-		FullClassPath += TEXT("_C");
-	}
-
-	UClass* LoadedClass = LoadClass<UObject>(nullptr, *FullClassPath);
-	if (!LoadedClass)
-	{
-		// Try without _C suffix (native classes)
-		LoadedClass = LoadClass<UObject>(nullptr, *ClassPath);
-	}
+	UClass* LoadedClass = ResolveClassPropertyPath(ClassPath);
 
 	if (LoadedClass)
 	{
