@@ -78,7 +78,7 @@ TSharedRef<FJsonObject> MakeMemberRef(const TCHAR* OwnerClass, const TCHAR* Name
 	return Member;
 }
 
-TSharedRef<FJsonObject> MakeGraphNode(const TCHAR* Id, const TCHAR* ClassPath, TSharedPtr<FJsonObject> Member = nullptr)
+TSharedRef<FJsonObject> UBlueprintGraphTestMakeGraphNode(const TCHAR* Id, const TCHAR* ClassPath, TSharedPtr<FJsonObject> Member = nullptr)
 {
 	TSharedRef<FJsonObject> Node = MakeShared<FJsonObject>();
 	Node->SetStringField(TEXT("Id"), Id);
@@ -696,7 +696,7 @@ TSharedRef<FJsonObject> MakeBeginPlayPrintStringBody(
 	const FString& FromPin = UEdGraphSchema_K2::PN_Then.ToString(),
 	const FString& ToPin = UEdGraphSchema_K2::PN_Execute.ToString())
 {
-	TSharedRef<FJsonObject> BeginPlay = MakeGraphNode(
+	TSharedRef<FJsonObject> BeginPlay = UBlueprintGraphTestMakeGraphNode(
 		TEXT("BeginPlay"),
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
@@ -706,7 +706,7 @@ TSharedRef<FJsonObject> MakeBeginPlayPrintStringBody(
 
 	if (bIncludePrint)
 	{
-		TSharedRef<FJsonObject> Print = MakeGraphNode(
+		TSharedRef<FJsonObject> Print = UBlueprintGraphTestMakeGraphNode(
 			TEXT("Print"),
 			TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 			MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")));
@@ -970,7 +970,7 @@ bool FAssetDocumentUBlueprintGraphValidationAcceptsTier1ShapeBeforeApplyTest::Ru
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
 		TEXT("UbergraphPages"),
 		{MakeEventGraph({
-			MakeGraphNode(
+			UBlueprintGraphTestMakeGraphNode(
 				TEXT("BeginPlay"),
 				TEXT("/Script/BlueprintGraph.K2Node_Event"),
 				MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")))
@@ -1080,7 +1080,7 @@ bool FAssetDocumentUBlueprintGraphValidationUnsupportedNodeHasActionableDiagnost
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
 		TEXT("UbergraphPages"),
 		{MakeEventGraph({
-			MakeGraphNode(TEXT("Branch"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))
+			UBlueprintGraphTestMakeGraphNode(TEXT("Branch"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))
 		})});
 
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
@@ -1114,8 +1114,8 @@ bool FAssetDocumentUBlueprintGraphValidationMultipleUnsupportedNodesHaveActionab
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
 		TEXT("UbergraphPages"),
 		{MakeEventGraph({
-			MakeGraphNode(TEXT("BranchA"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse")),
-			MakeGraphNode(TEXT("BranchB"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))
+			UBlueprintGraphTestMakeGraphNode(TEXT("BranchA"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse")),
+			UBlueprintGraphTestMakeGraphNode(TEXT("BranchB"), TEXT("/Script/BlueprintGraph.K2Node_IfThenElse"))
 		})});
 
 	const FAssetDocumentCapabilityResult Result = Capability.Validate(Context, MakeBodyValue(Body));
@@ -1141,7 +1141,7 @@ bool FAssetDocumentUBlueprintGraphValidationSupportsTier1CallFunctionTest::RunTe
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
 		TEXT("UbergraphPages"),
 		{MakeEventGraph({
-			MakeGraphNode(
+			UBlueprintGraphTestMakeGraphNode(
 				TEXT("Print"),
 				TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 				MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")))
@@ -1168,7 +1168,7 @@ bool FAssetDocumentUBlueprintGraphValidationUnresolvedFunctionHasActionableDiagn
 	TSharedRef<FJsonObject> Body = MakeBodyWithRegion(
 		TEXT("UbergraphPages"),
 		{MakeEventGraph({
-			MakeGraphNode(
+			UBlueprintGraphTestMakeGraphNode(
 				TEXT("MissingFunction"),
 				TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 				MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("FunctionThatDoesNotExist")))
@@ -1456,7 +1456,7 @@ bool FAssetDocumentUBlueprintGraphDiffReportsMissingNodeTest::RunTest(const FStr
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Desired graph has nodes"), DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	TSharedRef<FJsonObject> DesiredPrint = MakeGraphNode(
+	TSharedRef<FJsonObject> DesiredPrint = UBlueprintGraphTestMakeGraphNode(
 		TEXT("PrintString"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")));
@@ -1620,7 +1620,7 @@ bool FAssetDocumentUBlueprintGraphDiffUsesServiceCompatibleStatusesTest::RunTest
 		const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 		TestTrue(TEXT("Desired graph has nodes"), DesiredGraph.IsValid() && DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 		TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-		Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+		Nodes.Add(MakeShared<FJsonValueObject>(UBlueprintGraphTestMakeGraphNode(
 			TEXT("PrintString"),
 			TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 			MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")))));
@@ -1794,11 +1794,11 @@ bool FAssetDocumentUBlueprintGraphApplyUsesStagedVariableReferencesTest::RunTest
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+	Nodes.Add(MakeShared<FJsonValueObject>(UBlueprintGraphTestMakeGraphNode(
 		TEXT("GraphCounterGet"),
 		TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
 		MakeMemberRef(TEXT("Self"), TEXT("GraphCounter")))));
-	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+	Nodes.Add(MakeShared<FJsonValueObject>(UBlueprintGraphTestMakeGraphNode(
 		TEXT("GraphCounterSet"),
 		TEXT("/Script/BlueprintGraph.K2Node_VariableSet"),
 		MakeMemberRef(TEXT("Self"), TEXT("GraphCounter")))));
@@ -1903,7 +1903,7 @@ bool FAssetDocumentUBlueprintGraphApplyCompileFailureDoesNotSavePartialGraphTest
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+	TSharedRef<FJsonObject> DuplicateBeginPlay = UBlueprintGraphTestMakeGraphNode(
 		TEXT("BeginPlayDuplicate"),
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
@@ -1949,7 +1949,7 @@ bool FAssetDocumentUBlueprintGraphApplyCompileFailureRollbackPreservesUnsupporte
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+	TSharedRef<FJsonObject> DuplicateBeginPlay = UBlueprintGraphTestMakeGraphNode(
 		TEXT("BeginPlayDuplicate"),
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
@@ -1988,7 +1988,7 @@ bool FAssetDocumentUBlueprintGraphApplyIgnoresStaleNodeGuidWithDifferentMemberTe
 	TestTrue(TEXT("Desired graph has nodes"), DesiredGraph.IsValid() && DesiredGraph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
 
-	TSharedRef<FJsonObject> LogString = MakeGraphNode(
+	TSharedRef<FJsonObject> LogString = UBlueprintGraphTestMakeGraphNode(
 		TEXT("Log"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("LogString")));
@@ -2032,7 +2032,7 @@ bool FAssetDocumentUBlueprintGraphApplyCompileFailureRollsBackClassDefaultsTest:
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Bad body graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	TSharedRef<FJsonObject> DuplicateBeginPlay = MakeGraphNode(
+	TSharedRef<FJsonObject> DuplicateBeginPlay = UBlueprintGraphTestMakeGraphNode(
 		TEXT("BeginPlayDuplicate"),
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeMemberRef(TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")));
@@ -2082,7 +2082,7 @@ bool FAssetDocumentUBlueprintGraphApplyRejectsUnsupportedLatentCallFunctionTest:
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+	Nodes.Add(MakeShared<FJsonValueObject>(UBlueprintGraphTestMakeGraphNode(
 		TEXT("Delay"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeMemberRef(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("Delay")))));
@@ -2192,7 +2192,7 @@ bool FAssetDocumentUBlueprintGraphApplyRejectsInvalidVariableMemberBeforeBodyMut
 	const TArray<TSharedPtr<FJsonValue>>* ExistingNodes = nullptr;
 	TestTrue(TEXT("Desired graph has nodes"), Graph.IsValid() && Graph->TryGetArrayField(TEXT("Nodes"), ExistingNodes) && ExistingNodes);
 	TArray<TSharedPtr<FJsonValue>> Nodes = ExistingNodes ? *ExistingNodes : TArray<TSharedPtr<FJsonValue>>();
-	Nodes.Add(MakeShared<FJsonValueObject>(MakeGraphNode(
+	Nodes.Add(MakeShared<FJsonValueObject>(UBlueprintGraphTestMakeGraphNode(
 		TEXT("MissingVariableGet"),
 		TEXT("/Script/BlueprintGraph.K2Node_VariableGet"),
 		MakeMemberRef(TEXT("Self"), TEXT("MissingVariable")))));

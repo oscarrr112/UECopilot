@@ -60,7 +60,7 @@ TSharedPtr<FJsonObject> MakeGraphPinOverride(const TCHAR* Pin, const TCHAR* Dire
 	return PinOverride;
 }
 
-TSharedPtr<FJsonObject> MakeGraphNode(
+TSharedPtr<FJsonObject> RegionCanonicalizerTestMakeGraphNode(
 	const TCHAR* Id,
 	const TCHAR* Class,
 	TSharedPtr<FJsonObject> Member,
@@ -121,13 +121,13 @@ TSharedPtr<FJsonValue> MakeGraphRegionValue(
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Nodes;
-	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphNode(
+	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(RegionCanonicalizerTestMakeGraphNode(
 		EventNodeId,
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeGraphMember(TEXT("Event"), TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")),
 		bIncludeGeneratedMetadata ? TEXT("E0B14B7C4E0F4F0BA0E5E4D600000002") : nullptr,
 		bIncludeGeneratedMetadata ? TEXT("Event") : nullptr).ToSharedRef()));
-	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphNode(
+	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(RegionCanonicalizerTestMakeGraphNode(
 		CallNodeId,
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMember(TEXT("Function"), TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")),
@@ -801,15 +801,15 @@ bool FAssetDocumentRegionCanonicalizerGraphIgnoresMemberGuidTest::RunTest(const 
 	Context.Policy = &Policy;
 	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
 
-	TSharedPtr<FJsonObject> WithoutGuidNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> WithoutGuidNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), nullptr));
-	TSharedPtr<FJsonObject> WithGuidNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> WithGuidNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
-	TSharedPtr<FJsonObject> WithDifferentGuidNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> WithDifferentGuidNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("22222222222222222222222222222222")));
@@ -843,15 +843,15 @@ bool FAssetDocumentRegionCanonicalizerGraphKeepsMemberSemanticsTest::RunTest(con
 	Context.Policy = &Policy;
 	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
 
-	TSharedPtr<FJsonObject> BaselineNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> BaselineNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
-	TSharedPtr<FJsonObject> DifferentNameNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> DifferentNameNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("Delay"), TEXT("11111111111111111111111111111111")));
-	TSharedPtr<FJsonObject> DifferentClassNode = MakeGraphNode(
+	TSharedPtr<FJsonObject> DifferentClassNode = RegionCanonicalizerTestMakeGraphNode(
 		TEXT("print_string"),
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMemberWithClassAndGuid(TEXT("/Script/Engine.GameplayStatics"), TEXT("PrintString"), TEXT("11111111111111111111111111111111")));
