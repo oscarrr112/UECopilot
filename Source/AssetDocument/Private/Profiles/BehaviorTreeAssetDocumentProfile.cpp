@@ -719,8 +719,8 @@ TSharedRef<FJsonObject> FBehaviorTreeAssetDocumentCapability::GetSchemaHint() co
 {
 	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetStringField(TEXT("GraphGuid"), TEXT("canonical 32-hex UBehaviorTreeGraph identity"));
-	Tree->SetStringField(TEXT("Root"), TEXT("graph-source BehaviorTree node with NodeGuid identity, direct Children, Services, and Editor.Position"));
-	Tree->SetStringField(TEXT("Comments"), TEXT("array<BehaviorTreeComment>; Task 5 integration"));
+	Tree->SetStringField(TEXT("Root"), TEXT("graph-source BehaviorTree node with NodeGuid identity, direct Children, Decorators, Services, and Editor state"));
+	Tree->SetStringField(TEXT("Comments"), TEXT("array<BehaviorTreeComment> with stable NodeGuid identity and full UE comment-box state"));
 
 	TSharedRef<FJsonObject> Schema = MakeShared<FJsonObject>();
 	Schema->SetStringField(TEXT("BlackboardAsset"), TEXT("UBlackboardData object path | AssetRef<UBlackboardData> | null"));
@@ -829,6 +829,7 @@ TSharedRef<FJsonObject> FBehaviorTreeAssetDocumentProfile::GetDocumentShape() co
 TSharedRef<FJsonObject> FBehaviorTreeAssetDocumentProfile::CreateTemplate(const FAssetDocumentTemplateContext& Context) const
 {
 	TSharedRef<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetStringField(TEXT("GraphGuid"), FGuid::NewGuid().ToString(EGuidFormats::Digits));
 	Tree->SetObjectField(TEXT("Root"), MakeShared<FJsonObject>());
 	Tree->SetArrayField(TEXT("Comments"), TArray<TSharedPtr<FJsonValue>>());
 

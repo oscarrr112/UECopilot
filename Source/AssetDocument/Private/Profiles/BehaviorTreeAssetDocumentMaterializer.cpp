@@ -9,6 +9,7 @@
 
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BTCompositeNode.h"
+#include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/Composites/BTComposite_SimpleParallel.h"
@@ -16,11 +17,17 @@
 #include "BehaviorTreeGraph.h"
 #include "BehaviorTreeGraphNode.h"
 #include "BehaviorTreeGraphNode_Composite.h"
+#include "BehaviorTreeGraphNode_CompositeDecorator.h"
+#include "BehaviorTreeGraphNode_Decorator.h"
 #include "BehaviorTreeGraphNode_Root.h"
 #include "BehaviorTreeGraphNode_Service.h"
 #include "BehaviorTreeGraphNode_SimpleParallel.h"
 #include "BehaviorTreeGraphNode_SubtreeTask.h"
 #include "BehaviorTreeGraphNode_Task.h"
+#include "BehaviorTreeDecoratorGraph.h"
+#include "BehaviorTreeDecoratorGraphNode.h"
+#include "BehaviorTreeDecoratorGraphNode_Decorator.h"
+#include "BehaviorTreeDecoratorGraphNode_Logic.h"
 #include "Dom/JsonValue.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
@@ -51,9 +58,35 @@ constexpr const TCHAR* YField = TEXT("Y");
 constexpr const TCHAR* NodeCommentField = TEXT("NodeComment");
 constexpr const TCHAR* CommentBubblePinnedField = TEXT("bCommentBubblePinned");
 constexpr const TCHAR* CommentBubbleVisibleField = TEXT("bCommentBubbleVisible");
+constexpr const TCHAR* KindField = TEXT("Kind");
+constexpr const TCHAR* BoundGraphField = TEXT("BoundGraph");
+constexpr const TCHAR* NodesField = TEXT("Nodes");
+constexpr const TCHAR* LinksField = TEXT("Links");
+constexpr const TCHAR* FromField = TEXT("From");
+constexpr const TCHAR* ToField = TEXT("To");
+constexpr const TCHAR* ToInputField = TEXT("ToInput");
+constexpr const TCHAR* CompositeNameField = TEXT("CompositeName");
+constexpr const TCHAR* ShowOperationsField = TEXT("bShowOperations");
+constexpr const TCHAR* TextField = TEXT("Text");
+constexpr const TCHAR* SizeField = TEXT("Size");
+constexpr const TCHAR* WidthField = TEXT("Width");
+constexpr const TCHAR* HeightField = TEXT("Height");
+constexpr const TCHAR* ColorField = TEXT("Color");
+constexpr const TCHAR* RField = TEXT("R");
+constexpr const TCHAR* GField = TEXT("G");
+constexpr const TCHAR* BField = TEXT("B");
+constexpr const TCHAR* AField = TEXT("A");
+constexpr const TCHAR* CommentDepthField = TEXT("CommentDepth");
+constexpr const TCHAR* FontSizeField = TEXT("FontSize");
+constexpr const TCHAR* MoveModeField = TEXT("MoveMode");
+constexpr const TCHAR* NodeDetailsField = TEXT("NodeDetails");
+constexpr const TCHAR* CommentBubbleVisibleInDetailsField = TEXT("bCommentBubbleVisible_InDetailsPanel");
+constexpr const TCHAR* ColorCommentBubbleField = TEXT("bColorCommentBubble");
 
 #if WITH_DEV_AUTOMATION_TESTS
 bool bFailNextEditorGraphRebuildForTest = false;
+bool bFailNextTreeGraphSwapForTest = false;
+bool bFailNextPreviousTreeGraphCleanupForTest = false;
 #endif
 
 struct FBehaviorTreeEditorSpec
@@ -73,6 +106,67 @@ struct FBehaviorTreeServiceSpec
 	FString JsonPath;
 	UClass* NodeClass = nullptr;
 	TSharedPtr<FJsonObject> Properties;
+	FBehaviorTreeEditorSpec Editor;
+};
+
+struct FBehaviorTreeDecoratorGraphNodeSpec
+{
+	FGuid Guid;
+	FString Id;
+	FString JsonPath;
+	FString Kind;
+	UClass* NodeClass = nullptr;
+	TSharedPtr<FJsonObject> Properties;
+	FBehaviorTreeEditorSpec Editor;
+};
+
+struct FBehaviorTreeDecoratorGraphLinkSpec
+{
+	FGuid From;
+	FGuid To;
+	int32 ToInput = 0;
+	FString JsonPath;
+};
+
+struct FBehaviorTreeDecoratorGraphSpec
+{
+	FGuid GraphGuid;
+	TArray<FBehaviorTreeDecoratorGraphNodeSpec> Nodes;
+	TArray<FBehaviorTreeDecoratorGraphLinkSpec> Links;
+};
+
+struct FBehaviorTreeDecoratorSpec
+{
+	FGuid Guid;
+	FString Id;
+	FString JsonPath;
+	bool bComposite = false;
+	UClass* NodeClass = nullptr;
+	TSharedPtr<FJsonObject> Properties;
+	FBehaviorTreeEditorSpec Editor;
+	FString CompositeName;
+	bool bShowOperations = true;
+	FBehaviorTreeDecoratorGraphSpec BoundGraph;
+};
+
+struct FBehaviorTreeCommentSpec
+{
+	FGuid Guid;
+	FString Id;
+	FString Text;
+	int32 X = 0;
+	int32 Y = 0;
+	int32 Width = 400;
+	int32 Height = 100;
+	FLinearColor Color = FLinearColor::White;
+	int32 CommentDepth = -1;
+	int32 FontSize = 18;
+	ECommentBoxMode::Type MoveMode = ECommentBoxMode::GroupMovement;
+	FText NodeDetails;
+	bool bCommentBubblePinned = true;
+	bool bCommentBubbleVisible = true;
+	bool bCommentBubbleVisibleInDetails = true;
+	bool bColorCommentBubble = false;
 };
 
 struct FBehaviorTreeNodeSpec
@@ -82,6 +176,7 @@ struct FBehaviorTreeNodeSpec
 	FString JsonPath;
 	UClass* NodeClass = nullptr;
 	TSharedPtr<FJsonObject> Properties;
+	TArray<FBehaviorTreeDecoratorSpec> Decorators;
 	TArray<FBehaviorTreeServiceSpec> Services;
 	TArray<TSharedPtr<FBehaviorTreeNodeSpec>> Children;
 	FBehaviorTreeEditorSpec Editor;
@@ -92,6 +187,7 @@ struct FBehaviorTreeGraphSpec
 	FGuid GraphGuid;
 	bool bGraphGuidWasAuthored = false;
 	TSharedPtr<FBehaviorTreeNodeSpec> Root;
+	TArray<FBehaviorTreeCommentSpec> Comments;
 };
 
 struct FBehaviorTreeParseState
@@ -366,6 +462,370 @@ FAssetDocumentCapabilityResult ParseEditor(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+FAssetDocumentCapabilityResult ReadCanonicalGuidString(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& Field,
+	const FString& Path,
+	FGuid& OutGuid)
+{
+	FString Value;
+	if (!Object->TryGetStringField(Field, Value)
+		|| !FGuid::ParseExact(Value, EGuidFormats::Digits, OutGuid)
+		|| !OutGuid.IsValid())
+	{
+		return Failure(Path, TEXT("InvalidBehaviorTreeNodeGuid"), TEXT("BehaviorTree GUID references must be canonical 32-hex values"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ReadFiniteNumber(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& Field,
+	const FString& Path,
+	double& OutValue)
+{
+	if (!Object->TryGetNumberField(Field, OutValue) || !FMath::IsFinite(OutValue))
+	{
+		return Failure(Path, TEXT("InvalidBehaviorTreeNumber"), TEXT("BehaviorTree numeric fields must be finite numbers"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseDecoratorGraph(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& Path,
+	FBehaviorTreeParseState& State,
+	FBehaviorTreeDecoratorGraphSpec& OutGraph)
+{
+	FAssetDocumentCapabilityResult Result = CheckKnownFields(Object, Path, {GraphGuidField, NodesField, LinksField});
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	FString GraphGuidString;
+	if (!Object->TryGetStringField(GraphGuidField, GraphGuidString)
+		|| !FGuid::ParseExact(GraphGuidString, EGuidFormats::Digits, OutGraph.GraphGuid)
+		|| !OutGraph.GraphGuid.IsValid())
+	{
+		return Failure(JoinPath(Path, GraphGuidField), TEXT("InvalidBehaviorTreeGraphGuid"), TEXT("BoundGraph GraphGuid must be a valid canonical 32-hex GUID"));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+	Result = ReadArray(Object, NodesField, JoinPath(Path, NodesField), Nodes, false);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	for (int32 Index = 0; Nodes && Index < Nodes->Num(); ++Index)
+	{
+		const FString NodePath = JoinPath(JoinPath(Path, NodesField), Index);
+		TSharedPtr<FJsonObject> NodeObject;
+		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue((*Nodes)[Index], NodePath, NodeObject);
+		if (!Result.bSuccess)
+		{
+			return Failure(NodePath, TEXT("InvalidBehaviorTreeDecoratorNode"), TEXT("BoundGraph Nodes entries must be objects"));
+		}
+		Result = CheckKnownFields(NodeObject.ToSharedRef(), NodePath, {IdField, KindField, ClassField, PropertiesField, EditorField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		FBehaviorTreeDecoratorGraphNodeSpec Node;
+		Node.JsonPath = NodePath;
+		Result = ReadGuid(NodeObject.ToSharedRef(), NodePath, State, Node.Guid, Node.Id);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (!NodeObject->TryGetStringField(KindField, Node.Kind)
+			|| (Node.Kind != TEXT("Sink") && Node.Kind != TEXT("Test") && Node.Kind != TEXT("And") && Node.Kind != TEXT("Or") && Node.Kind != TEXT("Not")))
+		{
+			return Failure(JoinPath(NodePath, KindField), TEXT("InvalidBehaviorTreeDecoratorKind"), TEXT("BoundGraph Kind must be Sink, Test, And, Or, or Not"));
+		}
+		if (Node.Kind == TEXT("Test"))
+		{
+			Result = ResolveConcreteNodeClass(NodeObject.ToSharedRef(), NodePath, UBTDecorator::StaticClass(), Node.NodeClass);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			Result = ReadProperties(NodeObject.ToSharedRef(), NodePath, Node.Properties);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+		else if (NodeObject->HasField(ClassField) || NodeObject->HasField(PropertiesField))
+		{
+			return Failure(
+				JoinPath(NodePath, NodeObject->HasField(ClassField) ? ClassField : PropertiesField),
+				TEXT("InvalidBehaviorTreeDecoratorNode"),
+				TEXT("Only Test BoundGraph nodes may declare Class or Properties"));
+		}
+		Result = ParseEditor(NodeObject.ToSharedRef(), NodePath, State, Node.Editor);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutGraph.Nodes.Add(MoveTemp(Node));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Links = nullptr;
+	Result = ReadArray(Object, LinksField, JoinPath(Path, LinksField), Links, false);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	TMap<FGuid, int32> NodeIndices;
+	for (int32 Index = 0; Index < OutGraph.Nodes.Num(); ++Index)
+	{
+		NodeIndices.Add(OutGraph.Nodes[Index].Guid, Index);
+	}
+	TMap<FGuid, int32> OutgoingLinkIndices;
+	TSet<FString> TargetInputs;
+	for (int32 Index = 0; Links && Index < Links->Num(); ++Index)
+	{
+		const FString LinkPath = JoinPath(JoinPath(Path, LinksField), Index);
+		TSharedPtr<FJsonObject> LinkObject;
+		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue((*Links)[Index], LinkPath, LinkObject);
+		if (!Result.bSuccess)
+		{
+			return Failure(LinkPath, TEXT("InvalidBehaviorTreeDecoratorLink"), TEXT("BoundGraph Links entries must be objects"));
+		}
+		Result = CheckKnownFields(LinkObject.ToSharedRef(), LinkPath, {FromField, ToField, ToInputField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		FBehaviorTreeDecoratorGraphLinkSpec Link;
+		Link.JsonPath = LinkPath;
+		Result = ReadCanonicalGuidString(LinkObject.ToSharedRef(), FromField, JoinPath(LinkPath, FromField), Link.From);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ReadCanonicalGuidString(LinkObject.ToSharedRef(), ToField, JoinPath(LinkPath, ToField), Link.To);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		double ToInputNumber = 0.0;
+		if (!LinkObject->TryGetNumberField(ToInputField, ToInputNumber)
+			|| ToInputNumber < 0.0
+			|| ToInputNumber > MAX_int32
+			|| static_cast<double>(static_cast<int32>(ToInputNumber)) != ToInputNumber)
+		{
+			return Failure(JoinPath(LinkPath, ToInputField), TEXT("InvalidBehaviorTreeDecoratorInput"), TEXT("ToInput must be a non-negative int32"));
+		}
+		Link.ToInput = static_cast<int32>(ToInputNumber);
+		if (!NodeIndices.Contains(Link.From))
+		{
+			return Failure(JoinPath(LinkPath, FromField), TEXT("DanglingBehaviorTreeDecoratorLink"), TEXT("BoundGraph link From does not reference a node"));
+		}
+		if (!NodeIndices.Contains(Link.To))
+		{
+			return Failure(JoinPath(LinkPath, ToField), TEXT("DanglingBehaviorTreeDecoratorLink"), TEXT("BoundGraph link To does not reference a node"));
+		}
+		if (OutgoingLinkIndices.Contains(Link.From))
+		{
+			return Failure(JoinPath(LinkPath, FromField), TEXT("MultipleBehaviorTreeDecoratorLinks"), TEXT("BoundGraph nodes may have only one outgoing link"));
+		}
+		OutgoingLinkIndices.Add(Link.From, Index);
+		const FString TargetInput = FString::Printf(TEXT("%s:%d"), *Link.To.ToString(EGuidFormats::Digits), Link.ToInput);
+		if (TargetInputs.Contains(TargetInput))
+		{
+			return Failure(JoinPath(LinkPath, ToInputField), TEXT("MultipleBehaviorTreeDecoratorLinks"), TEXT("BoundGraph input pins may have only one incoming link"));
+		}
+		TargetInputs.Add(TargetInput);
+		OutGraph.Links.Add(Link);
+	}
+
+	// Reject cycles before structural arity checks so the closing link is the diagnostic anchor.
+	TMap<FGuid, const FBehaviorTreeDecoratorGraphLinkSpec*> Outgoing;
+	for (const FBehaviorTreeDecoratorGraphLinkSpec& Link : OutGraph.Links)
+	{
+		Outgoing.Add(Link.From, &Link);
+	}
+	TSet<FGuid> Visited;
+	TSet<FGuid> Active;
+	TFunction<FAssetDocumentCapabilityResult(const FGuid&)> Visit;
+	Visit = [&Visit, &Visited, &Active, &Outgoing](const FGuid& NodeId) -> FAssetDocumentCapabilityResult
+	{
+		if (Visited.Contains(NodeId))
+		{
+			return FAssetDocumentCapabilityResult::Success();
+		}
+		Active.Add(NodeId);
+		if (const FBehaviorTreeDecoratorGraphLinkSpec* const* LinkPtr = Outgoing.Find(NodeId))
+		{
+			const FBehaviorTreeDecoratorGraphLinkSpec* Link = *LinkPtr;
+			if (Active.Contains(Link->To))
+			{
+				return Failure(Link->JsonPath, TEXT("BehaviorTreeDecoratorGraphCycle"), TEXT("BoundGraph contains a cycle"));
+			}
+			FAssetDocumentCapabilityResult VisitResult = Visit(Link->To);
+			if (!VisitResult.bSuccess)
+			{
+				return VisitResult;
+			}
+		}
+		Active.Remove(NodeId);
+		Visited.Add(NodeId);
+		return FAssetDocumentCapabilityResult::Success();
+	};
+	for (const FBehaviorTreeDecoratorGraphNodeSpec& Node : OutGraph.Nodes)
+	{
+		Result = Visit(Node.Guid);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+
+	int32 SinkCount = 0;
+	FGuid SinkGuid;
+	for (const FBehaviorTreeDecoratorGraphNodeSpec& Node : OutGraph.Nodes)
+	{
+		int32 IncomingCount = 0;
+		for (const FBehaviorTreeDecoratorGraphLinkSpec& Link : OutGraph.Links)
+		{
+			IncomingCount += Link.To == Node.Guid ? 1 : 0;
+		}
+		const bool bVariadicLogic = Node.Kind == TEXT("And") || Node.Kind == TEXT("Or");
+		const int32 ExpectedInputs = bVariadicLogic
+			? IncomingCount
+			: (Node.Kind == TEXT("Sink") || Node.Kind == TEXT("Not") ? 1 : 0);
+		bool bInputsCanonical = IncomingCount == ExpectedInputs;
+		if (bVariadicLogic && ExpectedInputs < 2)
+		{
+			bInputsCanonical = false;
+		}
+		for (int32 InputIndex = 0; bInputsCanonical && InputIndex < ExpectedInputs; ++InputIndex)
+		{
+			bInputsCanonical = OutGraph.Links.ContainsByPredicate([&Node, InputIndex](const FBehaviorTreeDecoratorGraphLinkSpec& Link)
+			{
+				return Link.To == Node.Guid && Link.ToInput == InputIndex;
+			});
+		}
+		if (!bInputsCanonical || OutGraph.Links.ContainsByPredicate([&Node, ExpectedInputs](const FBehaviorTreeDecoratorGraphLinkSpec& Link)
+			{ return Link.To == Node.Guid && Link.ToInput >= ExpectedInputs; }))
+		{
+			return Failure(Node.JsonPath, TEXT("InvalidBehaviorTreeDecoratorArity"), TEXT("BoundGraph node input arity does not match its Kind"));
+		}
+		const bool bHasOutgoing = Outgoing.Contains(Node.Guid);
+		if (Node.Kind == TEXT("Sink"))
+		{
+			++SinkCount;
+			SinkGuid = Node.Guid;
+			if (bHasOutgoing)
+			{
+				return Failure(Node.JsonPath, TEXT("InvalidBehaviorTreeDecoratorArity"), TEXT("BoundGraph Sink cannot have an outgoing link"));
+			}
+		}
+		else if (!bHasOutgoing)
+		{
+			return Failure(Node.JsonPath, TEXT("UnreachableBehaviorTreeDecoratorNode"), TEXT("BoundGraph node does not reach the Sink"));
+		}
+	}
+	if (SinkCount != 1)
+	{
+		return Failure(JoinPath(Path, NodesField), TEXT("InvalidBehaviorTreeDecoratorSink"), TEXT("BoundGraph must contain exactly one Sink"));
+	}
+	for (const FBehaviorTreeDecoratorGraphNodeSpec& Node : OutGraph.Nodes)
+	{
+		FGuid Current = Node.Guid;
+		TSet<FGuid> Chain;
+		while (Current != SinkGuid && !Chain.Contains(Current))
+		{
+			Chain.Add(Current);
+			const FBehaviorTreeDecoratorGraphLinkSpec* const* Link = Outgoing.Find(Current);
+			if (!Link)
+			{
+				return Failure(Node.JsonPath, TEXT("UnreachableBehaviorTreeDecoratorNode"), TEXT("BoundGraph node does not reach the Sink"));
+			}
+			Current = (*Link)->To;
+		}
+		if (Current != SinkGuid)
+		{
+			return Failure(Node.JsonPath, TEXT("UnreachableBehaviorTreeDecoratorNode"), TEXT("BoundGraph node does not reach the Sink"));
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseDecorator(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path,
+	FBehaviorTreeParseState& State,
+	FBehaviorTreeDecoratorSpec& OutDecorator)
+{
+	TSharedPtr<FJsonObject> Object;
+	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, Path, Object);
+	if (!Result.bSuccess)
+	{
+		return Failure(Path, TEXT("InvalidBehaviorTreeDecorator"), TEXT("BehaviorTree Decorators entries must be objects"));
+	}
+	FString Kind;
+	const bool bHasKind = Object->TryGetStringField(KindField, Kind);
+	OutDecorator.bComposite = bHasKind && Kind == TEXT("Composite");
+	if (Object->HasField(KindField) && !OutDecorator.bComposite)
+	{
+		return Failure(JoinPath(Path, KindField), TEXT("InvalidBehaviorTreeDecoratorKind"), TEXT("Decorator Kind must be Composite when present"));
+	}
+	Result = OutDecorator.bComposite
+		? CheckKnownFields(Object.ToSharedRef(), Path, {IdField, KindField, PropertiesField, EditorField, BoundGraphField})
+		: CheckKnownFields(Object.ToSharedRef(), Path, {IdField, ClassField, PropertiesField, EditorField});
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutDecorator.JsonPath = Path;
+	Result = ReadGuid(Object.ToSharedRef(), Path, State, OutDecorator.Guid, OutDecorator.Id);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	Result = ParseEditor(Object.ToSharedRef(), Path, State, OutDecorator.Editor);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (!OutDecorator.bComposite)
+	{
+		Result = ResolveConcreteNodeClass(Object.ToSharedRef(), Path, UBTDecorator::StaticClass(), OutDecorator.NodeClass);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		return ReadProperties(Object.ToSharedRef(), Path, OutDecorator.Properties);
+	}
+
+	TSharedPtr<FJsonObject> Properties;
+	Result = RequireObject(Object.ToSharedRef(), PropertiesField, JoinPath(Path, PropertiesField), Properties);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	Result = CheckKnownFields(Properties.ToSharedRef(), JoinPath(Path, PropertiesField), {CompositeNameField, ShowOperationsField});
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Properties->HasField(CompositeNameField) && !Properties->TryGetStringField(CompositeNameField, OutDecorator.CompositeName))
+	{
+		return Failure(JoinPath(JoinPath(Path, PropertiesField), CompositeNameField), TEXT("InvalidBehaviorTreeDecoratorProperty"), TEXT("CompositeName must be a string"));
+	}
+	if (Properties->HasField(ShowOperationsField) && !Properties->TryGetBoolField(ShowOperationsField, OutDecorator.bShowOperations))
+	{
+		return Failure(JoinPath(JoinPath(Path, PropertiesField), ShowOperationsField), TEXT("InvalidBehaviorTreeDecoratorProperty"), TEXT("bShowOperations must be a boolean"));
+	}
+	TSharedPtr<FJsonObject> BoundGraph;
+	Result = RequireObject(Object.ToSharedRef(), BoundGraphField, JoinPath(Path, BoundGraphField), BoundGraph);
+	return Result.bSuccess
+		? ParseDecoratorGraph(BoundGraph.ToSharedRef(), JoinPath(Path, BoundGraphField), State, OutDecorator.BoundGraph)
+		: Result;
+}
+
 FAssetDocumentCapabilityResult ParseService(
 	const TSharedPtr<FJsonValue>& Value,
 	const FString& Path,
@@ -378,7 +838,7 @@ FAssetDocumentCapabilityResult ParseService(
 	{
 		return Failure(Path, TEXT("InvalidBehaviorTreeService"), TEXT("BehaviorTree Services entries must be objects"));
 	}
-	Result = CheckKnownFields(Object.ToSharedRef(), Path, {IdField, ClassField, PropertiesField});
+	Result = CheckKnownFields(Object.ToSharedRef(), Path, {IdField, ClassField, PropertiesField, EditorField});
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -394,7 +854,8 @@ FAssetDocumentCapabilityResult ParseService(
 	{
 		return Result;
 	}
-	return ReadProperties(Object.ToSharedRef(), Path, OutService.Properties);
+	Result = ReadProperties(Object.ToSharedRef(), Path, OutService.Properties);
+	return Result.bSuccess ? ParseEditor(Object.ToSharedRef(), Path, State, OutService.Editor) : Result;
 }
 
 FAssetDocumentCapabilityResult ParseNode(
@@ -465,7 +926,16 @@ FAssetDocumentCapabilityResult ParseNode(
 	}
 	if (Decorators && Decorators->Num() > 0)
 	{
-		return Failure(JoinPath(Path, DecoratorsField), TEXT("UnsupportedBehaviorTreeDecoratorsTask5"), TEXT("Decorator authored graphs are integrated by Task 5"));
+		for (int32 Index = 0; Index < Decorators->Num(); ++Index)
+		{
+			FBehaviorTreeDecoratorSpec Decorator;
+			Result = ParseDecorator((*Decorators)[Index], JoinPath(JoinPath(Path, DecoratorsField), Index), State, Decorator);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			OutNode.Decorators.Add(MoveTemp(Decorator));
+		}
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
@@ -498,6 +968,7 @@ FAssetDocumentCapabilityResult ParseNode(
 	{
 		return Failure(JoinPath(Path, ChildrenField), TEXT("InvalidBehaviorTreeParentClass"), TEXT("BehaviorTree task nodes cannot own Children"));
 	}
+	const bool bPinSemanticChildren = OutNode.NodeClass->IsChildOf(UBTComposite_SimpleParallel::StaticClass());
 	int32 PreviousX = MIN_int32;
 	if (Children)
 	{
@@ -515,14 +986,14 @@ FAssetDocumentCapabilityResult ParseNode(
 			{
 				return Result;
 			}
-			if (Index > 0 && Child->Editor.X == PreviousX)
+			if (!bPinSemanticChildren && Index > 0 && Child->Editor.X == PreviousX)
 			{
 				return Failure(
 					JoinPath(JoinPath(JoinPath(JoinPath(JoinPath(Path, ChildrenField), Index), EditorField), PositionField), XField),
 					TEXT("DuplicateBehaviorTreeSiblingCoordinate"),
 					TEXT("BehaviorTree siblings cannot share X coordinates"));
 			}
-			if (Index > 0 && Child->Editor.X < PreviousX)
+			if (!bPinSemanticChildren && Index > 0 && Child->Editor.X < PreviousX)
 			{
 				return Failure(
 					JoinPath(JoinPath(JoinPath(JoinPath(JoinPath(Path, ChildrenField), Index), EditorField), PositionField), XField),
@@ -532,6 +1003,223 @@ FAssetDocumentCapabilityResult ParseNode(
 			PreviousX = Child->Editor.X;
 			OutNode.Children.Add(MoveTemp(Child));
 		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+UEdGraphNode_Comment* FindExistingComment(const FAssetDocumentRegionContext& Context, const FGuid& Guid)
+{
+	const UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	const UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	if (!Graph)
+	{
+		return nullptr;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node); Comment && Comment->NodeGuid == Guid)
+		{
+			return Comment;
+		}
+	}
+	return nullptr;
+}
+
+FAssetDocumentCapabilityResult ReadOptionalIntField(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& Field,
+	const FString& Path,
+	int32& OutValue)
+{
+	if (!Object->HasField(Field))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	return ReadIntCoordinate(Object, Field, Path, OutValue);
+}
+
+FAssetDocumentCapabilityResult ReadOptionalColorField(
+	const TSharedRef<FJsonObject>& Object,
+	const FString& Field,
+	const FString& Path,
+	float& OutValue)
+{
+	if (!Object->HasField(Field))
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	double Number = 0.0;
+	FAssetDocumentCapabilityResult Result = ReadFiniteNumber(Object, Field, Path, Number);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	OutValue = static_cast<float>(Number);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ParseComment(
+	const FAssetDocumentRegionContext& Context,
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& Path,
+	FBehaviorTreeParseState& State,
+	FBehaviorTreeCommentSpec& OutComment)
+{
+	TSharedPtr<FJsonObject> Object;
+	FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, Path, Object);
+	if (!Result.bSuccess)
+	{
+		return Failure(Path, TEXT("InvalidBehaviorTreeComment"), TEXT("BehaviorTree Comments entries must be objects"));
+	}
+	Result = CheckKnownFields(Object.ToSharedRef(), Path, {
+		IdField, TextField, PositionField, SizeField, ColorField, CommentDepthField, FontSizeField,
+		MoveModeField, NodeDetailsField, CommentBubblePinnedField, CommentBubbleVisibleField,
+		CommentBubbleVisibleInDetailsField, ColorCommentBubbleField});
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	Result = ReadGuid(Object.ToSharedRef(), Path, State, OutComment.Guid, OutComment.Id);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (const UEdGraphNode_Comment* Existing = FindExistingComment(Context, OutComment.Guid))
+	{
+		OutComment.Text = Existing->NodeComment;
+		OutComment.X = Existing->NodePosX;
+		OutComment.Y = Existing->NodePosY;
+		OutComment.Width = Existing->NodeWidth;
+		OutComment.Height = Existing->NodeHeight;
+		OutComment.Color = Existing->CommentColor;
+		OutComment.CommentDepth = Existing->CommentDepth;
+		OutComment.FontSize = Existing->FontSize;
+		OutComment.MoveMode = Existing->MoveMode.GetValue();
+		OutComment.NodeDetails = Existing->NodeDetails;
+		OutComment.bCommentBubblePinned = Existing->bCommentBubblePinned;
+		OutComment.bCommentBubbleVisible = Existing->bCommentBubbleVisible;
+		OutComment.bCommentBubbleVisibleInDetails = Existing->bCommentBubbleVisible_InDetailsPanel;
+		OutComment.bColorCommentBubble = Existing->bColorCommentBubble;
+	}
+	if (Object->HasField(TextField) && !Object->TryGetStringField(TextField, OutComment.Text))
+	{
+		return Failure(JoinPath(Path, TextField), TEXT("InvalidBehaviorTreeCommentField"), TEXT("Comment Text must be a string"));
+	}
+	TSharedPtr<FJsonObject> Position;
+	Result = RequireObject(Object.ToSharedRef(), PositionField, JoinPath(Path, PositionField), Position, true);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Position)
+	{
+		Result = CheckKnownFields(Position.ToSharedRef(), JoinPath(Path, PositionField), {XField, YField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ReadOptionalIntField(Position.ToSharedRef(), XField, JoinPath(JoinPath(Path, PositionField), XField), OutComment.X);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ReadOptionalIntField(Position.ToSharedRef(), YField, JoinPath(JoinPath(Path, PositionField), YField), OutComment.Y);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	TSharedPtr<FJsonObject> Size;
+	Result = RequireObject(Object.ToSharedRef(), SizeField, JoinPath(Path, SizeField), Size, true);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Size)
+	{
+		Result = CheckKnownFields(Size.ToSharedRef(), JoinPath(Path, SizeField), {WidthField, HeightField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ReadOptionalIntField(Size.ToSharedRef(), WidthField, JoinPath(JoinPath(Path, SizeField), WidthField), OutComment.Width);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Result = ReadOptionalIntField(Size.ToSharedRef(), HeightField, JoinPath(JoinPath(Path, SizeField), HeightField), OutComment.Height);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (OutComment.Width <= 0 || OutComment.Height <= 0)
+		{
+			return Failure(JoinPath(Path, SizeField), TEXT("InvalidBehaviorTreeCommentSize"), TEXT("Comment Width and Height must be positive"));
+		}
+	}
+	TSharedPtr<FJsonObject> Color;
+	Result = RequireObject(Object.ToSharedRef(), ColorField, JoinPath(Path, ColorField), Color, true);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (Color)
+	{
+		Result = CheckKnownFields(Color.ToSharedRef(), JoinPath(Path, ColorField), {RField, GField, BField, AField});
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (!(Result = ReadOptionalColorField(Color.ToSharedRef(), RField, JoinPath(JoinPath(Path, ColorField), RField), OutComment.Color.R)).bSuccess
+			|| !(Result = ReadOptionalColorField(Color.ToSharedRef(), GField, JoinPath(JoinPath(Path, ColorField), GField), OutComment.Color.G)).bSuccess
+			|| !(Result = ReadOptionalColorField(Color.ToSharedRef(), BField, JoinPath(JoinPath(Path, ColorField), BField), OutComment.Color.B)).bSuccess
+			|| !(Result = ReadOptionalColorField(Color.ToSharedRef(), AField, JoinPath(JoinPath(Path, ColorField), AField), OutComment.Color.A)).bSuccess)
+		{
+			return Result;
+		}
+	}
+	if (!(Result = ReadOptionalIntField(Object.ToSharedRef(), CommentDepthField, JoinPath(Path, CommentDepthField), OutComment.CommentDepth)).bSuccess
+		|| !(Result = ReadOptionalIntField(Object.ToSharedRef(), FontSizeField, JoinPath(Path, FontSizeField), OutComment.FontSize)).bSuccess)
+	{
+		return Result;
+	}
+	if (OutComment.FontSize < 1)
+	{
+		return Failure(JoinPath(Path, FontSizeField), TEXT("InvalidBehaviorTreeCommentField"), TEXT("Comment FontSize must be positive"));
+	}
+	FString MoveMode;
+	if (Object->HasField(MoveModeField))
+	{
+		if (!Object->TryGetStringField(MoveModeField, MoveMode)
+			|| (MoveMode != TEXT("GroupMovement") && MoveMode != TEXT("NoGroupMovement")))
+		{
+			return Failure(JoinPath(Path, MoveModeField), TEXT("InvalidBehaviorTreeCommentField"), TEXT("MoveMode must be GroupMovement or NoGroupMovement"));
+		}
+		OutComment.MoveMode = MoveMode == TEXT("NoGroupMovement") ? ECommentBoxMode::NoGroupMovement : ECommentBoxMode::GroupMovement;
+	}
+	FString Details;
+	if (Object->HasField(NodeDetailsField))
+	{
+		if (!Object->TryGetStringField(NodeDetailsField, Details))
+		{
+			return Failure(JoinPath(Path, NodeDetailsField), TEXT("InvalidBehaviorTreeCommentField"), TEXT("NodeDetails must be a string"));
+		}
+		OutComment.NodeDetails = FText::FromString(Details);
+	}
+	const auto ReadOptionalBool = [&Object, &Path](const FString& Field, bool& OutValue) -> FAssetDocumentCapabilityResult
+	{
+		if (Object->HasField(Field) && !Object->TryGetBoolField(Field, OutValue))
+		{
+			return Failure(JoinPath(Path, Field), TEXT("InvalidBehaviorTreeCommentField"), FString::Printf(TEXT("%s must be a boolean"), *Field));
+		}
+		return FAssetDocumentCapabilityResult::Success();
+	};
+	if (!(Result = ReadOptionalBool(CommentBubblePinnedField, OutComment.bCommentBubblePinned)).bSuccess
+		|| !(Result = ReadOptionalBool(CommentBubbleVisibleField, OutComment.bCommentBubbleVisible)).bSuccess
+		|| !(Result = ReadOptionalBool(CommentBubbleVisibleInDetailsField, OutComment.bCommentBubbleVisibleInDetails)).bSuccess
+		|| !(Result = ReadOptionalBool(ColorCommentBubbleField, OutComment.bColorCommentBubble)).bSuccess)
+	{
+		return Result;
 	}
 	return FAssetDocumentCapabilityResult::Success();
 }
@@ -548,6 +1236,13 @@ FGuid ExistingOrNewGraphGuid(const FAssetDocumentRegionContext& Context)
 	return FGuid::NewGuid();
 }
 
+bool HasExistingGraphGuid(const FAssetDocumentRegionContext& Context)
+{
+	const UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	const UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
+	return Graph && Graph->GraphGuid.IsValid();
+}
+
 FAssetDocumentCapabilityResult ParseTreeSpec(
 	const FAssetDocumentRegionContext& Context,
 	const TSharedRef<FJsonObject>& Tree,
@@ -561,6 +1256,10 @@ FAssetDocumentCapabilityResult ParseTreeSpec(
 	}
 
 	OutSpec.GraphGuid = ExistingOrNewGraphGuid(Context);
+	const UBehaviorTree* ExistingBehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	const UBehaviorTreeGraph* ExistingGraph = ExistingBehaviorTree
+		? Cast<UBehaviorTreeGraph>(ExistingBehaviorTree->BTGraph)
+		: nullptr;
 	FString GraphGuidString;
 	if (Tree->TryGetStringField(GraphGuidField, GraphGuidString))
 	{
@@ -569,6 +1268,13 @@ FAssetDocumentCapabilityResult ParseTreeSpec(
 			return Failure(JoinPath(Path, GraphGuidField), TEXT("InvalidBehaviorTreeGraphGuid"), TEXT("GraphGuid must be a valid canonical 32-hex GUID"));
 		}
 		OutSpec.bGraphGuidWasAuthored = true;
+		if (ExistingGraph && ExistingGraph->GraphGuid.IsValid() && OutSpec.GraphGuid != ExistingGraph->GraphGuid)
+		{
+			return Failure(
+				JoinPath(Path, GraphGuidField),
+				TEXT("BehaviorTreeGraphGuidReplacementRejected"),
+				TEXT("Existing BehaviorTree graph identity cannot be replaced through Tree apply"));
+		}
 	}
 	else if (Tree->HasField(GraphGuidField))
 	{
@@ -581,23 +1287,36 @@ FAssetDocumentCapabilityResult ParseTreeSpec(
 	{
 		return Result;
 	}
-	if (Comments && Comments->Num() > 0)
-	{
-		return Failure(JoinPath(Path, CommentsField), TEXT("UnsupportedBehaviorTreeCommentsTask5"), TEXT("BehaviorTree comment boxes are integrated by Task 5"));
-	}
-
 	TSharedPtr<FJsonObject> Root;
 	Result = RequireObject(Tree, RootField, JoinPath(Path, RootField), Root);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
+	if (!OutSpec.bGraphGuidWasAuthored && !HasExistingGraphGuid(Context))
+	{
+		return Failure(JoinPath(Path, GraphGuidField), TEXT("MissingBehaviorTreeGraphGuid"), TEXT("A new BehaviorTree graph requires an authored GraphGuid"));
+	}
+
+	FBehaviorTreeParseState State;
+	if (Comments)
+	{
+		for (int32 Index = 0; Index < Comments->Num(); ++Index)
+		{
+			FBehaviorTreeCommentSpec Comment;
+			Result = ParseComment(Context, (*Comments)[Index], JoinPath(JoinPath(Path, CommentsField), Index), State, Comment);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			OutSpec.Comments.Add(MoveTemp(Comment));
+		}
+	}
 	if (Root->Values.Num() == 0)
 	{
 		return FAssetDocumentCapabilityResult::Success(TEXT("Parsed empty BehaviorTree graph source"));
 	}
 
-	FBehaviorTreeParseState State;
 	OutSpec.Root = MakeShared<FBehaviorTreeNodeSpec>();
 	return ParseNode(Root.ToSharedRef(), JoinPath(Path, RootField), true, 0, State, *OutSpec.Root);
 }
@@ -619,6 +1338,48 @@ FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSp
 		if (!Result.bSuccess)
 		{
 			return Result;
+		}
+		for (const FBehaviorTreeDecoratorSpec& Decorator : Node.Decorators)
+		{
+			if (!Decorator.bComposite)
+			{
+				UBTDecorator* PreviewDecorator = NewObject<UBTDecorator>(Outer, Decorator.NodeClass, NAME_None, RF_Transient);
+				if (!PreviewDecorator)
+				{
+					return Failure(Decorator.JsonPath, TEXT("InvalidBehaviorTreeNodeClass"), TEXT("Failed to instantiate BehaviorTree decorator"));
+				}
+				Result = FAssetDocumentReflectedPropertyUtils::ValidateProperties(
+					PreviewDecorator,
+					Decorator.Properties.ToSharedRef(),
+					JoinPath(Decorator.JsonPath, PropertiesField));
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+			}
+			else
+			{
+				for (const FBehaviorTreeDecoratorGraphNodeSpec& BoundNode : Decorator.BoundGraph.Nodes)
+				{
+					if (BoundNode.Kind != TEXT("Test"))
+					{
+						continue;
+					}
+					UBTDecorator* PreviewDecorator = NewObject<UBTDecorator>(Outer, BoundNode.NodeClass, NAME_None, RF_Transient);
+					if (!PreviewDecorator)
+					{
+						return Failure(BoundNode.JsonPath, TEXT("InvalidBehaviorTreeNodeClass"), TEXT("Failed to instantiate BoundGraph decorator"));
+					}
+					Result = FAssetDocumentReflectedPropertyUtils::ValidateProperties(
+						PreviewDecorator,
+						BoundNode.Properties.ToSharedRef(),
+						JoinPath(BoundNode.JsonPath, PropertiesField));
+					if (!Result.bSuccess)
+					{
+						return Result;
+					}
+				}
+			}
 		}
 		for (const FBehaviorTreeServiceSpec& Service : Node.Services)
 		{
@@ -682,6 +1443,53 @@ UEdGraphPin* FindPin(UEdGraphNode* Node, EEdGraphPinDirection Direction)
 	return nullptr;
 }
 
+TArray<UEdGraphPin*> FindPins(UEdGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	TArray<UEdGraphPin*> Pins;
+	if (Node)
+	{
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin && Pin->Direction == Direction)
+			{
+				Pins.Add(Pin);
+			}
+		}
+	}
+	return Pins;
+}
+
+UEdGraphPin* FindNamedPin(UEdGraphNode* Node, EEdGraphPinDirection Direction, const TCHAR* Name)
+{
+	for (UEdGraphPin* Pin : FindPins(Node, Direction))
+	{
+		if (Pin->PinName == FName(Name))
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+void ApplyEditorFields(UEdGraphNode* Node, const FBehaviorTreeEditorSpec& Editor)
+{
+	Node->NodePosX = Editor.X;
+	Node->NodePosY = Editor.Y;
+	Node->NodeComment = Editor.NodeComment;
+	Node->bCommentBubblePinned = Editor.bCommentBubblePinned;
+	Node->bCommentBubbleVisible = Editor.bCommentBubbleVisible;
+}
+
+FAssetDocumentCapabilityResult ApplyInstanceProperties(
+	UObject* Instance,
+	const TSharedRef<FJsonObject>& Properties,
+	const FString& Path)
+{
+	return Instance
+		? FAssetDocumentReflectedPropertyUtils::ApplyProperties(Instance, Properties, JoinPath(Path, PropertiesField))
+		: Failure(Path, TEXT("MissingBehaviorTreeNodeInstance"), TEXT("BehaviorTree graph wrapper failed to create its NodeInstance"));
+}
+
 FAssetDocumentCapabilityResult ApplyNodeProperties(
 	UBehaviorTreeGraphNode* GraphNode,
 	const TSharedRef<FJsonObject>& Properties,
@@ -692,7 +1500,121 @@ FAssetDocumentCapabilityResult ApplyNodeProperties(
 	{
 		return Failure(Path, TEXT("MissingBehaviorTreeNodeInstance"), TEXT("BehaviorTree graph wrapper failed to create its NodeInstance"));
 	}
-	return FAssetDocumentReflectedPropertyUtils::ApplyProperties(NodeInstance, Properties, JoinPath(Path, PropertiesField));
+	return ApplyInstanceProperties(NodeInstance, Properties, Path);
+}
+
+FAssetDocumentCapabilityResult BuildCompositeBoundGraph(
+	UBehaviorTreeGraphNode_CompositeDecorator* Composite,
+	const FBehaviorTreeDecoratorSpec& Spec)
+{
+	UBehaviorTreeDecoratorGraph* BoundGraph = Composite ? Cast<UBehaviorTreeDecoratorGraph>(Composite->BoundGraph) : nullptr;
+	if (!BoundGraph)
+	{
+		return Failure(Spec.JsonPath, TEXT("MissingBehaviorTreeDecoratorGraph"), TEXT("Composite decorator failed to create a UBehaviorTreeDecoratorGraph"));
+	}
+	BoundGraph->Nodes.Reset();
+	BoundGraph->GraphGuid = Spec.BoundGraph.GraphGuid;
+	const UEdGraphSchema* Schema = BoundGraph->GetSchema();
+	if (!Schema)
+	{
+		return Failure(JoinPath(Spec.JsonPath, BoundGraphField), TEXT("MissingBehaviorTreeDecoratorGraphSchema"), TEXT("BoundGraph has no decorator schema"));
+	}
+	TMap<FGuid, UBehaviorTreeDecoratorGraphNode*> Nodes;
+	for (const FBehaviorTreeDecoratorGraphNodeSpec& NodeSpec : Spec.BoundGraph.Nodes)
+	{
+		UBehaviorTreeDecoratorGraphNode* Created = nullptr;
+		if (NodeSpec.Kind == TEXT("Test"))
+		{
+			FGraphNodeCreator<UBehaviorTreeDecoratorGraphNode_Decorator> NodeCreator(*BoundGraph);
+			UBehaviorTreeDecoratorGraphNode_Decorator* Template = NodeCreator.CreateNode(false);
+			Template->ClassData = FGraphNodeClassData(NodeSpec.NodeClass, FGraphNodeClassHelper::GetDeprecationMessage(NodeSpec.NodeClass));
+			NodeCreator.Finalize();
+			Created = Template;
+			UBehaviorTreeDecoratorGraphNode_Decorator* TestNode = Cast<UBehaviorTreeDecoratorGraphNode_Decorator>(Created);
+			FAssetDocumentCapabilityResult Result = ApplyInstanceProperties(TestNode ? TestNode->NodeInstance : nullptr, NodeSpec.Properties.ToSharedRef(), NodeSpec.JsonPath);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+		else
+		{
+			FGraphNodeCreator<UBehaviorTreeDecoratorGraphNode_Logic> NodeCreator(*BoundGraph);
+			UBehaviorTreeDecoratorGraphNode_Logic* Template = NodeCreator.CreateNode(false);
+			Template->LogicMode = NodeSpec.Kind == TEXT("Sink") ? EDecoratorLogicMode::Sink
+				: NodeSpec.Kind == TEXT("And") ? EDecoratorLogicMode::And
+				: NodeSpec.Kind == TEXT("Or") ? EDecoratorLogicMode::Or
+				: EDecoratorLogicMode::Not;
+			NodeCreator.Finalize();
+			if (NodeSpec.Kind == TEXT("And") || NodeSpec.Kind == TEXT("Or"))
+			{
+				int32 AuthoredInputCount = 0;
+				for (const FBehaviorTreeDecoratorGraphLinkSpec& Link : Spec.BoundGraph.Links)
+				{
+					AuthoredInputCount += Link.To == NodeSpec.Guid ? 1 : 0;
+				}
+				while (FindPins(Template, EGPD_Input).Num() < AuthoredInputCount)
+				{
+					// AddInputPin is not exported by BehaviorTreeEditor, so reproduce its
+					// exact UE 5.7 pin shape through the exported UEdGraphNode API.
+					Template->CreatePin(EGPD_Input, TEXT("Transition"), TEXT("In"));
+				}
+			}
+			Created = Template;
+		}
+		if (!Created)
+		{
+			return Failure(NodeSpec.JsonPath, TEXT("BehaviorTreeDecoratorNodeCreationFailed"), TEXT("Failed to create BoundGraph node"));
+		}
+		Created->NodeGuid = NodeSpec.Guid;
+		ApplyEditorFields(Created, NodeSpec.Editor);
+		Nodes.Add(NodeSpec.Guid, Created);
+	}
+	for (const FBehaviorTreeDecoratorGraphLinkSpec& Link : Spec.BoundGraph.Links)
+	{
+		UBehaviorTreeDecoratorGraphNode* const* FromNode = Nodes.Find(Link.From);
+		UBehaviorTreeDecoratorGraphNode* const* ToNode = Nodes.Find(Link.To);
+		TArray<UEdGraphPin*> Inputs = ToNode ? FindPins(*ToNode, EGPD_Input) : TArray<UEdGraphPin*>();
+		UEdGraphPin* Output = FromNode ? FindPin(*FromNode, EGPD_Output) : nullptr;
+		if (!Output || !Inputs.IsValidIndex(Link.ToInput) || !Schema->TryCreateConnection(Output, Inputs[Link.ToInput]))
+		{
+			return Failure(Link.JsonPath, TEXT("InvalidBehaviorTreeDecoratorGraphConnection"), TEXT("UE decorator schema rejected the authored BoundGraph link"));
+		}
+	}
+	BoundGraph->NotifyGraphChanged();
+	Composite->OnInnerGraphChanged();
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult CreateDecoratorSubNode(
+	UBehaviorTreeGraph* Graph,
+	UBehaviorTreeGraphNode* Parent,
+	const FBehaviorTreeDecoratorSpec& Spec)
+{
+	UBehaviorTreeGraphNode* Decorator = nullptr;
+	if (Spec.bComposite)
+	{
+		Decorator = NewObject<UBehaviorTreeGraphNode_CompositeDecorator>(Graph);
+	}
+	else
+	{
+		Decorator = NewObject<UBehaviorTreeGraphNode_Decorator>(Graph);
+		Decorator->ClassData = FGraphNodeClassData(Spec.NodeClass, FGraphNodeClassHelper::GetDeprecationMessage(Spec.NodeClass));
+	}
+	FAISchemaAction_NewSubNode Action;
+	Action.ParentNode = Parent;
+	Action.NodeTemplate = Decorator;
+	Action.PerformAction(Graph, nullptr, FVector2f(Spec.Editor.X, Spec.Editor.Y), false);
+	Decorator->NodeGuid = Spec.Guid;
+	ApplyEditorFields(Decorator, Spec.Editor);
+	if (!Spec.bComposite)
+	{
+		return ApplyNodeProperties(Decorator, Spec.Properties.ToSharedRef(), Spec.JsonPath);
+	}
+	UBehaviorTreeGraphNode_CompositeDecorator* Composite = CastChecked<UBehaviorTreeGraphNode_CompositeDecorator>(Decorator);
+	Composite->CompositeName = Spec.CompositeName;
+	Composite->bShowOperations = Spec.bShowOperations;
+	return BuildCompositeBoundGraph(Composite, Spec);
 }
 
 FAssetDocumentCapabilityResult CreateGraphNode(
@@ -711,15 +1633,20 @@ FAssetDocumentCapabilityResult CreateGraphNode(
 		return Failure(Spec.JsonPath, TEXT("BehaviorTreeGraphNodeCreationFailed"), TEXT("Failed to create BehaviorTree graph wrapper"));
 	}
 	OutNode->NodeGuid = Spec.Guid;
-	OutNode->NodePosX = Spec.Editor.X;
-	OutNode->NodePosY = Spec.Editor.Y;
-	OutNode->NodeComment = Spec.Editor.NodeComment;
-	OutNode->bCommentBubblePinned = Spec.Editor.bCommentBubblePinned;
-	OutNode->bCommentBubbleVisible = Spec.Editor.bCommentBubbleVisible;
+	ApplyEditorFields(OutNode, Spec.Editor);
 	FAssetDocumentCapabilityResult Result = ApplyNodeProperties(OutNode, Spec.Properties.ToSharedRef(), Spec.JsonPath);
 	if (!Result.bSuccess)
 	{
 		return Result;
+	}
+
+	for (const FBehaviorTreeDecoratorSpec& DecoratorSpec : Spec.Decorators)
+	{
+		Result = CreateDecoratorSubNode(Graph, OutNode, DecoratorSpec);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
 	}
 
 	for (const FBehaviorTreeServiceSpec& ServiceSpec : Spec.Services)
@@ -731,6 +1658,7 @@ FAssetDocumentCapabilityResult CreateGraphNode(
 		ServiceAction.NodeTemplate = ServiceNode;
 		ServiceAction.PerformAction(Graph, nullptr, FVector2f(0.0f, 0.0f), false);
 		ServiceNode->NodeGuid = ServiceSpec.Guid;
+		ApplyEditorFields(ServiceNode, ServiceSpec.Editor);
 		Result = ApplyNodeProperties(ServiceNode, ServiceSpec.Properties.ToSharedRef(), ServiceSpec.JsonPath);
 		if (!Result.bSuccess)
 		{
@@ -751,15 +1679,26 @@ FAssetDocumentCapabilityResult BuildNodeSubtree(
 	{
 		return Result;
 	}
-	for (const TSharedPtr<FBehaviorTreeNodeSpec>& ChildSpec : Spec.Children)
+	for (int32 ChildIndex = 0; ChildIndex < Spec.Children.Num(); ++ChildIndex)
 	{
+		const TSharedPtr<FBehaviorTreeNodeSpec>& ChildSpec = Spec.Children[ChildIndex];
 		UBehaviorTreeGraphNode* ChildNode = nullptr;
 		Result = BuildNodeSubtree(Graph, Schema, *ChildSpec, ChildNode);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		UEdGraphPin* ParentOutput = FindPin(OutNode, EGPD_Output);
+		UEdGraphPin* ParentOutput = nullptr;
+		if (OutNode->IsA<UBehaviorTreeGraphNode_SimpleParallel>())
+		{
+			ParentOutput = ChildIndex == 0
+				? FindNamedPin(OutNode, EGPD_Output, TEXT("Task"))
+				: ChildIndex == 1 ? FindNamedPin(OutNode, EGPD_Output, TEXT("Out")) : nullptr;
+		}
+		else
+		{
+			ParentOutput = FindPin(OutNode, EGPD_Output);
+		}
 		UEdGraphPin* ChildInput = FindPin(ChildNode, EGPD_Input);
 		if (!ParentOutput || !ChildInput || !Schema->TryCreateConnection(ParentOutput, ChildInput))
 		{
@@ -775,8 +1714,12 @@ FAssetDocumentCapabilityResult BuildNodeSubtree(
 TArray<UBehaviorTreeGraphNode*> SortedGraphChildren(UBehaviorTreeGraphNode* Node)
 {
 	TArray<UBehaviorTreeGraphNode*> Children;
-	if (UEdGraphPin* Output = FindPin(Node, EGPD_Output))
+	const auto AddLinkedChildren = [&Children](UEdGraphPin* Output)
 	{
+		if (!Output)
+		{
+			return;
+		}
 		for (UEdGraphPin* Linked : Output->LinkedTo)
 		{
 			if (Linked)
@@ -787,12 +1730,90 @@ TArray<UBehaviorTreeGraphNode*> SortedGraphChildren(UBehaviorTreeGraphNode* Node
 				}
 			}
 		}
+	};
+	if (Node && Node->IsA<UBehaviorTreeGraphNode_SimpleParallel>())
+	{
+		AddLinkedChildren(FindNamedPin(Node, EGPD_Output, TEXT("Task")));
+		AddLinkedChildren(FindNamedPin(Node, EGPD_Output, TEXT("Out")));
+		return Children;
+	}
+	for (UEdGraphPin* Output : FindPins(Node, EGPD_Output))
+	{
+		AddLinkedChildren(Output);
 	}
 	Children.Sort([](const UBehaviorTreeGraphNode& A, const UBehaviorTreeGraphNode& B)
 	{
 		return A.NodePosX == B.NodePosX ? A.NodePosY < B.NodePosY : A.NodePosX < B.NodePosX;
 	});
 	return Children;
+}
+
+void CollectGraphDecoratorData(
+	const UBehaviorTreeGraphNode* Node,
+	TArray<UBTDecorator*>& OutInstances,
+	TArray<FBTDecoratorLogic>& OutOperations)
+{
+	int32 WrapperCount = 0;
+	bool bHasCompositeWrapper = false;
+	for (UBehaviorTreeGraphNode* Decorator : Node->Decorators)
+	{
+		if (const UBehaviorTreeGraphNode_Decorator* Ordinary = Cast<UBehaviorTreeGraphNode_Decorator>(Decorator))
+		{
+			Ordinary->CollectDecoratorData(OutInstances, OutOperations);
+			++WrapperCount;
+		}
+		else if (const UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(Decorator))
+		{
+			Composite->CollectDecoratorData(OutInstances, OutOperations);
+			++WrapperCount;
+			bHasCompositeWrapper = true;
+		}
+	}
+	// UE intentionally omits a logic program for ordinary-only wrappers. When at
+	// least one composite wrapper exists, multiple wrappers are implicitly ANDed.
+	if (!bHasCompositeWrapper)
+	{
+		OutOperations.Reset();
+	}
+	else if (WrapperCount > 1)
+	{
+		OutOperations.Insert(FBTDecoratorLogic(EBTDecoratorLogic::And, IntCastChecked<uint16>(WrapperCount)), 0);
+	}
+}
+
+FAssetDocumentCapabilityResult AssertDecoratorMirror(
+	const UBehaviorTreeGraphNode* GraphNode,
+	const TArray<TObjectPtr<UBTDecorator>>& RuntimeDecorators,
+	const TArray<FBTDecoratorLogic>& RuntimeOperations,
+	const FString& Path)
+{
+	TArray<UBTDecorator*> GraphDecorators;
+	TArray<FBTDecoratorLogic> GraphOperations;
+	CollectGraphDecoratorData(GraphNode, GraphDecorators, GraphOperations);
+	if (GraphDecorators.Num() != RuntimeDecorators.Num())
+	{
+		return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime decorator instances do not mirror graph decorator subnodes"));
+	}
+	for (int32 Index = 0; Index < GraphDecorators.Num(); ++Index)
+	{
+		if (GraphDecorators[Index] != RuntimeDecorators[Index])
+		{
+			return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime decorator order does not mirror graph decorator subnodes"));
+		}
+	}
+	if (GraphOperations.Num() != RuntimeOperations.Num())
+	{
+		return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime decorator operation count does not mirror graph decorator logic"));
+	}
+	for (int32 Index = 0; Index < GraphOperations.Num(); ++Index)
+	{
+		if (GraphOperations[Index].Operation != RuntimeOperations[Index].Operation
+			|| GraphOperations[Index].Number != RuntimeOperations[Index].Number)
+		{
+			return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime decorator operation/type/number does not mirror graph decorator logic"));
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult AssertRuntimeMirrorNode(UBehaviorTreeGraphNode* GraphNode, const FString& Path)
@@ -840,6 +1861,15 @@ FAssetDocumentCapabilityResult AssertRuntimeMirrorNode(UBehaviorTreeGraphNode* G
 		}
 		for (int32 Index = 0; Index < Children.Num(); ++Index)
 		{
+			FAssetDocumentCapabilityResult Result = AssertDecoratorMirror(
+				Children[Index],
+				Composite->Children[Index].Decorators,
+				Composite->Children[Index].DecoratorOps,
+				JoinPath(Path, Index));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 			const UBTNode* RuntimeChild = Composite->Children[Index].ChildComposite
 				? static_cast<const UBTNode*>(Composite->Children[Index].ChildComposite.Get())
 				: static_cast<const UBTNode*>(Composite->Children[Index].ChildTask.Get());
@@ -847,7 +1877,7 @@ FAssetDocumentCapabilityResult AssertRuntimeMirrorNode(UBehaviorTreeGraphNode* G
 			{
 				return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime child order does not mirror graph X order"));
 			}
-			FAssetDocumentCapabilityResult Result = AssertRuntimeMirrorNode(Children[Index], JoinPath(Path, Index));
+			Result = AssertRuntimeMirrorNode(Children[Index], JoinPath(Path, Index));
 			if (!Result.bSuccess)
 			{
 				return Result;
@@ -890,7 +1920,40 @@ FAssetDocumentCapabilityResult AssertRuntimeMirror(UBehaviorTree* BehaviorTree, 
 	{
 		return Failure(Path, TEXT("BehaviorTreeRuntimeMirrorMismatch"), TEXT("Runtime RootNode does not mirror the authored graph root wrapper"));
 	}
+	FAssetDocumentCapabilityResult DecoratorResult = AssertDecoratorMirror(
+		GraphRoot,
+		BehaviorTree->RootDecorators,
+		BehaviorTree->RootDecoratorOps,
+		JoinPath(Path, RootField));
+	if (!DecoratorResult.bSuccess)
+	{
+		return DecoratorResult;
+	}
 	return AssertRuntimeMirrorNode(GraphRoot, JoinPath(Path, RootField));
+}
+
+void BuildComments(UBehaviorTreeGraph* Graph, const FBehaviorTreeGraphSpec& Spec)
+{
+	for (const FBehaviorTreeCommentSpec& CommentSpec : Spec.Comments)
+	{
+		UEdGraphNode_Comment* Comment = NewObject<UEdGraphNode_Comment>(Graph);
+		Comment->NodeGuid = CommentSpec.Guid;
+		Comment->NodeComment = CommentSpec.Text;
+		Comment->NodePosX = CommentSpec.X;
+		Comment->NodePosY = CommentSpec.Y;
+		Comment->NodeWidth = CommentSpec.Width;
+		Comment->NodeHeight = CommentSpec.Height;
+		Comment->CommentColor = CommentSpec.Color;
+		Comment->CommentDepth = CommentSpec.CommentDepth;
+		Comment->FontSize = CommentSpec.FontSize;
+		Comment->MoveMode = CommentSpec.MoveMode;
+		Comment->NodeDetails = CommentSpec.NodeDetails;
+		Comment->bCommentBubblePinned = CommentSpec.bCommentBubblePinned;
+		Comment->bCommentBubbleVisible = CommentSpec.bCommentBubbleVisible;
+		Comment->bCommentBubbleVisible_InDetailsPanel = CommentSpec.bCommentBubbleVisibleInDetails;
+		Comment->bColorCommentBubble = CommentSpec.bColorCommentBubble;
+		Graph->AddNode(Comment, false, false);
+	}
 }
 
 FAssetDocumentCapabilityResult BuildGraph(
@@ -945,6 +2008,7 @@ FAssetDocumentCapabilityResult BuildGraph(
 			return Failure(JoinPath(Path, RootField), TEXT("InvalidBehaviorTreeGraphConnection"), TEXT("UE BehaviorTree schema rejected the authored root connection"));
 		}
 	}
+	BuildComments(OutGraph, Spec);
 	OutGraph->UnlockUpdates();
 	OutGraph->UpdateClassData();
 	OutGraph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
@@ -960,41 +2024,143 @@ FAssetDocumentCapabilityResult BuildGraph(
 #endif
 }
 
-void RenameObjectToTransient(UObject* Object)
+bool RenameObjectToTransient(UObject* Object)
 {
 	if (!Object || Object->GetOuter() == GetTransientPackage())
 	{
-		return;
+		return true;
 	}
 	const FName NewName = MakeUniqueObjectName(GetTransientPackage(), Object->GetClass(), Object->GetFName());
-	Object->Rename(*NewName.ToString(), GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+	return Object->Rename(*NewName.ToString(), GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
 }
 
-void MoveGraphToTransient(UBehaviorTreeGraph* Graph)
+void CollectGraphRuntimeNodeInstances(const UBehaviorTreeGraph* Graph, TArray<UObject*>& OutInstances)
 {
 	if (!Graph)
 	{
 		return;
 	}
-	for (UEdGraphNode* NodeObject : Graph->Nodes)
+	for (const UEdGraphNode* NodeObject : Graph->Nodes)
 	{
-		if (UBehaviorTreeGraphNode* Node = Cast<UBehaviorTreeGraphNode>(NodeObject))
+		if (const UBehaviorTreeGraphNode* Node = Cast<UBehaviorTreeGraphNode>(NodeObject))
 		{
-			RenameObjectToTransient(Node->NodeInstance);
+			if (Node->NodeInstance)
+			{
+				OutInstances.Add(Node->NodeInstance);
+			}
 			for (const TObjectPtr<UAIGraphNode>& SubNode : Node->SubNodes)
 			{
-				RenameObjectToTransient(SubNode ? SubNode->NodeInstance : nullptr);
+				if (SubNode && SubNode->NodeInstance)
+				{
+					OutInstances.Add(SubNode->NodeInstance);
+				}
+				if (const UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(SubNode))
+				{
+					if (const UBehaviorTreeDecoratorGraph* BoundGraph = Cast<UBehaviorTreeDecoratorGraph>(Composite->BoundGraph))
+					{
+						for (const UEdGraphNode* BoundNode : BoundGraph->Nodes)
+						{
+							if (const UBehaviorTreeDecoratorGraphNode_Decorator* Test = Cast<UBehaviorTreeDecoratorGraphNode_Decorator>(BoundNode))
+							{
+								if (Test->NodeInstance)
+								{
+									OutInstances.Add(Test->NodeInstance);
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
-	RenameObjectToTransient(Graph);
+}
+
+bool RestoreGraphRuntimeNodeOwnership(UBehaviorTreeGraph* Graph, UBehaviorTree* BehaviorTree)
+{
+	if (!Graph)
+	{
+		return true;
+	}
+	if (!BehaviorTree)
+	{
+		return false;
+	}
+	TArray<UObject*> Instances;
+	CollectGraphRuntimeNodeInstances(Graph, Instances);
+	bool bSuccess = true;
+	for (UObject* Instance : Instances)
+	{
+		if (!Instance || Instance->GetOuter() == BehaviorTree)
+		{
+			continue;
+		}
+		const FName RestoredName = MakeUniqueObjectName(BehaviorTree, Instance->GetClass(), Instance->GetFName());
+		bSuccess = Instance->Rename(
+			*RestoredName.ToString(),
+			BehaviorTree,
+			REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty) && bSuccess;
+	}
+	for (const UObject* Instance : Instances)
+	{
+		bSuccess = Instance && Instance->GetOuter() == BehaviorTree && bSuccess;
+	}
+	return bSuccess;
+}
+
+bool MoveGraphToTransient(UBehaviorTreeGraph* Graph);
+
+bool MoveGraphRuntimeNodeInstancesToTransient(UBehaviorTreeGraph* Graph)
+{
+	TArray<UObject*> Instances;
+	CollectGraphRuntimeNodeInstances(Graph, Instances);
+	bool bSuccess = true;
+	for (UObject* Instance : Instances)
+	{
+		bSuccess = RenameObjectToTransient(Instance) && bSuccess;
+	}
+	return bSuccess;
+}
+
+bool CleanupRejectedGraphAndRestorePreviousOwnership(
+	UBehaviorTreeGraph* RejectedGraph,
+	UBehaviorTreeGraph* PreviousGraph,
+	UBehaviorTree* BehaviorTree,
+	bool& bOutCleanupSucceeded)
+{
+	// UpdateAsset can orphan every instance referenced by the previous graph before
+	// the replacement graph is installed. Clean the rejected graph first so the
+	// previous instances can reclaim BehaviorTree ownership without name conflicts.
+	bOutCleanupSucceeded = MoveGraphToTransient(RejectedGraph);
+	return RestoreGraphRuntimeNodeOwnership(PreviousGraph, BehaviorTree);
+}
+
+bool MoveGraphToTransient(UBehaviorTreeGraph* Graph)
+{
+	if (!Graph)
+	{
+		return true;
+	}
+	const bool bInstancesMoved = MoveGraphRuntimeNodeInstancesToTransient(Graph);
+	return RenameObjectToTransient(Graph) && bInstancesMoved;
 }
 
 bool WrapperMatchesInstance(const UBehaviorTreeGraphNode* Node)
 {
-	if (!Node || !Node->NodeInstance)
+	if (!Node)
 	{
 		return false;
+	}
+	if (const UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(Node))
+	{
+		return Composite->BoundGraph && Composite->BoundGraph->IsA<UBehaviorTreeDecoratorGraph>();
+	}
+	if (!Node->NodeInstance)
+	{
+		return false;
+	}
+	if (Node->IsA<UBehaviorTreeGraphNode_Decorator>())
+	{
+		return Node->NodeInstance->IsA<UBTDecorator>();
 	}
 	if (Node->IsA<UBehaviorTreeGraphNode_Service>())
 	{
@@ -1009,6 +2175,54 @@ bool WrapperMatchesInstance(const UBehaviorTreeGraphNode* Node)
 		return Node->NodeInstance->IsA<UBTTaskNode>();
 	}
 	return false;
+}
+
+FAssetDocumentCapabilityResult ValidateGraphDecorator(
+	UBehaviorTreeGraphNode* Decorator,
+	const FString& Path,
+	TSet<FGuid>& SeenGuids)
+{
+	if (!Decorator || !WrapperMatchesInstance(Decorator)
+		|| (!Decorator->IsA<UBehaviorTreeGraphNode_Decorator>() && !Decorator->IsA<UBehaviorTreeGraphNode_CompositeDecorator>()))
+	{
+		return Failure(Path, TEXT("InvalidBehaviorTreeGraphDecorator"), TEXT("BehaviorTree decorator subnode wrapper/class is invalid"));
+	}
+	if (!Decorator->NodeGuid.IsValid())
+	{
+		return Failure(JoinPath(Path, IdField), TEXT("InvalidBehaviorTreeNodeGuid"), TEXT("BehaviorTree decorator has no persistent NodeGuid"));
+	}
+	if (SeenGuids.Contains(Decorator->NodeGuid))
+	{
+		return Failure(JoinPath(Path, IdField), TEXT("DuplicateBehaviorTreeNodeGuid"), TEXT("BehaviorTree graph contains duplicate NodeGuid identities"));
+	}
+	SeenGuids.Add(Decorator->NodeGuid);
+	if (UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(Decorator))
+	{
+		UBehaviorTreeDecoratorGraph* BoundGraph = Cast<UBehaviorTreeDecoratorGraph>(Composite->BoundGraph);
+		if (!BoundGraph || !BoundGraph->GraphGuid.IsValid())
+		{
+			return Failure(JoinPath(JoinPath(Path, BoundGraphField), GraphGuidField), TEXT("InvalidBehaviorTreeGraphGuid"), TEXT("Composite decorator BoundGraph has no persistent GraphGuid"));
+		}
+		for (int32 Index = 0; Index < BoundGraph->Nodes.Num(); ++Index)
+		{
+			UEdGraphNode* BoundNode = BoundGraph->Nodes[Index];
+			if (!BoundNode || !BoundNode->NodeGuid.IsValid())
+			{
+				return Failure(JoinPath(JoinPath(JoinPath(Path, BoundGraphField), NodesField), Index), TEXT("InvalidBehaviorTreeNodeGuid"), TEXT("BoundGraph node has no persistent NodeGuid"));
+			}
+			if (SeenGuids.Contains(BoundNode->NodeGuid))
+			{
+				return Failure(JoinPath(JoinPath(JoinPath(JoinPath(Path, BoundGraphField), NodesField), Index), IdField), TEXT("DuplicateBehaviorTreeNodeGuid"), TEXT("BehaviorTree graph contains duplicate NodeGuid identities"));
+			}
+			SeenGuids.Add(BoundNode->NodeGuid);
+			if (UBehaviorTreeDecoratorGraphNode_Decorator* TestNode = Cast<UBehaviorTreeDecoratorGraphNode_Decorator>(BoundNode);
+				TestNode && (!TestNode->NodeInstance || !TestNode->NodeInstance->IsA<UBTDecorator>()))
+			{
+				return Failure(JoinPath(JoinPath(JoinPath(Path, BoundGraphField), NodesField), Index), TEXT("InvalidBehaviorTreeGraphDecorator"), TEXT("BoundGraph Test node has no decorator instance"));
+			}
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ValidateGraphService(
@@ -1062,9 +2276,13 @@ FAssetDocumentCapabilityResult ValidateGraphNodeShallow(
 		return Failure(JoinPath(JoinPath(JoinPath(Path, EditorField), PositionField), XField), TEXT("DuplicateBehaviorTreeCoordinate"), TEXT("BehaviorTree graph nodes share X/Y coordinates"));
 	}
 	SeenCoordinates.Add(Coordinate);
-	if (Node->Decorators.Num() > 0)
+	for (int32 Index = 0; Index < Node->Decorators.Num(); ++Index)
 	{
-		return Failure(JoinPath(Path, DecoratorsField), TEXT("UnsupportedBehaviorTreeDecoratorsTask5"), TEXT("Decorator authored graphs are integrated by Task 5"));
+		FAssetDocumentCapabilityResult Result = ValidateGraphDecorator(Node->Decorators[Index], JoinPath(JoinPath(Path, DecoratorsField), Index), SeenGuids);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
 	}
 	for (int32 Index = 0; Index < Node->Services.Num(); ++Index)
 	{
@@ -1085,11 +2303,13 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 	OutSemanticRoot = nullptr;
 	TArray<UBehaviorTreeGraphNode_Root*> SyntheticRoots;
 	TArray<UBehaviorTreeGraphNode*> SemanticNodes;
+	TArray<UEdGraphNode_Comment*> Comments;
 	for (UEdGraphNode* NodeObject : Graph->Nodes)
 	{
-		if (Cast<UEdGraphNode_Comment>(NodeObject))
+		if (UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(NodeObject))
 		{
-			return Failure(JoinPath(Path, CommentsField), TEXT("UnsupportedBehaviorTreeCommentsTask5"), TEXT("BehaviorTree comment boxes are integrated by Task 5"));
+			Comments.Add(Comment);
+			continue;
 		}
 		if (UBehaviorTreeGraphNode_Root* Root = Cast<UBehaviorTreeGraphNode_Root>(NodeObject))
 		{
@@ -1136,6 +2356,18 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 
 	TSet<FGuid> SeenGuids;
 	TSet<FString> SeenCoordinates;
+	for (int32 Index = 0; Index < Comments.Num(); ++Index)
+	{
+		if (!Comments[Index]->NodeGuid.IsValid())
+		{
+			return Failure(JoinPath(JoinPath(JoinPath(Path, CommentsField), Index), IdField), TEXT("InvalidBehaviorTreeNodeGuid"), TEXT("BehaviorTree comment has no persistent NodeGuid"));
+		}
+		if (SeenGuids.Contains(Comments[Index]->NodeGuid))
+		{
+			return Failure(JoinPath(JoinPath(JoinPath(Path, CommentsField), Index), IdField), TEXT("DuplicateBehaviorTreeNodeGuid"), TEXT("BehaviorTree graph contains duplicate NodeGuid identities"));
+		}
+		SeenGuids.Add(Comments[Index]->NodeGuid);
+	}
 	TSet<UBehaviorTreeGraphNode*> Visited;
 	TSet<UBehaviorTreeGraphNode*> Active;
 	TFunction<FAssetDocumentCapabilityResult(UBehaviorTreeGraphNode*, const FString&, bool)> Visit;
@@ -1156,12 +2388,12 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 		}
 		Visited.Add(Node);
 		Active.Add(Node);
-		UEdGraphPin* Output = FindPin(Node, EGPD_Output);
-		if (!Output && Node->NodeInstance->IsA<UBTCompositeNode>())
+		const TArray<UEdGraphPin*> Outputs = FindPins(Node, EGPD_Output);
+		if (Outputs.Num() == 0 && Node->NodeInstance->IsA<UBTCompositeNode>())
 		{
 			return Failure(NodePath, TEXT("InvalidBehaviorTreeGraphConnection"), TEXT("BehaviorTree graph node has no output pin"));
 		}
-		if (Output)
+		for (UEdGraphPin* Output : Outputs)
 		{
 			for (UEdGraphPin* LinkedPin : Output->LinkedTo)
 			{
@@ -1174,7 +2406,9 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 		const TArray<UBehaviorTreeGraphNode*> Children = SortedGraphChildren(Node);
 		for (int32 Index = 0; Index < Children.Num(); ++Index)
 		{
-			if (Index > 0 && Children[Index - 1]->NodePosX == Children[Index]->NodePosX)
+			if (!Node->IsA<UBehaviorTreeGraphNode_SimpleParallel>()
+				&& Index > 0
+				&& Children[Index - 1]->NodePosX == Children[Index]->NodePosX)
 			{
 				return Failure(
 					JoinPath(JoinPath(JoinPath(JoinPath(JoinPath(NodePath, ChildrenField), Index), EditorField), PositionField), XField),
@@ -1191,7 +2425,8 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 			{
 				return Failure(JoinPath(JoinPath(NodePath, ChildrenField), Index), TEXT("MultipleBehaviorTreeParents"), TEXT("BehaviorTree child input must have exactly one parent"));
 			}
-			if (!Output || Schema->CanCreateConnection(Output, Input).Response == CONNECT_RESPONSE_DISALLOW)
+			UEdGraphPin* ActualOutput = Input && Input->LinkedTo.Num() == 1 ? Input->LinkedTo[0] : nullptr;
+			if (!ActualOutput || !Outputs.Contains(ActualOutput) || Schema->CanCreateConnection(ActualOutput, Input).Response == CONNECT_RESPONSE_DISALLOW)
 			{
 				return Failure(
 					JoinPath(JoinPath(NodePath, ChildrenField), Index),
@@ -1233,7 +2468,7 @@ FAssetDocumentCapabilityResult ValidateGraphTopology(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedPtr<FJsonObject> MakeEditorJson(const UBehaviorTreeGraphNode* Node)
+TSharedPtr<FJsonObject> MakeEditorJson(const UEdGraphNode* Node)
 {
 	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
 	Position->SetNumberField(XField, Node->NodePosX);
@@ -1244,6 +2479,163 @@ TSharedPtr<FJsonObject> MakeEditorJson(const UBehaviorTreeGraphNode* Node)
 	Editor->SetBoolField(CommentBubblePinnedField, Node->bCommentBubblePinned);
 	Editor->SetBoolField(CommentBubbleVisibleField, Node->bCommentBubbleVisible);
 	return Editor;
+}
+
+FString BoundNodeKind(const UEdGraphNode* Node)
+{
+	if (Cast<UBehaviorTreeDecoratorGraphNode_Decorator>(Node))
+	{
+		return TEXT("Test");
+	}
+	if (const UBehaviorTreeDecoratorGraphNode_Logic* Logic = Cast<UBehaviorTreeDecoratorGraphNode_Logic>(Node))
+	{
+		switch (Logic->LogicMode)
+		{
+		case EDecoratorLogicMode::Sink: return TEXT("Sink");
+		case EDecoratorLogicMode::And: return TEXT("And");
+		case EDecoratorLogicMode::Or: return TEXT("Or");
+		case EDecoratorLogicMode::Not: return TEXT("Not");
+		default: break;
+		}
+	}
+	return FString();
+}
+
+FAssetDocumentCapabilityResult ExtractBoundGraph(
+	UBehaviorTreeGraphNode_CompositeDecorator* Composite,
+	const FString& Path,
+	TSharedPtr<FJsonObject>& OutGraph)
+{
+	UBehaviorTreeDecoratorGraph* Graph = Composite ? Cast<UBehaviorTreeDecoratorGraph>(Composite->BoundGraph) : nullptr;
+	if (!Graph || !Graph->GraphGuid.IsValid())
+	{
+		return Failure(JoinPath(Path, GraphGuidField), TEXT("InvalidBehaviorTreeGraphGuid"), TEXT("Composite decorator BoundGraph has no persistent GraphGuid"));
+	}
+	OutGraph = MakeShared<FJsonObject>();
+	OutGraph->SetStringField(GraphGuidField, Graph->GraphGuid.ToString(EGuidFormats::Digits));
+	TArray<TSharedPtr<FJsonValue>> Nodes;
+	TMap<const UEdGraphNode*, FString> NodeIds;
+	for (int32 Index = 0; Index < Graph->Nodes.Num(); ++Index)
+	{
+		UEdGraphNode* Node = Graph->Nodes[Index];
+		const FString Kind = BoundNodeKind(Node);
+		if (!Node || Kind.IsEmpty())
+		{
+			return Failure(JoinPath(JoinPath(Path, NodesField), Index), TEXT("InvalidBehaviorTreeDecoratorNode"), TEXT("BoundGraph contains an unsupported node"));
+		}
+		TSharedPtr<FJsonObject> NodeJson = MakeShared<FJsonObject>();
+		const FString Id = Node->NodeGuid.ToString(EGuidFormats::Digits);
+		NodeIds.Add(Node, Id);
+		NodeJson->SetStringField(IdField, Id);
+		NodeJson->SetStringField(KindField, Kind);
+		if (UBehaviorTreeDecoratorGraphNode_Decorator* TestNode = Cast<UBehaviorTreeDecoratorGraphNode_Decorator>(Node))
+		{
+			NodeJson->SetStringField(ClassField, TestNode->NodeInstance->GetClass()->GetPathName());
+			TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
+			FAssetDocumentCapabilityResult Result = FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(
+				TestNode->NodeInstance,
+				Properties,
+				JoinPath(JoinPath(JoinPath(Path, NodesField), Index), PropertiesField));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			NodeJson->SetObjectField(PropertiesField, Properties);
+		}
+		NodeJson->SetObjectField(EditorField, MakeEditorJson(Node));
+		Nodes.Add(MakeShared<FJsonValueObject>(NodeJson));
+	}
+	Nodes.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(IdField) < Right->AsObject()->GetStringField(IdField);
+	});
+	OutGraph->SetArrayField(NodesField, Nodes);
+
+	TArray<TSharedPtr<FJsonValue>> Links;
+	for (UEdGraphNode* FromNode : Graph->Nodes)
+	{
+		for (UEdGraphPin* Output : FindPins(FromNode, EGPD_Output))
+		{
+			for (UEdGraphPin* Linked : Output->LinkedTo)
+			{
+				UEdGraphNode* ToNode = Linked ? Linked->GetOwningNode() : nullptr;
+				const FString* FromId = NodeIds.Find(FromNode);
+				const FString* ToId = NodeIds.Find(ToNode);
+				if (!FromId || !ToId)
+				{
+					return Failure(Path, TEXT("InvalidBehaviorTreeDecoratorGraphConnection"), TEXT("BoundGraph contains a dangling connection"));
+				}
+				const int32 ToInput = FindPins(ToNode, EGPD_Input).IndexOfByKey(Linked);
+				if (ToInput == INDEX_NONE)
+				{
+					return Failure(Path, TEXT("InvalidBehaviorTreeDecoratorGraphConnection"), TEXT("BoundGraph link does not target an input pin"));
+				}
+				TSharedPtr<FJsonObject> Link = MakeShared<FJsonObject>();
+				Link->SetStringField(FromField, *FromId);
+				Link->SetStringField(ToField, *ToId);
+				Link->SetNumberField(ToInputField, ToInput);
+				Links.Add(MakeShared<FJsonValueObject>(Link));
+			}
+		}
+	}
+	Links.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const TSharedPtr<FJsonObject> LeftObject = Left->AsObject();
+		const TSharedPtr<FJsonObject> RightObject = Right->AsObject();
+		const FString LeftFrom = LeftObject->GetStringField(FromField);
+		const FString RightFrom = RightObject->GetStringField(FromField);
+		if (LeftFrom != RightFrom)
+		{
+			return LeftFrom < RightFrom;
+		}
+		const FString LeftTo = LeftObject->GetStringField(ToField);
+		const FString RightTo = RightObject->GetStringField(ToField);
+		return LeftTo == RightTo
+			? LeftObject->GetNumberField(ToInputField) < RightObject->GetNumberField(ToInputField)
+			: LeftTo < RightTo;
+	});
+	OutGraph->SetArrayField(LinksField, Links);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ExtractDecorator(
+	UBehaviorTreeGraphNode* Decorator,
+	const FString& Path,
+	TSharedPtr<FJsonObject>& OutDecorator)
+{
+	OutDecorator = MakeShared<FJsonObject>();
+	OutDecorator->SetStringField(IdField, Decorator->NodeGuid.ToString(EGuidFormats::Digits));
+	if (UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(Decorator))
+	{
+		OutDecorator->SetStringField(KindField, TEXT("Composite"));
+		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+		Properties->SetStringField(CompositeNameField, Composite->CompositeName);
+		Properties->SetBoolField(ShowOperationsField, Composite->bShowOperations);
+		OutDecorator->SetObjectField(PropertiesField, Properties);
+		TSharedPtr<FJsonObject> BoundGraph;
+		FAssetDocumentCapabilityResult Result = ExtractBoundGraph(Composite, JoinPath(Path, BoundGraphField), BoundGraph);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutDecorator->SetObjectField(BoundGraphField, BoundGraph);
+	}
+	else
+	{
+		OutDecorator->SetStringField(ClassField, Decorator->NodeInstance->GetClass()->GetPathName());
+		TSharedRef<FJsonObject> Properties = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult Result = FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(
+			Decorator->NodeInstance,
+			Properties,
+			JoinPath(Path, PropertiesField));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		OutDecorator->SetObjectField(PropertiesField, Properties);
+	}
+	OutDecorator->SetObjectField(EditorField, MakeEditorJson(Decorator));
+	return FAssetDocumentCapabilityResult::Success();
 }
 
 FAssetDocumentCapabilityResult ExtractService(
@@ -1264,6 +2656,7 @@ FAssetDocumentCapabilityResult ExtractService(
 		return Result;
 	}
 	OutService->SetObjectField(PropertiesField, Properties);
+	OutService->SetObjectField(EditorField, MakeEditorJson(Service));
 	return FAssetDocumentCapabilityResult::Success();
 }
 
@@ -1285,7 +2678,18 @@ FAssetDocumentCapabilityResult ExtractNode(
 		return Result;
 	}
 	OutNode->SetObjectField(PropertiesField, Properties);
-	OutNode->SetArrayField(DecoratorsField, {});
+	TArray<TSharedPtr<FJsonValue>> Decorators;
+	for (int32 Index = 0; Index < Node->Decorators.Num(); ++Index)
+	{
+		TSharedPtr<FJsonObject> Decorator;
+		Result = ExtractDecorator(Node->Decorators[Index], JoinPath(JoinPath(Path, DecoratorsField), Index), Decorator);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		Decorators.Add(MakeShared<FJsonValueObject>(Decorator));
+	}
+	OutNode->SetArrayField(DecoratorsField, Decorators);
 
 	TArray<TSharedPtr<FJsonValue>> Services;
 	for (int32 Index = 0; Index < Node->Services.Num(); ++Index)
@@ -1317,6 +2721,36 @@ FAssetDocumentCapabilityResult ExtractNode(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
+TSharedPtr<FJsonObject> ExtractComment(const UEdGraphNode_Comment* Comment)
+{
+	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+	Json->SetStringField(IdField, Comment->NodeGuid.ToString(EGuidFormats::Digits));
+	Json->SetStringField(TextField, Comment->NodeComment);
+	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(XField, Comment->NodePosX);
+	Position->SetNumberField(YField, Comment->NodePosY);
+	Json->SetObjectField(PositionField, Position);
+	TSharedPtr<FJsonObject> Size = MakeShared<FJsonObject>();
+	Size->SetNumberField(WidthField, Comment->NodeWidth);
+	Size->SetNumberField(HeightField, Comment->NodeHeight);
+	Json->SetObjectField(SizeField, Size);
+	TSharedPtr<FJsonObject> Color = MakeShared<FJsonObject>();
+	Color->SetNumberField(RField, Comment->CommentColor.R);
+	Color->SetNumberField(GField, Comment->CommentColor.G);
+	Color->SetNumberField(BField, Comment->CommentColor.B);
+	Color->SetNumberField(AField, Comment->CommentColor.A);
+	Json->SetObjectField(ColorField, Color);
+	Json->SetNumberField(CommentDepthField, Comment->CommentDepth);
+	Json->SetNumberField(FontSizeField, Comment->FontSize);
+	Json->SetStringField(MoveModeField, Comment->MoveMode.GetValue() == ECommentBoxMode::NoGroupMovement ? TEXT("NoGroupMovement") : TEXT("GroupMovement"));
+	Json->SetStringField(NodeDetailsField, Comment->NodeDetails.ToString());
+	Json->SetBoolField(CommentBubblePinnedField, Comment->bCommentBubblePinned);
+	Json->SetBoolField(CommentBubbleVisibleField, Comment->bCommentBubbleVisible);
+	Json->SetBoolField(CommentBubbleVisibleInDetailsField, Comment->bCommentBubbleVisible_InDetailsPanel);
+	Json->SetBoolField(ColorCommentBubbleField, Comment->bColorCommentBubble);
+	return Json;
+}
+
 FAssetDocumentCapabilityResult ExtractGraphTree(
 	const UBehaviorTree* BehaviorTree,
 	const FString& Path,
@@ -1345,6 +2779,19 @@ FAssetDocumentCapabilityResult ExtractGraphTree(
 		return Result;
 	}
 	OutTree->SetStringField(GraphGuidField, Graph->GraphGuid.ToString(EGuidFormats::Digits));
+	TArray<TSharedPtr<FJsonValue>> Comments;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node))
+		{
+			Comments.Add(MakeShared<FJsonValueObject>(ExtractComment(Comment)));
+		}
+	}
+	Comments.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return Left->AsObject()->GetStringField(IdField) < Right->AsObject()->GetStringField(IdField);
+	});
+	OutTree->SetArrayField(CommentsField, Comments);
 	if (Root)
 	{
 		TSharedPtr<FJsonObject> RootJson;
@@ -1398,6 +2845,99 @@ void FlattenObject(
 	}
 }
 
+void FlattenAttachment(
+	const TSharedPtr<FJsonObject>& Attachment,
+	const FString& TreePath,
+	const FString& Collection,
+	TMap<FString, TSharedPtr<FJsonValue>>& OutValues)
+{
+	if (!Attachment.IsValid())
+	{
+		return;
+	}
+	const FString Id = Attachment->GetStringField(IdField);
+	const FString Path = JoinPath(JoinPath(TreePath, Collection), Id);
+	if (Attachment->HasField(ClassField))
+	{
+		OutValues.Add(JoinPath(Path, ClassField), Attachment->TryGetField(ClassField));
+	}
+	if (Attachment->HasField(KindField))
+	{
+		OutValues.Add(JoinPath(Path, KindField), Attachment->TryGetField(KindField));
+	}
+	if (const TSharedPtr<FJsonObject>* Properties = nullptr; Attachment->TryGetObjectField(PropertiesField, Properties) && Properties && Properties->IsValid())
+	{
+		FlattenObject(*Properties, JoinPath(Path, PropertiesField), OutValues);
+	}
+	if (const TSharedPtr<FJsonObject>* Editor = nullptr; Attachment->TryGetObjectField(EditorField, Editor) && Editor && Editor->IsValid())
+	{
+		FlattenObject(*Editor, JoinPath(Path, EditorField), OutValues);
+	}
+	const TSharedPtr<FJsonObject>* BoundGraph = nullptr;
+	if (Attachment->TryGetObjectField(BoundGraphField, BoundGraph) && BoundGraph && BoundGraph->IsValid())
+	{
+		const FString BoundPath = JoinPath(Path, BoundGraphField);
+		OutValues.Add(JoinPath(BoundPath, GraphGuidField), (*BoundGraph)->TryGetField(GraphGuidField));
+		TArray<FString> BoundNodeIds;
+		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
+		if ((*BoundGraph)->TryGetArrayField(NodesField, Nodes) && Nodes)
+		{
+			for (const TSharedPtr<FJsonValue>& NodeValue : *Nodes)
+			{
+				TSharedPtr<FJsonObject> Node = NodeValue->AsObject();
+				if (!Node)
+				{
+					continue;
+				}
+				const FString NodeId = Node->GetStringField(IdField);
+				BoundNodeIds.Add(NodeId);
+				const FString NodePath = JoinPath(JoinPath(BoundPath, NodesField), NodeId);
+				OutValues.Add(JoinPath(NodePath, KindField), Node->TryGetField(KindField));
+				if (Node->HasField(ClassField))
+				{
+					OutValues.Add(JoinPath(NodePath, ClassField), Node->TryGetField(ClassField));
+				}
+				if (const TSharedPtr<FJsonObject>* NodeProperties = nullptr; Node->TryGetObjectField(PropertiesField, NodeProperties) && NodeProperties && NodeProperties->IsValid())
+				{
+					FlattenObject(*NodeProperties, JoinPath(NodePath, PropertiesField), OutValues);
+				}
+				if (const TSharedPtr<FJsonObject>* NodeEditor = nullptr; Node->TryGetObjectField(EditorField, NodeEditor) && NodeEditor && NodeEditor->IsValid())
+				{
+					FlattenObject(*NodeEditor, JoinPath(NodePath, EditorField), OutValues);
+				}
+			}
+		}
+		BoundNodeIds.Sort();
+		OutValues.Add(JoinPath(BoundPath, NodesField), StringArrayValue(BoundNodeIds));
+		const TArray<TSharedPtr<FJsonValue>>* BoundLinks = nullptr;
+		if ((*BoundGraph)->TryGetArrayField(LinksField, BoundLinks) && BoundLinks)
+		{
+			TArray<TSharedPtr<FJsonValue>> SortedLinks = *BoundLinks;
+			SortedLinks.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+			{
+				const TSharedPtr<FJsonObject> LeftObject = Left->AsObject();
+				const TSharedPtr<FJsonObject> RightObject = Right->AsObject();
+				const FString LeftFrom = LeftObject->GetStringField(FromField);
+				const FString RightFrom = RightObject->GetStringField(FromField);
+				if (LeftFrom != RightFrom)
+				{
+					return LeftFrom < RightFrom;
+				}
+				const FString LeftTo = LeftObject->GetStringField(ToField);
+				const FString RightTo = RightObject->GetStringField(ToField);
+				return LeftTo == RightTo
+					? LeftObject->GetNumberField(ToInputField) < RightObject->GetNumberField(ToInputField)
+					: LeftTo < RightTo;
+			});
+			OutValues.Add(JoinPath(BoundPath, LinksField), MakeShared<FJsonValueArray>(SortedLinks));
+		}
+		else
+		{
+			OutValues.Add(JoinPath(BoundPath, LinksField), (*BoundGraph)->TryGetField(LinksField));
+		}
+	}
+}
+
 void FlattenNode(
 	const TSharedPtr<FJsonObject>& Node,
 	const FString& TreePath,
@@ -1419,6 +2959,19 @@ void FlattenNode(
 		FlattenObject(*Editor, JoinPath(NodePath, EditorField), OutValues);
 	}
 
+	TArray<FString> DecoratorIds;
+	const TArray<TSharedPtr<FJsonValue>>* Decorators = nullptr;
+	if (Node->TryGetArrayField(DecoratorsField, Decorators) && Decorators)
+	{
+		for (const TSharedPtr<FJsonValue>& DecoratorValue : *Decorators)
+		{
+			TSharedPtr<FJsonObject> Decorator = DecoratorValue->AsObject();
+			DecoratorIds.Add(Decorator->GetStringField(IdField));
+			FlattenAttachment(Decorator, TreePath, DecoratorsField, OutValues);
+		}
+	}
+	OutValues.Add(JoinPath(NodePath, DecoratorsField), StringArrayValue(DecoratorIds));
+
 	TArray<FString> ServiceIds;
 	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
 	if (Node->TryGetArrayField(ServicesField, Services) && Services)
@@ -1427,7 +2980,7 @@ void FlattenNode(
 		{
 			TSharedPtr<FJsonObject> Service = ServiceValue->AsObject();
 			ServiceIds.Add(Service->GetStringField(IdField));
-			FlattenNode(Service, TreePath, OutValues);
+			FlattenAttachment(Service, TreePath, ServicesField, OutValues);
 		}
 	}
 	OutValues.Add(JoinPath(NodePath, ServicesField), StringArrayValue(ServiceIds));
@@ -1452,7 +3005,39 @@ void FlattenTree(
 	TMap<FString, TSharedPtr<FJsonValue>>& OutValues)
 {
 	OutValues.Add(JoinPath(Path, GraphGuidField), Tree->TryGetField(GraphGuidField));
-	OutValues.Add(JoinPath(Path, CommentsField), Tree->TryGetField(CommentsField));
+	TArray<FString> CommentIds;
+	const TArray<TSharedPtr<FJsonValue>>* Comments = nullptr;
+	if (Tree->TryGetArrayField(CommentsField, Comments) && Comments)
+	{
+		for (const TSharedPtr<FJsonValue>& CommentValue : *Comments)
+		{
+			TSharedPtr<FJsonObject> Comment = CommentValue->AsObject();
+			if (!Comment)
+			{
+				continue;
+			}
+			const FString Id = Comment->GetStringField(IdField);
+			CommentIds.Add(Id);
+			const FString CommentPath = JoinPath(JoinPath(Path, CommentsField), Id);
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Comment->Values)
+			{
+				if (Pair.Key == IdField)
+				{
+					continue;
+				}
+				if (Pair.Value.IsValid() && Pair.Value->Type == EJson::Object)
+				{
+					FlattenObject(Pair.Value->AsObject(), JoinPath(CommentPath, Pair.Key), OutValues);
+				}
+				else
+				{
+					OutValues.Add(JoinPath(CommentPath, Pair.Key), Pair.Value);
+				}
+			}
+		}
+	}
+	CommentIds.Sort();
+	OutValues.Add(JoinPath(Path, CommentsField), StringArrayValue(CommentIds));
 	const TSharedPtr<FJsonObject>* Root = nullptr;
 	if (Tree->TryGetObjectField(RootField, Root) && Root && Root->IsValid() && (*Root)->Values.Num() > 0)
 	{
@@ -1497,6 +3082,17 @@ void AddMapDiffs(
 void CollectSpecIds(const FBehaviorTreeNodeSpec& Node, TSet<FString>& OutIds)
 {
 	OutIds.Add(Node.Id);
+	for (const FBehaviorTreeDecoratorSpec& Decorator : Node.Decorators)
+	{
+		OutIds.Add(Decorator.Id);
+		if (Decorator.bComposite)
+		{
+			for (const FBehaviorTreeDecoratorGraphNodeSpec& BoundNode : Decorator.BoundGraph.Nodes)
+			{
+				OutIds.Add(BoundNode.Id);
+			}
+		}
+	}
 	for (const FBehaviorTreeServiceSpec& Service : Node.Services)
 	{
 		OutIds.Add(Service.Id);
@@ -1609,27 +3205,193 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	const auto PreviousRootDecorators = BehaviorTree->RootDecorators;
 	const auto PreviousRootOps = BehaviorTree->RootDecoratorOps;
 	UBlackboardData* PreviousBlackboard = BehaviorTree->BlackboardAsset;
+	UPackage* Package = BehaviorTree->GetOutermost();
+	const bool bWasPackageDirty = Package && Package->IsDirty();
 	UBehaviorTreeGraph* NewGraph = nullptr;
 	BehaviorTree->Modify();
 	Result = BuildGraph(BehaviorTree, Spec, RegionPath(Context), NewGraph);
 	if (!Result.bSuccess)
 	{
+		bOutChanged = false;
 		BehaviorTree->BTGraph = PreviousGraph;
 		BehaviorTree->RootNode = PreviousRoot;
 		BehaviorTree->RootDecorators = PreviousRootDecorators;
 		BehaviorTree->RootDecoratorOps = PreviousRootOps;
 		BehaviorTree->BlackboardAsset = PreviousBlackboard;
-		MoveGraphToTransient(NewGraph);
+		bool bCleanupSucceeded = false;
+		const bool bOwnershipRestored = CleanupRejectedGraphAndRestorePreviousOwnership(
+			NewGraph,
+			PreviousGraph,
+			BehaviorTree,
+			bCleanupSucceeded);
+		if (!bOwnershipRestored)
+		{
+			Result = Failure(RegionPath(Context), TEXT("BehaviorTreeGraphRollbackFailed"), TEXT("Failed to restore all previous BehaviorTree runtime node ownership after rejected graph build"));
+		}
+		else if (!bCleanupSucceeded)
+		{
+			Result = Failure(RegionPath(Context), TEXT("BehaviorTreeGraphCleanupFailed"), TEXT("Failed to move the rejected BehaviorTree staging graph to transient ownership"));
+		}
+		if (Package)
+		{
+			Package->SetDirtyFlag(bWasPackageDirty);
+		}
 		return Result;
 	}
-	BehaviorTree->BlackboardAsset = PreviousBlackboard;
-	MoveGraphToTransient(PreviousGraph);
-	if (NewGraph)
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bFailNextTreeGraphSwapForTest)
 	{
-		NewGraph->Rename(TEXT("Behavior Tree"), BehaviorTree, REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
-		BehaviorTree->BTGraph = NewGraph;
-		NewGraph->MarkPackageDirty();
+		bFailNextTreeGraphSwapForTest = false;
+		bOutChanged = false;
+		BehaviorTree->BTGraph = PreviousGraph;
+		BehaviorTree->RootNode = PreviousRoot;
+		BehaviorTree->RootDecorators = PreviousRootDecorators;
+		BehaviorTree->RootDecoratorOps = PreviousRootOps;
+		BehaviorTree->BlackboardAsset = PreviousBlackboard;
+		bool bCleanupSucceeded = false;
+		const bool bOwnershipRestored = CleanupRejectedGraphAndRestorePreviousOwnership(
+			NewGraph,
+			PreviousGraph,
+			BehaviorTree,
+			bCleanupSucceeded);
+		if (Package)
+		{
+			Package->SetDirtyFlag(bWasPackageDirty);
+		}
+		if (!bOwnershipRestored)
+		{
+			return Failure(RegionPath(Context), TEXT("BehaviorTreeGraphRollbackFailed"), TEXT("Forced graph swap failure also failed to restore all previous BehaviorTree runtime node ownership"));
+		}
+		return bCleanupSucceeded
+			? Failure(RegionPath(Context), TEXT("ForcedBehaviorTreeGraphSwapFailure"), TEXT("Forced BehaviorTree graph swap failure for automation coverage"))
+			: Failure(RegionPath(Context), TEXT("BehaviorTreeGraphCleanupFailed"), TEXT("Forced graph swap failure also failed to clean the rejected graph"));
 	}
+#endif
+	BehaviorTree->BlackboardAsset = PreviousBlackboard;
+	const FName PreviousName = PreviousGraph ? PreviousGraph->GetFName() : NAME_None;
+	if (PreviousGraph)
+	{
+		const FName BackupName = MakeUniqueObjectName(BehaviorTree, UBehaviorTreeGraph::StaticClass(), TEXT("Behavior Tree Previous"));
+		if (!PreviousGraph->Rename(*BackupName.ToString(), BehaviorTree, REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty))
+		{
+			bOutChanged = false;
+			BehaviorTree->BTGraph = PreviousGraph;
+			BehaviorTree->RootNode = PreviousRoot;
+			BehaviorTree->RootDecorators = PreviousRootDecorators;
+			BehaviorTree->RootDecoratorOps = PreviousRootOps;
+			bool bCleanupSucceeded = false;
+			const bool bOwnershipRestored = CleanupRejectedGraphAndRestorePreviousOwnership(
+				NewGraph,
+				PreviousGraph,
+				BehaviorTree,
+				bCleanupSucceeded);
+			if (Package)
+			{
+				Package->SetDirtyFlag(bWasPackageDirty);
+			}
+			if (!bOwnershipRestored)
+			{
+				return Failure(RegionPath(Context), TEXT("BehaviorTreeGraphRollbackFailed"), TEXT("Graph swap failure could not restore all previous BehaviorTree runtime node ownership"));
+			}
+			return bCleanupSucceeded
+				? Failure(RegionPath(Context), TEXT("BehaviorTreeGraphSwapFailed"), TEXT("Failed to reserve the canonical BehaviorTree graph name"))
+				: Failure(RegionPath(Context), TEXT("BehaviorTreeGraphCleanupFailed"), TEXT("Graph swap failed and rejected graph cleanup also failed"));
+		}
+	}
+	if (!NewGraph
+		|| !NewGraph->Rename(TEXT("Behavior Tree"), BehaviorTree, REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty))
+	{
+		bOutChanged = false;
+		bool bPreviousNameRestored = true;
+		if (PreviousGraph)
+		{
+			bPreviousNameRestored = PreviousGraph->Rename(*PreviousName.ToString(), BehaviorTree, REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+		}
+		BehaviorTree->BTGraph = PreviousGraph;
+		BehaviorTree->RootNode = PreviousRoot;
+		BehaviorTree->RootDecorators = PreviousRootDecorators;
+		BehaviorTree->RootDecoratorOps = PreviousRootOps;
+		bool bCleanupSucceeded = false;
+		const bool bOwnershipRestored = CleanupRejectedGraphAndRestorePreviousOwnership(
+			NewGraph,
+			PreviousGraph,
+			BehaviorTree,
+			bCleanupSucceeded);
+		if (Package)
+		{
+			Package->SetDirtyFlag(bWasPackageDirty);
+		}
+		if (!bPreviousNameRestored || !bOwnershipRestored)
+		{
+			return Failure(RegionPath(Context), TEXT("BehaviorTreeGraphRollbackFailed"), TEXT("Graph swap failed and previous graph ownership restoration was incomplete"));
+		}
+		return bCleanupSucceeded
+			? Failure(RegionPath(Context), TEXT("BehaviorTreeGraphSwapFailed"), TEXT("Failed to install the replacement BehaviorTree graph"))
+			: Failure(RegionPath(Context), TEXT("BehaviorTreeGraphCleanupFailed"), TEXT("Graph swap failed and rejected graph cleanup was incomplete"));
+	}
+	BehaviorTree->BTGraph = NewGraph;
+	bool bPreviousCleanupSucceeded = true;
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bFailNextPreviousTreeGraphCleanupForTest && PreviousGraph)
+	{
+		bFailNextPreviousTreeGraphCleanupForTest = false;
+		// Exercise a real partial cleanup: old runtime instances move first, then
+		// the graph Rename itself is reported as failed.
+		MoveGraphRuntimeNodeInstancesToTransient(PreviousGraph);
+		bPreviousCleanupSucceeded = false;
+	}
+	else
+#endif
+	{
+		bPreviousCleanupSucceeded = MoveGraphToTransient(PreviousGraph);
+	}
+	if (!bPreviousCleanupSucceeded)
+	{
+		bOutChanged = false;
+		BehaviorTree->BTGraph = PreviousGraph;
+		BehaviorTree->RootNode = PreviousRoot;
+		BehaviorTree->RootDecorators = PreviousRootDecorators;
+		BehaviorTree->RootDecoratorOps = PreviousRootOps;
+		BehaviorTree->BlackboardAsset = PreviousBlackboard;
+
+		const bool bRejectedCleanupSucceeded = MoveGraphToTransient(NewGraph);
+		bool bPreviousGraphRestored = true;
+		if (PreviousGraph
+			&& (PreviousGraph->GetOuter() != BehaviorTree || PreviousGraph->GetFName() != PreviousName))
+		{
+			bPreviousGraphRestored = PreviousGraph->Rename(
+				*PreviousName.ToString(),
+				BehaviorTree,
+				REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+		}
+		bPreviousGraphRestored = bPreviousGraphRestored
+			&& (!PreviousGraph
+				|| (PreviousGraph->GetOuter() == BehaviorTree && PreviousGraph->GetFName() == PreviousName));
+		const bool bPreviousInstancesRestored = RestoreGraphRuntimeNodeOwnership(PreviousGraph, BehaviorTree);
+		if (Package)
+		{
+			Package->SetDirtyFlag(bWasPackageDirty);
+		}
+		if (!bRejectedCleanupSucceeded)
+		{
+			return Failure(
+				RegionPath(Context),
+				TEXT("BehaviorTreeGraphRollbackCleanupFailed"),
+				TEXT("Previous graph cleanup failed and rollback could not clean the installed replacement graph"));
+		}
+		if (!bPreviousGraphRestored || !bPreviousInstancesRestored)
+		{
+			return Failure(
+				RegionPath(Context),
+				TEXT("BehaviorTreeGraphRollbackFailed"),
+				TEXT("Previous graph cleanup failed and rollback could not restore previous graph ownership"));
+		}
+		return Failure(
+			RegionPath(Context),
+			TEXT("BehaviorTreeGraphCleanupFailed"),
+			TEXT("Failed to release previous BehaviorTree graph ownership; replacement was rolled back"));
+	}
+	NewGraph->MarkPackageDirty();
 	BehaviorTree->MarkPackageDirty();
 	return FAssetDocumentCapabilityResult::Success(TEXT("Applied BehaviorTree authored graph source"));
 }
@@ -1703,6 +3465,10 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectSe
 	if (Spec.Root.IsValid())
 	{
 		CollectSpecIds(*Spec.Root, OutIds);
+	}
+	for (const FBehaviorTreeCommentSpec& Comment : Spec.Comments)
+	{
+		OutIds.Add(Comment.Id);
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree graph-source identities"));
 }
@@ -1781,9 +3547,30 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectEd
 			continue;
 		}
 		OutNodesById.Add(Node->NodeGuid.ToString(EGuidFormats::Digits), Node);
+		for (UBehaviorTreeGraphNode* Decorator : Node->Decorators)
+		{
+			OutNodesById.Add(Decorator->NodeGuid.ToString(EGuidFormats::Digits), Decorator);
+			if (UBehaviorTreeGraphNode_CompositeDecorator* Composite = Cast<UBehaviorTreeGraphNode_CompositeDecorator>(Decorator))
+			{
+				if (UBehaviorTreeDecoratorGraph* BoundGraph = Cast<UBehaviorTreeDecoratorGraph>(Composite->BoundGraph))
+				{
+					for (UEdGraphNode* BoundNode : BoundGraph->Nodes)
+					{
+						OutNodesById.Add(BoundNode->NodeGuid.ToString(EGuidFormats::Digits), BoundNode);
+					}
+				}
+			}
+		}
 		for (UBehaviorTreeGraphNode* Service : Node->Services)
 		{
 			OutNodesById.Add(Service->NodeGuid.ToString(EGuidFormats::Digits), Service);
+		}
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node))
+		{
+			OutNodesById.Add(Comment->NodeGuid.ToString(EGuidFormats::Digits), Comment);
 		}
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Collected BehaviorTree graph wrappers by NodeGuid"));
@@ -1793,5 +3580,15 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::CollectEd
 void FBehaviorTreeAssetDocumentMaterializer::FailNextEditorGraphRebuildForTest()
 {
 	bFailNextEditorGraphRebuildForTest = true;
+}
+
+void FBehaviorTreeAssetDocumentMaterializer::FailNextTreeGraphSwapForTest()
+{
+	bFailNextTreeGraphSwapForTest = true;
+}
+
+void FBehaviorTreeAssetDocumentMaterializer::FailNextPreviousTreeGraphCleanupForTest()
+{
+	bFailNextPreviousTreeGraphCleanupForTest = true;
 }
 #endif

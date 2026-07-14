@@ -53,5 +53,7 @@ public:
 
 #if WITH_DEV_AUTOMATION_TESTS
 	static void FailNextEditorGraphRebuildForTest();
+	static void FailNextTreeGraphSwapForTest();
+	static void FailNextPreviousTreeGraphCleanupForTest();
 #endif
 };
