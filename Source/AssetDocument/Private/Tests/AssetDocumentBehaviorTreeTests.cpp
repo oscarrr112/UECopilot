@@ -7,6 +7,7 @@
 #include "Profiles/BehaviorTreeAssetDocumentMaterializer.h"
 #include "Profiles/BehaviorTreeAssetDocumentProfile.h"
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
+#include "AIGraphTypes.h"
 
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BTCompositeNode.h"
@@ -21,21 +22,32 @@
 #include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
 #include "BehaviorTree/Services/BTService_DefaultFocus.h"
 #include "BehaviorTree/Tasks/BTTask_MoveTo.h"
+#include "BehaviorTree/Tasks/BTTask_BlueprintBase.h"
 #include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
 #include "BehaviorTree/Tasks/BTTask_SetKeyValue.h"
+#include "BehaviorTree/Tasks/BTTask_Wait.h"
 #include "BehaviorTree/Tasks/BTTask_WaitBlackboardTime.h"
 #include "BehaviorTreeGraph.h"
 #include "BehaviorTreeGraphNode.h"
+#include "BehaviorTreeGraphNode_Composite.h"
+#include "BehaviorTreeGraphNode_Root.h"
+#include "BehaviorTreeGraphNode_Task.h"
 #include "Animation/NodeMappingContainer.h"
 #include "BlueprintEditorSettings.h"
+#include "EdGraph/EdGraphPin.h"
 #include "EdGraphNode_Comment.h"
+#include "Engine/Blueprint.h"
+#include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "PackageTools.h"
 #include "Sections/MovieSceneCVarSection.h"
 #include "TestActorBase.h"
 #include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/PackageName.h"
 #include "UObject/UnrealType.h"
+#include "UObject/UObjectIterator.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -3257,6 +3269,626 @@ bool FAssetDocumentBehaviorTreeProfileInspectionListsAllRegionsTest::RunTest(con
 	TestTrue(TEXT("BehaviorTree profile lists blackboard adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName().ToString()));
 	TestTrue(TEXT("BehaviorTree profile lists tree adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName().ToString()));
 	TestTrue(TEXT("BehaviorTree profile lists editor layout adapter"), JsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName().ToString()));
+	return true;
+}
+
+namespace Task4GraphSourceTests
+{
+// Task 4 contract fixtures intentionally author graph identity, topology, and layout together.
+constexpr const TCHAR* GraphGuid = TEXT("0102030405060708090A0B0C0D0E0F10");
+constexpr const TCHAR* RootGuid = TEXT("11111111222222223333333344444444");
+constexpr const TCHAR* FirstTaskGuid = TEXT("AAAAAAAA11111111BBBBBBBB22222222");
+constexpr const TCHAR* SecondTaskGuid = TEXT("CCCCCCCC33333333DDDDDDDD44444444");
+constexpr const TCHAR* NestedCompositeGuid = TEXT("55555555666666667777777788888888");
+constexpr const TCHAR* RootServiceGuid = TEXT("99999999AAAABBBBCCCCDDDDEEEEFFFF");
+
+TSharedPtr<FJsonObject> MakePosition(double X, double Y)
+{
+	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+	Position->SetNumberField(TEXT("X"), X);
+	Position->SetNumberField(TEXT("Y"), Y);
+	return Position;
+}
+
+TSharedPtr<FJsonObject> MakeEditor(double X, double Y)
+{
+	TSharedPtr<FJsonObject> Editor = MakeShared<FJsonObject>();
+	Editor->SetObjectField(TEXT("Position"), MakePosition(X, Y));
+	return Editor;
+}
+
+TSharedPtr<FJsonObject> MakeGraphNode(
+	const FString& Id,
+	const FString& ClassPath,
+	const FString& NodeName,
+	double X,
+	double Y,
+	TArray<TSharedPtr<FJsonValue>> Children = {})
+{
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetStringField(TEXT("NodeName"), NodeName);
+	if (ClassPath.Contains(TEXT("BTComposite_")))
+	{
+		Properties->SetBoolField(TEXT("bApplyDecoratorScope"), true);
+	}
+	if (ClassPath.Contains(TEXT("BTTask_")) || ClassPath.Contains(TEXT("BTTaskBlueprint")))
+	{
+		Properties->SetBoolField(TEXT("bIgnoreRestartSelf"), true);
+	}
+
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("Id"), Id);
+	Node->SetStringField(TEXT("Class"), ClassPath);
+	Node->SetObjectField(TEXT("Properties"), Properties);
+	Node->SetArrayField(TEXT("Decorators"), {});
+	Node->SetArrayField(TEXT("Services"), {});
+	Node->SetArrayField(TEXT("Children"), Children);
+	Node->SetObjectField(TEXT("Editor"), MakeEditor(X, Y));
+	return Node;
+}
+
+TSharedPtr<FJsonObject> MakeGraphService()
+{
+	TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+	Properties->SetStringField(TEXT("NodeName"), TEXT("Authored focus service"));
+	Properties->SetNumberField(TEXT("Interval"), 0.75);
+	Properties->SetNumberField(TEXT("RandomDeviation"), 0.125);
+	Properties->SetBoolField(TEXT("bCallTickOnSearchStart"), true);
+	Properties->SetBoolField(TEXT("bRestartTimerOnEachActivation"), false);
+
+	TSharedPtr<FJsonObject> Service = MakeShared<FJsonObject>();
+	Service->SetStringField(TEXT("Id"), RootServiceGuid);
+	Service->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTService_DefaultFocus"));
+	Service->SetObjectField(TEXT("Properties"), Properties);
+	return Service;
+}
+
+TSharedPtr<FJsonObject> MakeGraphSourceTree(
+	const FString& FirstNodeName = TEXT("Shared visible label"),
+	double FirstX = 100.0,
+	double SecondX = 300.0,
+	const FString& FirstClass = TEXT("/Script/AIModule.BTTask_Wait"))
+{
+	TArray<TSharedPtr<FJsonValue>> Children;
+	Children.Add(MakeObjectValue(MakeGraphNode(
+		FirstTaskGuid,
+		FirstClass,
+		FirstNodeName,
+		FirstX,
+		300.0)));
+	Children.Add(MakeObjectValue(MakeGraphNode(
+		SecondTaskGuid,
+		TEXT("/Script/AIModule.BTTask_Wait"),
+		TEXT("Shared visible label"),
+		SecondX,
+		300.0)));
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetStringField(TEXT("GraphGuid"), GraphGuid);
+	TSharedPtr<FJsonObject> Root = MakeGraphNode(
+		RootGuid,
+		TEXT("/Script/AIModule.BTComposite_Selector"),
+		TEXT("Authored selector label"),
+		200.0,
+		0.0,
+		Children);
+	Root->SetArrayField(TEXT("Services"), {MakeObjectValue(MakeGraphService())});
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("Comments"), {});
+	return Tree;
+}
+
+FAssetDocumentRegionContext MakeTreeContext(UBehaviorTree* BehaviorTree)
+{
+	FAssetDocumentRegionContext Context;
+	Context.Asset = BehaviorTree;
+	Context.AssetClass = UBehaviorTree::StaticClass();
+	Context.BodyPath = TEXT("Body.Tree");
+	Context.JsonPointer = TEXT("/Body/Tree");
+	return Context;
+}
+
+FAssetDocumentCapabilityResult ApplyTree(UBehaviorTree* BehaviorTree, const TSharedPtr<FJsonObject>& Tree, bool& bOutChanged)
+{
+	FAssetDocumentRegionContext Context = MakeTreeContext(BehaviorTree);
+	return FBehaviorTreeAssetDocumentMaterializer::ApplyTree(Context, Tree.ToSharedRef(), bOutChanged);
+}
+
+UBehaviorTreeGraphNode* FindGraphNodeByGuid(UBehaviorTreeGraph* Graph, const FString& GuidString)
+{
+	if (!Graph)
+	{
+		return nullptr;
+	}
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UBehaviorTreeGraphNode* BehaviorNode = Cast<UBehaviorTreeGraphNode>(Node);
+		if (BehaviorNode && BehaviorNode->NodeGuid.ToString(EGuidFormats::Digits).Equals(GuidString, ESearchCase::IgnoreCase))
+		{
+			return BehaviorNode;
+		}
+		if (BehaviorNode)
+		{
+			for (UBehaviorTreeGraphNode* Service : BehaviorNode->Services)
+			{
+				if (Service && Service->NodeGuid.ToString(EGuidFormats::Digits).Equals(GuidString, ESearchCase::IgnoreCase))
+				{
+					return Service;
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
+UEdGraphPin* FindGraphPin(UBehaviorTreeGraphNode* Node, EEdGraphPinDirection Direction)
+{
+	if (!Node)
+	{
+		return nullptr;
+	}
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (Pin && Pin->Direction == Direction)
+		{
+			return Pin;
+		}
+	}
+	return nullptr;
+}
+
+TSharedPtr<FJsonObject> FindExtractedNodeById(const TSharedPtr<FJsonObject>& Node, const FString& Id)
+{
+	if (!Node.IsValid())
+	{
+		return nullptr;
+	}
+	FString CandidateId;
+	if (Node->TryGetStringField(TEXT("Id"), CandidateId) && CandidateId == Id)
+	{
+		return Node;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+	if (Node->TryGetArrayField(TEXT("Children"), Children) && Children)
+	{
+		for (const TSharedPtr<FJsonValue>& ChildValue : *Children)
+		{
+			TSharedPtr<FJsonObject> Found = FindExtractedNodeById(ChildValue.IsValid() ? ChildValue->AsObject() : nullptr, Id);
+			if (Found.IsValid())
+			{
+				return Found;
+			}
+		}
+	}
+	return nullptr;
+}
+
+TSharedPtr<FJsonObject> ExtractTree(FAutomationTestBase& Test, UBehaviorTree* BehaviorTree)
+{
+	FAssetDocumentRegionContext Context = MakeTreeContext(BehaviorTree);
+	TSharedRef<FJsonObject> Extracted = MakeShared<FJsonObject>();
+	const FAssetDocumentCapabilityResult Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(Context, Extracted);
+	Test.TestTrue(TEXT("graph-source extraction succeeds"), Result.bSuccess);
+	if (!Result.bSuccess)
+	{
+		Test.AddError(Result.Message);
+		return nullptr;
+	}
+	return Extracted;
+}
+
+TSharedPtr<FJsonObject> MakeGraphSourceBody(const TSharedPtr<FJsonObject>& Tree)
+{
+	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
+	Body->SetField(TEXT("BlackboardAsset"), MakeShared<FJsonValueNull>());
+	Body->SetObjectField(TEXT("Tree"), Tree);
+	return Body;
+}
+
+void RemoveEditorLayoutRecursively(const TSharedPtr<FJsonObject>& Node)
+{
+	if (!Node.IsValid())
+	{
+		return;
+	}
+	Node->RemoveField(TEXT("Editor"));
+	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+	if (Node->TryGetArrayField(TEXT("Children"), Children) && Children)
+	{
+		for (const TSharedPtr<FJsonValue>& Child : *Children)
+		{
+			RemoveEditorLayoutRecursively(Child.IsValid() ? Child->AsObject() : nullptr);
+		}
+	}
+}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphSourceIdentityTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphSource.IdentityAndNodeName",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphSourceIdentityTest::RunTest(const FString&)
+{
+	using namespace Task4GraphSourceTests;
+	UBehaviorTree* BehaviorTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	bool bChanged = false;
+	FAssetDocumentCapabilityResult Result = ApplyTree(BehaviorTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("graph-source apply succeeds"), Result.bSuccess);
+	if (!Result.bSuccess)
+	{
+		AddError(Result.Message);
+		return false;
+	}
+	TestTrue(TEXT("initial graph-source apply reports change"), bChanged);
+
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	TestNotNull(TEXT("UBehaviorTree owns a production UBehaviorTreeGraph"), Graph);
+	TestEqual(TEXT("authored GraphGuid is preserved"), Graph ? Graph->GraphGuid.ToString(EGuidFormats::Digits) : FString(), FString(GraphGuid));
+
+	UBehaviorTreeGraphNode* RootNode = FindGraphNodeByGuid(Graph, RootGuid);
+	UBehaviorTreeGraphNode* FirstTask = FindGraphNodeByGuid(Graph, FirstTaskGuid);
+	UBehaviorTreeGraphNode* SecondTask = FindGraphNodeByGuid(Graph, SecondTaskGuid);
+	UBehaviorTreeGraphNode* RootService = FindGraphNodeByGuid(Graph, RootServiceGuid);
+	TestTrue(TEXT("explicit root NodeGuid becomes graph wrapper identity"), RootNode && RootNode->NodeGuid.ToString(EGuidFormats::Digits) == RootGuid);
+	TestTrue(TEXT("explicit first task NodeGuid becomes graph wrapper identity"), FirstTask && FirstTask->NodeGuid.ToString(EGuidFormats::Digits) == FirstTaskGuid);
+	TestTrue(TEXT("explicit second task NodeGuid becomes graph wrapper identity"), SecondTask && SecondTask->NodeGuid.ToString(EGuidFormats::Digits) == SecondTaskGuid);
+	TestTrue(TEXT("explicit service NodeGuid becomes graph subnode identity"), RootService && RootService->NodeGuid.ToString(EGuidFormats::Digits) == RootServiceGuid);
+	TestTrue(TEXT("duplicate visible labels do not collapse graph identity"), FirstTask && SecondTask && FirstTask != SecondTask);
+	TestEqual(TEXT("NodeName is an independent authored property"), FirstTask && FirstTask->NodeInstance ? CastChecked<UBTNode>(FirstTask->NodeInstance)->NodeName : FString(), FString(TEXT("Shared visible label")));
+
+	TSharedPtr<FJsonObject> Extracted = ExtractTree(*this, BehaviorTree);
+	TSharedPtr<FJsonObject> ExtractedRoot = Extracted.IsValid() ? GetObjectField(Extracted, TEXT("Root")) : nullptr;
+	TSharedPtr<FJsonObject> ExtractedFirst = FindExtractedNodeById(ExtractedRoot, FirstTaskGuid);
+	TestTrue(TEXT("extract reads first NodeGuid from graph"), ExtractedFirst.IsValid());
+	TestEqual(TEXT("extract keeps canonical graph identity"), ExtractedFirst.IsValid() ? ExtractedFirst->GetStringField(TEXT("Id")) : FString(), FString(FirstTaskGuid));
+	const TSharedPtr<FJsonObject> ExtractedRootProperties = ExtractedRoot.IsValid() ? GetObjectField(ExtractedRoot, TEXT("Properties")) : nullptr;
+	TestTrue(TEXT("base composite editable property round-trips"), ExtractedRootProperties.IsValid() && ExtractedRootProperties->GetBoolField(TEXT("bApplyDecoratorScope")));
+	const TSharedPtr<FJsonObject> ExtractedTaskProperties = ExtractedFirst.IsValid() ? GetObjectField(ExtractedFirst, TEXT("Properties")) : nullptr;
+	TestTrue(TEXT("base task editable property round-trips"), ExtractedTaskProperties.IsValid() && ExtractedTaskProperties->GetBoolField(TEXT("bIgnoreRestartSelf")));
+	const TArray<TSharedPtr<FJsonValue>>* ExtractedServices = nullptr;
+	TestTrue(TEXT("root service order and identity extract from graph subnodes"), ExtractedRoot.IsValid() && ExtractedRoot->TryGetArrayField(TEXT("Services"), ExtractedServices) && ExtractedServices && ExtractedServices->Num() == 1 && (*ExtractedServices)[0]->AsObject()->GetStringField(TEXT("Id")) == RootServiceGuid);
+	if (ExtractedServices && ExtractedServices->Num() == 1)
+	{
+		const TSharedPtr<FJsonObject> ServiceProperties = GetObjectField((*ExtractedServices)[0]->AsObject(), TEXT("Properties"));
+		TestEqual(TEXT("concrete service float property round-trips"), ServiceProperties.IsValid() ? ServiceProperties->GetNumberField(TEXT("Interval")) : -1.0, 0.75);
+		TestTrue(TEXT("concrete service bool property round-trips"), ServiceProperties.IsValid() && ServiceProperties->GetBoolField(TEXT("bCallTickOnSearchStart")));
+	}
+
+	TSharedPtr<FJsonObject> UpdatedTree = MakeGraphSourceTree(TEXT("Renamed without identity change"));
+	Result = ApplyTree(BehaviorTree, UpdatedTree, bChanged);
+	TestTrue(TEXT("graph-source update succeeds"), Result.bSuccess);
+	TestTrue(TEXT("NodeName-only update reports change"), bChanged);
+	Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	FirstTask = FindGraphNodeByGuid(Graph, FirstTaskGuid);
+	TestEqual(TEXT("NodeGuid survives update"), FirstTask ? FirstTask->NodeGuid.ToString(EGuidFormats::Digits) : FString(), FString(FirstTaskGuid));
+	TestEqual(TEXT("NodeName update does not rewrite identity"), FirstTask && FirstTask->NodeInstance ? CastChecked<UBTNode>(FirstTask->NodeInstance)->NodeName : FString(), FString(TEXT("Renamed without identity change")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphSourceTopologyAndOrderTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphSource.TopologyOrderAndRuntimeMirror",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphSourceTopologyAndOrderTest::RunTest(const FString&)
+{
+	using namespace Task4GraphSourceTests;
+	UBehaviorTree* BehaviorTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult ApplyResult = ApplyTree(BehaviorTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("ordered graph apply succeeds"), ApplyResult.bSuccess);
+	if (!ApplyResult.bSuccess)
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph);
+	UBehaviorTreeGraphNode* RootGraphNode = FindGraphNodeByGuid(Graph, RootGuid);
+	UBehaviorTreeGraphNode* FirstGraphTask = FindGraphNodeByGuid(Graph, FirstTaskGuid);
+	UBehaviorTreeGraphNode* SecondGraphTask = FindGraphNodeByGuid(Graph, SecondTaskGuid);
+	UBTCompositeNode* RuntimeRoot = BehaviorTree->RootNode;
+	TestTrue(TEXT("semantic child order has strictly increasing X"), FirstGraphTask && SecondGraphTask && FirstGraphTask->NodePosX < SecondGraphTask->NodePosX);
+	TestTrue(TEXT("standard UpdateAsset sets runtime root from graph wrapper"), RootGraphNode && RuntimeRoot == RootGraphNode->NodeInstance);
+	TestEqual(TEXT("standard UpdateAsset creates two runtime children"), RuntimeRoot ? RuntimeRoot->Children.Num() : -1, 2);
+	TestTrue(TEXT("standard UpdateAsset mirrors ordered service subnodes"), RuntimeRoot && RuntimeRoot->Services.Num() == 1 && RootGraphNode->Services.Num() == 1 && RuntimeRoot->Services[0] == RootGraphNode->Services[0]->NodeInstance);
+	if (RuntimeRoot && RuntimeRoot->Children.Num() == 2)
+	{
+		TestTrue(TEXT("runtime first child mirrors graph X order"), RuntimeRoot->Children[0].ChildTask == FirstGraphTask->NodeInstance);
+		TestTrue(TEXT("runtime second child mirrors graph X order"), RuntimeRoot->Children[1].ChildTask == SecondGraphTask->NodeInstance);
+
+		RuntimeRoot->Children.Swap(0, 1);
+		TSharedPtr<FJsonObject> Extracted = ExtractTree(*this, BehaviorTree);
+		TSharedPtr<FJsonObject> ExtractedRoot = Extracted.IsValid() ? GetObjectField(Extracted, TEXT("Root")) : nullptr;
+		const TArray<TSharedPtr<FJsonValue>>* ExtractedChildren = nullptr;
+		TestTrue(TEXT("extract has graph children"), ExtractedRoot.IsValid() && ExtractedRoot->TryGetArrayField(TEXT("Children"), ExtractedChildren) && ExtractedChildren && ExtractedChildren->Num() == 2);
+		if (ExtractedChildren && ExtractedChildren->Num() == 2)
+		{
+			TestEqual(TEXT("extract ignores corrupted runtime order and reads graph first"), (*ExtractedChildren)[0]->AsObject()->GetStringField(TEXT("Id")), FString(FirstTaskGuid));
+			TestEqual(TEXT("extract ignores corrupted runtime order and reads graph second"), (*ExtractedChildren)[1]->AsObject()->GetStringField(TEXT("Id")), FString(SecondTaskGuid));
+		}
+
+		Graph->UpdateAsset();
+		RuntimeRoot = BehaviorTree->RootNode;
+		TestTrue(TEXT("standard graph rebuild restores runtime first child"), RuntimeRoot && RuntimeRoot->Children[0].ChildTask == FirstGraphTask->NodeInstance);
+		TestTrue(TEXT("standard graph rebuild restores runtime second child"), RuntimeRoot && RuntimeRoot->Children[1].ChildTask == SecondGraphTask->NodeInstance);
+	}
+
+	TSharedPtr<FJsonObject> GeneratedLayoutTree = MakeGraphSourceTree();
+	RemoveEditorLayoutRecursively(GetObjectField(GeneratedLayoutTree, TEXT("Root")));
+	UBehaviorTree* GeneratedLayoutAsset = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	const FAssetDocumentCapabilityResult GeneratedLayoutResult = ApplyTree(GeneratedLayoutAsset, GeneratedLayoutTree, bChanged);
+	TestTrue(TEXT("omitted layout generates deterministic graph coordinates"), GeneratedLayoutResult.bSuccess);
+	UBehaviorTreeGraph* GeneratedLayoutGraph = Cast<UBehaviorTreeGraph>(GeneratedLayoutAsset->BTGraph);
+	UBehaviorTreeGraphNode* GeneratedFirst = FindGraphNodeByGuid(GeneratedLayoutGraph, FirstTaskGuid);
+	UBehaviorTreeGraphNode* GeneratedSecond = FindGraphNodeByGuid(GeneratedLayoutGraph, SecondTaskGuid);
+	TestTrue(TEXT("generated sibling coordinates preserve semantic order"), GeneratedFirst && GeneratedSecond && GeneratedFirst->NodePosX < GeneratedSecond->NodePosX);
+	TSharedPtr<FJsonObject> GeneratedExtract = ExtractTree(*this, GeneratedLayoutAsset);
+	TSharedPtr<FJsonObject> GeneratedRoot = GeneratedExtract.IsValid() ? GetObjectField(GeneratedExtract, TEXT("Root")) : nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* GeneratedChildren = nullptr;
+	TestTrue(TEXT("generated layout is emitted canonically"), GeneratedRoot.IsValid() && GeneratedRoot->TryGetArrayField(TEXT("Children"), GeneratedChildren) && GeneratedChildren && GeneratedChildren->Num() == 2 && GetObjectField((*GeneratedChildren)[0]->AsObject(), TEXT("Editor")).IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphSourceValidationTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphSource.Validation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphSourceValidationTest::RunTest(const FString&)
+{
+	using namespace Task4GraphSourceTests;
+	UBehaviorTree* BehaviorTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	FAssetDocumentRegionContext Context = MakeTreeContext(BehaviorTree);
+
+	TSharedPtr<FJsonObject> NameIdTree = MakeGraphSourceTree();
+	GetObjectField(NameIdTree, TEXT("Root"))->SetStringField(TEXT("Id"), TEXT("RootByName"));
+	FAssetDocumentCapabilityResult Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, NameIdTree.ToSharedRef());
+	TestFalse(TEXT("legacy name identity is rejected"), Result.bSuccess);
+	TestTrue(TEXT("legacy name identity diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Id"), TEXT("InvalidBehaviorTreeNodeGuid")));
+
+	TSharedPtr<FJsonObject> DuplicateGuidTree = MakeGraphSourceTree();
+	TSharedPtr<FJsonObject> DuplicateRoot = GetObjectField(DuplicateGuidTree, TEXT("Root"));
+	const TArray<TSharedPtr<FJsonValue>>* DuplicateChildren = nullptr;
+	if (DuplicateRoot->TryGetArrayField(TEXT("Children"), DuplicateChildren) && DuplicateChildren && DuplicateChildren->Num() == 2)
+	{
+		(*DuplicateChildren)[1]->AsObject()->SetStringField(TEXT("Id"), FirstTaskGuid);
+	}
+	Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, DuplicateGuidTree.ToSharedRef());
+	TestFalse(TEXT("duplicate NodeGuid is rejected"), Result.bSuccess);
+	TestTrue(TEXT("duplicate NodeGuid diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/1/Id"), TEXT("DuplicateBehaviorTreeNodeGuid")));
+
+	TSharedPtr<FJsonObject> OrderConflictTree = MakeGraphSourceTree(TEXT("first"), 400.0, 100.0);
+	Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, OrderConflictTree.ToSharedRef());
+	TestFalse(TEXT("semantic child order conflicting with X order is rejected"), Result.bSuccess);
+	TestTrue(TEXT("layout order conflict diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/1/Editor/Position/X"), TEXT("BehaviorTreeLayoutOrderConflict")));
+
+	TSharedPtr<FJsonObject> DuplicateXTree = MakeGraphSourceTree(TEXT("first"), 100.0, 100.0);
+	Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, DuplicateXTree.ToSharedRef());
+	TestFalse(TEXT("sibling X tie is rejected"), Result.bSuccess);
+	TestTrue(TEXT("sibling X tie diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/1/Editor/Position/X"), TEXT("DuplicateBehaviorTreeSiblingCoordinate")));
+
+	TSharedPtr<FJsonObject> WrongRootClassTree = MakeGraphSourceTree();
+	GetObjectField(WrongRootClassTree, TEXT("Root"))->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_Wait"));
+	Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, WrongRootClassTree.ToSharedRef());
+	TestFalse(TEXT("task class cannot be the root composite"), Result.bSuccess);
+	TestTrue(TEXT("root class legality diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Class"), TEXT("InvalidBehaviorTreeNodeClass")));
+
+	TSharedPtr<FJsonObject> AbstractClassTree = MakeGraphSourceTree(TEXT("first"), 100.0, 300.0, TEXT("/Script/AIModule.BTTaskNode"));
+	Result = FBehaviorTreeAssetDocumentMaterializer::ValidateTree(Context, AbstractClassTree.ToSharedRef());
+	TestFalse(TEXT("abstract task class is rejected"), Result.bSuccess);
+	TestTrue(TEXT("abstract class diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/0/Class"), TEXT("AbstractBehaviorTreeNodeClass")));
+
+	UBehaviorTree* MultipleRootsTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	bool bChanged = false;
+	Result = ApplyTree(MultipleRootsTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("multiple-root graph fixture applies before corruption"), Result.bSuccess);
+	if (UBehaviorTreeGraph* MultipleRootsGraph = Cast<UBehaviorTreeGraph>(MultipleRootsTree->BTGraph))
+	{
+		UBehaviorTreeGraphNode_Root* ExtraRoot = NewObject<UBehaviorTreeGraphNode_Root>(MultipleRootsGraph);
+		MultipleRootsGraph->AddNode(ExtraRoot, false, false);
+		ExtraRoot->CreateNewGuid();
+		ExtraRoot->AllocateDefaultPins();
+		TSharedRef<FJsonObject> Ignored = MakeShared<FJsonObject>();
+		Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(MakeTreeContext(MultipleRootsTree), Ignored);
+		TestFalse(TEXT("extract rejects a graph with multiple synthetic roots"), Result.bSuccess);
+		TestTrue(TEXT("multiple-root graph diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root"), TEXT("MultipleBehaviorTreeRoots")));
+	}
+
+	UBehaviorTree* OrphanTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	Result = ApplyTree(OrphanTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("orphan graph fixture applies before corruption"), Result.bSuccess);
+	if (UBehaviorTreeGraph* OrphanGraph = Cast<UBehaviorTreeGraph>(OrphanTree->BTGraph))
+	{
+		UBehaviorTreeGraphNode_Task* Orphan = NewObject<UBehaviorTreeGraphNode_Task>(OrphanGraph);
+		Orphan->ClassData = FGraphNodeClassData(UBTTask_Wait::StaticClass(), FString());
+		OrphanGraph->AddNode(Orphan, false, false);
+		Orphan->CreateNewGuid();
+		Orphan->PostPlacedNewNode();
+		Orphan->AllocateDefaultPins();
+		TSharedRef<FJsonObject> Ignored = MakeShared<FJsonObject>();
+		Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(MakeTreeContext(OrphanTree), Ignored);
+		TestFalse(TEXT("extract rejects an unreachable graph node"), Result.bSuccess);
+		TestTrue(TEXT("unreachable graph diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Nodes"), TEXT("UnreachableBehaviorTreeGraphNode")));
+	}
+
+	UBehaviorTree* CycleTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	Result = ApplyTree(CycleTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("cycle graph fixture applies before corruption"), Result.bSuccess);
+	if (UBehaviorTreeGraph* CycleGraph = Cast<UBehaviorTreeGraph>(CycleTree->BTGraph))
+	{
+		UBehaviorTreeGraphNode* RootGraphNode = FindGraphNodeByGuid(CycleGraph, RootGuid);
+		UEdGraphPin* RootOutput = FindGraphPin(RootGraphNode, EGPD_Output);
+		UEdGraphPin* RootInput = FindGraphPin(RootGraphNode, EGPD_Input);
+		if (RootOutput && RootInput)
+		{
+			RootGraphNode->NodePosX = -100;
+			RootOutput->MakeLinkTo(RootInput);
+		}
+		TSharedRef<FJsonObject> Ignored = MakeShared<FJsonObject>();
+		Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(MakeTreeContext(CycleTree), Ignored);
+		TestFalse(TEXT("extract rejects a graph cycle"), Result.bSuccess);
+		TestTrue(TEXT("cycle graph diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/0"), TEXT("BehaviorTreeGraphCycle")));
+	}
+
+	UBehaviorTree* IllegalPinTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	Result = ApplyTree(IllegalPinTree, MakeGraphSourceTree(), bChanged);
+	TestTrue(TEXT("illegal-pin graph fixture applies before corruption"), Result.bSuccess);
+	if (UBehaviorTreeGraph* IllegalPinGraph = Cast<UBehaviorTreeGraph>(IllegalPinTree->BTGraph))
+	{
+		UEdGraphPin* TaskInput = FindGraphPin(FindGraphNodeByGuid(IllegalPinGraph, FirstTaskGuid), EGPD_Input);
+		if (TaskInput)
+		{
+			TaskInput->PinType.PinCategory = FName(TEXT("SingleTask"));
+		}
+		TSharedRef<FJsonObject> Ignored = MakeShared<FJsonObject>();
+		Result = FBehaviorTreeAssetDocumentMaterializer::ExtractTree(MakeTreeContext(IllegalPinTree), Ignored);
+		TestFalse(TEXT("extract rejects a schema-illegal pin connection"), Result.bSuccess);
+		TestTrue(TEXT("illegal pin diagnostic is exact"), HasDiagnostic(Result, TEXT("/Body/Tree/Root/Children/0"), TEXT("InvalidBehaviorTreeGraphConnection")));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphSourceDynamicBlueprintClassTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphSource.DynamicBlueprintClass",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphSourceDynamicBlueprintClassTest::RunTest(const FString&)
+{
+	using namespace Task4GraphSourceTests;
+	const FString PackageName = TEXT("/Game/AssetDocumentTests/BTTaskBlueprint_Task4");
+	UPackage* BlueprintPackage = CreatePackage(*PackageName);
+	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
+		UBTTask_BlueprintBase::StaticClass(),
+		BlueprintPackage,
+		TEXT("BTTaskBlueprint_Task4"),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(),
+		TEXT("AssetDocumentBehaviorTreeTask4"));
+	TestNotNull(TEXT("dynamic Blueprint task class fixture is created"), Blueprint);
+	if (!Blueprint)
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	UClass* GeneratedClass = Blueprint->GeneratedClass;
+	TestTrue(TEXT("generated Blueprint class is concrete UBTTaskNode"), GeneratedClass && GeneratedClass->IsChildOf(UBTTaskNode::StaticClass()) && !GeneratedClass->HasAnyClassFlags(CLASS_Abstract));
+	if (!GeneratedClass)
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> Tree = MakeGraphSourceTree(TEXT("Blueprint task label"), 100.0, 300.0, GeneratedClass->GetPathName());
+	UBehaviorTree* BehaviorTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	bool bChanged = false;
+	const FAssetDocumentCapabilityResult Result = ApplyTree(BehaviorTree, Tree, bChanged);
+	TestTrue(TEXT("dynamically loaded Blueprint node class applies"), Result.bSuccess);
+	if (!Result.bSuccess)
+	{
+		AddError(Result.Message);
+		return false;
+	}
+	UBehaviorTreeGraphNode* GraphNode = FindGraphNodeByGuid(Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph), FirstTaskGuid);
+	TestTrue(TEXT("graph wrapper owns generated Blueprint NodeInstance"), GraphNode && GraphNode->NodeInstance && GraphNode->NodeInstance->GetClass() == GeneratedClass);
+	TSharedPtr<FJsonObject> Extracted = ExtractTree(*this, BehaviorTree);
+	TSharedPtr<FJsonObject> ExtractedNode = FindExtractedNodeById(Extracted.IsValid() ? GetObjectField(Extracted, TEXT("Root")) : nullptr, FirstTaskGuid);
+	TestEqual(TEXT("dynamic class extracts as canonical concrete path"), ExtractedNode.IsValid() ? ExtractedNode->GetStringField(TEXT("Class")) : FString(), GeneratedClass->GetPathName());
+
+	UClass* AngelscriptTaskClass = nullptr;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Candidate = *It;
+		if (Candidate
+			&& Candidate->bIsScriptClass
+			&& Candidate->IsChildOf(UBTTaskNode::StaticClass())
+			&& !Candidate->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		{
+			AngelscriptTaskClass = Candidate;
+			break;
+		}
+	}
+	if (!AngelscriptTaskClass)
+	{
+		AddWarning(TEXT("No concrete Angelscript UBTTaskNode is loaded in this host; dynamic Angelscript graph coverage was skipped"));
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> AngelscriptTree = MakeGraphSourceTree(
+		TEXT("Angelscript task label"),
+		100.0,
+		300.0,
+		AngelscriptTaskClass->GetPathName());
+	UBehaviorTree* AngelscriptBehaviorTree = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	bChanged = false;
+	const FAssetDocumentCapabilityResult AngelscriptResult = ApplyTree(AngelscriptBehaviorTree, AngelscriptTree, bChanged);
+	TestTrue(TEXT("dynamically loaded Angelscript node class applies"), AngelscriptResult.bSuccess);
+	if (!AngelscriptResult.bSuccess)
+	{
+		AddError(AngelscriptResult.Message);
+		return false;
+	}
+	UBehaviorTreeGraphNode* AngelscriptGraphNode = FindGraphNodeByGuid(
+		Cast<UBehaviorTreeGraph>(AngelscriptBehaviorTree->BTGraph),
+		FirstTaskGuid);
+	TestTrue(
+		TEXT("graph wrapper owns Angelscript NodeInstance"),
+		AngelscriptGraphNode && AngelscriptGraphNode->NodeInstance && AngelscriptGraphNode->NodeInstance->GetClass() == AngelscriptTaskClass);
+	TSharedPtr<FJsonObject> AngelscriptExtracted = ExtractTree(*this, AngelscriptBehaviorTree);
+	TSharedPtr<FJsonObject> AngelscriptExtractedNode = FindExtractedNodeById(
+		AngelscriptExtracted.IsValid() ? GetObjectField(AngelscriptExtracted, TEXT("Root")) : nullptr,
+		FirstTaskGuid);
+	TestEqual(
+		TEXT("Angelscript class extracts as canonical concrete path"),
+		AngelscriptExtractedNode.IsValid() ? AngelscriptExtractedNode->GetStringField(TEXT("Class")) : FString(),
+		AngelscriptTaskClass->GetPathName());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentBehaviorTreeGraphSourceSaveReloadTest,
+	"AssetFactory.AssetDocument.BehaviorTree.GraphSource.SaveReload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentBehaviorTreeGraphSourceSaveReloadTest::RunTest(const FString&)
+{
+	using namespace Task4GraphSourceTests;
+	const FString Target = TEXT("/Game/AssetDocumentTests/BT_GraphSource_Task4_Reload");
+	TSharedPtr<FJsonObject> Document = MakeBehaviorTreeDocument(Target, MakeGraphSourceBody(MakeGraphSourceTree()));
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Document;
+	Request.bSaveAsset = true;
+	FAssetDocumentService Service;
+	const FAssetDocumentResult ApplyResult = Service.Apply(Request);
+	TestTrue(TEXT("saved graph-source apply succeeds"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+
+	UBehaviorTree* BeforeReload = LoadBehaviorTreeForTarget(Target);
+	TestNotNull(TEXT("saved BehaviorTree loads before explicit unload"), BeforeReload);
+	UPackage* Package = BeforeReload ? BeforeReload->GetOutermost() : nullptr;
+	TestNotNull(TEXT("saved BehaviorTree package exists"), Package);
+	if (!Package)
+	{
+		return false;
+	}
+
+	const bool bUnloaded = UPackageTools::UnloadPackages({Package});
+	TestTrue(TEXT("saved BehaviorTree package unloads"), bUnloaded);
+	UBehaviorTree* Reloaded = LoadBehaviorTreeForTarget(Target);
+	TestNotNull(TEXT("BehaviorTree fresh reload succeeds"), Reloaded);
+	UBehaviorTreeGraph* ReloadedGraph = Reloaded ? Cast<UBehaviorTreeGraph>(Reloaded->BTGraph) : nullptr;
+	TestEqual(TEXT("GraphGuid survives save and fresh reload"), ReloadedGraph ? ReloadedGraph->GraphGuid.ToString(EGuidFormats::Digits) : FString(), FString(GraphGuid));
+	TestNotNull(TEXT("root NodeGuid survives save and fresh reload"), FindGraphNodeByGuid(ReloadedGraph, RootGuid));
+	TestNotNull(TEXT("first task NodeGuid survives save and fresh reload"), FindGraphNodeByGuid(ReloadedGraph, FirstTaskGuid));
+	TestNotNull(TEXT("second task NodeGuid survives save and fresh reload"), FindGraphNodeByGuid(ReloadedGraph, SecondTaskGuid));
+	TestNotNull(TEXT("service NodeGuid survives save and fresh reload"), FindGraphNodeByGuid(ReloadedGraph, RootServiceGuid));
 	return true;
 }
 
