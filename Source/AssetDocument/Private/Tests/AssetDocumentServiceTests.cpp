@@ -47,14 +47,14 @@ void SetProperty(TSharedPtr<FJsonObject> Document, const FString& PropertyName, 
 	Properties->SetField(PropertyName, Value);
 }
 
-FString GetObjectPath(const FString& Target)
+FString AssetDocumentServiceTestGetObjectPath(const FString& Target)
 {
 	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 }
 
 void CleanupTestAsset(const FString& Target)
 {
-	const FString ObjectPath = GetObjectPath(Target);
+	const FString ObjectPath = AssetDocumentServiceTestGetObjectPath(Target);
 	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension());
 
 	UObject* ExistingAsset = FindObject<UObject>(nullptr, *ObjectPath);
@@ -76,7 +76,7 @@ void CleanupTestAsset(const FString& Target)
 	}
 }
 
-TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& FieldValue)
+TSharedPtr<FJsonObject> AssetDocumentServiceTestFindObjectByStringField(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& FieldName, const FString& FieldValue)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
 	{
@@ -210,7 +210,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/DA_ReadSide");
 	const FString MissingTarget = TEXT("/Game/AssetDocumentTests/DA_ReadMissing");
-	const FString ObjectPath = GetObjectPath(Target);
+	const FString ObjectPath = AssetDocumentServiceTestGetObjectPath(Target);
 	const FString SidecarPath = FPackageName::LongPackageNameToFilename(Target, TEXT(".assetdoc.json"));
 	CleanupTestAsset(Target);
 	IFileManager::Get().Delete(*SidecarPath, false, true);
@@ -256,7 +256,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Inspect payload has skipped array"), HasArrayField(Result.Payload, TEXT("skipped")));
 		if (Properties)
 		{
-			TSharedPtr<FJsonObject> StringRow = FindObjectByStringField(*Properties, TEXT("name"), TEXT("TestString"));
+			TSharedPtr<FJsonObject> StringRow = AssetDocumentServiceTestFindObjectByStringField(*Properties, TEXT("name"), TEXT("TestString"));
 			TestTrue(TEXT("Inspect includes TestString row"), StringRow.IsValid());
 			if (StringRow.IsValid())
 			{
@@ -270,7 +270,7 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 				TestEqual(TEXT("Inspect default value comes from CDO"), StringRow->GetStringField(TEXT("default_value")), FString());
 			}
 
-			TSharedPtr<FJsonObject> IntRow = FindObjectByStringField(*Properties, TEXT("name"), TEXT("TestInt"));
+			TSharedPtr<FJsonObject> IntRow = AssetDocumentServiceTestFindObjectByStringField(*Properties, TEXT("name"), TEXT("TestInt"));
 			TestTrue(TEXT("Inspect includes TestInt row"), IntRow.IsValid());
 			if (IntRow.IsValid())
 			{
@@ -393,17 +393,17 @@ bool FAssetDocumentReadTest::RunTest(const FString& Parameters)
 			Result.Payload->TryGetArrayField(TEXT("unchanged"), Unchanged);
 			Result.Payload->TryGetArrayField(TEXT("skipped"), Skipped);
 			Result.Payload->TryGetArrayField(TEXT("failed"), Failed);
-			TestTrue(TEXT("Diff reports changed property"), Changed && FindObjectByStringField(*Changed, TEXT("name"), TEXT("TestString")).IsValid());
-			TestTrue(TEXT("Diff reports unchanged property"), Unchanged && FindObjectByStringField(*Unchanged, TEXT("name"), TEXT("TestInt")).IsValid());
-			TSharedPtr<FJsonObject> SkippedFloat = Skipped ? FindObjectByStringField(*Skipped, TEXT("name"), TEXT("TestFloat")) : nullptr;
+			TestTrue(TEXT("Diff reports changed property"), Changed && AssetDocumentServiceTestFindObjectByStringField(*Changed, TEXT("name"), TEXT("TestString")).IsValid());
+			TestTrue(TEXT("Diff reports unchanged property"), Unchanged && AssetDocumentServiceTestFindObjectByStringField(*Unchanged, TEXT("name"), TEXT("TestInt")).IsValid());
+			TSharedPtr<FJsonObject> SkippedFloat = Skipped ? AssetDocumentServiceTestFindObjectByStringField(*Skipped, TEXT("name"), TEXT("TestFloat")) : nullptr;
 			TestTrue(TEXT("Diff skips EditConst property"), SkippedFloat.IsValid());
 			if (SkippedFloat.IsValid())
 			{
 				TestEqual(TEXT("Diff skipped EditConst uses NonWritable code"), SkippedFloat->GetStringField(TEXT("code")), FString(TEXT("NonWritable")));
 				TestTrue(TEXT("Diff skipped EditConst message includes reason"), SkippedFloat->GetStringField(TEXT("message")).Contains(TEXT("edit-const")));
 			}
-			TestTrue(TEXT("Diff reports type-invalid property as failed"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("bTestBool")).IsValid());
-			TestTrue(TEXT("Diff reports failed missing property"), Failed && FindObjectByStringField(*Failed, TEXT("name"), TEXT("DefinitelyMissing")).IsValid());
+			TestTrue(TEXT("Diff reports type-invalid property as failed"), Failed && AssetDocumentServiceTestFindObjectByStringField(*Failed, TEXT("name"), TEXT("bTestBool")).IsValid());
+			TestTrue(TEXT("Diff reports failed missing property"), Failed && AssetDocumentServiceTestFindObjectByStringField(*Failed, TEXT("name"), TEXT("DefinitelyMissing")).IsValid());
 		}
 		TestFalse(TEXT("Diff does not dirty asset package"), Package && Package->IsDirty());
 	}
@@ -636,7 +636,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Create TestDataAsset succeeds"), Result.IsSuccess());
 		TestTrue(TEXT("Create saves asset"), Result.bSavedAsset);
 
-		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *GetObjectPath(CreateTarget));
+		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *AssetDocumentServiceTestGetObjectPath(CreateTarget));
 		TestNotNull(TEXT("Created TestDataAsset loads"), Asset);
 		if (Asset)
 		{
@@ -666,7 +666,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 
 		TestTrue(TEXT("Update one property succeeds"), UpdateResult.IsSuccess());
 
-		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *GetObjectPath(UpdateTarget));
+		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *AssetDocumentServiceTestGetObjectPath(UpdateTarget));
 		TestNotNull(TEXT("Updated TestDataAsset loads"), Asset);
 		if (Asset)
 		{
@@ -701,7 +701,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 
 		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
 		TestFalse(TEXT("Failed Create with bad typed subtype fails"), BadResult.IsSuccess());
-		TestNull(TEXT("Failed Create with bad typed subtype leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedSubtypeRetryTarget)));
+		TestNull(TEXT("Failed Create with bad typed subtype leaves no live asset"), FindObject<UObject>(nullptr, *AssetDocumentServiceTestGetObjectPath(FailedSubtypeRetryTarget)));
 
 		FAssetDocumentApplyRequest RetryRequest;
 		RetryRequest.Document = MakeApplyDocument(FailedSubtypeRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
@@ -718,7 +718,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 
 		const FAssetDocumentResult BadResult = Service.Apply(BadRequest);
 		TestFalse(TEXT("Failed Create with unknown property fails"), BadResult.IsSuccess());
-		TestNull(TEXT("Failed Create with unknown property leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedUnknownPropertyRetryTarget)));
+		TestNull(TEXT("Failed Create with unknown property leaves no live asset"), FindObject<UObject>(nullptr, *AssetDocumentServiceTestGetObjectPath(FailedUnknownPropertyRetryTarget)));
 
 		FAssetDocumentApplyRequest RetryRequest;
 		RetryRequest.Document = MakeApplyDocument(FailedUnknownPropertyRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
@@ -741,7 +741,7 @@ bool FAssetDocumentApplyTest::RunTest(const FString& Parameters)
 		}
 		TestFalse(TEXT("Failed Create with non-writable property fails"), BadResult.IsSuccess());
 		TestTrue(TEXT("Failed Create with non-writable property returns diagnostics"), BadResult.Diagnostics.Num() > 0);
-		TestNull(TEXT("Failed Create with non-writable property leaves no live asset"), FindObject<UObject>(nullptr, *GetObjectPath(FailedNonWritableRetryTarget)));
+		TestNull(TEXT("Failed Create with non-writable property leaves no live asset"), FindObject<UObject>(nullptr, *AssetDocumentServiceTestGetObjectPath(FailedNonWritableRetryTarget)));
 
 		FAssetDocumentApplyRequest RetryRequest;
 		RetryRequest.Document = MakeApplyDocument(FailedNonWritableRetryTarget, TEXT("TestDataAsset"), TEXT("Create"));
@@ -827,7 +827,7 @@ bool FAssetDocumentApplyFileTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("ApplyFile saves asset when requested"), Result.bSavedAsset);
 		TestTrue(TEXT("ApplyFile returns payload"), Result.Payload.IsValid());
 
-		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *GetObjectPath(ApplyTarget));
+		UTestDataAsset* Asset = LoadObject<UTestDataAsset>(nullptr, *AssetDocumentServiceTestGetObjectPath(ApplyTarget));
 		TestNotNull(TEXT("ApplyFile-created asset loads"), Asset);
 		if (Asset)
 		{
@@ -862,7 +862,7 @@ bool FAssetDocumentApplyFileTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("ApplyFile fails when Target does not match sidecar path"), Result.IsSuccess());
 		TestEqual(TEXT("Target mismatch reports sidecar path"), Result.SidecarFilePath, MismatchFilePath);
 		TestTrue(TEXT("Target mismatch reports expected path"), Result.Message.Contains(TEXT("/Game/")) && Result.Message.Contains(TEXT("expected"), ESearchCase::IgnoreCase));
-		TestNull(TEXT("Target mismatch does not create target asset"), FindObject<UObject>(nullptr, *GetObjectPath(MismatchTarget)));
+		TestNull(TEXT("Target mismatch does not create target asset"), FindObject<UObject>(nullptr, *AssetDocumentServiceTestGetObjectPath(MismatchTarget)));
 	}
 
 	CleanupTestAsset(ApplyTarget);

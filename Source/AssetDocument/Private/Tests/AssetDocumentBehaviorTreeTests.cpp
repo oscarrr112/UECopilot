@@ -53,7 +53,7 @@
 
 namespace
 {
-const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId)
+const FAssetDocumentRegionPolicy* BTTestFindPolicyByRegionId(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId)
 {
 	return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
 	{
@@ -1255,9 +1255,9 @@ bool FAssetDocumentBehaviorTreeProfileShapeTest::RunTest(const FString&)
 	TestNull(TEXT("BlackboardInline does not resolve adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("BlackboardInline")));
 
 	const TArray<FAssetDocumentRegionPolicy> Policies = RegisteredProfile->GetRegionPolicies();
-	TestNotNull(TEXT("Policy includes Body.Blackboard"), FindPolicyByRegionId(Policies, TEXT("Body.Blackboard")));
-	TestNotNull(TEXT("Policy includes Body.Tree"), FindPolicyByRegionId(Policies, TEXT("Body.Tree")));
-	TestNotNull(TEXT("Policy includes Body.EditorLayout"), FindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
+	TestNotNull(TEXT("Policy includes Body.Blackboard"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.Blackboard")));
+	TestNotNull(TEXT("Policy includes Body.Tree"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.Tree")));
+	TestNotNull(TEXT("Policy includes Body.EditorLayout"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
 	return true;
 }
 
