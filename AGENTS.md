@@ -22,3 +22,13 @@
 
 - 如果远程 baseline 在现有任务进行期间前进，不要静默 reset 或 rebase；先核对差异，再显式合并或变基。
 - 除非用户明确更新本文件中的决定，不得默认切回 `master` 或从其他旧分支开始后续开发。
+
+## BehaviorTree / BlackboardData AssetDocument Invariants
+
+- `UBehaviorTree` 的 authored source-of-truth 是 `BTGraph`、持久 `NodeGuid`、graph topology、graph-node `NodeInstance` 和 editor-authored state；`RootNode`、Children、Services、DecoratorOps 等 runtime tree 只由 UE 标准 graph rebuild 产生，不能成为第二份可写真源。
+- Behavior Tree 同一 parent 下的子节点会按 `NodePosX/NodePosY` 决定执行顺序；AssetDocument 的 semantic child order 与 editor layout 必须一致，不能把位置当成无语义装饰。
+- BT node identity 使用持久 `NodeGuid`，不得使用 `NodeName`、数组下标、UObject name 或地址。`NodeName` 是独立 authored property。
+- `UBlackboardData` 只管理 ordered local `Keys`；本地顺序会影响 Key ID，canonicalization 不得排序。拒绝本地 duplicate、父链 shadow 和 parent cycle。
+- `FBlackboardKeySelector` 只把 `SelectedKeyName` 作为 authored selection；AllowedTypes、SelectedKeyType、SelectedKeyID 和 None policy 是 concrete node class policy/cache，只读暴露并用于验证，不接受外部写入。
+- BT/BB 所有合法、可加载、非 abstract、位置兼容的 native、Blueprint、Angelscript/project class 及安全实例可编辑属性必须走动态 class loading 和公共 reflected property runtime；不得用 AIModule 白名单、`_Skipped`、empty-only、validate-only 或 authored deferred 缩减范围。
+- BT/BB apply 必须 staging preflight、existing-asset snapshot rollback，并在成功返回前完成 save → fresh reload → canonical extract/diff verification。
