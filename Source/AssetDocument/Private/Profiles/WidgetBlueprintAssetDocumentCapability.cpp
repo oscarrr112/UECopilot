@@ -1411,7 +1411,7 @@ bool IsOrdinaryAuthoredVariable(const UBlueprint* Blueprint, const FBPVariableDe
 	return !PublicWidgetVariableNames.Contains(Variable.VarName) && WidgetBlueprintIsSupportedAuthoredPinType(Variable.VarType);
 }
 
-TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
+TSharedRef<FJsonObject> WidgetBlueprintVariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("Name"), Variable.VarName.ToString());
@@ -1466,7 +1466,7 @@ TArray<TSharedPtr<FJsonValue>> ExtractVariableArray(const UBlueprint* Blueprint)
 	TArray<TSharedPtr<FJsonValue>> Result;
 	for (const FBPVariableDescription* Variable : Variables)
 	{
-		Result.Add(MakeShared<FJsonValueObject>(VariableToJsonObject(*Variable, Blueprint)));
+		Result.Add(MakeShared<FJsonValueObject>(WidgetBlueprintVariableToJsonObject(*Variable, Blueprint)));
 	}
 	return Result;
 }
@@ -2187,7 +2187,7 @@ TSharedRef<FJsonObject> WidgetBlueprintInterfaceToJsonObject(UClass* InterfaceCl
 	return Object;
 }
 
-TSharedPtr<FJsonValue> MakeInterfaceDiffValue(UClass* InterfaceClass)
+TSharedPtr<FJsonValue> WidgetBlueprintMakeInterfaceDiffValue(UClass* InterfaceClass)
 {
 	return InterfaceClass
 		? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(WidgetBlueprintInterfaceToJsonObject(InterfaceClass)))
@@ -2207,7 +2207,7 @@ FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
 	return JsonText;
 }
 
-void AddBodyDiffEntry(
+void WidgetBlueprintAddBodyDiffEntry(
 	TArray<TSharedPtr<FJsonValue>>& Entries,
 	const FString& Path,
 	const FString& Status,
@@ -2927,7 +2927,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				DesiredInterfaceElements.Add({
 					DesiredPath,
 					DesiredPath,
-					MakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
+					WidgetBlueprintMakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
 				});
 			}
 
@@ -2944,7 +2944,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 					CurrentInterfaceElements.Add({
 						CurrentPath,
 						CurrentPath,
-						MakeInterfaceDiffValue(CurrentInterface.Interface)
+						WidgetBlueprintMakeInterfaceDiffValue(CurrentInterface.Interface)
 					});
 				}
 			}
@@ -3005,7 +3005,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 				const FString Status = VariablesSemanticallyDiffer(Cast<UBlueprint>(Context.Asset), DesiredVariables)
 					? TEXT("changed")
 					: TEXT("unchanged");
-				AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+				WidgetBlueprintAddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
 				continue;
 			}
 			else if (BodyKey == TEXT("WidgetVariableGuids"))
@@ -3031,7 +3031,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAssetDocumentCapability::Diff(con
 			const FString Status = JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue)
 				? TEXT("unchanged")
 				: TEXT("changed");
-			AddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
+			WidgetBlueprintAddBodyDiffEntry(OutDiffEntries, FString::Printf(TEXT("/Body/%s"), *BodyKey), Status, CurrentValue, DesiredValue);
 		}
 	}
 
