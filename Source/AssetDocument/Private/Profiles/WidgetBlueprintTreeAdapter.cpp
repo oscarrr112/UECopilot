@@ -48,12 +48,12 @@ FAssetDocumentCapabilityResult TreeFailure(const FString& Message, const FString
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-FString EscapePathToken(const FString& Token)
+FString WidgetTreeEscapePathToken(const FString& Token)
 {
 	return Token.Replace(TEXT("~"), TEXT("~0")).Replace(TEXT("/"), TEXT("~1"));
 }
 
-FString JsonValueToComparableString(TSharedPtr<FJsonValue> Value)
+FString WidgetTreeJsonValueToComparableString(TSharedPtr<FJsonValue> Value)
 {
 	FString JsonText;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
@@ -98,7 +98,7 @@ FString DiffArrayPathToken(TSharedPtr<FJsonValue> Current, TSharedPtr<FJsonValue
 	FString Name;
 	if (ExtractName(Desired, Name) || ExtractName(Current, Name))
 	{
-		return EscapePathToken(Name);
+		return WidgetTreeEscapePathToken(Name);
 	}
 	return FString::FromInt(Index);
 }
@@ -109,7 +109,7 @@ void AddRecursiveDiffEntries(
 	TSharedPtr<FJsonValue> Current,
 	TSharedPtr<FJsonValue> Desired)
 {
-	if (JsonValueToComparableString(Current) == JsonValueToComparableString(Desired))
+	if (WidgetTreeJsonValueToComparableString(Current) == WidgetTreeJsonValueToComparableString(Desired))
 	{
 		AddDiffEntry(Entries, Path, TEXT("unchanged"), CloneJsonValue(Current), CloneJsonValue(Desired));
 		return;
@@ -135,7 +135,7 @@ void AddRecursiveDiffEntries(
 			const TSharedPtr<FJsonValue>* DesiredChild = Desired->AsObject()->Values.Find(Key);
 			AddRecursiveDiffEntries(
 				Entries,
-				FString::Printf(TEXT("%s/%s"), *Path, *EscapePathToken(Key)),
+				FString::Printf(TEXT("%s/%s"), *Path, *WidgetTreeEscapePathToken(Key)),
 				CurrentChild ? *CurrentChild : MakeShared<FJsonValueNull>(),
 				DesiredChild ? *DesiredChild : MakeShared<FJsonValueNull>());
 		}
@@ -173,9 +173,9 @@ UClass* ResolveWidgetClass(const FString& ClassPath)
 	return WidgetClass && WidgetClass->IsChildOf(UWidget::StaticClass()) ? WidgetClass : nullptr;
 }
 
-FString NodePath(const FString& ParentPath, const FString& ChildName)
+FString WidgetTreeNodePath(const FString& ParentPath, const FString& ChildName)
 {
-	return FString::Printf(TEXT("%s/%s"), *ParentPath, *EscapePathToken(ChildName));
+	return FString::Printf(TEXT("%s/%s"), *ParentPath, *WidgetTreeEscapePathToken(ChildName));
 }
 
 FAssetDocumentCapabilityResult ParseWidgetNode(
@@ -198,28 +198,28 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 	FString Name;
 	if (!NodeObject->TryGetStringField(TEXT("Name"), Name) || Name.IsEmpty())
 	{
-		return TreeFailure(TEXT("Widget node requires non-empty Name"), NodePath(Path, TEXT("Name")), TEXT("MissingWidgetName"));
+		return TreeFailure(TEXT("Widget node requires non-empty Name"), WidgetTreeNodePath(Path, TEXT("Name")), TEXT("MissingWidgetName"));
 	}
 	OutNode.Name = FName(*Name);
 	if (UsedNames.Contains(OutNode.Name))
 	{
 		return TreeFailure(
 			FString::Printf(TEXT("Duplicate widget name '%s'"), *Name),
-			NodePath(Path, TEXT("Name")),
+			WidgetTreeNodePath(Path, TEXT("Name")),
 			TEXT("DuplicateWidgetName"));
 	}
 	UsedNames.Add(OutNode.Name);
 
 	if (!NodeObject->TryGetStringField(TEXT("Class"), OutNode.ClassPath) || OutNode.ClassPath.IsEmpty())
 	{
-		return TreeFailure(TEXT("Widget node requires non-empty Class"), NodePath(Path, TEXT("Class")), TEXT("MissingWidgetClass"));
+		return TreeFailure(TEXT("Widget node requires non-empty Class"), WidgetTreeNodePath(Path, TEXT("Class")), TEXT("MissingWidgetClass"));
 	}
 	OutNode.WidgetClass = ResolveWidgetClass(OutNode.ClassPath);
 	if (!OutNode.WidgetClass)
 	{
 		return TreeFailure(
 			FString::Printf(TEXT("Failed to resolve widget class '%s'"), *OutNode.ClassPath),
-			NodePath(Path, TEXT("Class")),
+			WidgetTreeNodePath(Path, TEXT("Class")),
 			OutNode.ClassPath.StartsWith(TEXT("/Script/")) ? TEXT("InvalidWidgetClass") : TEXT("UnresolvedWidgetClass"));
 	}
 
@@ -231,14 +231,14 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 		{
 			return TreeFailure(
 				TEXT("Widget VariableName requires IsVariable=true"),
-				NodePath(Path, TEXT("VariableName")),
+				WidgetTreeNodePath(Path, TEXT("VariableName")),
 				TEXT("UnsupportedWidgetVariableName"));
 		}
 		if (OutNode.VariableName.IsEmpty() || OutNode.VariableName != Name)
 		{
 			return TreeFailure(
 				TEXT("Widget VariableName must match Name until variable renaming is supported"),
-				NodePath(Path, TEXT("VariableName")),
+				WidgetTreeNodePath(Path, TEXT("VariableName")),
 				TEXT("UnsupportedWidgetVariableName"));
 		}
 	}
@@ -247,7 +247,7 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 	{
 		if (!PropertiesValue->IsValid() || (*PropertiesValue)->Type != EJson::Object)
 		{
-			return TreeFailure(TEXT("Widget node Properties must be an object"), NodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperties"));
+			return TreeFailure(TEXT("Widget node Properties must be an object"), WidgetTreeNodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperties"));
 		}
 		OutNode.Properties = (*PropertiesValue)->AsObject();
 	}
@@ -256,7 +256,7 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 	{
 		if (!SlotValue->IsValid() || (*SlotValue)->Type != EJson::Object)
 		{
-			return TreeFailure(TEXT("Widget node Slot must be an object"), NodePath(Path, TEXT("Slot")), TEXT("InvalidWidgetSlot"));
+			return TreeFailure(TEXT("Widget node Slot must be an object"), WidgetTreeNodePath(Path, TEXT("Slot")), TEXT("InvalidWidgetSlot"));
 		}
 		OutNode.Slot = (*SlotValue)->AsObject();
 	}
@@ -265,7 +265,7 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 	{
 		if (!ChildrenValue->IsValid() || (*ChildrenValue)->Type != EJson::Array)
 		{
-			return TreeFailure(TEXT("Widget node Children must be an array"), NodePath(Path, TEXT("Children")), TEXT("InvalidWidgetChildren"));
+			return TreeFailure(TEXT("Widget node Children must be an array"), WidgetTreeNodePath(Path, TEXT("Children")), TEXT("InvalidWidgetChildren"));
 		}
 
 		const TArray<TSharedPtr<FJsonValue>>& Children = (*ChildrenValue)->AsArray();
@@ -289,17 +289,17 @@ FAssetDocumentCapabilityResult ParseWidgetNode(
 		FAssetDocumentPropertyAdapter::PreflightProperties(OutNode.WidgetClass, OutNode.Properties);
 	if (!PropertyResult.bSuccess)
 	{
-		FAssetDocumentCapabilityResult Result = TreeFailure(PropertyResult.Message, NodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperty"));
+		FAssetDocumentCapabilityResult Result = TreeFailure(PropertyResult.Message, WidgetTreeNodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperty"));
 		Result.Diagnostics.Reset();
 		for (FAssetDocumentDiagnostic Diagnostic : PropertyResult.Diagnostics)
 		{
-			Diagnostic.Path = FString::Printf(TEXT("%s/%s"), *NodePath(Path, TEXT("Properties")), *Diagnostic.Path);
+			Diagnostic.Path = FString::Printf(TEXT("%s/%s"), *WidgetTreeNodePath(Path, TEXT("Properties")), *Diagnostic.Path);
 			Result.Diagnostics.Add(MoveTemp(Diagnostic));
 		}
 		if (Result.Diagnostics.Num() == 0)
 		{
 			FAssetDocumentDiagnostic Diagnostic;
-			Diagnostic.Path = NodePath(Path, TEXT("Properties"));
+			Diagnostic.Path = WidgetTreeNodePath(Path, TEXT("Properties"));
 			Diagnostic.Code = TEXT("InvalidWidgetProperty");
 			Diagnostic.Message = PropertyResult.Message;
 			Result.Diagnostics.Add(MoveTemp(Diagnostic));
@@ -340,7 +340,7 @@ FAssetDocumentCapabilityResult ParseWidgetTree(
 		{
 			return TreeFailure(
 				FString::Printf(TEXT("Unknown Body.WidgetTree key '%s'"), *Pair.Key),
-				FString::Printf(TEXT("/Body/WidgetTree/%s"), *EscapePathToken(Pair.Key)),
+				FString::Printf(TEXT("/Body/WidgetTree/%s"), *WidgetTreeEscapePathToken(Pair.Key)),
 				TEXT("UnknownBodyKey"));
 		}
 	}
@@ -384,7 +384,7 @@ FAssetDocumentCapabilityResult ParseWidgetTree(
 			Binding.SlotName = FName(*SlotName);
 			const FAssetDocumentCapabilityResult BindingResult = ParseWidgetNode(
 				NamedSlotObject->Values.FindChecked(SlotName),
-				FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *EscapePathToken(SlotName)),
+				FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *WidgetTreeEscapePathToken(SlotName)),
 				UsedNames,
 				Binding.Widget);
 			if (!BindingResult.bSuccess)
@@ -454,7 +454,7 @@ FAssetDocumentCapabilityResult ApplyChildSlotProperties(
 		FAssetDocumentPropertyAdapter::ApplyProperties(Slot, ChildSpec.Slot);
 	if (!SlotPropertyResult.bSuccess)
 	{
-		return ApplyPropertyResultAsCapability(SlotPropertyResult, NodePath(ChildPath, TEXT("Slot")), TEXT("InvalidWidgetSlotProperty"));
+		return ApplyPropertyResultAsCapability(SlotPropertyResult, WidgetTreeNodePath(ChildPath, TEXT("Slot")), TEXT("InvalidWidgetSlotProperty"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -471,7 +471,7 @@ FAssetDocumentCapabilityResult MaterializeSingleChild(
 	{
 		return TreeFailure(
 			FString::Printf(TEXT("Widget '%s' accepts a single authored child"), *ParentSpec.Name.ToString()),
-			NodePath(ParentPath, TEXT("Children")),
+			WidgetTreeNodePath(ParentPath, TEXT("Children")),
 			TEXT("UnsupportedWidgetChildren"));
 	}
 
@@ -517,14 +517,14 @@ FAssetDocumentCapabilityResult TrySetReflectedContent(
 		{
 			return TreeFailure(
 				FString::Printf(TEXT("Widget '%s' has an unsupported SetContent signature"), *ParentSpec.Name.ToString()),
-				NodePath(ParentPath, TEXT("Children")),
+				WidgetTreeNodePath(ParentPath, TEXT("Children")),
 				TEXT("UnsupportedWidgetChildren"));
 		}
 		if (ContentParam)
 		{
 			return TreeFailure(
 				FString::Printf(TEXT("Widget '%s' has an ambiguous SetContent signature"), *ParentSpec.Name.ToString()),
-				NodePath(ParentPath, TEXT("Children")),
+				WidgetTreeNodePath(ParentPath, TEXT("Children")),
 				TEXT("UnsupportedWidgetChildren"));
 		}
 		ContentParam = ObjectParam;
@@ -650,7 +650,7 @@ FAssetDocumentCapabilityResult TryGetReflectedContent(
 	{
 		return TreeFailure(
 			FString::Printf(TEXT("Widget '%s' supports reflected SetContent but has no safe GetContent extractor"), *GetNameSafe(Widget)),
-			NodePath(Path, TEXT("Children")),
+			WidgetTreeNodePath(Path, TEXT("Children")),
 			TEXT("UnsupportedWidgetContentExtraction"));
 	}
 
@@ -680,7 +680,7 @@ FAssetDocumentCapabilityResult MaterializeNode(
 		FAssetDocumentPropertyAdapter::ApplyProperties(OutWidget, Spec.Properties);
 	if (!WidgetPropertyResult.bSuccess)
 	{
-		return ApplyPropertyResultAsCapability(WidgetPropertyResult, NodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperty"));
+		return ApplyPropertyResultAsCapability(WidgetPropertyResult, WidgetTreeNodePath(Path, TEXT("Properties")), TEXT("InvalidWidgetProperty"));
 	}
 
 	if (Spec.Children.Num() == 0)
@@ -715,7 +715,7 @@ FAssetDocumentCapabilityResult MaterializeNode(
 
 		return TreeFailure(
 			FString::Printf(TEXT("Widget '%s' does not support authored children"), *Spec.Name.ToString()),
-			NodePath(Path, TEXT("Children")),
+			WidgetTreeNodePath(Path, TEXT("Children")),
 			TEXT("UnsupportedWidgetChildren"));
 	}
 
@@ -773,7 +773,7 @@ FAssetDocumentCapabilityResult MaterializeTree(UWidgetTree* WidgetTree, const FW
 	for (const FWidgetBlueprintNamedSlotSpec& Binding : Spec.NamedSlotBindings)
 	{
 		UWidget* SlotWidget = nullptr;
-		const FString BindingPath = FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *EscapePathToken(Binding.SlotName.ToString()));
+		const FString BindingPath = FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *WidgetTreeEscapePathToken(Binding.SlotName.ToString()));
 		const FAssetDocumentCapabilityResult BindingResult = MaterializeNode(WidgetTree, Binding.Widget, BindingPath, SlotWidget);
 		if (!BindingResult.bSuccess)
 		{
@@ -903,7 +903,7 @@ FAssetDocumentCapabilityResult ExtractTreeObject(const UWidgetTree* WidgetTree, 
 		if (UWidget* SlotWidget = WidgetTree->NamedSlotBindings.FindRef(SlotName))
 		{
 			TSharedRef<FJsonObject> SlotNode = MakeShared<FJsonObject>();
-			const FString BindingPath = FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *EscapePathToken(SlotName.ToString()));
+			const FString BindingPath = FString::Printf(TEXT("/Body/WidgetTree/NamedSlotBindings/%s"), *WidgetTreeEscapePathToken(SlotName.ToString()));
 			const FAssetDocumentCapabilityResult SlotResult = ExtractNode(SlotWidget, BindingPath, SlotNode);
 			if (!SlotResult.bSuccess)
 			{
@@ -949,8 +949,8 @@ FAssetDocumentCapabilityResult ComputeWidgetTreeChanged(
 		return DesiredExtractResult;
 	}
 	bOutChanged =
-		JsonValueToComparableString(MakeShared<FJsonValueObject>(CurrentTree)) !=
-		JsonValueToComparableString(MakeShared<FJsonValueObject>(DesiredTree));
+		WidgetTreeJsonValueToComparableString(MakeShared<FJsonValueObject>(CurrentTree)) !=
+		WidgetTreeJsonValueToComparableString(MakeShared<FJsonValueObject>(DesiredTree));
 	return FAssetDocumentCapabilityResult::Success();
 }
 

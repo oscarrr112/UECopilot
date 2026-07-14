@@ -21,16 +21,16 @@ namespace
 constexpr const TCHAR* AnimLayersPath = TEXT("/Body/AnimLayers");
 constexpr const TCHAR* AnimLayerKind = TEXT("AnimLayer");
 
-FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
+FAssetDocumentCapabilityResult AnimLayerFailure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(Path, Code, Message);
 }
 
-FAssetDocumentCapabilityResult FromGraphDiagnostics(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
+FAssetDocumentCapabilityResult AnimLayerFromGraphDiagnostics(const TArray<FAssetDocumentGraphDiagnostic>& Diagnostics)
 {
 	if (Diagnostics.IsEmpty())
 	{
-		return Failure(AnimLayersPath, TEXT("InvalidAnimLayerRegion"), TEXT("Body.AnimLayers graph region is invalid."));
+		return AnimLayerFailure(AnimLayersPath, TEXT("InvalidAnimLayerRegion"), TEXT("Body.AnimLayers graph region is invalid."));
 	}
 
 	FAssetDocumentCapabilityResult Result;
@@ -66,7 +66,7 @@ FAssetDocumentCapabilityResult ParseAnimLayerRegion(
 	OutGraphs.Reset();
 	if (!DesiredValue.IsValid() || DesiredValue->Type != EJson::Object)
 	{
-		return Failure(
+		return AnimLayerFailure(
 			AnimLayersPath,
 			TEXT("InvalidAnimLayerRegionType"),
 			TEXT("Body.AnimLayers must be an object with a Graphs array."));
@@ -75,7 +75,7 @@ FAssetDocumentCapabilityResult ParseAnimLayerRegion(
 	const TSharedPtr<FJsonObject> RegionObject = DesiredValue->AsObject();
 	if (!RegionObject.IsValid())
 	{
-		return Failure(
+		return AnimLayerFailure(
 			AnimLayersPath,
 			TEXT("InvalidAnimLayerRegionType"),
 			TEXT("Body.AnimLayers must be an object with a Graphs array."));
@@ -87,7 +87,7 @@ FAssetDocumentCapabilityResult ParseAnimLayerRegion(
 		FAssetDocumentGraphParser::ParseGraphRegion(RegionObject.ToSharedRef(), Options);
 	if (!ParseResult.IsValid())
 	{
-		return FromGraphDiagnostics(ParseResult.Diagnostics);
+		return AnimLayerFromGraphDiagnostics(ParseResult.Diagnostics);
 	}
 
 	TSet<FString> Identities;
@@ -95,7 +95,7 @@ FAssetDocumentCapabilityResult ParseAnimLayerRegion(
 	{
 		if (Graph.Kind != AnimLayerKind)
 		{
-			return Failure(
+			return AnimLayerFailure(
 				FString::Printf(TEXT("%s/Graphs/%s/Kind"), AnimLayersPath, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Graph.Id)),
 				TEXT("InvalidAnimLayerGraphKind"),
 				TEXT("Body.AnimLayers graphs must use Kind='AnimLayer'."));
@@ -104,14 +104,14 @@ FAssetDocumentCapabilityResult ParseAnimLayerRegion(
 		const FString Identity = GraphIdentity(Graph);
 		if (Identity.IsEmpty())
 		{
-			return Failure(
+			return AnimLayerFailure(
 				FString::Printf(TEXT("%s/Graphs/%s/Name"), AnimLayersPath, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Graph.Id)),
 				TEXT("MissingAnimLayerGraphName"),
 				TEXT("AnimLayer graph requires Id or Name as the layer function name."));
 		}
 		if (Identities.Contains(Identity))
 		{
-			return Failure(
+			return AnimLayerFailure(
 				FString::Printf(TEXT("%s/Graphs/%s"), AnimLayersPath, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Identity)),
 				TEXT("DuplicateAnimLayerGraph"),
 				FString::Printf(TEXT("Duplicate AnimLayer graph '%s'."), *Identity));
@@ -209,7 +209,7 @@ TSharedPtr<FJsonValue> WriteAnimLayerRegion(const TArray<FAssetDocumentGraphSpec
 	return MakeShared<FJsonValueObject>(Region);
 }
 
-TSharedPtr<FJsonObject> GraphDiffEntryToBodyDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
+TSharedPtr<FJsonObject> AnimLayerGraphDiffEntryToBodyDiffEntry(const FAssetDocumentGraphDiffEntry& GraphEntry)
 {
 	TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("path"), GraphEntry.Path);
@@ -247,13 +247,13 @@ public:
 		UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(RegionContext.Asset);
 		if (!AnimBlueprint)
 		{
-			return Failure(AnimLayersPath, TEXT("InvalidAnimBlueprintAsset"), TEXT("Body.AnimLayers requires a UAnimBlueprint asset."));
+			return AnimLayerFailure(AnimLayersPath, TEXT("InvalidAnimBlueprintAsset"), TEXT("Body.AnimLayers requires a UAnimBlueprint asset."));
 		}
 
 		UAnimationGraph* Graph = FindOrCreateSelfAnimLayerGraph(AnimBlueprint, GraphSpec, bOutChanged);
 		if (!Graph)
 		{
-			return Failure(AnimLayersPath, TEXT("AnimLayerGraphCreateFailed"), TEXT("Failed to create AnimLayer graph."));
+			return AnimLayerFailure(AnimLayersPath, TEXT("AnimLayerGraphCreateFailed"), TEXT("Failed to create AnimLayer graph."));
 		}
 
 		InOutContext.Asset = AnimBlueprint;
@@ -406,7 +406,7 @@ FAssetDocumentCapabilityResult FAssetDocumentAnimLayerRegionAdapter::DiffRegion(
 		FAssetDocumentGraphDiff::CompareGraphRegion(DesiredGraphs, CurrentGraphs, AnimLayersPath);
 	for (const FAssetDocumentGraphDiffEntry& GraphEntry : GraphEntries)
 	{
-		OutDiffEntries.Add(MakeShared<FJsonValueObject>(GraphDiffEntryToBodyDiffEntry(GraphEntry)));
+		OutDiffEntries.Add(MakeShared<FJsonValueObject>(AnimLayerGraphDiffEntryToBodyDiffEntry(GraphEntry)));
 	}
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed AnimBlueprint AnimLayers"));
 }

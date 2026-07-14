@@ -22,12 +22,12 @@ const FName ManagedNotifyStateName(TEXT("AssetDocument.NotifyState"));
 const TCHAR* ManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_Notify_");
 const TCHAR* ManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_NotifyState_");
 
-FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
+FAssetDocumentCapabilityResult NotifyBodyFailure(const FString& Message, const FString& Path, const FString& Code)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-FAssetDocumentCapabilityResult FragmentFailure(const FAssetDocumentFragmentResult& FragmentResult)
+FAssetDocumentCapabilityResult NotifyFragmentFailure(const FAssetDocumentFragmentResult& FragmentResult)
 {
 	FAssetDocumentCapabilityResult Result = FAssetDocumentCapabilityResult::Failure(FragmentResult.Message);
 	Result.Diagnostics = FragmentResult.Diagnostics;
@@ -66,17 +66,17 @@ FString PlacementFieldPath(const TCHAR* SectionName, int32 Index, const TCHAR* F
 	return FString::Printf(TEXT("/Body/%s[%d]/%s"), SectionName, Index, FieldName);
 }
 
-FAssetDocumentCapabilityResult RequireObjectValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, TSharedPtr<FJsonObject>& OutObject)
+FAssetDocumentCapabilityResult NotifyRequireObjectValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, TSharedPtr<FJsonObject>& OutObject)
 {
 	if (!Value.IsValid() || Value->Type != EJson::Object)
 	{
-		return BodyFailure(TEXT("Expected a JSON object"), Path, TEXT("InvalidNotifyPlacement"));
+		return NotifyBodyFailure(TEXT("Expected a JSON object"), Path, TEXT("InvalidNotifyPlacement"));
 	}
 
 	OutObject = Value->AsObject();
 	if (!OutObject.IsValid())
 	{
-		return BodyFailure(TEXT("Expected a JSON object"), Path, TEXT("InvalidNotifyPlacement"));
+		return NotifyBodyFailure(TEXT("Expected a JSON object"), Path, TEXT("InvalidNotifyPlacement"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -156,7 +156,7 @@ FAssetDocumentCapabilityResult MapTimelinePlacementFailure(
 			: FString(TEXT("DuplicateNotifyStatePlacementKey"));
 	}
 
-	return BodyFailure(Result.Message, Path, Code);
+	return NotifyBodyFailure(Result.Message, Path, Code);
 }
 
 FAssetDocumentCapabilityResult ValidatePlacementFloatSafety(
@@ -195,7 +195,7 @@ FAssetDocumentCapabilityResult ValidatePlacementFloatSafety(
 			const double Number = NumberValue->AsNumber();
 			if (!std::isfinite(Number) || Number < -static_cast<double>(MAX_flt) || Number > static_cast<double>(MAX_flt))
 			{
-				return BodyFailure(
+				return NotifyBodyFailure(
 					FString::Printf(TEXT("%s must fit in a float"), FieldName),
 					PlacementFieldPath(SectionName, Index, FieldName),
 					TEXT("InvalidNumericField"));
@@ -203,7 +203,7 @@ FAssetDocumentCapabilityResult ValidatePlacementFloatSafety(
 			const float FloatNumber = static_cast<float>(Number);
 			if (!FMath::IsFinite(FloatNumber))
 			{
-				return BodyFailure(
+				return NotifyBodyFailure(
 					FString::Printf(TEXT("%s must fit in a finite float"), FieldName),
 					PlacementFieldPath(SectionName, Index, FieldName),
 					TEXT("InvalidNumericField"));
@@ -347,19 +347,19 @@ FAssetDocumentCapabilityResult ValidateEmbeddedObjectClass(
 	FString ClassName;
 	if (!ObjectFragment->TryGetStringField(TEXT("Class"), ClassName) || ClassName.TrimStartAndEnd().IsEmpty())
 	{
-		return BodyFailure(TEXT("EmbeddedObject field 'Class' is required."), Path, TEXT("missing-embeddedobject-class"));
+		return NotifyBodyFailure(TEXT("EmbeddedObject field 'Class' is required."), Path, TEXT("missing-embeddedobject-class"));
 	}
 
 	UClass* ResolvedClass = nullptr;
 	FString Error;
 	if (!ResolveClassAllowAbstract(ClassName, ResolvedClass, Error))
 	{
-		return BodyFailure(Error, Path, TEXT("object-class-resolve-failed"));
+		return NotifyBodyFailure(Error, Path, TEXT("object-class-resolve-failed"));
 	}
 
 	if (ExpectedBaseClass && !ResolvedClass->IsChildOf(ExpectedBaseClass))
 	{
-		return BodyFailure(
+		return NotifyBodyFailure(
 			FString::Printf(TEXT("Class '%s' is not a child of '%s'."), *ResolvedClass->GetName(), *ExpectedBaseClass->GetName()),
 			Path,
 			TEXT("embeddedobject-base-class-mismatch"));
@@ -367,7 +367,7 @@ FAssetDocumentCapabilityResult ValidateEmbeddedObjectClass(
 
 	if (ResolvedClass->HasAnyClassFlags(CLASS_Abstract))
 	{
-		return BodyFailure(
+		return NotifyBodyFailure(
 			FString::Printf(TEXT("Class '%s' is abstract and cannot be used as an AnimMontage notify object."), *ResolvedClass->GetName()),
 			Path,
 			TEXT("AbstractNotifyClass"));
@@ -386,7 +386,7 @@ FAssetDocumentCapabilityResult ValidateObjectProducingFragment(
 	FString Kind;
 	if (!ObjectFragment->TryGetStringField(TEXT("Kind"), Kind) || Kind.TrimStartAndEnd().IsEmpty())
 	{
-		return BodyFailure(TEXT("Fragment Kind must be a string."), Path, TEXT("missing-fragment-kind"));
+		return NotifyBodyFailure(TEXT("Fragment Kind must be a string."), Path, TEXT("missing-fragment-kind"));
 	}
 
 	if (Kind == TEXT("EmbeddedObject"))
@@ -399,23 +399,23 @@ FAssetDocumentCapabilityResult ValidateObjectProducingFragment(
 		FString Id;
 		if (!ObjectFragment->TryGetStringField(TEXT("Id"), Id) || Id.TrimStartAndEnd().IsEmpty())
 		{
-			return BodyFailure(TEXT("DefinitionRef field 'Id' is required."), Path, TEXT("missing-definitionref-id"));
+			return NotifyBodyFailure(TEXT("DefinitionRef field 'Id' is required."), Path, TEXT("missing-definitionref-id"));
 		}
 
 		if (!Context.Definitions || !Context.Definitions->IsValid())
 		{
-			return BodyFailure(TEXT("DefinitionRef requires Definitions."), Path, TEXT("definitionref-missing-definitions"));
+			return NotifyBodyFailure(TEXT("DefinitionRef requires Definitions."), Path, TEXT("definitionref-missing-definitions"));
 		}
 
 		if (DefinitionStack.Contains(Id))
 		{
-			return BodyFailure(FString::Printf(TEXT("DefinitionRef cycle detected at '%s'."), *Id), Path, TEXT("definitionref-cycle"));
+			return NotifyBodyFailure(FString::Printf(TEXT("DefinitionRef cycle detected at '%s'."), *Id), Path, TEXT("definitionref-cycle"));
 		}
 
 		const TSharedPtr<FJsonObject>* DefinitionJson = nullptr;
 		if (!(*Context.Definitions)->TryGetObjectField(Id, DefinitionJson) || !DefinitionJson || !DefinitionJson->IsValid())
 		{
-			return BodyFailure(FString::Printf(TEXT("Definition '%s' was not found."), *Id), Path, TEXT("definitionref-missing-id"));
+			return NotifyBodyFailure(FString::Printf(TEXT("Definition '%s' was not found."), *Id), Path, TEXT("definitionref-missing-id"));
 		}
 
 		DefinitionStack.Add(Id);
@@ -424,7 +424,7 @@ FAssetDocumentCapabilityResult ValidateObjectProducingFragment(
 		return Result;
 	}
 
-	return BodyFailure(TEXT("Notify placement Object must be an EmbeddedObject or DefinitionRef to an EmbeddedObject."), Path, TEXT("InvalidNotifyObjectFragment"));
+	return NotifyBodyFailure(TEXT("Notify placement Object must be an EmbeddedObject or DefinitionRef to an EmbeddedObject."), Path, TEXT("InvalidNotifyObjectFragment"));
 }
 
 FAssetDocumentCapabilityResult ValidatePlacementArray(
@@ -447,11 +447,11 @@ FAssetDocumentCapabilityResult ValidatePlacementArray(
 		const TSharedPtr<FJsonValue>* ObjectValue = Placement.EntryObject->Values.Find(TEXT("Object"));
 		if (!ObjectValue)
 		{
-			return BodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
+			return NotifyBodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
 		}
 
 		TSharedPtr<FJsonObject> ObjectFragment;
-		Result = RequireObjectValue(*ObjectValue, BasePath / TEXT("Object"), ObjectFragment);
+		Result = NotifyRequireObjectValue(*ObjectValue, BasePath / TEXT("Object"), ObjectFragment);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -491,11 +491,11 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		const TSharedPtr<FJsonValue>* ObjectValue = Placement.EntryObject->Values.Find(TEXT("Object"));
 		if (!ObjectValue)
 		{
-			return BodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
+			return NotifyBodyFailure(TEXT("Notify placement requires Object fragment"), BasePath / TEXT("Object"), TEXT("MissingNotifyObject"));
 		}
 
 		TSharedPtr<FJsonObject> ObjectFragment;
-		Result = RequireObjectValue(*ObjectValue, BasePath / TEXT("Object"), ObjectFragment);
+		Result = NotifyRequireObjectValue(*ObjectValue, BasePath / TEXT("Object"), ObjectFragment);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -518,13 +518,13 @@ FAssetDocumentCapabilityResult CompilePlacementArray(
 		FAssetDocumentFragmentResult FragmentResult = Compiler.Compile(ObjectFragment.ToSharedRef(), FragmentContext);
 		if (!FragmentResult.bSuccess)
 		{
-			return FragmentFailure(FragmentResult);
+			return NotifyFragmentFailure(FragmentResult);
 		}
 
 		UObject* NotifyObject = FragmentResult.Object;
 		if (!NotifyObject || !NotifyObject->IsA(ExpectedBaseClass))
 		{
-			return BodyFailure(TEXT("Object fragment did not resolve to the expected notify class"), BasePath / TEXT("Object"), TEXT("InvalidNotifyObject"));
+			return NotifyBodyFailure(TEXT("Object fragment did not resolve to the expected notify class"), BasePath / TEXT("Object"), TEXT("InvalidNotifyObject"));
 		}
 		MarkManagedNotifyObject(NotifyObject, Montage, bState);
 
@@ -575,7 +575,7 @@ FAssetDocumentCapabilityResult ExtractEmbeddedObject(
 	const FAssetDocumentFragmentResult FragmentResult = Compiler.Extract(ExtractContext, OutFragment);
 	if (!FragmentResult.bSuccess)
 	{
-		return FragmentFailure(FragmentResult);
+		return NotifyFragmentFailure(FragmentResult);
 	}
 
 	if (TSharedPtr<FJsonObject> Properties = FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(ValueObject, true))
@@ -716,7 +716,7 @@ FAssetDocumentCapabilityResult FAnimMontageNotifyPlacementAdapter::Extract(
 {
 	if (!Montage)
 	{
-		return BodyFailure(TEXT("AnimMontage notify extraction requires an asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+		return NotifyBodyFailure(TEXT("AnimMontage notify extraction requires an asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Notifies;

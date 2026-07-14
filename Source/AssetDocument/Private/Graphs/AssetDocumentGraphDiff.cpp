@@ -7,7 +7,7 @@
 
 namespace
 {
-FString JoinPath(const FString& BasePath, const FString& Segment)
+FString GraphDiffJoinPath(const FString& BasePath, const FString& Segment)
 {
 	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
@@ -194,7 +194,7 @@ void CompareObjectFields(
 	{
 		const TSharedPtr<FJsonValue>* DesiredValue = DesiredObject->Values.Find(Key);
 		const TSharedPtr<FJsonValue>* CurrentValue = CurrentObject->Values.Find(Key);
-		const FString FieldPath = JoinPath(ObjectPath, Key);
+		const FString FieldPath = GraphDiffJoinPath(ObjectPath, Key);
 		if (!DesiredValue)
 		{
 			AddEntry(Entries, FieldPath, TEXT("extra"), nullptr, AssetDocumentGraphJson::CloneJsonValue(*CurrentValue));
@@ -237,7 +237,7 @@ void ComparePins(
 	{
 		const FAssetDocumentPinOverrideSpec* const* DesiredPin = DesiredPins.Find(PinKey);
 		const FAssetDocumentPinOverrideSpec* const* CurrentPin = CurrentPins.Find(PinKey);
-		const FString PinPath = JoinPath(JoinPath(NodePath, TEXT("PinOverrides")), PinKey);
+		const FString PinPath = GraphDiffJoinPath(GraphDiffJoinPath(NodePath, TEXT("PinOverrides")), PinKey);
 		if (!DesiredPin)
 		{
 			AddEntry(
@@ -278,17 +278,17 @@ void CompareNodeDetails(
 		NodePath,
 		MakeShared<FJsonValueObject>(DesiredNode.ToJsonObject()),
 		MakeShared<FJsonValueObject>(CurrentNode.ToJsonObject()));
-	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Fields")), DesiredNode.Fields, CurrentNode.Fields);
-	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Pins")), DesiredNode.Pins, CurrentNode.Pins);
+	CompareObjectFields(Entries, GraphDiffJoinPath(NodePath, TEXT("Fields")), DesiredNode.Fields, CurrentNode.Fields);
+	CompareObjectFields(Entries, GraphDiffJoinPath(NodePath, TEXT("Pins")), DesiredNode.Pins, CurrentNode.Pins);
 	CompareObjectAsWhole(
 		Entries,
-		JoinPath(NodePath, TEXT("Position")),
+		GraphDiffJoinPath(NodePath, TEXT("Position")),
 		DesiredNode.Position,
 		CurrentNode.Position,
 		TEXT("layout"));
-	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Spawner")), DesiredNode.Spawner, CurrentNode.Spawner);
-	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("SubgraphRefs")), DesiredNode.SubgraphRefs, CurrentNode.SubgraphRefs);
-	CompareObjectFields(Entries, JoinPath(NodePath, TEXT("Evidence")), DesiredNode.Evidence, CurrentNode.Evidence);
+	CompareObjectFields(Entries, GraphDiffJoinPath(NodePath, TEXT("Spawner")), DesiredNode.Spawner, CurrentNode.Spawner);
+	CompareObjectFields(Entries, GraphDiffJoinPath(NodePath, TEXT("SubgraphRefs")), DesiredNode.SubgraphRefs, CurrentNode.SubgraphRefs);
+	CompareObjectFields(Entries, GraphDiffJoinPath(NodePath, TEXT("Evidence")), DesiredNode.Evidence, CurrentNode.Evidence);
 }
 
 void CompareLinks(
@@ -305,7 +305,7 @@ void CompareLinks(
 	{
 		const FAssetDocumentLinkSpec* const* DesiredLink = DesiredLinks.Find(LinkKey);
 		const FAssetDocumentLinkSpec* const* CurrentLink = CurrentLinks.Find(LinkKey);
-		const FString LinkPath = JoinPath(JoinPath(GraphPath, TEXT("Links")), LinkKey);
+		const FString LinkPath = GraphDiffJoinPath(GraphDiffJoinPath(GraphPath, TEXT("Links")), LinkKey);
 		if (!DesiredLink)
 		{
 			AddEntry(
@@ -349,7 +349,7 @@ void CompareNodes(
 	{
 		const FAssetDocumentNodeSpec* const* DesiredNode = DesiredNodes.Find(NodeKey);
 		const FAssetDocumentNodeSpec* const* CurrentNode = CurrentNodes.Find(NodeKey);
-		const FString NodePath = JoinPath(JoinPath(GraphPath, TEXT("Nodes")), NodeKey);
+		const FString NodePath = GraphDiffJoinPath(GraphDiffJoinPath(GraphPath, TEXT("Nodes")), NodeKey);
 		if (!DesiredNode)
 		{
 			AddEntry(
@@ -393,12 +393,12 @@ void CompareGraphDetails(
 		GraphPath,
 		MakeShared<FJsonValueObject>(DesiredGraph.ToJsonObject()),
 		MakeShared<FJsonValueObject>(CurrentGraph.ToJsonObject()));
-	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Owner")), DesiredGraph.Owner, CurrentGraph.Owner);
+	CompareObjectFields(Entries, GraphDiffJoinPath(GraphPath, TEXT("Owner")), DesiredGraph.Owner, CurrentGraph.Owner);
 	if (DesiredGraph.OwnerNodeId != CurrentGraph.OwnerNodeId)
 	{
 		AddComparisonEntry(
 			Entries,
-			JoinPath(GraphPath, TEXT("OwnerNodeId")),
+			GraphDiffJoinPath(GraphPath, TEXT("OwnerNodeId")),
 			MakeShared<FJsonValueString>(DesiredGraph.OwnerNodeId),
 			MakeShared<FJsonValueString>(CurrentGraph.OwnerNodeId));
 	}
@@ -406,28 +406,28 @@ void CompareGraphDetails(
 	{
 		AddComparisonEntry(
 			Entries,
-			JoinPath(GraphPath, TEXT("OwnerPin")),
+			GraphDiffJoinPath(GraphPath, TEXT("OwnerPin")),
 			MakeShared<FJsonValueString>(DesiredGraph.OwnerPin),
 			MakeShared<FJsonValueString>(CurrentGraph.OwnerPin));
 	}
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("EntryPins")), DesiredGraph.EntryPins, CurrentGraph.EntryPins);
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("ResultPins")), DesiredGraph.ResultPins, CurrentGraph.ResultPins);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("EntryPins")), DesiredGraph.EntryPins, CurrentGraph.EntryPins);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("ResultPins")), DesiredGraph.ResultPins, CurrentGraph.ResultPins);
 	CompareObjectAsWhole(
 		Entries,
-		JoinPath(GraphPath, TEXT("Position")),
+		GraphDiffJoinPath(GraphPath, TEXT("Position")),
 		DesiredGraph.Position,
 		CurrentGraph.Position,
 		TEXT("layout"));
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Metadata")), DesiredGraph.Metadata, CurrentGraph.Metadata);
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Diagnostics")), DesiredGraph.Diagnostics, CurrentGraph.Diagnostics);
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("Skipped")), DesiredGraph.Skipped, CurrentGraph.Skipped);
-	CompareOptionalValue(Entries, JoinPath(GraphPath, TEXT("_Skipped")), DesiredGraph.UnderscoreSkipped, CurrentGraph.UnderscoreSkipped);
-	CompareObjectFields(Entries, JoinPath(GraphPath, TEXT("Evidence")), DesiredGraph.Evidence, CurrentGraph.Evidence);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("Metadata")), DesiredGraph.Metadata, CurrentGraph.Metadata);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("Diagnostics")), DesiredGraph.Diagnostics, CurrentGraph.Diagnostics);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("Skipped")), DesiredGraph.Skipped, CurrentGraph.Skipped);
+	CompareOptionalValue(Entries, GraphDiffJoinPath(GraphPath, TEXT("_Skipped")), DesiredGraph.UnderscoreSkipped, CurrentGraph.UnderscoreSkipped);
+	CompareObjectFields(Entries, GraphDiffJoinPath(GraphPath, TEXT("Evidence")), DesiredGraph.Evidence, CurrentGraph.Evidence);
 	CompareNodes(Entries, GraphPath, DesiredGraph, CurrentGraph);
 	CompareLinks(Entries, GraphPath, DesiredGraph, CurrentGraph);
 	CompareGraphListById(
 		Entries,
-		JoinPath(GraphPath, TEXT("Subgraphs")),
+		GraphDiffJoinPath(GraphPath, TEXT("Subgraphs")),
 		DesiredGraph.Subgraphs,
 		CurrentGraph.Subgraphs);
 }
@@ -446,7 +446,7 @@ void CompareGraphListById(
 	{
 		const FAssetDocumentGraphSpec* const* DesiredGraph = DesiredGraphMap.Find(GraphKey);
 		const FAssetDocumentGraphSpec* const* CurrentGraph = CurrentGraphMap.Find(GraphKey);
-		const FString GraphPath = JoinPath(GraphsPath, GraphKey);
+		const FString GraphPath = GraphDiffJoinPath(GraphsPath, GraphKey);
 		if (!DesiredGraph)
 		{
 			AddEntry(
@@ -533,7 +533,7 @@ TArray<FAssetDocumentGraphDiffEntry> FAssetDocumentGraphDiff::CompareUbergraphPa
 	{
 		const FAssetDocumentGraphSpec* const* DesiredGraph = DesiredGraphMap.Find(GraphKey);
 		const FAssetDocumentGraphSpec* const* CurrentGraph = CurrentGraphMap.Find(GraphKey);
-		const FString GraphPath = JoinPath(TEXT("/Body/UbergraphPages"), GraphKey);
+		const FString GraphPath = GraphDiffJoinPath(TEXT("/Body/UbergraphPages"), GraphKey);
 		if (!DesiredGraph)
 		{
 			AddEntry(
@@ -573,7 +573,7 @@ TArray<FAssetDocumentGraphDiffEntry> FAssetDocumentGraphDiff::CompareGraphRegion
 	const FString& RegionPath)
 {
 	TArray<FAssetDocumentGraphDiffEntry> Entries;
-	CompareGraphListById(Entries, JoinPath(RegionPath, TEXT("Graphs")), DesiredGraphs, CurrentGraphs);
+	CompareGraphListById(Entries, GraphDiffJoinPath(RegionPath, TEXT("Graphs")), DesiredGraphs, CurrentGraphs);
 	return Entries;
 }
 

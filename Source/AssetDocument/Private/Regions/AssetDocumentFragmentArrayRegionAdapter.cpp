@@ -6,7 +6,7 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentFragmentArrayRegionConfig& Config, const FAssetDocumentRegionContext& Context)
+FString FragmentArrayRegionPath(const FAssetDocumentFragmentArrayRegionConfig& Config, const FAssetDocumentRegionContext& Context)
 {
 	if (!Config.JsonPointer.IsEmpty())
 	{
@@ -29,7 +29,7 @@ FAssetDocumentCapabilityResult UnsupportedLifecycleFailure(
 	const TCHAR* Lifecycle)
 {
 	return FragmentArrayFailure(
-		RegionPath(Config, Context),
+		FragmentArrayRegionPath(Config, Context),
 		TEXT("UnsupportedFragmentArrayLifecycle"),
 		FString::Printf(
 			TEXT("Fragment array region %s requires an explicit %s hook"),
@@ -157,7 +157,7 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::Validat
 {
 	TArray<FAssetDocumentFragmentArrayEntry> Entries;
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), Entries);
+		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, FragmentArrayRegionPath(Config, Context), Entries);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -177,7 +177,7 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::Preflig
 {
 	TArray<FAssetDocumentFragmentArrayEntry> Entries;
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), Entries);
+		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, FragmentArrayRegionPath(Config, Context), Entries);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -206,7 +206,7 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::ApplyRe
 
 	TArray<FAssetDocumentFragmentArrayEntry> Entries;
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), Entries);
+		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, FragmentArrayRegionPath(Config, Context), Entries);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -254,7 +254,7 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::DiffReg
 {
 	TArray<FAssetDocumentFragmentArrayEntry> DesiredEntries;
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, RegionPath(Config, Context), DesiredEntries);
+		FAssetDocumentFragmentArrayUtils::ParseObjectEntries(DesiredValue, FragmentArrayRegionPath(Config, Context), DesiredEntries);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -288,7 +288,7 @@ FAssetDocumentCapabilityResult FAssetDocumentFragmentArrayRegionAdapter::DiffReg
 	{
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Config, Context),
+			FragmentArrayRegionPath(Config, Context),
 			TEXT("changed"),
 			CurrentValue,
 			DesiredValue);

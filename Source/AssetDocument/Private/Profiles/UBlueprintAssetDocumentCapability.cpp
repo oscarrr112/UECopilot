@@ -51,7 +51,7 @@ bool IsProtectedRegion(const FString& BodyKey)
 	return BodyKey == TEXT("Timelines");
 }
 
-FAssetDocumentCapabilityResult BodyFailure(const FString& Message, const FString& Path, const FString& Code)
+FAssetDocumentCapabilityResult UBlueprintBodyFailure(const FString& Message, const FString& Path, const FString& Code)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
@@ -60,13 +60,13 @@ FAssetDocumentCapabilityResult RequireObjectValue(const TSharedRef<FJsonValue>& 
 {
 	if (Value->Type != EJson::Object)
 	{
-		return BodyFailure(TEXT("Body must be a JSON object"), Path, TEXT("InvalidBodyType"));
+		return UBlueprintBodyFailure(TEXT("Body must be a JSON object"), Path, TEXT("InvalidBodyType"));
 	}
 
 	OutObject = Value->AsObject();
 	if (!OutObject.IsValid())
 	{
-		return BodyFailure(TEXT("Body must be a JSON object"), Path, TEXT("InvalidBodyType"));
+		return UBlueprintBodyFailure(TEXT("Body must be a JSON object"), Path, TEXT("InvalidBodyType"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -81,7 +81,7 @@ FAssetDocumentCapabilityResult ValidateDeferredUBlueprintRegion(
 	FAssetDocumentRegionPolicy Policy;
 	if (!FAssetDocumentDeferredRegionAdapter::FindDeclaredPolicyForBodyKey(Profile.GetRegionPolicies(), BodyKey, Policy))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Missing deferred UBlueprint region policy for Body.%s"), *BodyKey),
 			FString::Printf(TEXT("/Body/%s"), *BodyKey),
 			TEXT("MissingDeferredRegionPolicy"));
@@ -96,12 +96,12 @@ FAssetDocumentCapabilityResult ValidateDeferredUBlueprintRegion(
 	return FAssetDocumentRegionRuntime::Validate(RegionContext, Value, Adapter);
 }
 
-FAssetDocumentCapabilityResult RequireArrayValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
+FAssetDocumentCapabilityResult UBlueprintRequireArrayValue(const TSharedPtr<FJsonValue>& Value, const FString& Path, const FString& BodyKey, const TArray<TSharedPtr<FJsonValue>>*& OutArray)
 {
 	OutArray = nullptr;
 	if (!Value.IsValid() || Value->Type != EJson::Array)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Body.%s must be an array when authored"), *BodyKey),
 			Path,
 			TEXT("InvalidBodySectionType"));
@@ -117,31 +117,31 @@ FAssetDocumentCapabilityResult ResolveParentClass(const TSharedPtr<FJsonValue>& 
 
 	if (!Value.IsValid() || Value->Type != EJson::Object)
 	{
-		return BodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
+		return UBlueprintBodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
 	}
 
 	const TSharedPtr<FJsonObject> ParentClass = Value->AsObject();
 	if (!ParentClass.IsValid())
 	{
-		return BodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
+		return UBlueprintBodyFailure(TEXT("Body.ParentClass must be a ClassRef object"), TEXT("/Body/ParentClass"), TEXT("InvalidParentClass"));
 	}
 
 	FString Kind;
 	if (!ParentClass->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
 	{
-		return BodyFailure(TEXT("Body.ParentClass.Kind must be ClassRef"), TEXT("/Body/ParentClass/Kind"), TEXT("InvalidParentClassKind"));
+		return UBlueprintBodyFailure(TEXT("Body.ParentClass.Kind must be ClassRef"), TEXT("/Body/ParentClass/Kind"), TEXT("InvalidParentClassKind"));
 	}
 
 	FString ClassPath;
 	if (!ParentClass->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
 	{
-		return BodyFailure(TEXT("Body.ParentClass.Class is required"), TEXT("/Body/ParentClass/Class"), TEXT("MissingParentClass"));
+		return UBlueprintBodyFailure(TEXT("Body.ParentClass.Class is required"), TEXT("/Body/ParentClass/Class"), TEXT("MissingParentClass"));
 	}
 
 	OutParentClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 	if (!OutParentClass)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Failed to resolve Body.ParentClass.Class '%s'"), *ClassPath),
 			TEXT("/Body/ParentClass/Class"),
 			TEXT("UnresolvedParentClass"));
@@ -149,7 +149,7 @@ FAssetDocumentCapabilityResult ResolveParentClass(const TSharedPtr<FJsonValue>& 
 
 	if (!OutParentClass->IsChildOf(UObject::StaticClass()))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Body.ParentClass.Class '%s' is not a UObject class"), *OutParentClass->GetName()),
 			TEXT("/Body/ParentClass/Class"),
 			TEXT("InvalidParentClass"));
@@ -157,7 +157,7 @@ FAssetDocumentCapabilityResult ResolveParentClass(const TSharedPtr<FJsonValue>& 
 
 	if (OutParentClass->HasAnyClassFlags(CLASS_Abstract))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Body.ParentClass.Class '%s' is abstract"), *OutParentClass->GetName()),
 			TEXT("/Body/ParentClass/Class"),
 			TEXT("AbstractParentClass"));
@@ -202,16 +202,16 @@ struct FUBlueprintComponentSpec
 	TSharedPtr<FJsonObject> Properties;
 };
 
-FString GetClassPath(const UClass* Class)
+FString UBlueprintGetClassPath(const UClass* Class)
 {
 	return Class ? Class->GetPathName() : FString();
 }
 
-TSharedRef<FJsonObject> MakeClassRef(UClass* Class)
+TSharedRef<FJsonObject> UBlueprintMakeClassRef(UClass* Class)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
-	ClassRef->SetStringField(TEXT("Class"), GetClassPath(Class));
+	ClassRef->SetStringField(TEXT("Class"), UBlueprintGetClassPath(Class));
 	return ClassRef;
 }
 
@@ -220,7 +220,7 @@ FAssetDocumentCapabilityResult ReadBodyObject(const TSharedRef<FJsonValue>& Body
 	return RequireObjectValue(BodyJson, TEXT("/Body"), OutBody);
 }
 
-FAssetDocumentRegionContext MakeUBlueprintGraphRegionContext(const FAssetDocumentCapabilityContext& Context)
+FAssetDocumentRegionContext UBlueprintMakeGraphRegionContext(const FAssetDocumentCapabilityContext& Context)
 {
 	FAssetDocumentRegionContext RegionContext;
 	RegionContext.Asset = Context.Asset;
@@ -280,30 +280,30 @@ FAssetDocumentGraphRegionWrapperAdapter MakeUBlueprintGraphWrapperAdapter()
 		MakeUBlueprintGraphWrapperHooks());
 }
 
-FAssetDocumentCapabilityResult ReadClassRef(const TSharedPtr<FJsonObject>& Object, const FString& Path, UClass*& OutClass)
+FAssetDocumentCapabilityResult UBlueprintReadClassRef(const TSharedPtr<FJsonObject>& Object, const FString& Path, UClass*& OutClass)
 {
 	OutClass = nullptr;
 	if (!Object.IsValid())
 	{
-		return BodyFailure(TEXT("Expected ClassRef object"), Path, TEXT("InvalidClassRef"));
+		return UBlueprintBodyFailure(TEXT("Expected ClassRef object"), Path, TEXT("InvalidClassRef"));
 	}
 
 	FString Kind;
 	if (!Object->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
 	{
-		return BodyFailure(TEXT("ClassRef.Kind must be ClassRef"), Path / TEXT("Kind"), TEXT("InvalidClassRefKind"));
+		return UBlueprintBodyFailure(TEXT("ClassRef.Kind must be ClassRef"), Path / TEXT("Kind"), TEXT("InvalidClassRefKind"));
 	}
 
 	FString ClassPath;
 	if (!Object->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
 	{
-		return BodyFailure(TEXT("ClassRef.Class is required"), Path / TEXT("Class"), TEXT("MissingClassRefClass"));
+		return UBlueprintBodyFailure(TEXT("ClassRef.Class is required"), Path / TEXT("Class"), TEXT("MissingClassRefClass"));
 	}
 
 	OutClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 	if (!OutClass)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Failed to resolve class '%s'"), *ClassPath),
 			Path / TEXT("Class"),
 			TEXT("UnresolvedClassRef"));
@@ -312,18 +312,18 @@ FAssetDocumentCapabilityResult ReadClassRef(const TSharedPtr<FJsonObject>& Objec
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeObject, const FString& Path, FEdGraphPinType& OutPinType)
+FAssetDocumentCapabilityResult UBlueprintReadPinType(const TSharedPtr<FJsonObject>& TypeObject, const FString& Path, FEdGraphPinType& OutPinType)
 {
 	OutPinType.ResetToDefaults();
 	if (!TypeObject.IsValid())
 	{
-		return BodyFailure(TEXT("Variable Type must be an object"), Path, TEXT("InvalidVariableType"));
+		return UBlueprintBodyFailure(TEXT("Variable Type must be an object"), Path, TEXT("InvalidVariableType"));
 	}
 
 	FString PinCategory;
 	if (!TypeObject->TryGetStringField(TEXT("PinCategory"), PinCategory) || PinCategory.IsEmpty())
 	{
-		return BodyFailure(TEXT("Variable Type.PinCategory is required"), Path / TEXT("PinCategory"), TEXT("MissingPinCategory"));
+		return UBlueprintBodyFailure(TEXT("Variable Type.PinCategory is required"), Path / TEXT("PinCategory"), TEXT("MissingPinCategory"));
 	}
 
 	auto SetScalar = [&OutPinType](FName Category)
@@ -365,7 +365,7 @@ FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeOb
 		FString PinSubCategory;
 		if (!TypeObject->TryGetStringField(TEXT("PinSubCategory"), PinSubCategory) || PinSubCategory.IsEmpty())
 		{
-			return BodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("MissingRealPinSubCategory"));
+			return UBlueprintBodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("MissingRealPinSubCategory"));
 		}
 		if (PinSubCategory == UEdGraphSchema_K2::PC_Float.ToString())
 		{
@@ -379,7 +379,7 @@ FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeOb
 		}
 		else
 		{
-			return BodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("UnsupportedRealPinSubCategory"));
+			return UBlueprintBodyFailure(TEXT("real variable Type.PinSubCategory must be float or double"), Path / TEXT("PinSubCategory"), TEXT("UnsupportedRealPinSubCategory"));
 		}
 	}
 	else if (PinCategory == UEdGraphSchema_K2::PC_Object.ToString() || PinCategory == UEdGraphSchema_K2::PC_Class.ToString())
@@ -387,13 +387,13 @@ FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeOb
 		FString ObjectClassPath;
 		if (!TypeObject->TryGetStringField(TEXT("PinSubCategoryObject"), ObjectClassPath) || ObjectClassPath.IsEmpty())
 		{
-			return BodyFailure(TEXT("object/class variable Type.PinSubCategoryObject is required"), Path / TEXT("PinSubCategoryObject"), TEXT("MissingPinSubCategoryObject"));
+			return UBlueprintBodyFailure(TEXT("object/class variable Type.PinSubCategoryObject is required"), Path / TEXT("PinSubCategoryObject"), TEXT("MissingPinSubCategoryObject"));
 		}
 
 		UClass* ObjectClass = StaticLoadClass(UObject::StaticClass(), nullptr, *ObjectClassPath);
 		if (!ObjectClass)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Failed to resolve PinSubCategoryObject '%s'"), *ObjectClassPath),
 				Path / TEXT("PinSubCategoryObject"),
 				TEXT("UnresolvedPinSubCategoryObject"));
@@ -407,7 +407,7 @@ FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeOb
 	}
 	else
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Unsupported variable PinCategory '%s'"), *PinCategory),
 			Path / TEXT("PinCategory"),
 			TEXT("UnsupportedPinCategory"));
@@ -416,7 +416,7 @@ FAssetDocumentCapabilityResult ReadPinType(const TSharedPtr<FJsonObject>& TypeOb
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ParseVariableSpecs(const TSharedPtr<FJsonObject>& BodyObject, TArray<FUBlueprintVariableSpec>& OutVariables)
+FAssetDocumentCapabilityResult UBlueprintParseVariableSpecs(const TSharedPtr<FJsonObject>& BodyObject, TArray<FUBlueprintVariableSpec>& OutVariables)
 {
 	OutVariables.Reset();
 	const TSharedPtr<FJsonValue>* VariablesValue = BodyObject->Values.Find(TEXT("Variables"));
@@ -426,7 +426,7 @@ FAssetDocumentCapabilityResult ParseVariableSpecs(const TSharedPtr<FJsonObject>&
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Variables = nullptr;
-	const FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*VariablesValue, TEXT("/Body/Variables"), TEXT("Variables"), Variables);
+	const FAssetDocumentCapabilityResult ArrayResult = UBlueprintRequireArrayValue(*VariablesValue, TEXT("/Body/Variables"), TEXT("Variables"), Variables);
 	if (!ArrayResult.bSuccess)
 	{
 		return ArrayResult;
@@ -439,20 +439,20 @@ FAssetDocumentCapabilityResult ParseVariableSpecs(const TSharedPtr<FJsonObject>&
 		const TSharedPtr<FJsonObject> VariableObject = (*Variables)[Index].IsValid() ? (*Variables)[Index]->AsObject() : nullptr;
 		if (!VariableObject.IsValid())
 		{
-			return BodyFailure(TEXT("Body.Variables entries must be objects"), Path, TEXT("InvalidVariable"));
+			return UBlueprintBodyFailure(TEXT("Body.Variables entries must be objects"), Path, TEXT("InvalidVariable"));
 		}
 
 		FString Name;
 		if (!VariableObject->TryGetStringField(TEXT("Name"), Name) || Name.IsEmpty())
 		{
-			return BodyFailure(TEXT("Variable Name is required"), Path / TEXT("Name"), TEXT("MissingVariableName"));
+			return UBlueprintBodyFailure(TEXT("Variable Name is required"), Path / TEXT("Name"), TEXT("MissingVariableName"));
 		}
 
 		FUBlueprintVariableSpec Spec;
 		Spec.Name = FName(*Name);
 		if (SeenNames.Contains(Spec.Name))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Duplicate Body.Variables Name '%s'"), *Name),
 				Path / TEXT("Name"),
 				TEXT("DuplicateVariableName"));
@@ -462,10 +462,10 @@ FAssetDocumentCapabilityResult ParseVariableSpecs(const TSharedPtr<FJsonObject>&
 		const TSharedPtr<FJsonObject>* TypeObject = nullptr;
 		if (!VariableObject->TryGetObjectField(TEXT("Type"), TypeObject) || !TypeObject || !TypeObject->IsValid())
 		{
-			return BodyFailure(TEXT("Variable Type object is required"), Path / TEXT("Type"), TEXT("MissingVariableType"));
+			return UBlueprintBodyFailure(TEXT("Variable Type object is required"), Path / TEXT("Type"), TEXT("MissingVariableType"));
 		}
 
-		const FAssetDocumentCapabilityResult TypeResult = ReadPinType(*TypeObject, Path / TEXT("Type"), Spec.Type);
+		const FAssetDocumentCapabilityResult TypeResult = UBlueprintReadPinType(*TypeObject, Path / TEXT("Type"), Spec.Type);
 		if (!TypeResult.bSuccess)
 		{
 			return TypeResult;
@@ -491,7 +491,7 @@ FAssetDocumentCapabilityResult ParseVariableSpecs(const TSharedPtr<FJsonObject>&
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ParseInterfaceSpecs(const TSharedPtr<FJsonObject>& BodyObject, TArray<FUBlueprintInterfaceSpec>& OutInterfaces)
+FAssetDocumentCapabilityResult UBlueprintParseInterfaceSpecs(const TSharedPtr<FJsonObject>& BodyObject, TArray<FUBlueprintInterfaceSpec>& OutInterfaces)
 {
 	OutInterfaces.Reset();
 	const TSharedPtr<FJsonValue>* InterfacesValue = BodyObject->Values.Find(TEXT("ImplementedInterfaces"));
@@ -501,7 +501,7 @@ FAssetDocumentCapabilityResult ParseInterfaceSpecs(const TSharedPtr<FJsonObject>
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Interfaces = nullptr;
-	const FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*InterfacesValue, TEXT("/Body/ImplementedInterfaces"), TEXT("ImplementedInterfaces"), Interfaces);
+	const FAssetDocumentCapabilityResult ArrayResult = UBlueprintRequireArrayValue(*InterfacesValue, TEXT("/Body/ImplementedInterfaces"), TEXT("ImplementedInterfaces"), Interfaces);
 	if (!ArrayResult.bSuccess)
 	{
 		return ArrayResult;
@@ -514,17 +514,17 @@ FAssetDocumentCapabilityResult ParseInterfaceSpecs(const TSharedPtr<FJsonObject>
 		const TSharedPtr<FJsonObject> InterfaceObject = (*Interfaces)[Index].IsValid() ? (*Interfaces)[Index]->AsObject() : nullptr;
 		if (!InterfaceObject.IsValid())
 		{
-			return BodyFailure(TEXT("Body.ImplementedInterfaces entries must be objects"), Path, TEXT("InvalidImplementedInterface"));
+			return UBlueprintBodyFailure(TEXT("Body.ImplementedInterfaces entries must be objects"), Path, TEXT("InvalidImplementedInterface"));
 		}
 
 		const TSharedPtr<FJsonObject>* InterfaceRef = nullptr;
 		if (!InterfaceObject->TryGetObjectField(TEXT("Interface"), InterfaceRef) || !InterfaceRef || !InterfaceRef->IsValid())
 		{
-			return BodyFailure(TEXT("ImplementedInterfaces entry requires Interface ClassRef"), Path / TEXT("Interface"), TEXT("MissingInterfaceClassRef"));
+			return UBlueprintBodyFailure(TEXT("ImplementedInterfaces entry requires Interface ClassRef"), Path / TEXT("Interface"), TEXT("MissingInterfaceClassRef"));
 		}
 
 		UClass* InterfaceClass = nullptr;
-		const FAssetDocumentCapabilityResult ClassResult = ReadClassRef(*InterfaceRef, Path / TEXT("Interface"), InterfaceClass);
+		const FAssetDocumentCapabilityResult ClassResult = UBlueprintReadClassRef(*InterfaceRef, Path / TEXT("Interface"), InterfaceClass);
 		if (!ClassResult.bSuccess)
 		{
 			return ClassResult;
@@ -532,16 +532,16 @@ FAssetDocumentCapabilityResult ParseInterfaceSpecs(const TSharedPtr<FJsonObject>
 
 		if (!InterfaceClass->HasAnyClassFlags(CLASS_Interface))
 		{
-			return BodyFailure(
-				FString::Printf(TEXT("Implemented interface '%s' is not an interface class"), *GetClassPath(InterfaceClass)),
+			return UBlueprintBodyFailure(
+				FString::Printf(TEXT("Implemented interface '%s' is not an interface class"), *UBlueprintGetClassPath(InterfaceClass)),
 				Path / TEXT("Interface/Class"),
 				TEXT("InvalidInterfaceClass"));
 		}
 
 		if (SeenInterfaces.Contains(InterfaceClass))
 		{
-			return BodyFailure(
-				FString::Printf(TEXT("Duplicate implemented interface '%s'"), *GetClassPath(InterfaceClass)),
+			return UBlueprintBodyFailure(
+				FString::Printf(TEXT("Duplicate implemented interface '%s'"), *UBlueprintGetClassPath(InterfaceClass)),
 				Path / TEXT("Interface/Class"),
 				TEXT("DuplicateInterface"));
 		}
@@ -590,19 +590,19 @@ FAssetDocumentCapabilityResult ReadComponentKey(const TSharedPtr<FJsonObject>& O
 	OutKey = FUBlueprintComponentKey();
 	if (!Object.IsValid())
 	{
-		return BodyFailure(TEXT("Component Key must be an object"), Path, TEXT("InvalidComponentKey"));
+		return UBlueprintBodyFailure(TEXT("Component Key must be an object"), Path, TEXT("InvalidComponentKey"));
 	}
 
 	FString Name;
 	if (!Object->TryGetStringField(TEXT("Name"), Name) || Name.IsEmpty())
 	{
-		return BodyFailure(TEXT("Component Key.Name is required"), Path / TEXT("Name"), TEXT("MissingComponentKeyName"));
+		return UBlueprintBodyFailure(TEXT("Component Key.Name is required"), Path / TEXT("Name"), TEXT("MissingComponentKeyName"));
 	}
 
 	FString OwnerClass;
 	if (!Object->TryGetStringField(TEXT("OwnerClass"), OwnerClass) || OwnerClass.IsEmpty())
 	{
-		return BodyFailure(TEXT("Component Key.OwnerClass is required"), Path / TEXT("OwnerClass"), TEXT("MissingComponentKeyOwnerClass"));
+		return UBlueprintBodyFailure(TEXT("Component Key.OwnerClass is required"), Path / TEXT("OwnerClass"), TEXT("MissingComponentKeyOwnerClass"));
 	}
 
 	OutKey.Name = FName(*Name);
@@ -616,9 +616,9 @@ FAssetDocumentCapabilityResult ComponentPropertyFailure(const FAssetDocumentProp
 	{
 		const FAssetDocumentDiagnostic& Diagnostic = PropertyResult.Diagnostics[0];
 		const FString DiagnosticPath = Diagnostic.Path.IsEmpty() ? Path : Path / Diagnostic.Path;
-		return BodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
+		return UBlueprintBodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
 	}
-	return BodyFailure(PropertyResult.Message, Path, TEXT("InvalidComponentProperties"));
+	return UBlueprintBodyFailure(PropertyResult.Message, Path, TEXT("InvalidComponentProperties"));
 }
 
 FAssetDocumentPropertyApplyResult ApplyPropertiesDirectNoDuplicate(UObject* Object, TSharedPtr<FJsonObject> Properties)
@@ -725,7 +725,7 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Components = nullptr;
-	const FAssetDocumentCapabilityResult ArrayResult = RequireArrayValue(*ComponentsValue, TEXT("/Body/Components"), TEXT("Components"), Components);
+	const FAssetDocumentCapabilityResult ArrayResult = UBlueprintRequireArrayValue(*ComponentsValue, TEXT("/Body/Components"), TEXT("Components"), Components);
 	if (!ArrayResult.bSuccess)
 	{
 		return ArrayResult;
@@ -738,14 +738,14 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 		const TSharedPtr<FJsonObject> ComponentObject = (*Components)[Index].IsValid() ? (*Components)[Index]->AsObject() : nullptr;
 		if (!ComponentObject.IsValid())
 		{
-			return BodyFailure(TEXT("Body.Components entries must be objects"), Path, TEXT("InvalidComponent"));
+			return UBlueprintBodyFailure(TEXT("Body.Components entries must be objects"), Path, TEXT("InvalidComponent"));
 		}
 
 		FUBlueprintComponentSpec Spec;
 		const TSharedPtr<FJsonObject>* KeyObject = nullptr;
 		if (!ComponentObject->TryGetObjectField(TEXT("Key"), KeyObject) || !KeyObject || !KeyObject->IsValid())
 		{
-			return BodyFailure(TEXT("Component Key object is required"), Path / TEXT("Key"), TEXT("MissingComponentKey"));
+			return UBlueprintBodyFailure(TEXT("Component Key object is required"), Path / TEXT("Key"), TEXT("MissingComponentKey"));
 		}
 
 		const FAssetDocumentCapabilityResult KeyResult = ReadComponentKey(*KeyObject, Path / TEXT("Key"), Spec.Key);
@@ -757,7 +757,7 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 		const FString KeyString = ComponentKeyToString(Spec.Key);
 		if (SeenKeys.Contains(KeyString))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Duplicate Body.Components Key '%s'"), *KeyString),
 				Path / TEXT("Key"),
 				TEXT("DuplicateComponentKey"));
@@ -766,33 +766,33 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 
 		if (!ComponentObject->TryGetStringField(TEXT("Scope"), Spec.Scope) || Spec.Scope.IsEmpty())
 		{
-			return BodyFailure(TEXT("Component Scope is required"), Path / TEXT("Scope"), TEXT("MissingComponentScope"));
+			return UBlueprintBodyFailure(TEXT("Component Scope is required"), Path / TEXT("Scope"), TEXT("MissingComponentScope"));
 		}
 		if (Spec.Scope != TEXT("OwnedSCS") && Spec.Scope != TEXT("Inherited") && Spec.Scope != TEXT("Native"))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Unsupported component Scope '%s'"), *Spec.Scope),
 				Path / TEXT("Scope"),
 				TEXT("UnsupportedComponentScope"));
 		}
 		if (Spec.Scope == TEXT("OwnedSCS") && !IsSelfComponentKey(Spec.Key))
 		{
-			return BodyFailure(TEXT("OwnedSCS components require Key.OwnerClass == Self"), Path / TEXT("Key/OwnerClass"), TEXT("InvalidOwnedSCSOwnerClass"));
+			return UBlueprintBodyFailure(TEXT("OwnedSCS components require Key.OwnerClass == Self"), Path / TEXT("Key/OwnerClass"), TEXT("InvalidOwnedSCSOwnerClass"));
 		}
 		if (Spec.Scope == TEXT("OwnedSCS") && IsDefaultSceneRootKey(Spec.Key))
 		{
-			return BodyFailure(TEXT("DefaultSceneRoot is reserved for the generated default scene root"), Path / TEXT("Key/Name"), TEXT("ProtectedComponentName"));
+			return UBlueprintBodyFailure(TEXT("DefaultSceneRoot is reserved for the generated default scene root"), Path / TEXT("Key/Name"), TEXT("ProtectedComponentName"));
 		}
 
 		FString ClassPath;
 		if (!ComponentObject->TryGetStringField(TEXT("Class"), ClassPath) || ClassPath.IsEmpty())
 		{
-			return BodyFailure(TEXT("Component Class is required"), Path / TEXT("Class"), TEXT("MissingComponentClass"));
+			return UBlueprintBodyFailure(TEXT("Component Class is required"), Path / TEXT("Class"), TEXT("MissingComponentClass"));
 		}
 		Spec.ComponentClass = StaticLoadClass(UActorComponent::StaticClass(), nullptr, *ClassPath);
 		if (!Spec.ComponentClass || !Spec.ComponentClass->IsChildOf(UActorComponent::StaticClass()))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Component Class '%s' must resolve to a UActorComponent subclass"), *ClassPath),
 				Path / TEXT("Class"),
 				TEXT("InvalidComponentClass"));
@@ -817,14 +817,14 @@ FAssetDocumentCapabilityResult ParseComponentSpecs(const TSharedPtr<FJsonObject>
 		}
 		if (IsInheritedOrNativeComponentScope(Spec.Scope) && (Spec.AttachTo.IsSet() || Spec.bRoot))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				TEXT("Inherited and Native component AttachTo/Root overrides are not supported yet"),
 				ComponentPath(Spec.Key) / (Spec.AttachTo.IsSet() ? TEXT("AttachTo") : TEXT("Root")),
 				TEXT("UnsupportedInheritedComponentAttachRoot"));
 		}
 		if (Spec.bRoot && !Spec.ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
-			return BodyFailure(TEXT("Root components must be USceneComponent subclasses"), Path / TEXT("Root"), TEXT("InvalidRootComponentClass"));
+			return UBlueprintBodyFailure(TEXT("Root components must be USceneComponent subclasses"), Path / TEXT("Root"), TEXT("InvalidRootComponentClass"));
 		}
 
 		const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;
@@ -945,11 +945,11 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 			++RootCount;
 			if (RootCount > 1)
 			{
-				return BodyFailure(TEXT("Only one OwnedSCS component can declare Root:true"), ComponentPath(Spec.Key) / TEXT("Root"), TEXT("MultipleRootComponents"));
+				return UBlueprintBodyFailure(TEXT("Only one OwnedSCS component can declare Root:true"), ComponentPath(Spec.Key) / TEXT("Root"), TEXT("MultipleRootComponents"));
 			}
 			if (Spec.AttachTo.IsSet())
 			{
-				return BodyFailure(TEXT("Root components cannot also declare AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("RootComponentCannotAttach"));
+				return UBlueprintBodyFailure(TEXT("Root components cannot also declare AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("RootComponentCannotAttach"));
 			}
 		}
 
@@ -960,14 +960,14 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 
 		if (!Spec.ComponentClass || !Spec.ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
-			return BodyFailure(TEXT("Only scene components can use AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+			return UBlueprintBodyFailure(TEXT("Only scene components can use AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
 		}
 
 		const FUBlueprintComponentKey AttachToKey = Spec.AttachTo.GetValue();
 		const FString AttachToKeyString = ComponentKeyToString(AttachToKey);
 		if (AttachToKeyString == SpecKeyString)
 		{
-			return BodyFailure(TEXT("Component cannot attach to itself"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+			return UBlueprintBodyFailure(TEXT("Component cannot attach to itself"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
 		}
 
 		if (const FUBlueprintComponentSpec* const* DesiredParent = DesiredOwnedByKey.Find(AttachToKeyString))
@@ -975,7 +975,7 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 			const FUBlueprintComponentSpec* ParentSpec = *DesiredParent;
 			if (!ParentSpec->ComponentClass || !ParentSpec->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 			{
-				return BodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
+				return UBlueprintBodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
 			}
 			DesiredAttachParentByChild.Add(SpecKeyString, AttachToKeyString);
 			continue;
@@ -988,7 +988,7 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 
 		if (IsSelfComponentKey(AttachToKey))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("AttachTo component '%s' is not present in the authoritative OwnedSCS component set"), *AttachToKeyString),
 				ComponentPath(Spec.Key) / TEXT("AttachTo"),
 				TEXT("AttachParentRemovedByAuthoritativeRegion"));
@@ -999,14 +999,14 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 			: nullptr;
 		if (!ExistingParent)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("AttachTo component '%s' was not found"), *AttachToKeyString),
 				ComponentPath(Spec.Key) / TEXT("AttachTo"),
 				TEXT("MissingAttachParent"));
 		}
 		if (!ExistingParent->ComponentClass || !ExistingParent->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
-			return BodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
+			return UBlueprintBodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
 		}
 	}
 
@@ -1020,7 +1020,7 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 		{
 			if (*ParentKey == StartKey || SeenKeys.Contains(*ParentKey))
 			{
-				return BodyFailure(TEXT("OwnedSCS AttachTo declarations cannot form a cycle"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("ComponentAttachCycle"));
+				return UBlueprintBodyFailure(TEXT("OwnedSCS AttachTo declarations cannot form a cycle"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("ComponentAttachCycle"));
 			}
 			SeenKeys.Add(CurrentKey);
 			CurrentKey = *ParentKey;
@@ -1030,7 +1030,7 @@ FAssetDocumentCapabilityResult PreflightOwnedSCSStructure(
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FBPVariableDescription* FindNewVariable(UBlueprint* Blueprint, FName Name)
+FBPVariableDescription* UBlueprintFindNewVariable(UBlueprint* Blueprint, FName Name)
 {
 	return Blueprint ? Blueprint->NewVariables.FindByPredicate([Name](const FBPVariableDescription& Variable)
 	{
@@ -1038,7 +1038,7 @@ FBPVariableDescription* FindNewVariable(UBlueprint* Blueprint, FName Name)
 	}) : nullptr;
 }
 
-const FBPVariableDescription* FindNewVariable(const UBlueprint* Blueprint, FName Name)
+const FBPVariableDescription* UBlueprintFindNewVariable(const UBlueprint* Blueprint, FName Name)
 {
 	return Blueprint ? Blueprint->NewVariables.FindByPredicate([Name](const FBPVariableDescription& Variable)
 	{
@@ -1046,9 +1046,9 @@ const FBPVariableDescription* FindNewVariable(const UBlueprint* Blueprint, FName
 	}) : nullptr;
 }
 
-void ApplyVariableMetadata(UBlueprint* Blueprint, const FUBlueprintVariableSpec& Spec)
+void UBlueprintApplyVariableMetadata(UBlueprint* Blueprint, const FUBlueprintVariableSpec& Spec)
 {
-	if (FBPVariableDescription* Variable = FindNewVariable(Blueprint, Spec.Name))
+	if (FBPVariableDescription* Variable = UBlueprintFindNewVariable(Blueprint, Spec.Name))
 	{
 		if (Spec.Category.IsSet())
 		{
@@ -1069,7 +1069,7 @@ void ApplyVariableMetadata(UBlueprint* Blueprint, const FUBlueprintVariableSpec&
 	}
 }
 
-bool ParentClassHasPropertyNamed(const UClass* ParentClass, FName Name)
+bool UBlueprintParentClassHasPropertyNamed(const UClass* ParentClass, FName Name)
 {
 	if (!ParentClass || Name.IsNone())
 	{
@@ -1086,14 +1086,14 @@ bool ParentClassHasPropertyNamed(const UClass* ParentClass, FName Name)
 	return false;
 }
 
-FAssetDocumentCapabilityResult ValidateVariablesAgainstParentClass(UClass* ParentClass, const TArray<FUBlueprintVariableSpec>& Variables)
+FAssetDocumentCapabilityResult UBlueprintValidateVariablesAgainstParentClass(UClass* ParentClass, const TArray<FUBlueprintVariableSpec>& Variables)
 {
 	for (const FUBlueprintVariableSpec& Variable : Variables)
 	{
-		if (ParentClassHasPropertyNamed(ParentClass, Variable.Name))
+		if (UBlueprintParentClassHasPropertyNamed(ParentClass, Variable.Name))
 		{
-			return BodyFailure(
-				FString::Printf(TEXT("Body.Variables Name '%s' conflicts with parent class '%s'"), *Variable.Name.ToString(), *GetClassPath(ParentClass)),
+			return UBlueprintBodyFailure(
+				FString::Printf(TEXT("Body.Variables Name '%s' conflicts with parent class '%s'"), *Variable.Name.ToString(), *UBlueprintGetClassPath(ParentClass)),
 				FString::Printf(TEXT("/Body/Variables/%s"), *Variable.Name.ToString()),
 				TEXT("ParentVariableNameConflict"));
 		}
@@ -1101,7 +1101,7 @@ FAssetDocumentCapabilityResult ValidateVariablesAgainstParentClass(UClass* Paren
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArray<FUBlueprintVariableSpec>& Variables, bool& bOutChanged)
+FAssetDocumentCapabilityResult UBlueprintApplyVariables(UBlueprint* Blueprint, const TArray<FUBlueprintVariableSpec>& Variables, bool& bOutChanged)
 {
 	bOutChanged = false;
 	TSet<FName> DesiredNames;
@@ -1127,7 +1127,7 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 
 	for (const FUBlueprintVariableSpec& Spec : Variables)
 	{
-		const FBPVariableDescription* Existing = FindNewVariable(Blueprint, Spec.Name);
+		const FBPVariableDescription* Existing = UBlueprintFindNewVariable(Blueprint, Spec.Name);
 		if (Existing && Existing->VarType != Spec.Type)
 		{
 			FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, Spec.Name);
@@ -1139,7 +1139,7 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 		{
 			if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, Spec.Name, Spec.Type))
 			{
-				return BodyFailure(
+				return UBlueprintBodyFailure(
 					FString::Printf(TEXT("Failed to add Blueprint variable '%s'"), *Spec.Name.ToString()),
 					TEXT("/Body/Variables"),
 					TEXT("AddVariableFailed"));
@@ -1147,7 +1147,7 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 			bOutChanged = true;
 		}
 
-		FBPVariableDescription* Mutable = FindNewVariable(Blueprint, Spec.Name);
+		FBPVariableDescription* Mutable = UBlueprintFindNewVariable(Blueprint, Spec.Name);
 		if (Mutable)
 		{
 			const FString PreviousDefault = Mutable->DefaultValue;
@@ -1155,7 +1155,7 @@ FAssetDocumentCapabilityResult ApplyVariables(UBlueprint* Blueprint, const TArra
 			const FString PreviousTooltip = Mutable->HasMetaData(FBlueprintMetadata::MD_Tooltip)
 				? Mutable->GetMetaData(FBlueprintMetadata::MD_Tooltip)
 				: FString();
-			ApplyVariableMetadata(Blueprint, Spec);
+			UBlueprintApplyVariableMetadata(Blueprint, Spec);
 			if (PreviousDefault != Spec.DefaultValue
 				|| (Spec.Category.IsSet() && PreviousCategory != Spec.Category.GetValue())
 				|| (Spec.Tooltip.IsSet() && PreviousTooltip != Spec.Tooltip.GetValue()))
@@ -1200,7 +1200,7 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 	const UBlueprint* SourceBlueprint = Cast<UBlueprint>(Context.Asset);
 	if (!UbergraphPagesValue || !SourceBlueprint || !EffectiveParentClass)
 	{
-		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+		FAssetDocumentRegionContext GraphRegionContext = UBlueprintMakeGraphRegionContext(Context);
 		return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
 			GraphRegionContext,
 			MakeShared<FJsonValueObject>(BodyObject));
@@ -1220,7 +1220,7 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 		TEXT("AssetDocumentGraphValidation"));
 	if (!ValidationBlueprint)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			TEXT("Failed to create staged UBlueprint for graph validation"),
 			TEXT("/Body/UbergraphPages"),
 			TEXT("CreateValidationBlueprintFailed"));
@@ -1228,7 +1228,7 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 
 	FScopedRootedObject RootedValidationBlueprint(ValidationBlueprint);
 	bool bVariablesChanged = false;
-	const FAssetDocumentCapabilityResult VariableApplyResult = ApplyVariables(ValidationBlueprint, VariableSpecs, bVariablesChanged);
+	const FAssetDocumentCapabilityResult VariableApplyResult = UBlueprintApplyVariables(ValidationBlueprint, VariableSpecs, bVariablesChanged);
 	if (!VariableApplyResult.bSuccess)
 	{
 		return VariableApplyResult;
@@ -1239,7 +1239,7 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 		FKismetEditorUtilities::CompileBlueprint(ValidationBlueprint);
 		if (ValidationBlueprint->Status == BS_Error)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				TEXT("Failed to compile staged UBlueprint variables for graph validation"),
 				TEXT("/Body/Variables"),
 				TEXT("BlueprintCompileFailed"));
@@ -1248,13 +1248,13 @@ FAssetDocumentCapabilityResult ValidateGraphRegionsWithStagedVariables(
 
 	FAssetDocumentCapabilityContext GraphContext = Context;
 	GraphContext.Asset = ValidationBlueprint;
-	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(GraphContext);
+	FAssetDocumentRegionContext GraphRegionContext = UBlueprintMakeGraphRegionContext(GraphContext);
 	return MakeUBlueprintGraphWrapperAdapter().ValidateRegion(
 		GraphRegionContext,
 		MakeShared<FJsonValueObject>(BodyObject));
 }
 
-FAssetDocumentCapabilityResult ApplyInterfaces(UBlueprint* Blueprint, const TArray<FUBlueprintInterfaceSpec>& Interfaces, bool& bOutChanged)
+FAssetDocumentCapabilityResult UBlueprintApplyInterfaces(UBlueprint* Blueprint, const TArray<FUBlueprintInterfaceSpec>& Interfaces, bool& bOutChanged)
 {
 	bOutChanged = false;
 	TSet<UClass*> DesiredInterfaces;
@@ -1291,8 +1291,8 @@ FAssetDocumentCapabilityResult ApplyInterfaces(UBlueprint* Blueprint, const TArr
 		{
 			if (!FBlueprintEditorUtils::ImplementNewInterface(Blueprint, Spec.InterfaceClass->GetClassPathName()))
 			{
-				return BodyFailure(
-					FString::Printf(TEXT("Failed to implement Blueprint interface '%s'"), *GetClassPath(Spec.InterfaceClass)),
+				return UBlueprintBodyFailure(
+					FString::Printf(TEXT("Failed to implement Blueprint interface '%s'"), *UBlueprintGetClassPath(Spec.InterfaceClass)),
 					TEXT("/Body/ImplementedInterfaces"),
 					TEXT("ImplementInterfaceFailed"));
 			}
@@ -1353,31 +1353,31 @@ FAssetDocumentCapabilityResult AttachOwnedNode(USimpleConstructionScript* SCS, U
 {
 	if (!SCS || !Node)
 	{
-		return BodyFailure(TEXT("Missing SCS node while applying owned component"), ComponentPath(Spec.Key), TEXT("MissingSCSNode"));
+		return UBlueprintBodyFailure(TEXT("Missing SCS node while applying owned component"), ComponentPath(Spec.Key), TEXT("MissingSCSNode"));
 	}
 
 	if (Spec.AttachTo.IsSet())
 	{
 		if (!Node->ComponentClass || !Node->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
-			return BodyFailure(TEXT("Only scene components can use AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+			return UBlueprintBodyFailure(TEXT("Only scene components can use AttachTo"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
 		}
 
 		USCS_Node* ParentNode = FindSCSNodeByKey(SCS, Spec.AttachTo.GetValue());
 		if (!ParentNode)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("AttachTo component '%s' was not found"), *ComponentKeyToString(Spec.AttachTo.GetValue())),
 				ComponentPath(Spec.Key) / TEXT("AttachTo"),
 				TEXT("MissingAttachParent"));
 		}
 		if (ParentNode == Node)
 		{
-			return BodyFailure(TEXT("Component cannot attach to itself"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
+			return UBlueprintBodyFailure(TEXT("Component cannot attach to itself"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidComponentAttach"));
 		}
 		if (!ParentNode->ComponentClass || !ParentNode->ComponentClass->IsChildOf(USceneComponent::StaticClass()))
 		{
-			return BodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
+			return UBlueprintBodyFailure(TEXT("AttachTo target must be a scene component"), ComponentPath(Spec.Key) / TEXT("AttachTo"), TEXT("InvalidAttachParent"));
 		}
 
 		DetachNodeFromCurrentParent(SCS, Node);
@@ -1399,7 +1399,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 	bOutChanged = DesiredOwnedSpecs.Num() > 0;
 	if (DesiredOwnedSpecs.Num() > 0 && (!Blueprint || !Blueprint->ParentClass || !Blueprint->ParentClass->IsChildOf(AActor::StaticClass())))
 	{
-		return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
+		return UBlueprintBodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	}
 
 	const FAssetDocumentCapabilityResult StructureResult = PreflightOwnedSCSStructure(Blueprint, DesiredOwnedSpecs, DesiredOwnedByKey);
@@ -1423,7 +1423,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 	}
 	if (!SCS)
 	{
-		return BodyFailure(TEXT("Failed to create SimpleConstructionScript for UBlueprint"), TEXT("/Body/Components"), TEXT("MissingSimpleConstructionScript"));
+		return UBlueprintBodyFailure(TEXT("Failed to create SimpleConstructionScript for UBlueprint"), TEXT("/Body/Components"), TEXT("MissingSimpleConstructionScript"));
 	}
 
 	TArray<USCS_Node*> ExistingNodes = SCS->GetAllNodes();
@@ -1456,7 +1456,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		}
 		if (!Node)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Failed to create owned SCS component '%s'"), *ComponentKeyToString(Spec.Key)),
 				ComponentPath(Spec.Key),
 				TEXT("CreateSCSNodeFailed"));
@@ -1467,7 +1467,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 			Node = SCS->CreateNode(Spec.ComponentClass, Spec.Key.Name);
 			if (!Node)
 			{
-				return BodyFailure(
+				return UBlueprintBodyFailure(
 					FString::Printf(TEXT("Failed to recreate owned SCS component '%s'"), *ComponentKeyToString(Spec.Key)),
 					ComponentPath(Spec.Key),
 					TEXT("CreateSCSNodeFailed"));
@@ -1500,7 +1500,7 @@ FAssetDocumentCapabilityResult ApplyOwnedSCSComponents(UBlueprint* Blueprint, co
 		USCS_Node* Node = NodesByKey.FindRef(ComponentKeyToString(Spec.Key));
 		if (!Node || !Node->ComponentTemplate)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Owned SCS component '%s' has no component template"), *ComponentKeyToString(Spec.Key)),
 				ComponentPath(Spec.Key),
 				TEXT("MissingComponentTemplate"));
@@ -1528,32 +1528,32 @@ FAssetDocumentCapabilityResult ResolveInheritedComponentKey(
 	OutOriginalTemplate = nullptr;
 	if (!Blueprint)
 	{
-		return BodyFailure(TEXT("Blueprint is required to resolve inherited component key"), ComponentPath(Spec.Key), TEXT("MissingBlueprint"));
+		return UBlueprintBodyFailure(TEXT("Blueprint is required to resolve inherited component key"), ComponentPath(Spec.Key), TEXT("MissingBlueprint"));
 	}
 	if (IsSelfComponentKey(Spec.Key))
 	{
-		return BodyFailure(TEXT("Inherited components require Key.OwnerClass to name the parent generated class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidInheritedComponentOwnerClass"));
+		return UBlueprintBodyFailure(TEXT("Inherited components require Key.OwnerClass to name the parent generated class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidInheritedComponentOwnerClass"));
 	}
 
 	UClass* OwnerClass = StaticLoadClass(UObject::StaticClass(), nullptr, *Spec.Key.OwnerClass);
 	UBlueprintGeneratedClass* OwnerGeneratedClass = Cast<UBlueprintGeneratedClass>(OwnerClass);
 	if (!OwnerGeneratedClass)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Inherited component OwnerClass '%s' must resolve to a Blueprint generated class"), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
 			TEXT("UnresolvedInheritedComponentOwnerClass"));
 	}
 	if (Blueprint->GeneratedClass && !Blueprint->GeneratedClass->IsChildOf(OwnerGeneratedClass))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Inherited component OwnerClass '%s' is not in the Blueprint parent chain"), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
 			TEXT("InvalidInheritedComponentOwnerClass"));
 	}
 	if (!OwnerGeneratedClass->SimpleConstructionScript)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Inherited component OwnerClass '%s' has no SimpleConstructionScript"), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
 			TEXT("MissingInheritedComponentSCS"));
@@ -1562,18 +1562,18 @@ FAssetDocumentCapabilityResult ResolveInheritedComponentKey(
 	USCS_Node* InheritedNode = OwnerGeneratedClass->SimpleConstructionScript->FindSCSNode(Spec.Key.Name);
 	if (!InheritedNode || !InheritedNode->ComponentTemplate)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Inherited component '%s' was not found on '%s'"), *Spec.Key.Name.ToString(), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key),
 			TEXT("MissingInheritedComponent"));
 	}
 	if (Spec.ComponentClass && !InheritedNode->ComponentTemplate->IsA(Spec.ComponentClass))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Inherited component '%s' class '%s' is not compatible with declared class '%s'"),
 				*Spec.Key.Name.ToString(),
-				*GetClassPath(InheritedNode->ComponentTemplate->GetClass()),
-				*GetClassPath(Spec.ComponentClass)),
+				*UBlueprintGetClassPath(InheritedNode->ComponentTemplate->GetClass()),
+				*UBlueprintGetClassPath(Spec.ComponentClass)),
 			ComponentPath(Spec.Key) / TEXT("Class"),
 			TEXT("ComponentClassMismatch"));
 	}
@@ -1581,7 +1581,7 @@ FAssetDocumentCapabilityResult ResolveInheritedComponentKey(
 	OutKey = FComponentKey(InheritedNode);
 	if (!OutKey.IsValid())
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Failed to construct inherited component key for '%s'"), *ComponentKeyToString(Spec.Key)),
 			ComponentPath(Spec.Key),
 			TEXT("InvalidInheritedComponentKey"));
@@ -1662,7 +1662,7 @@ FAssetDocumentCapabilityResult ApplyInheritedComponentOverrides(UBlueprint* Blue
 	UInheritableComponentHandler* Handler = Blueprint->GetInheritableComponentHandler(true);
 	if (!Handler)
 	{
-		return BodyFailure(TEXT("Failed to create inheritable component handler"), TEXT("/Body/Components"), TEXT("MissingInheritableComponentHandler"));
+		return UBlueprintBodyFailure(TEXT("Failed to create inheritable component handler"), TEXT("/Body/Components"), TEXT("MissingInheritableComponentHandler"));
 	}
 
 	for (const FResolvedInheritedSpec& Resolved : ResolvedSpecs)
@@ -1672,7 +1672,7 @@ FAssetDocumentCapabilityResult ApplyInheritedComponentOverrides(UBlueprint* Blue
 		UActorComponent* OverrideTemplate = Handler->CreateOverridenComponentTemplate(Resolved.Key);
 		if (!OverrideTemplate)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Failed to create inherited component override template for '%s'"), *ComponentKeyToString(Spec.Key)),
 				ComponentPath(Spec.Key),
 				TEXT("CreateInheritedOverrideTemplateFailed"));
@@ -1690,7 +1690,7 @@ FAssetDocumentCapabilityResult ApplyInheritedComponentOverrides(UBlueprint* Blue
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-bool IsSupportedClassDefaultProperty(FProperty* Property)
+bool UBlueprintIsSupportedClassDefaultProperty(FProperty* Property)
 {
 	return CastField<FBoolProperty>(Property)
 		|| CastField<FEnumProperty>(Property)
@@ -1705,9 +1705,9 @@ bool IsSupportedClassDefaultProperty(FProperty* Property)
 		|| CastField<FSoftClassProperty>(Property);
 }
 
-bool IsBlueprintVariableClassDefaultProperty(const UBlueprint* Blueprint, const FProperty* Property)
+bool UBlueprintIsBlueprintVariableClassDefaultProperty(const UBlueprint* Blueprint, const FProperty* Property)
 {
-	return Blueprint && Property && FindNewVariable(Blueprint, Property->GetFName()) != nullptr;
+	return Blueprint && Property && UBlueprintFindNewVariable(Blueprint, Property->GetFName()) != nullptr;
 }
 
 FAssetDocumentCapabilityResult ResetWritablePropertiesFromBaseline(UObject* Target, UObject* Baseline, const FString& Path)
@@ -1869,24 +1869,24 @@ FAssetDocumentCapabilityResult ResolveNativeComponent(
 	UObject* ParentCDO = ParentClass ? ParentClass->GetDefaultObject(false) : nullptr;
 	if (!GeneratedClass || !GeneratedCDO || !ParentCDO)
 	{
-		return BodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), ComponentPath(Spec.Key), TEXT("MissingGeneratedCDO"));
+		return UBlueprintBodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), ComponentPath(Spec.Key), TEXT("MissingGeneratedCDO"));
 	}
 	if (IsSelfComponentKey(Spec.Key))
 	{
-		return BodyFailure(TEXT("Native components require Key.OwnerClass to name the native owner class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidNativeComponentOwnerClass"));
+		return UBlueprintBodyFailure(TEXT("Native components require Key.OwnerClass to name the native owner class"), ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"), TEXT("InvalidNativeComponentOwnerClass"));
 	}
 
 	UClass* OwnerClass = StaticLoadClass(UObject::StaticClass(), nullptr, *Spec.Key.OwnerClass);
 	if (!OwnerClass || !OwnerClass->IsChildOf(AActor::StaticClass()))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Native component OwnerClass '%s' must resolve to an Actor class"), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
 			TEXT("UnresolvedNativeComponentOwnerClass"));
 	}
 	if (!GeneratedClass->IsChildOf(OwnerClass))
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Native component OwnerClass '%s' is not in the Blueprint parent chain"), *Spec.Key.OwnerClass),
 			ComponentPath(Spec.Key) / TEXT("Key/OwnerClass"),
 			TEXT("InvalidNativeComponentOwnerClass"));
@@ -1900,7 +1900,7 @@ FAssetDocumentCapabilityResult ResolveNativeComponent(
 		OutGeneratedComponent = FindComponentByObjectName(GeneratedCDO, Spec.Key.Name, Spec.ComponentClass, bAmbiguous);
 		if (bAmbiguous)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Native component key '%s' matched multiple generated CDO component templates"), *ComponentKeyToString(Spec.Key)),
 				ComponentPath(Spec.Key),
 				TEXT("AmbiguousNativeComponent"));
@@ -1911,7 +1911,7 @@ FAssetDocumentCapabilityResult ResolveNativeComponent(
 			OutBaselineComponent = FindComponentByObjectName(ParentCDO, OutGeneratedComponent->GetFName(), Spec.ComponentClass, bBaselineAmbiguous);
 			if (bBaselineAmbiguous)
 			{
-				return BodyFailure(
+				return UBlueprintBodyFailure(
 					FString::Printf(TEXT("Native component key '%s' matched multiple parent CDO component templates"), *ComponentKeyToString(Spec.Key)),
 					ComponentPath(Spec.Key),
 					TEXT("AmbiguousNativeComponent"));
@@ -1921,14 +1921,14 @@ FAssetDocumentCapabilityResult ResolveNativeComponent(
 
 	if (!OutGeneratedComponent)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Native component '%s' was not found on generated CDO"), *ComponentKeyToString(Spec.Key)),
 			ComponentPath(Spec.Key),
 			TEXT("MissingNativeComponent"));
 	}
 	if (!OutBaselineComponent)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			FString::Printf(TEXT("Native component '%s' baseline was not found on parent CDO"), *ComponentKeyToString(Spec.Key)),
 			ComponentPath(Spec.Key),
 			TEXT("MissingNativeComponentBaseline"));
@@ -1952,7 +1952,7 @@ FAssetDocumentCapabilityResult ApplyNativeComponentOverrides(UBlueprint* Bluepri
 	{
 		return DesiredNativeSpecs.Num() == 0
 			? FAssetDocumentCapabilityResult::Success()
-			: BodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), TEXT("/Body/Components"), TEXT("MissingGeneratedCDO"));
+			: UBlueprintBodyFailure(TEXT("Native component overrides require a compiled Blueprint generated class"), TEXT("/Body/Components"), TEXT("MissingGeneratedCDO"));
 	}
 
 	TArray<UActorComponent*> GeneratedComponents;
@@ -1966,7 +1966,7 @@ FAssetDocumentCapabilityResult ApplyNativeComponentOverrides(UBlueprint* Bluepri
 
 		FUBlueprintComponentKey ObjectNameKey;
 		ObjectNameKey.Name = GeneratedComponent->GetFName();
-		ObjectNameKey.OwnerClass = ParentClass ? GetClassPath(ParentClass) : FString();
+		ObjectNameKey.OwnerClass = ParentClass ? UBlueprintGetClassPath(ParentClass) : FString();
 		if (DesiredNativeKeys.Contains(ComponentKeyToString(ObjectNameKey)))
 		{
 			continue;
@@ -2056,7 +2056,7 @@ FAssetDocumentCapabilityResult PreflightInheritedNativeComponents(UBlueprint* Bl
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedRef<FJsonObject> PinTypeToJsonObject(const FEdGraphPinType& PinType)
+TSharedRef<FJsonObject> UBlueprintPinTypeToJsonObject(const FEdGraphPinType& PinType)
 {
 	TSharedRef<FJsonObject> TypeObject = MakeShared<FJsonObject>();
 	TypeObject->SetStringField(TEXT("PinCategory"), PinType.PinCategory.ToString());
@@ -2071,7 +2071,7 @@ TSharedRef<FJsonObject> PinTypeToJsonObject(const FEdGraphPinType& PinType)
 	return TypeObject;
 }
 
-bool IsSupportedAuthoredPinType(const FEdGraphPinType& PinType)
+bool UBlueprintIsSupportedAuthoredPinType(const FEdGraphPinType& PinType)
 {
 	if (PinType.IsContainer() || PinType.bIsReference || PinType.bIsWeakPointer || PinType.bIsConst)
 	{
@@ -2107,7 +2107,7 @@ bool IsSupportedAuthoredPinType(const FEdGraphPinType& PinType)
 	return false;
 }
 
-FString ResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
+FString UBlueprintResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
 {
 	if (Blueprint && Blueprint->GeneratedClass)
 	{
@@ -2124,17 +2124,17 @@ FString ResolveVariableDefaultValue(const UBlueprint* Blueprint, const FBPVariab
 	return Variable.DefaultValue;
 }
 
-FString MakeVariableIdentityKey(const FName Name)
+FString UBlueprintMakeVariableIdentityKey(const FName Name)
 {
 	return Name.ToString().ToLower();
 }
 
-TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
+TSharedRef<FJsonObject> UBlueprintVariableToJsonObject(const FBPVariableDescription& Variable, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("Name"), Variable.VarName.ToString());
-	Object->SetObjectField(TEXT("Type"), PinTypeToJsonObject(Variable.VarType));
-	Object->SetStringField(TEXT("DefaultValue"), ResolveVariableDefaultValue(Blueprint, Variable));
+	Object->SetObjectField(TEXT("Type"), UBlueprintPinTypeToJsonObject(Variable.VarType));
+	Object->SetStringField(TEXT("DefaultValue"), UBlueprintResolveVariableDefaultValue(Blueprint, Variable));
 	if (!Variable.Category.IsEmpty())
 	{
 		Object->SetStringField(TEXT("Category"), Variable.Category.ToString());
@@ -2146,11 +2146,11 @@ TSharedRef<FJsonObject> VariableToJsonObject(const FBPVariableDescription& Varia
 	return Object;
 }
 
-TSharedRef<FJsonObject> VariableSpecToJsonObject(const FUBlueprintVariableSpec& Variable)
+TSharedRef<FJsonObject> UBlueprintVariableSpecToJsonObject(const FUBlueprintVariableSpec& Variable)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetStringField(TEXT("Name"), Variable.Name.ToString());
-	Object->SetObjectField(TEXT("Type"), PinTypeToJsonObject(Variable.Type));
+	Object->SetObjectField(TEXT("Type"), UBlueprintPinTypeToJsonObject(Variable.Type));
 	Object->SetStringField(TEXT("DefaultValue"), Variable.DefaultValue);
 	if (Variable.Category.IsSet())
 	{
@@ -2176,7 +2176,7 @@ TSharedRef<FJsonObject> ComponentSpecToJsonObject(const FUBlueprintComponentSpec
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetObjectField(TEXT("Key"), ComponentKeyToJsonObject(Component.Key));
 	Object->SetStringField(TEXT("Scope"), Component.Scope);
-	Object->SetStringField(TEXT("Class"), GetClassPath(Component.ComponentClass));
+	Object->SetStringField(TEXT("Class"), UBlueprintGetClassPath(Component.ComponentClass));
 	if (Component.AttachTo.IsSet())
 	{
 		Object->SetObjectField(TEXT("AttachTo"), ComponentKeyToJsonObject(Component.AttachTo.GetValue()));
@@ -2195,7 +2195,7 @@ TSharedRef<FJsonObject> ComponentNodeToJsonObject(const UBlueprint* Blueprint, c
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
 	Object->SetObjectField(TEXT("Key"), ComponentKeyToJsonObject(Key));
 	Object->SetStringField(TEXT("Scope"), TEXT("OwnedSCS"));
-	Object->SetStringField(TEXT("Class"), GetClassPath(Node ? Node->ComponentClass.Get() : nullptr));
+	Object->SetStringField(TEXT("Class"), UBlueprintGetClassPath(Node ? Node->ComponentClass.Get() : nullptr));
 
 	USCS_Node* ParentNode = Node && Node->GetSCS() ? Node->GetSCS()->FindParentNode(const_cast<USCS_Node*>(Node)) : nullptr;
 	if (ParentNode)
@@ -2221,7 +2221,7 @@ TSharedRef<FJsonObject> ComponentNodeToJsonObject(const UBlueprint* Blueprint, c
 	return Object;
 }
 
-FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
+FString UBlueprintJsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 {
 	FString Result;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Result);
@@ -2231,12 +2231,12 @@ FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 
 bool JsonValuesDiffer(const TSharedPtr<FJsonValue>& Current, const TSharedPtr<FJsonValue>& Desired)
 {
-	return JsonValueToComparableString(Current) != JsonValueToComparableString(Desired);
+	return UBlueprintJsonValueToComparableString(Current) != UBlueprintJsonValueToComparableString(Desired);
 }
 
-bool AuthoredPinTypesDiffer(const FEdGraphPinType& Current, const FEdGraphPinType& Desired)
+bool UBlueprintAuthoredPinTypesDiffer(const FEdGraphPinType& Current, const FEdGraphPinType& Desired)
 {
-	if (!IsSupportedAuthoredPinType(Current) || !IsSupportedAuthoredPinType(Desired))
+	if (!UBlueprintIsSupportedAuthoredPinType(Current) || !UBlueprintIsSupportedAuthoredPinType(Desired))
 	{
 		return true;
 	}
@@ -2249,7 +2249,7 @@ bool AuthoredPinTypesDiffer(const FEdGraphPinType& Current, const FEdGraphPinTyp
 	return Current.PinSubCategoryObject.Get() != Desired.PinSubCategoryObject.Get();
 }
 
-bool AuthoredDefaultValuesDiffer(const FEdGraphPinType& PinType, const FString& Current, const FString& Desired)
+bool UBlueprintAuthoredDefaultValuesDiffer(const FEdGraphPinType& PinType, const FString& Current, const FString& Desired)
 {
 	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
 	{
@@ -2264,26 +2264,26 @@ bool AuthoredDefaultValuesDiffer(const FEdGraphPinType& PinType, const FString& 
 	return Current != Desired;
 }
 
-TSharedPtr<FJsonValue> MakeVariableDiffValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
+TSharedPtr<FJsonValue> UBlueprintMakeVariableDiffValue(const UBlueprint* Blueprint, const FBPVariableDescription& Variable)
 {
-	if (!IsSupportedAuthoredPinType(Variable.VarType))
+	if (!UBlueprintIsSupportedAuthoredPinType(Variable.VarType))
 	{
 		return MakeShared<FJsonValueString>(TEXT("UnsupportedPinType"));
 	}
-	return MakeShared<FJsonValueObject>(VariableToJsonObject(Variable, Blueprint));
+	return MakeShared<FJsonValueObject>(UBlueprintVariableToJsonObject(Variable, Blueprint));
 }
 
-TSharedRef<FJsonObject> InterfaceToJsonObject(UClass* InterfaceClass)
+TSharedRef<FJsonObject> UBlueprintInterfaceToJsonObject(UClass* InterfaceClass)
 {
 	TSharedRef<FJsonObject> Object = MakeShared<FJsonObject>();
-	Object->SetObjectField(TEXT("Interface"), MakeClassRef(InterfaceClass));
+	Object->SetObjectField(TEXT("Interface"), UBlueprintMakeClassRef(InterfaceClass));
 	return Object;
 }
 
-TSharedPtr<FJsonValue> MakeInterfaceDiffValue(UClass* InterfaceClass)
+TSharedPtr<FJsonValue> UBlueprintMakeInterfaceDiffValue(UClass* InterfaceClass)
 {
 	return InterfaceClass
-		? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(InterfaceToJsonObject(InterfaceClass)))
+		? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(UBlueprintInterfaceToJsonObject(InterfaceClass)))
 		: TSharedPtr<FJsonValue>(MakeShared<FJsonValueNull>());
 }
 
@@ -2373,7 +2373,7 @@ FAssetDocumentCapabilityResult MergeSkippedEvidence(
 	}
 	if (IncomingSkippedValue->Type != EJson::Object)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
 			TEXT("/Body/_Skipped"),
 			TEXT("InvalidGraphRegionHookResult"));
@@ -2394,7 +2394,7 @@ FAssetDocumentCapabilityResult MergeSkippedEvidence(
 	const TSharedPtr<FJsonObject> IncomingSkipped = IncomingSkippedValue->AsObject();
 	if (!IncomingSkipped.IsValid())
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			TEXT("UBlueprint graph extract _Skipped evidence must be an object"),
 			TEXT("/Body/_Skipped"),
 			TEXT("InvalidGraphRegionHookResult"));
@@ -2442,13 +2442,13 @@ void RestoreBlueprintState(
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
 }
 
-FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint* Blueprint, const TArray<FUBlueprintVariableSpec>& Variables)
+FAssetDocumentCapabilityResult UBlueprintApplyVariableDefaultsToGeneratedClass(UBlueprint* Blueprint, const TArray<FUBlueprintVariableSpec>& Variables)
 {
 	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
 	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
 	if (!GeneratedCDO)
 	{
-		return BodyFailure(TEXT("Failed to resolve Blueprint generated CDO for variable defaults"), TEXT("/Body/Variables"), TEXT("MissingGeneratedCDO"));
+		return UBlueprintBodyFailure(TEXT("Failed to resolve Blueprint generated CDO for variable defaults"), TEXT("/Body/Variables"), TEXT("MissingGeneratedCDO"));
 	}
 
 	struct FPreviousDefault
@@ -2463,7 +2463,7 @@ FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint*
 		FProperty* Property = FindFProperty<FProperty>(GeneratedCDO->GetClass(), Variable.Name);
 		if (!Property)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Failed to resolve generated property for Blueprint variable '%s'"), *Variable.Name.ToString()),
 				FString::Printf(TEXT("/Body/Variables/%s/DefaultValue"), *Variable.Name.ToString()),
 				TEXT("MissingGeneratedVariableProperty"));
@@ -2489,13 +2489,13 @@ FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint*
 					FBlueprintEditorUtils::PropertyValueFromString(Previous.Property, Previous.Value, reinterpret_cast<uint8*>(GeneratedCDO), GeneratedCDO, PPF_SerializedAsImportText);
 				}
 			}
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Failed to parse default value '%s' for Blueprint variable '%s'"), *Variable.DefaultValue, *Variable.Name.ToString()),
 				FString::Printf(TEXT("/Body/Variables/%s/DefaultValue"), *Variable.Name.ToString()),
 				TEXT("InvalidVariableDefaultValue"));
 		}
 
-		if (FBPVariableDescription* MutableVariable = FindNewVariable(Blueprint, Variable.Name))
+		if (FBPVariableDescription* MutableVariable = UBlueprintFindNewVariable(Blueprint, Variable.Name))
 		{
 			MutableVariable->DefaultValue = Variable.DefaultValue;
 		}
@@ -2505,7 +2505,7 @@ FAssetDocumentCapabilityResult ApplyVariableDefaultsToGeneratedClass(UBlueprint*
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ParseClassDefaults(
+FAssetDocumentCapabilityResult UBlueprintParseClassDefaults(
 	const TSharedPtr<FJsonObject>& BodyObject,
 	bool& bOutHasClassDefaults,
 	TSharedPtr<FJsonObject>& OutClassDefaults)
@@ -2522,19 +2522,19 @@ FAssetDocumentCapabilityResult ParseClassDefaults(
 	bOutHasClassDefaults = true;
 	if (!ClassDefaultsValue->IsValid() || (*ClassDefaultsValue)->Type != EJson::Object)
 	{
-		return BodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
+		return UBlueprintBodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
 	}
 
 	OutClassDefaults = (*ClassDefaultsValue)->AsObject();
 	if (!OutClassDefaults.IsValid())
 	{
-		return BodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
+		return UBlueprintBodyFailure(TEXT("Body.ClassDefaults must be an object when authored"), TEXT("/Body/ClassDefaults"), TEXT("InvalidBodySectionType"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ClassDefaultPropertyFailure(const FAssetDocumentPropertyApplyResult& PropertyResult)
+FAssetDocumentCapabilityResult UBlueprintClassDefaultPropertyFailure(const FAssetDocumentPropertyApplyResult& PropertyResult)
 {
 	if (PropertyResult.Diagnostics.Num() > 0)
 	{
@@ -2542,12 +2542,12 @@ FAssetDocumentCapabilityResult ClassDefaultPropertyFailure(const FAssetDocumentP
 		const FString DiagnosticPath = Diagnostic.Path.IsEmpty()
 			? FString(TEXT("/Body/ClassDefaults"))
 			: FString(TEXT("/Body/ClassDefaults/")) + Diagnostic.Path.Replace(TEXT("Properties."), TEXT(""));
-		return BodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
+		return UBlueprintBodyFailure(Diagnostic.Message, DiagnosticPath, Diagnostic.Code);
 	}
-	return BodyFailure(PropertyResult.Message, TEXT("/Body/ClassDefaults"), TEXT("InvalidClassDefaults"));
+	return UBlueprintBodyFailure(PropertyResult.Message, TEXT("/Body/ClassDefaults"), TEXT("InvalidClassDefaults"));
 }
 
-FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
+FAssetDocumentCapabilityResult UBlueprintPreflightClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
 {
 	if (!ClassDefaults.IsValid() || ClassDefaults->Values.Num() == 0)
 	{
@@ -2557,7 +2557,7 @@ FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, con
 	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
 	if (!GeneratedClass)
 	{
-		return BodyFailure(TEXT("Body.ClassDefaults requires a compiled Blueprint generated class"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedClass"));
+		return UBlueprintBodyFailure(TEXT("Body.ClassDefaults requires a compiled Blueprint generated class"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedClass"));
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : ClassDefaults->Values)
@@ -2565,28 +2565,28 @@ FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, con
 		FProperty* Property = FindFProperty<FProperty>(GeneratedClass, *Pair.Key);
 		if (!Property)
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Class default property '%s' does not exist"), *Pair.Key),
 				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
 				TEXT("UnknownProperty"));
 		}
-		if (IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
+		if (UBlueprintIsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Blueprint variable '%s' must be authored through Body.Variables, not Body.ClassDefaults"), *Pair.Key),
 				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
 				TEXT("BlueprintVariableClassDefaultUnsupported"));
 		}
 		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Class default property '%s' is not writable: %s"), *Pair.Key, *FAssetDocumentPropertyAdapter::GetNonWritableReason(Property)),
 				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
 				TEXT("NonWritable"));
 		}
-		if (!IsSupportedClassDefaultProperty(Property))
+		if (!UBlueprintIsSupportedClassDefaultProperty(Property))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Class default property '%s' uses unsupported type '%s'"), *Pair.Key, *FAssetDocumentPropertyAdapter::GetTypeToken(Property)),
 				FString::Printf(TEXT("/Body/ClassDefaults/%s"), *Pair.Key),
 				TEXT("UnsupportedClassDefaultValueType"));
@@ -2597,13 +2597,13 @@ FAssetDocumentCapabilityResult PreflightClassDefaults(UBlueprint* Blueprint, con
 		FAssetDocumentPropertyAdapter::PreflightProperties(GeneratedClass, ClassDefaults);
 	if (!PreflightResult.bSuccess)
 	{
-		return ClassDefaultPropertyFailure(PreflightResult);
+		return UBlueprintClassDefaultPropertyFailure(PreflightResult);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
+FAssetDocumentCapabilityResult UBlueprintApplyClassDefaults(UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& ClassDefaults)
 {
 	UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass : nullptr;
 	UObject* GeneratedCDO = GeneratedClass ? GeneratedClass->GetDefaultObject(false) : nullptr;
@@ -2611,7 +2611,7 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const T
 	UObject* ParentCDO = ParentClass ? ParentClass->GetDefaultObject(false) : nullptr;
 	if (!GeneratedCDO || !ParentCDO)
 	{
-		return BodyFailure(TEXT("Body.ClassDefaults requires generated and parent CDOs"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedCDO"));
+		return UBlueprintBodyFailure(TEXT("Body.ClassDefaults requires generated and parent CDOs"), TEXT("/Body/ClassDefaults"), TEXT("MissingGeneratedCDO"));
 	}
 
 	GeneratedCDO->Modify();
@@ -2619,8 +2619,8 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const T
 	{
 		FProperty* Property = *PropertyIt;
 		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
-			|| !IsSupportedClassDefaultProperty(Property)
-			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
+			|| !UBlueprintIsSupportedClassDefaultProperty(Property)
+			|| UBlueprintIsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2647,13 +2647,13 @@ FAssetDocumentCapabilityResult ApplyClassDefaults(UBlueprint* Blueprint, const T
 		FAssetDocumentPropertyAdapter::ApplyProperties(GeneratedCDO, ClassDefaults);
 	if (!PropertyResult.bSuccess)
 	{
-		return ClassDefaultPropertyFailure(PropertyResult);
+		return UBlueprintClassDefaultPropertyFailure(PropertyResult);
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
 }
 
-TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Object, UObject* Baseline, const UBlueprint* Blueprint = nullptr)
+TSharedPtr<FJsonObject> UBlueprintExtractWritablePropertiesComparedToBaseline(UObject* Object, UObject* Baseline, const UBlueprint* Blueprint = nullptr)
 {
 	TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
 	if (!Object || !Baseline)
@@ -2665,8 +2665,8 @@ TSharedPtr<FJsonObject> ExtractWritablePropertiesComparedToBaseline(UObject* Obj
 	{
 		FProperty* Property = *PropertyIt;
 		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
-			|| !IsSupportedClassDefaultProperty(Property)
-			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
+			|| !UBlueprintIsSupportedClassDefaultProperty(Property)
+			|| UBlueprintIsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2706,8 +2706,8 @@ int32 CountUnsupportedWritableDifferences(UObject* Object, UObject* Baseline, co
 	{
 		FProperty* Property = *PropertyIt;
 		if (!FAssetDocumentPropertyAdapter::IsWritableProperty(Property)
-			|| IsSupportedClassDefaultProperty(Property)
-			|| IsBlueprintVariableClassDefaultProperty(Blueprint, Property))
+			|| UBlueprintIsSupportedClassDefaultProperty(Property)
+			|| UBlueprintIsBlueprintVariableClassDefaultProperty(Blueprint, Property))
 		{
 			continue;
 		}
@@ -2737,15 +2737,15 @@ TSharedPtr<FJsonObject> InheritedOverrideToJsonObject(const FComponentKey& Key, 
 
 	FUBlueprintComponentKey PublicKey;
 	PublicKey.Name = Key.GetSCSVariableName();
-	PublicKey.OwnerClass = GetClassPath(Key.GetComponentOwner());
+	PublicKey.OwnerClass = UBlueprintGetClassPath(Key.GetComponentOwner());
 
 	UActorComponent* OriginalTemplate = Key.GetOriginalTemplate();
 	TSharedPtr<FJsonObject> ComponentObject = MakeShared<FJsonObject>();
 	ComponentObject->SetObjectField(TEXT("Key"), ComponentKeyToJsonObject(PublicKey));
 	ComponentObject->SetStringField(TEXT("Scope"), TEXT("Inherited"));
-	ComponentObject->SetStringField(TEXT("Class"), GetClassPath(Template->GetClass()));
+	ComponentObject->SetStringField(TEXT("Class"), UBlueprintGetClassPath(Template->GetClass()));
 	ComponentObject->SetBoolField(TEXT("Root"), false);
-	ComponentObject->SetObjectField(TEXT("Properties"), ExtractWritablePropertiesComparedToBaseline(Template, OriginalTemplate));
+	ComponentObject->SetObjectField(TEXT("Properties"), UBlueprintExtractWritablePropertiesComparedToBaseline(Template, OriginalTemplate));
 	return ComponentObject;
 }
 
@@ -2767,7 +2767,7 @@ TSharedPtr<FJsonObject> NativeComponentOverrideToJsonObject(
 		return nullptr;
 	}
 
-	TSharedPtr<FJsonObject> Properties = ExtractWritablePropertiesComparedToBaseline(GeneratedComponent, BaselineComponent);
+	TSharedPtr<FJsonObject> Properties = UBlueprintExtractWritablePropertiesComparedToBaseline(GeneratedComponent, BaselineComponent);
 	if (!Properties.IsValid() || Properties->Values.Num() == 0)
 	{
 		return nullptr;
@@ -2776,12 +2776,12 @@ TSharedPtr<FJsonObject> NativeComponentOverrideToJsonObject(
 	FUBlueprintComponentKey PublicKey;
 	const FName AliasName = FindAliasPropertyNameForComponent(GeneratedCDO, GeneratedComponent);
 	PublicKey.Name = AliasName.IsNone() ? GeneratedComponent->GetFName() : AliasName;
-	PublicKey.OwnerClass = GetClassPath(NativeOwnerClass);
+	PublicKey.OwnerClass = UBlueprintGetClassPath(NativeOwnerClass);
 
 	TSharedPtr<FJsonObject> ComponentObject = MakeShared<FJsonObject>();
 	ComponentObject->SetObjectField(TEXT("Key"), ComponentKeyToJsonObject(PublicKey));
 	ComponentObject->SetStringField(TEXT("Scope"), TEXT("Native"));
-	ComponentObject->SetStringField(TEXT("Class"), GetClassPath(GeneratedComponent->GetClass()));
+	ComponentObject->SetStringField(TEXT("Class"), UBlueprintGetClassPath(GeneratedComponent->GetClass()));
 	ComponentObject->SetBoolField(TEXT("Root"), false);
 	ComponentObject->SetObjectField(TEXT("Properties"), Properties);
 	return ComponentObject;
@@ -2882,7 +2882,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
 	if (!Blueprint)
 	{
-		return BodyFailure(TEXT("UBlueprint body apply requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body apply requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
 	TSharedPtr<FJsonObject> BodyObject;
@@ -2909,14 +2909,14 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	}
 
 	TArray<FUBlueprintInterfaceSpec> ParsedInterfaces;
-	const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(BodyObject, ParsedInterfaces);
+	const FAssetDocumentCapabilityResult InterfaceParseResult = UBlueprintParseInterfaceSpecs(BodyObject, ParsedInterfaces);
 	if (!InterfaceParseResult.bSuccess)
 	{
 		return InterfaceParseResult;
 	}
 
 	TArray<FUBlueprintVariableSpec> ParsedVariables;
-	const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(BodyObject, ParsedVariables);
+	const FAssetDocumentCapabilityResult VariableParseResult = UBlueprintParseVariableSpecs(BodyObject, ParsedVariables);
 	if (!VariableParseResult.bSuccess)
 	{
 		return VariableParseResult;
@@ -2931,7 +2931,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	bool bHasClassDefaultsRegion = false;
 	TSharedPtr<FJsonObject> ParsedClassDefaults;
-	const FAssetDocumentCapabilityResult ClassDefaultsParseResult = ParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ParsedClassDefaults);
+	const FAssetDocumentCapabilityResult ClassDefaultsParseResult = UBlueprintParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ParsedClassDefaults);
 	if (!ClassDefaultsParseResult.bSuccess)
 	{
 		return ClassDefaultsParseResult;
@@ -2950,7 +2950,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasVariablesRegion)
 	{
-		const FAssetDocumentCapabilityResult ParentVariableResult = ValidateVariablesAgainstParentClass(const_cast<UClass*>(EffectiveParentClass), ParsedVariables);
+		const FAssetDocumentCapabilityResult ParentVariableResult = UBlueprintValidateVariablesAgainstParentClass(const_cast<UClass*>(EffectiveParentClass), ParsedVariables);
 		if (!ParentVariableResult.bSuccess)
 		{
 			return ParentVariableResult;
@@ -2959,7 +2959,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasComponentsRegion && HasOwnedSCSComponent(ParsedComponents) && (!EffectiveParentClass || !EffectiveParentClass->IsChildOf(AActor::StaticClass())))
 	{
-		return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
+		return UBlueprintBodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 	}
 
 	if (bHasComponentsRegion)
@@ -2982,7 +2982,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasClassDefaultsRegionForApply && !bParentChangesExistingBlueprint)
 	{
-		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
+		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = UBlueprintPreflightClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsPreflightResult.bSuccess)
 		{
 			return ClassDefaultsPreflightResult;
@@ -3003,7 +3003,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	if (bHasInterfacesRegion)
 	{
 		bool bInterfacesChanged = false;
-		const FAssetDocumentCapabilityResult InterfaceApplyResult = ApplyInterfaces(Blueprint, ParsedInterfaces, bInterfacesChanged);
+		const FAssetDocumentCapabilityResult InterfaceApplyResult = UBlueprintApplyInterfaces(Blueprint, ParsedInterfaces, bInterfacesChanged);
 		if (!InterfaceApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, InterfaceApplyResult);
@@ -3014,7 +3014,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 	if (bHasVariablesRegion)
 	{
 		bool bVariablesChanged = false;
-		const FAssetDocumentCapabilityResult VariableApplyResult = ApplyVariables(Blueprint, ParsedVariables, bVariablesChanged);
+		const FAssetDocumentCapabilityResult VariableApplyResult = UBlueprintApplyVariables(Blueprint, ParsedVariables, bVariablesChanged);
 		if (!VariableApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, VariableApplyResult);
@@ -3039,12 +3039,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 				PreviousParentClass,
 				PreviousInterfaces,
 				PreviousVariables,
-				BodyFailure(TEXT("Failed to compile UBlueprint after applying authoritative Body regions"), TEXT("/Body"), TEXT("BlueprintCompileFailed")));
+				UBlueprintBodyFailure(TEXT("Failed to compile UBlueprint after applying authoritative Body regions"), TEXT("/Body"), TEXT("BlueprintCompileFailed")));
 		}
 
 		if (bHasVariablesRegion)
 		{
-			const FAssetDocumentCapabilityResult DefaultsResult = ApplyVariableDefaultsToGeneratedClass(Blueprint, ParsedVariables);
+			const FAssetDocumentCapabilityResult DefaultsResult = UBlueprintApplyVariableDefaultsToGeneratedClass(Blueprint, ParsedVariables);
 			if (!DefaultsResult.bSuccess)
 			{
 				return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, DefaultsResult);
@@ -3054,7 +3054,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	{
 		bool bGraphChanged = false;
-		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+		FAssetDocumentRegionContext GraphRegionContext = UBlueprintMakeGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphApplyResult =
 			MakeUBlueprintGraphWrapperAdapter().ApplyRegion(
 				GraphRegionContext,
@@ -3078,7 +3078,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasClassDefaultsRegionForApply)
 	{
-		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(Blueprint, ParsedClassDefaults);
+		const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = UBlueprintPreflightClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsPreflightResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsPreflightResult);
@@ -3105,7 +3105,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 					PreviousParentClass,
 					PreviousInterfaces,
 					PreviousVariables,
-					BodyFailure(TEXT("Failed to compile UBlueprint after applying owned SCS components"), TEXT("/Body/Components"), TEXT("BlueprintCompileFailed")));
+					UBlueprintBodyFailure(TEXT("Failed to compile UBlueprint after applying owned SCS components"), TEXT("/Body/Components"), TEXT("BlueprintCompileFailed")));
 			}
 		}
 	}
@@ -3129,7 +3129,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Apply(FAssetD
 
 	if (bHasClassDefaultsRegionForApply)
 	{
-		const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = ApplyClassDefaults(Blueprint, ParsedClassDefaults);
+		const FAssetDocumentCapabilityResult ClassDefaultsApplyResult = UBlueprintApplyClassDefaults(Blueprint, ParsedClassDefaults);
 		if (!ClassDefaultsApplyResult.bSuccess)
 		{
 			return RestoreAndReturnFailure(Blueprint, PreviousParentClass, PreviousInterfaces, PreviousVariables, ClassDefaultsApplyResult);
@@ -3143,17 +3143,17 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 {
 	if (Context.Asset && !SupportsAsset(Context.Asset))
 	{
-		return BodyFailure(TEXT("UBlueprint body extract requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body extract requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 	if (!Context.Asset && Context.AssetClass && !SupportsClass(Context.AssetClass))
 	{
-		return BodyFailure(TEXT("UBlueprint body extract requires exact UBlueprint class"), TEXT("/Class"), TEXT("UnsupportedClass"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body extract requires exact UBlueprint class"), TEXT("/Class"), TEXT("UnsupportedClass"));
 	}
 
 	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
 	if (Blueprint && Blueprint->ParentClass)
 	{
-		OutBodyJson->SetObjectField(TEXT("ParentClass"), MakeClassRef(Blueprint->ParentClass.Get()));
+		OutBodyJson->SetObjectField(TEXT("ParentClass"), UBlueprintMakeClassRef(Blueprint->ParentClass.Get()));
 	}
 	else
 	{
@@ -3170,7 +3170,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 				continue;
 			}
 			TSharedPtr<FJsonObject> InterfaceObject = MakeShared<FJsonObject>();
-			InterfaceObject->SetObjectField(TEXT("Interface"), MakeClassRef(InterfaceDescription.Interface));
+			InterfaceObject->SetObjectField(TEXT("Interface"), UBlueprintMakeClassRef(InterfaceDescription.Interface));
 			Interfaces.Add(MakeShared<FJsonValueObject>(InterfaceObject));
 		}
 	}
@@ -3181,12 +3181,12 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
 		{
-			if (!IsSupportedAuthoredPinType(Variable.VarType))
+			if (!UBlueprintIsSupportedAuthoredPinType(Variable.VarType))
 			{
 				AddSkippedVariableEvidence(OutBodyJson, Variable.VarName.ToString(), TEXT("UnsupportedPinType"));
 				continue;
 			}
-			Variables.Add(MakeShared<FJsonValueObject>(VariableToJsonObject(Variable, Blueprint)));
+			Variables.Add(MakeShared<FJsonValueObject>(UBlueprintVariableToJsonObject(Variable, Blueprint)));
 		}
 	}
 	OutBodyJson->SetArrayField(TEXT("Variables"), Variables);
@@ -3240,7 +3240,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	{
 		UObject* GeneratedCDO = Blueprint->GeneratedClass->GetDefaultObject(false);
 		UObject* ParentCDO = Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false);
-		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint));
+		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), UBlueprintExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint));
 		AddSkippedUnsupportedEvidence(OutBodyJson, TEXT("ClassDefaults"), CountUnsupportedWritableDifferences(GeneratedCDO, ParentCDO, Blueprint));
 	}
 	else
@@ -3248,7 +3248,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 		OutBodyJson->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	}
 	TSharedPtr<FJsonValue> ExtractedGraphBodyValue;
-	FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+	FAssetDocumentRegionContext GraphRegionContext = UBlueprintMakeGraphRegionContext(Context);
 	const FAssetDocumentCapabilityResult GraphExtractResult =
 		MakeUBlueprintGraphWrapperAdapter().ExtractRegion(GraphRegionContext, ExtractedGraphBodyValue);
 	if (!GraphExtractResult.bSuccess)
@@ -3257,7 +3257,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Extract(const
 	}
 	if (!ExtractedGraphBodyValue.IsValid() || ExtractedGraphBodyValue->Type != EJson::Object)
 	{
-		return BodyFailure(
+		return UBlueprintBodyFailure(
 			TEXT("UBlueprint graph extract must return a Body object"),
 			TEXT("/Body"),
 			TEXT("InvalidGraphExtractBody"));
@@ -3305,11 +3305,11 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	const UBlueprint* Blueprint = Cast<UBlueprint>(Context.Asset);
 	if (!Blueprint)
 	{
-		return BodyFailure(TEXT("UBlueprint body diff requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body diff requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 
 	{
-		FAssetDocumentRegionContext GraphRegionContext = MakeUBlueprintGraphRegionContext(Context);
+		FAssetDocumentRegionContext GraphRegionContext = UBlueprintMakeGraphRegionContext(Context);
 		const FAssetDocumentCapabilityResult GraphDiffResult =
 			MakeUBlueprintGraphWrapperAdapter().DiffRegion(
 				GraphRegionContext,
@@ -3323,7 +3323,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 
 	{
 		TArray<FUBlueprintVariableSpec> DesiredVariables;
-		const FAssetDocumentCapabilityResult VariableParseResult = ParseVariableSpecs(DesiredBody, DesiredVariables);
+		const FAssetDocumentCapabilityResult VariableParseResult = UBlueprintParseVariableSpecs(DesiredBody, DesiredVariables);
 		if (!VariableParseResult.bSuccess)
 		{
 			return VariableParseResult;
@@ -3335,13 +3335,13 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		for (const FBPVariableDescription& CurrentVariable : Blueprint->NewVariables)
 		{
 			const FString VariableName = CurrentVariable.VarName.ToString();
-			const FString VariableIdentity = MakeVariableIdentityKey(CurrentVariable.VarName);
+			const FString VariableIdentity = UBlueprintMakeVariableIdentityKey(CurrentVariable.VarName);
 			CurrentVariablesByIdentity.Add(VariableIdentity, &CurrentVariable);
 			VariablePathTokensByIdentity.Add(VariableIdentity, VariableName);
 			CurrentVariables.Add({
 				VariableIdentity,
 				VariableName,
-				MakeVariableDiffValue(Blueprint, CurrentVariable)
+				UBlueprintMakeVariableDiffValue(Blueprint, CurrentVariable)
 			});
 		}
 
@@ -3350,7 +3350,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		for (const FUBlueprintVariableSpec& DesiredVariable : DesiredVariables)
 		{
 			const FString VariableName = DesiredVariable.Name.ToString();
-			const FString VariableIdentity = MakeVariableIdentityKey(DesiredVariable.Name);
+			const FString VariableIdentity = UBlueprintMakeVariableIdentityKey(DesiredVariable.Name);
 			DesiredVariableSpecsByIdentity.Add(VariableIdentity, DesiredVariable);
 			if (!VariablePathTokensByIdentity.Contains(VariableIdentity))
 			{
@@ -3359,7 +3359,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			DesiredVariableElements.Add({
 				VariableIdentity,
 				VariableName,
-				MakeShared<FJsonValueObject>(VariableSpecToJsonObject(DesiredVariable))
+				MakeShared<FJsonValueObject>(UBlueprintVariableSpecToJsonObject(DesiredVariable))
 			});
 		}
 
@@ -3388,9 +3388,9 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 				return false;
 			}
 
-			const bool bTypeChanged = AuthoredPinTypesDiffer((*CurrentVariable)->VarType, DesiredVariable->Type);
-			const FString CurrentDefaultValue = ResolveVariableDefaultValue(Blueprint, **CurrentVariable);
-			const bool bDefaultChanged = AuthoredDefaultValuesDiffer((*CurrentVariable)->VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
+			const bool bTypeChanged = UBlueprintAuthoredPinTypesDiffer((*CurrentVariable)->VarType, DesiredVariable->Type);
+			const FString CurrentDefaultValue = UBlueprintResolveVariableDefaultValue(Blueprint, **CurrentVariable);
+			const bool bDefaultChanged = UBlueprintAuthoredDefaultValuesDiffer((*CurrentVariable)->VarType, CurrentDefaultValue, DesiredVariable->DefaultValue);
 			const FString DesiredCategory = DesiredVariable->Category.IsSet() ? DesiredVariable->Category.GetValue() : FString();
 			const bool bCategoryChanged = (*CurrentVariable)->Category.ToString() != DesiredCategory;
 			const FString CurrentTooltip = (*CurrentVariable)->HasMetaData(FBlueprintMetadata::MD_Tooltip)
@@ -3416,7 +3416,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 
 	{
 		TArray<FUBlueprintInterfaceSpec> DesiredInterfaces;
-		const FAssetDocumentCapabilityResult InterfaceParseResult = ParseInterfaceSpecs(DesiredBody, DesiredInterfaces);
+		const FAssetDocumentCapabilityResult InterfaceParseResult = UBlueprintParseInterfaceSpecs(DesiredBody, DesiredInterfaces);
 		if (!InterfaceParseResult.bSuccess)
 		{
 			return InterfaceParseResult;
@@ -3429,22 +3429,22 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			{
 				continue;
 			}
-			const FString CurrentPath = GetClassPath(CurrentInterface.Interface);
+			const FString CurrentPath = UBlueprintGetClassPath(CurrentInterface.Interface);
 			CurrentInterfaceElements.Add({
 				CurrentPath,
 				CurrentPath,
-				MakeInterfaceDiffValue(CurrentInterface.Interface)
+				UBlueprintMakeInterfaceDiffValue(CurrentInterface.Interface)
 			});
 		}
 
 		TArray<FAssetDocumentIdentityArrayDiffElement> DesiredInterfaceElements;
 		for (const FUBlueprintInterfaceSpec& DesiredInterface : DesiredInterfaces)
 		{
-			const FString DesiredPath = GetClassPath(DesiredInterface.InterfaceClass);
+			const FString DesiredPath = UBlueprintGetClassPath(DesiredInterface.InterfaceClass);
 			DesiredInterfaceElements.Add({
 				DesiredPath,
 				DesiredPath,
-				MakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
+				UBlueprintMakeInterfaceDiffValue(DesiredInterface.InterfaceClass)
 			});
 		}
 
@@ -3606,7 +3606,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	{
 		bool bHasClassDefaultsRegion = false;
 		TSharedPtr<FJsonObject> DesiredClassDefaults;
-		const FAssetDocumentCapabilityResult ClassDefaultsParseResult = ParseClassDefaults(DesiredBody, bHasClassDefaultsRegion, DesiredClassDefaults);
+		const FAssetDocumentCapabilityResult ClassDefaultsParseResult = UBlueprintParseClassDefaults(DesiredBody, bHasClassDefaultsRegion, DesiredClassDefaults);
 		if (!ClassDefaultsParseResult.bSuccess)
 		{
 			return ClassDefaultsParseResult;
@@ -3620,7 +3620,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 		UObject* ParentCDO = Blueprint->GeneratedClass && Blueprint->GeneratedClass->GetSuperClass()
 			? Blueprint->GeneratedClass->GetSuperClass()->GetDefaultObject(false)
 			: nullptr;
-		TSharedPtr<FJsonObject> CurrentClassDefaults = ExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint);
+		TSharedPtr<FJsonObject> CurrentClassDefaults = UBlueprintExtractWritablePropertiesComparedToBaseline(GeneratedCDO, ParentCDO, Blueprint);
 		TSet<FString> SeenClassDefaultNames;
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& CurrentPair : CurrentClassDefaults->Values)
 		{
@@ -3655,7 +3655,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 	{
 		TSharedPtr<FJsonObject> DesiredParentObject = (*DesiredParentClassValue).IsValid() ? (*DesiredParentClassValue)->AsObject() : nullptr;
 		UClass* DesiredParentClass = nullptr;
-		const FAssetDocumentCapabilityResult ParentClassResult = ReadClassRef(DesiredParentObject, TEXT("/Body/ParentClass"), DesiredParentClass);
+		const FAssetDocumentCapabilityResult ParentClassResult = UBlueprintReadClassRef(DesiredParentObject, TEXT("/Body/ParentClass"), DesiredParentClass);
 		if (!ParentClassResult.bSuccess)
 		{
 			return ParentClassResult;
@@ -3664,8 +3664,8 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::Diff(const FA
 			OutDiffEntries,
 			TEXT("/Body/ParentClass"),
 			Blueprint->ParentClass.Get() == DesiredParentClass ? TEXT("unchanged") : TEXT("changed"),
-			MakeShared<FJsonValueObject>(MakeClassRef(Blueprint->ParentClass.Get())),
-			MakeShared<FJsonValueObject>(MakeClassRef(DesiredParentClass)));
+			MakeShared<FJsonValueObject>(UBlueprintMakeClassRef(Blueprint->ParentClass.Get())),
+			MakeShared<FJsonValueObject>(UBlueprintMakeClassRef(DesiredParentClass)));
 	}
 
 	return FAssetDocumentCapabilityResult::Success(TEXT("UBlueprint Body diffed"));
@@ -3675,23 +3675,23 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 {
 	if (Context.Asset && !SupportsAsset(Context.Asset))
 	{
-		return BodyFailure(TEXT("UBlueprint body validation requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body validation requires exact UBlueprint asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
 	}
 	if (!Context.Asset && Context.AssetClass && !SupportsClass(Context.AssetClass))
 	{
-		return BodyFailure(TEXT("UBlueprint body validation requires exact UBlueprint class"), TEXT("/Class"), TEXT("UnsupportedClass"));
+		return UBlueprintBodyFailure(TEXT("UBlueprint body validation requires exact UBlueprint class"), TEXT("/Class"), TEXT("UnsupportedClass"));
 	}
 
 	if (!BodyObject->HasField(TEXT("ParentClass")))
 	{
-		return BodyFailure(TEXT("Body.ParentClass is required for UBlueprint documents"), TEXT("/Body/ParentClass"), TEXT("MissingParentClass"));
+		return UBlueprintBodyFailure(TEXT("Body.ParentClass is required for UBlueprint documents"), TEXT("/Body/ParentClass"), TEXT("MissingParentClass"));
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : BodyObject->Values)
 	{
 		if (!IsKnownBodyKey(Pair.Key))
 		{
-			return BodyFailure(
+			return UBlueprintBodyFailure(
 				FString::Printf(TEXT("Unknown UBlueprint Body key '%s'"), *Pair.Key),
 				FString::Printf(TEXT("/Body/%s"), *Pair.Key),
 				TEXT("UnknownBodyKey"));
@@ -3718,14 +3718,14 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	}
 
 	TArray<FUBlueprintInterfaceSpec> InterfaceSpecs;
-	const FAssetDocumentCapabilityResult InterfaceResult = ParseInterfaceSpecs(BodyObject, InterfaceSpecs);
+	const FAssetDocumentCapabilityResult InterfaceResult = UBlueprintParseInterfaceSpecs(BodyObject, InterfaceSpecs);
 	if (!InterfaceResult.bSuccess)
 	{
 		return InterfaceResult;
 	}
 
 	TArray<FUBlueprintVariableSpec> VariableSpecs;
-	const FAssetDocumentCapabilityResult VariableResult = ParseVariableSpecs(BodyObject, VariableSpecs);
+	const FAssetDocumentCapabilityResult VariableResult = UBlueprintParseVariableSpecs(BodyObject, VariableSpecs);
 	if (!VariableResult.bSuccess)
 	{
 		return VariableResult;
@@ -3747,7 +3747,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 
 	if (DesiredParentClass)
 	{
-		const FAssetDocumentCapabilityResult ParentVariableResult = ValidateVariablesAgainstParentClass(DesiredParentClass, VariableSpecs);
+		const FAssetDocumentCapabilityResult ParentVariableResult = UBlueprintValidateVariablesAgainstParentClass(DesiredParentClass, VariableSpecs);
 		if (!ParentVariableResult.bSuccess)
 		{
 			return ParentVariableResult;
@@ -3770,7 +3770,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 
 	bool bHasClassDefaultsRegion = false;
 	TSharedPtr<FJsonObject> ClassDefaults;
-	const FAssetDocumentCapabilityResult ClassDefaultsResult = ParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ClassDefaults);
+	const FAssetDocumentCapabilityResult ClassDefaultsResult = UBlueprintParseClassDefaults(BodyObject, bHasClassDefaultsRegion, ClassDefaults);
 	if (!ClassDefaultsResult.bSuccess)
 	{
 		return ClassDefaultsResult;
@@ -3786,7 +3786,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 		}
 		if (!ParentClass || !ParentClass->IsChildOf(AActor::StaticClass()))
 		{
-			return BodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
+			return UBlueprintBodyFailure(TEXT("OwnedSCS components require an Actor-derived Blueprint parent class"), TEXT("/Body/Components"), TEXT("OwnedSCSRequiresActorParent"));
 		}
 	}
 
@@ -3816,7 +3816,7 @@ FAssetDocumentCapabilityResult FUBlueprintAssetDocumentCapability::ValidateBodyO
 	{
 		if (ValidationBlueprint)
 		{
-			const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = PreflightClassDefaults(ValidationBlueprint, ClassDefaults);
+			const FAssetDocumentCapabilityResult ClassDefaultsPreflightResult = UBlueprintPreflightClassDefaults(ValidationBlueprint, ClassDefaults);
 			if (!ClassDefaultsPreflightResult.bSuccess)
 			{
 				return ClassDefaultsPreflightResult;

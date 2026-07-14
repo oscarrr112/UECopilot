@@ -8,7 +8,7 @@
 
 namespace
 {
-FString NormalizeFilenameString(const FString& FilePath)
+FString SidecarNormalizeFilenameString(const FString& FilePath)
 {
 	if (FilePath.IsEmpty())
 	{
@@ -28,14 +28,14 @@ FString NormalizeFilenameString(const FString& FilePath)
 	return NormalizedPath;
 }
 
-FString NormalizeContentDir()
+FString SidecarNormalizeContentDir()
 {
 	FString ContentDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
 	FPaths::NormalizeDirectoryName(ContentDir);
 	return ContentDir;
 }
 
-FString NormalizeObjectPath(const FString& ObjectPath)
+FString SidecarNormalizeObjectPath(const FString& ObjectPath)
 {
 	FString NormalizedPath = ObjectPath;
 	FPaths::NormalizeFilename(NormalizedPath);
@@ -54,13 +54,13 @@ FString NormalizeObjectPath(const FString& ObjectPath)
 
 FString FAssetDocumentSidecar::ResolveObjectPathFromSidecar(const FString& FilePath)
 {
-	const FString NormalizedPath = NormalizeFilenameString(FilePath);
+	const FString NormalizedPath = SidecarNormalizeFilenameString(FilePath);
 	if (NormalizedPath.IsEmpty())
 	{
 		return FString();
 	}
 
-	const FString ContentDir = NormalizeContentDir();
+	const FString ContentDir = SidecarNormalizeContentDir();
 	FString ContentRoot = ContentDir;
 	if (!ContentRoot.EndsWith(TEXT("/")))
 	{
@@ -94,7 +94,7 @@ FString FAssetDocumentSidecar::ResolveObjectPathFromSidecar(const FString& FileP
 
 FString FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(const FString& ObjectPath)
 {
-	const FString NormalizedObjectPath = NormalizeObjectPath(ObjectPath);
+	const FString NormalizedObjectPath = SidecarNormalizeObjectPath(ObjectPath);
 	if (!NormalizedObjectPath.StartsWith(TEXT("/Game/"), ESearchCase::CaseSensitive))
 	{
 		return FString();
@@ -111,12 +111,12 @@ FString FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(const FString& O
 
 bool FAssetDocumentSidecar::LoadJsonFile(const FString& FilePath, TSharedPtr<FJsonObject>& OutJson, FString& OutError)
 {
-	return FAssetDocumentJson::LoadJsonFile(NormalizeFilenameString(FilePath), OutJson, OutError);
+	return FAssetDocumentJson::LoadJsonFile(SidecarNormalizeFilenameString(FilePath), OutJson, OutError);
 }
 
 bool FAssetDocumentSidecar::WriteJsonFile(const FString& FilePath, const TSharedPtr<FJsonObject>& Json, FString& OutError)
 {
-	return FAssetDocumentJson::WriteJsonFile(NormalizeFilenameString(FilePath), Json, OutError);
+	return FAssetDocumentJson::WriteJsonFile(SidecarNormalizeFilenameString(FilePath), Json, OutError);
 }
 
 bool FAssetDocumentSidecar::ValidateTargetMatchesSidecar(const FString& FilePath, const TSharedPtr<FJsonObject>& Json, FString& OutError)
@@ -135,24 +135,24 @@ bool FAssetDocumentSidecar::ValidateTargetMatchesSidecar(const FString& FilePath
 	FString Target;
 	if (!Json->TryGetStringField(TEXT("Target"), Target) || Target.IsEmpty())
 	{
-		OutError = FString::Printf(TEXT("Target is required for sidecar file '%s'"), *NormalizeFilenameString(FilePath));
+		OutError = FString::Printf(TEXT("Target is required for sidecar file '%s'"), *SidecarNormalizeFilenameString(FilePath));
 		return false;
 	}
 
 	const FString ExpectedTarget = ResolveObjectPathFromSidecar(FilePath);
 	if (ExpectedTarget.IsEmpty())
 	{
-		OutError = FString::Printf(TEXT("Unable to resolve expected Target from sidecar file '%s'"), *NormalizeFilenameString(FilePath));
+		OutError = FString::Printf(TEXT("Unable to resolve expected Target from sidecar file '%s'"), *SidecarNormalizeFilenameString(FilePath));
 		return false;
 	}
 
-	const FString NormalizedTarget = NormalizeObjectPath(Target);
+	const FString NormalizedTarget = SidecarNormalizeObjectPath(Target);
 	if (!NormalizedTarget.Equals(ExpectedTarget, ESearchCase::CaseSensitive))
 	{
 		OutError = FString::Printf(
 			TEXT("Target '%s' does not match sidecar file '%s'; expected '%s'"),
 			*NormalizedTarget,
-			*NormalizeFilenameString(FilePath),
+			*SidecarNormalizeFilenameString(FilePath),
 			*ExpectedTarget);
 		return false;
 	}

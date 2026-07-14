@@ -53,7 +53,7 @@ bool TryMakeVariableMemberRef(const UBlueprint* Blueprint, const UK2Node_Variabl
 	return true;
 }
 
-bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
+bool VariableTryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
 {
 	if (!Member.IsValid())
 	{
@@ -69,12 +69,12 @@ bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerCl
 		&& !OutName.IsEmpty();
 }
 
-UClass* ResolveClass(const FString& ClassPath)
+UClass* VariableResolveClass(const FString& ClassPath)
 {
 	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 }
 
-UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
+UClass* VariableResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
 {
 	if (OwnerClassPath == TEXT("Self"))
 	{
@@ -84,14 +84,14 @@ UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& Owne
 		}
 		return Blueprint ? Blueprint->ParentClass.Get() : nullptr;
 	}
-	return ResolveClass(OwnerClassPath);
+	return VariableResolveClass(OwnerClassPath);
 }
 
 FProperty* ResolveMemberProperty(const UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Member)
 {
 	FString OwnerClassPath;
 	FString PropertyName;
-	if (!TryReadMemberRef(Member, OwnerClassPath, PropertyName))
+	if (!VariableTryReadMemberRef(Member, OwnerClassPath, PropertyName))
 	{
 		return nullptr;
 	}
@@ -108,11 +108,11 @@ FProperty* ResolveMemberProperty(const UBlueprint* Blueprint, const TSharedPtr<F
 		}
 	}
 
-	UClass* OwnerClass = ResolveMemberOwnerClass(Blueprint, OwnerClassPath);
+	UClass* OwnerClass = VariableResolveMemberOwnerClass(Blueprint, OwnerClassPath);
 	return OwnerClass ? FindFProperty<FProperty>(OwnerClass, FName(*PropertyName)) : nullptr;
 }
 
-FAssetDocumentCapabilityResult MissingMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+FAssetDocumentCapabilityResult VariableMissingMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
 {
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph node '%s' requires a reflected MemberRef"), *Node.Id),
@@ -120,7 +120,7 @@ FAssetDocumentCapabilityResult MissingMemberFailure(const FAssetDocumentNodeAppl
 		TEXT("MissingGraphMemberReference"));
 }
 
-FAssetDocumentCapabilityResult UnresolvedMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+FAssetDocumentCapabilityResult VariableUnresolvedMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
 {
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph node '%s' MemberRef could not be resolved"), *Node.Id),
@@ -145,13 +145,13 @@ FAssetDocumentCapabilityResult ConfigureVariableNodeForApply(
 
 	FString OwnerClassPath;
 	FString PropertyName;
-	if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName))
+	if (!VariableTryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName))
 	{
-		return MissingMemberFailure(Context, NodeSpec);
+		return VariableMissingMemberFailure(Context, NodeSpec);
 	}
 	if (!ResolveMemberProperty(Context.Blueprint, NodeSpec.Member))
 	{
-		return UnresolvedMemberFailure(Context, NodeSpec);
+		return VariableUnresolvedMemberFailure(Context, NodeSpec);
 	}
 
 	if (OwnerClassPath == TEXT("Self"))
@@ -160,7 +160,7 @@ FAssetDocumentCapabilityResult ConfigureVariableNodeForApply(
 	}
 	else
 	{
-		UClass* OwnerClass = ResolveMemberOwnerClass(Context.Blueprint, OwnerClassPath);
+		UClass* OwnerClass = VariableResolveMemberOwnerClass(Context.Blueprint, OwnerClassPath);
 		VariableNode->VariableReference.SetExternalMember(FName(*PropertyName), OwnerClass);
 	}
 	return FAssetDocumentCapabilityResult::Success();
@@ -179,7 +179,7 @@ bool DoesVariableNodeMatchSpec(
 
 	FString OwnerClassPath;
 	FString PropertyName;
-	return TryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName)
+	return VariableTryReadMemberRef(NodeSpec.Member, OwnerClassPath, PropertyName)
 		&& VariableNode->GetVarName() == FName(*PropertyName);
 }
 }

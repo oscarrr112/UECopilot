@@ -11,7 +11,7 @@
 
 namespace
 {
-TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
+TSharedPtr<FJsonValue> CanonicalJsonTestMakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
@@ -42,8 +42,8 @@ bool FAssetDocumentCanonicalJsonObjectOrderStableTest::RunTest(const FString& Pa
 	SecondObject->SetNumberField(TEXT("B"), 2.0);
 	SecondObject->SetNumberField(TEXT("A"), 1.0);
 
-	const FString FirstHash = FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(FirstObject));
-	const FString SecondHash = FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(SecondObject));
+	const FString FirstHash = FAssetDocumentCanonicalJson::HashJsonValue(CanonicalJsonTestMakeObjectValue(FirstObject));
+	const FString SecondHash = FAssetDocumentCanonicalJson::HashJsonValue(CanonicalJsonTestMakeObjectValue(SecondObject));
 
 	TestTrue(TEXT("Hash uses an explicit algorithm prefix"), FirstHash.StartsWith(TEXT("sha1:")));
 	TestEqual(TEXT("Object key order does not change hash"), FirstHash, SecondHash);
@@ -96,11 +96,11 @@ bool FAssetDocumentCanonicalJsonExtractOnlyFieldsIgnoredTest::RunTest(const FStr
 	FAssetDocumentRegionPolicy Policy;
 	Policy.ExtractOnlyFields.Add(TEXT("_ProjectionMetrics"));
 
-	const FString BaselineHash = FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(BaselineObject), &Policy);
-	const FString ExtractOnlyHash = FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(WithExtractOnlyObject), &Policy);
+	const FString BaselineHash = FAssetDocumentCanonicalJson::HashJsonValue(CanonicalJsonTestMakeObjectValue(BaselineObject), &Policy);
+	const FString ExtractOnlyHash = FAssetDocumentCanonicalJson::HashJsonValue(CanonicalJsonTestMakeObjectValue(WithExtractOnlyObject), &Policy);
 	TestEqual(TEXT("Default and policy extract-only fields do not change hash"), BaselineHash, ExtractOnlyHash);
 
-	TSharedPtr<FJsonValue> Clone = FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(MakeObjectValue(WithExtractOnlyObject), &Policy);
+	TSharedPtr<FJsonValue> Clone = FAssetDocumentCanonicalJson::CloneWithoutExtractOnlyFields(CanonicalJsonTestMakeObjectValue(WithExtractOnlyObject), &Policy);
 	TestTrue(TEXT("Clone remains an object"), Clone.IsValid() && Clone->Type == EJson::Object);
 	if (Clone.IsValid() && Clone->Type == EJson::Object)
 	{
@@ -121,7 +121,7 @@ bool FAssetDocumentCanonicalJsonExtractOnlyFieldsIgnoredTest::RunTest(const FStr
 	TestNotEqual(
 		TEXT("Ordinary field changes still change hash"),
 		BaselineHash,
-		FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(ChangedObject), &Policy));
+		FAssetDocumentCanonicalJson::HashJsonValue(CanonicalJsonTestMakeObjectValue(ChangedObject), &Policy));
 
 	return true;
 }
@@ -138,7 +138,7 @@ bool FAssetDocumentCanonicalJsonWritesExpectedStringsTest::RunTest(const FString
 	Object->SetNumberField(TEXT("A"), 1.0);
 	TestEqual(
 		TEXT("Canonical object keys sort lexically"),
-		FAssetDocumentCanonicalJson::WriteCanonicalJson(MakeObjectValue(Object)),
+		FAssetDocumentCanonicalJson::WriteCanonicalJson(CanonicalJsonTestMakeObjectValue(Object)),
 		FString(TEXT("{\"A\":1,\"B\":2}")));
 
 	TestEqual(
@@ -162,7 +162,7 @@ bool FAssetDocumentCanonicalJsonWritesExpectedStringsTest::RunTest(const FString
 	Policy.ExtractOnlyFields.Add(TEXT("_ProjectionMetrics"));
 	TestEqual(
 		TEXT("Canonical writing filters extract-only fields"),
-		FAssetDocumentCanonicalJson::WriteCanonicalJson(MakeObjectValue(FilteredObject), &Policy),
+		FAssetDocumentCanonicalJson::WriteCanonicalJson(CanonicalJsonTestMakeObjectValue(FilteredObject), &Policy),
 		FString(TEXT("{\"Value\":7}")));
 
 	return true;
@@ -248,7 +248,7 @@ bool FAssetDocumentCanonicalJsonFiltersReservedFieldsDeepTest::RunTest(const FSt
 
 	TestEqual(
 		TEXT("Canonical filtering removes reserved names at any depth"),
-		FAssetDocumentCanonicalJson::WriteCanonicalJson(MakeObjectValue(RootObject)),
+		FAssetDocumentCanonicalJson::WriteCanonicalJson(CanonicalJsonTestMakeObjectValue(RootObject)),
 		FString(TEXT("{\"Nested\":{\"Kept\":\"nested value\"}}")));
 
 	return true;

@@ -66,7 +66,7 @@ FAssetDocumentCapabilityResult AnimationFailure(const FString& Message, const FS
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
+FString WidgetAnimationJsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 {
 	FString JsonText;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
@@ -1145,8 +1145,8 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAnimationAdapter::Apply(UWidgetBl
 	{
 		return Result;
 	}
-	const FString CurrentComparable = JsonValueToComparableString(AnimationSpecsToJsonValue(CurrentSpecs));
-	const FString DesiredComparable = JsonValueToComparableString(AnimationSpecsToJsonValue(DesiredSpecs));
+	const FString CurrentComparable = WidgetAnimationJsonValueToComparableString(AnimationSpecsToJsonValue(CurrentSpecs));
+	const FString DesiredComparable = WidgetAnimationJsonValueToComparableString(AnimationSpecsToJsonValue(DesiredSpecs));
 	if (CurrentComparable == DesiredComparable)
 	{
 		return FAssetDocumentCapabilityResult::Success(TEXT("Applied WidgetBlueprint Animations"));
@@ -1241,7 +1241,7 @@ FAssetDocumentCapabilityResult FWidgetBlueprintAnimationAdapter::Diff(
 	Entry->SetStringField(TEXT("path"), TEXT("/Body/Animations"));
 	Entry->SetStringField(
 		TEXT("status"),
-		JsonValueToComparableString(CurrentValue) == JsonValueToComparableString(DesiredValue) ? TEXT("unchanged") : TEXT("changed"));
+		WidgetAnimationJsonValueToComparableString(CurrentValue) == WidgetAnimationJsonValueToComparableString(DesiredValue) ? TEXT("unchanged") : TEXT("changed"));
 	Entry->SetField(TEXT("current"), CurrentValue.IsValid() ? CurrentValue : MakeShared<FJsonValueNull>());
 	Entry->SetField(TEXT("desired"), DesiredValue.IsValid() ? DesiredValue : MakeShared<FJsonValueNull>());
 	OutDiffEntries.Add(MakeShared<FJsonValueObject>(Entry));

@@ -16,7 +16,7 @@
 
 namespace
 {
-TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
+TSharedPtr<FJsonValue> RegionCanonicalizerTestMakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
@@ -86,7 +86,7 @@ TSharedPtr<FJsonObject> MakeGraphNode(
 	Node->SetStringField(TEXT("Comment"), TEXT("keep authored comment"));
 
 	TArray<TSharedPtr<FJsonValue>> PinOverrides;
-	PinOverrides.Add(MakeObjectValue(MakeGraphPinOverride(TEXT("Message"), TEXT("Input"), TEXT("Hello")).ToSharedRef()));
+	PinOverrides.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphPinOverride(TEXT("Message"), TEXT("Input"), TEXT("Hello")).ToSharedRef()));
 	Node->SetArrayField(TEXT("PinOverrides"), MoveTemp(PinOverrides));
 	return Node;
 }
@@ -121,13 +121,13 @@ TSharedPtr<FJsonValue> MakeGraphRegionValue(
 	}
 
 	TArray<TSharedPtr<FJsonValue>> Nodes;
-	Nodes.Add(MakeObjectValue(MakeGraphNode(
+	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphNode(
 		EventNodeId,
 		TEXT("/Script/BlueprintGraph.K2Node_Event"),
 		MakeGraphMember(TEXT("Event"), TEXT("/Script/Engine.Actor"), TEXT("ReceiveBeginPlay")),
 		bIncludeGeneratedMetadata ? TEXT("E0B14B7C4E0F4F0BA0E5E4D600000002") : nullptr,
 		bIncludeGeneratedMetadata ? TEXT("Event") : nullptr).ToSharedRef()));
-	Nodes.Add(MakeObjectValue(MakeGraphNode(
+	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphNode(
 		CallNodeId,
 		TEXT("/Script/BlueprintGraph.K2Node_CallFunction"),
 		MakeGraphMember(TEXT("Function"), TEXT("/Script/Engine.KismetSystemLibrary"), TEXT("PrintString")),
@@ -136,11 +136,11 @@ TSharedPtr<FJsonValue> MakeGraphRegionValue(
 	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 
 	TArray<TSharedPtr<FJsonValue>> Links;
-	Links.Add(MakeObjectValue(MakeGraphLink(EventNodeId, TEXT("Then"), CallNodeId, TEXT("execute")).ToSharedRef()));
+	Links.Add(RegionCanonicalizerTestMakeObjectValue(MakeGraphLink(EventNodeId, TEXT("Then"), CallNodeId, TEXT("execute")).ToSharedRef()));
 	Graph->SetArrayField(TEXT("Links"), MoveTemp(Links));
 
 	TArray<TSharedPtr<FJsonValue>> Graphs;
-	Graphs.Add(MakeObjectValue(Graph.ToSharedRef()));
+	Graphs.Add(RegionCanonicalizerTestMakeObjectValue(Graph.ToSharedRef()));
 	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
 }
 
@@ -151,12 +151,12 @@ TSharedPtr<FJsonValue> MakeSingleNodeGraphRegionValue(TSharedPtr<FJsonObject> No
 	Graph->SetStringField(TEXT("Schema"), TEXT("K2"));
 
 	TArray<TSharedPtr<FJsonValue>> Nodes;
-	Nodes.Add(MakeObjectValue(Node.ToSharedRef()));
+	Nodes.Add(RegionCanonicalizerTestMakeObjectValue(Node.ToSharedRef()));
 	Graph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
 	Graph->SetArrayField(TEXT("Links"), TArray<TSharedPtr<FJsonValue>>());
 
 	TArray<TSharedPtr<FJsonValue>> Graphs;
-	Graphs.Add(MakeObjectValue(Graph.ToSharedRef()));
+	Graphs.Add(RegionCanonicalizerTestMakeObjectValue(Graph.ToSharedRef()));
 	return MakeShared<FJsonValueArray>(MoveTemp(Graphs));
 }
 
@@ -199,8 +199,8 @@ TSharedPtr<FJsonValue> MakeCurveObjectValue(const TCHAR* Name, const TCHAR* Inte
 	TSharedRef<FJsonObject> Curve = MakeShared<FJsonObject>();
 	Curve->SetStringField(TEXT("Name"), Name);
 	Curve->SetStringField(TEXT("CurveType"), TEXT("Float"));
-	Curve->SetArrayField(TEXT("Keys"), {MakeObjectValue(Key)});
-	return MakeObjectValue(Curve);
+	Curve->SetArrayField(TEXT("Keys"), {RegionCanonicalizerTestMakeObjectValue(Key)});
+	return RegionCanonicalizerTestMakeObjectValue(Curve);
 }
 }
 
@@ -230,12 +230,12 @@ bool FAssetDocumentRegionCanonicalizerIdentityHashMatchesCanonicalJsonTest::RunT
 
 	TestEqual(
 		TEXT("Identity canonicalizer keeps canonical json hash"),
-		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeObjectValue(Object)),
-		FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(Object), &Policy));
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, RegionCanonicalizerTestMakeObjectValue(Object)),
+		FAssetDocumentCanonicalJson::HashJsonValue(RegionCanonicalizerTestMakeObjectValue(Object), &Policy));
 	TestEqual(
 		TEXT("Identity canonicalizer ignores extract-only fields"),
-		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, MakeObjectValue(Object)),
-		FAssetDocumentCanonicalJson::HashJsonValue(MakeObjectValue(BaselineObject), &Policy));
+		FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, RegionCanonicalizerTestMakeObjectValue(Object)),
+		FAssetDocumentCanonicalJson::HashJsonValue(RegionCanonicalizerTestMakeObjectValue(BaselineObject), &Policy));
 
 	return true;
 }
@@ -260,7 +260,7 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 	Context.Policy = &Policy;
 	Context.Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence;
 
-	const TSharedPtr<FJsonValue> Writeback = FAssetDocumentRegionCanonicalizer::CanonicalizeForSidecarWriteback(Context, MakeObjectValue(Object));
+	const TSharedPtr<FJsonValue> Writeback = FAssetDocumentRegionCanonicalizer::CanonicalizeForSidecarWriteback(Context, RegionCanonicalizerTestMakeObjectValue(Object));
 	TestTrue(TEXT("Writeback remains object"), Writeback.IsValid() && Writeback->Type == EJson::Object);
 	if (Writeback.IsValid() && Writeback->Type == EJson::Object)
 	{
@@ -294,8 +294,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesGeneratedId
 
 	TestEqual(
 		TEXT("Generated object identity fields hash equally"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Second)));
 
 	return true;
 }
@@ -319,8 +319,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesGeneratedEmpty
 
 	TestEqual(
 		TEXT("Empty generated diagnostic containers hash equally"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Baseline)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithGeneratedContainers)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Baseline)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(WithGeneratedContainers)));
 
 	return true;
 }
@@ -345,8 +345,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesManagedFloa
 
 	TestEqual(
 		TEXT("Managed float fields hash at reflected property precision"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Extracted), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -382,8 +382,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyRemovesProjectDefault
 
 	TestEqual(
 		TEXT("Project default compression asset refs hash like omitted default-diff fields"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Extracted), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -419,8 +419,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsExtendedDefaultA
 
 	TestNotEqual(
 		TEXT("Default AssetRef objects with authored extension fields remain semantic"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Authored), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Extracted), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Authored), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Extracted), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -476,8 +476,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineFlo
 
 	TestEqual(
 		TEXT("Timeline Time and Duration fields hash at reflected float precision"),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(AuthoredNotifyState)}), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(ExtractedNotifyState)}), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(AuthoredNotifyState)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(ExtractedNotifyState)}), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -510,8 +510,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArr
 
 	TestEqual(
 		TEXT("Timeline arrays hash independently of post-apply sort order"),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(AuthoredRight), MakeObjectValue(AuthoredLeft)}), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(ExtractedLeft), MakeObjectValue(ExtractedRight)}), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(AuthoredRight), RegionCanonicalizerTestMakeObjectValue(AuthoredLeft)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(ExtractedLeft), RegionCanonicalizerTestMakeObjectValue(ExtractedRight)}), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -552,8 +552,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyNormalizesTimelineArr
 
 	TestEqual(
 		TEXT("Timeline sort uses a deterministic semantic tie-breaker"),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(FirstShort), MakeObjectValue(FirstLong)}), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(SecondLong), MakeObjectValue(SecondShort)}), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(FirstShort), RegionCanonicalizerTestMakeObjectValue(FirstLong)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(SecondLong), RegionCanonicalizerTestMakeObjectValue(SecondShort)}), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -579,8 +579,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesObject
 
 	TestNotEqual(
 		TEXT("Properties.ObjectPath remains semantic"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Second)));
 
 	return true;
 }
@@ -613,8 +613,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesTimeSe
 
 	TestNotEqual(
 		TEXT("Non-timeline Properties.Time and Properties.Duration remain semantic"),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(First)}), UAnimSequence::StaticClass()),
-		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{MakeObjectValue(Second)}), UAnimSequence::StaticClass()));
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(First)}), UAnimSequence::StaticClass()),
+		HashAnimSequencePostApplyRegion(Policy, MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>{RegionCanonicalizerTestMakeObjectValue(Second)}), UAnimSequence::StaticClass()));
 
 	return true;
 }
@@ -641,8 +641,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsPropertiesDiagno
 
 	TestNotEqual(
 		TEXT("Properties.Diagnostics remains semantic"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithoutDiagnostics)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(WithDiagnostics)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(WithoutDiagnostics)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(WithDiagnostics)));
 
 	return true;
 }
@@ -664,8 +664,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameTestObjectPa
 
 	TestNotEqual(
 		TEXT("/Game/Test ObjectPath remains hash-significant"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Second)));
 
 	return true;
 }
@@ -687,8 +687,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsGameAssetDocumen
 
 	TestNotEqual(
 		TEXT("/Game/AssetDocumentTests ObjectPath remains hash-significant"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Second)));
 
 	return true;
 }
@@ -710,8 +710,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsAssetRefLikeFiel
 
 	TestNotEqual(
 		TEXT("Asset-ref-like fields remain hash-significant"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(First)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(Second)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(First)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(Second)));
 
 	return true;
 }
@@ -731,8 +731,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsNameAndClassSema
 	SecondName->SetStringField(TEXT("Name"), TEXT("AuthoredNameB"));
 	TestNotEqual(
 		TEXT("Name remains hash-significant"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(FirstName)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(SecondName)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(FirstName)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(SecondName)));
 
 	TSharedRef<FJsonObject> FirstClass = MakeShared<FJsonObject>();
 	FirstClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotify"));
@@ -740,8 +740,8 @@ bool FAssetDocumentRegionCanonicalizerAnimSequencePostApplyKeepsNameAndClassSema
 	SecondClass->SetStringField(TEXT("Class"), TEXT("/Script/Engine.AnimNotifyState"));
 	TestNotEqual(
 		TEXT("Class remains hash-significant"),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(FirstClass)),
-		HashAnimSequencePostApplyRegion(Policy, MakeObjectValue(SecondClass)));
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(FirstClass)),
+		HashAnimSequencePostApplyRegion(Policy, RegionCanonicalizerTestMakeObjectValue(SecondClass)));
 
 	return true;
 }

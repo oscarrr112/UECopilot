@@ -51,7 +51,7 @@ struct FEditorLayoutSpec
 	TArray<FEditorLayoutCommentSpec> Comments;
 };
 
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString EditorLayoutRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -656,7 +656,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::Validate
 	const TSharedPtr<FJsonValue>& DesiredValue) const
 {
 	FEditorLayoutSpec Spec;
-	return ParseLayout(DesiredValue, RegionPath(Context), Spec);
+	return ParseLayout(DesiredValue, EditorLayoutRegionPath(Context), Spec);
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyRegion(
@@ -667,7 +667,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	bOutChanged = false;
 
 	FEditorLayoutSpec Spec;
-	FAssetDocumentCapabilityResult Result = ParseLayout(DesiredValue, RegionPath(Context), Spec);
+	FAssetDocumentCapabilityResult Result = ParseLayout(DesiredValue, EditorLayoutRegionPath(Context), Spec);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -680,7 +680,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	FAssetDocumentEditorLayoutGraphState GraphState;
 	if (!Hooks.PrepareGraphForApply)
 	{
-		return Failure(RegionPath(Context), TEXT("InvalidEditorLayoutAdapterConfig"), TEXT("EditorLayout adapter requires a graph apply hook"));
+		return Failure(EditorLayoutRegionPath(Context), TEXT("InvalidEditorLayoutAdapterConfig"), TEXT("EditorLayout adapter requires a graph apply hook"));
 	}
 	Result = Hooks.PrepareGraphForApply(Context, GraphState);
 	if (!Result.bSuccess)
@@ -689,7 +689,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::ApplyReg
 	}
 	if (!GraphState.Graph)
 	{
-		return Failure(RegionPath(Context), TEXT("MissingEditorLayoutGraph"), TEXT("EditorLayout apply requires an editor graph"));
+		return Failure(EditorLayoutRegionPath(Context), TEXT("MissingEditorLayoutGraph"), TEXT("EditorLayout apply requires an editor graph"));
 	}
 
 	for (const FEditorLayoutNodeSpec& Node : Spec.Nodes)
@@ -809,7 +809,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::DiffRegi
 	TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const
 {
 	FEditorLayoutSpec DesiredSpec;
-	FAssetDocumentCapabilityResult Result = ParseLayout(DesiredValue, RegionPath(Context), DesiredSpec);
+	FAssetDocumentCapabilityResult Result = ParseLayout(DesiredValue, EditorLayoutRegionPath(Context), DesiredSpec);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -827,7 +827,7 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::DiffRegi
 		{
 			return Result;
 		}
-		Result = ValidateSemanticReferences(DesiredValue, RegionPath(Context), SemanticIds);
+		Result = ValidateSemanticReferences(DesiredValue, EditorLayoutRegionPath(Context), SemanticIds);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -887,8 +887,8 @@ FAssetDocumentCapabilityResult FAssetDocumentEditorLayoutRegionAdapter::DiffRegi
 
 	TMap<FString, TSharedPtr<FJsonValue>> CurrentValues;
 	TMap<FString, TSharedPtr<FJsonValue>> DesiredValues;
-	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(CurrentObject), RegionPath(Context), CurrentValues);
-	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(DesiredObject), RegionPath(Context), DesiredValues);
+	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(CurrentObject), EditorLayoutRegionPath(Context), CurrentValues);
+	CollectLayoutDiffValues(MakeShared<FJsonValueObject>(DesiredObject), EditorLayoutRegionPath(Context), DesiredValues);
 	AddMapDiffs(CurrentValues, DesiredValues, OutDiffEntries);
 	return FAssetDocumentCapabilityResult::Success(TEXT("Diffed EditorLayout"));
 }

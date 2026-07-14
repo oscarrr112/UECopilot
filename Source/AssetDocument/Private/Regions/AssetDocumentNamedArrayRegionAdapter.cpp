@@ -6,7 +6,7 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString NamedArrayRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -15,7 +15,7 @@ FString FieldPath(const FAssetDocumentRegionContext& Context, const int32 Index,
 {
 	return FString::Printf(
 		TEXT("%s/%d/%s"),
-		*RegionPath(Context),
+		*NamedArrayRegionPath(Context),
 		Index,
 		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(FieldName));
 }
@@ -27,7 +27,7 @@ bool IsArrayRegion(const FAssetDocumentRegionContext& Context)
 		|| Context.Policy->RegionKind == EAssetDocumentRegionKind::Timeline;
 }
 
-FAssetDocumentCapabilityResult Failure(
+FAssetDocumentCapabilityResult NamedArrayFailure(
 	const FAssetDocumentRegionContext& Context,
 	const int32 Index,
 	const FString& FieldName,
@@ -43,7 +43,7 @@ FAssetDocumentCapabilityResult MissingHookFailure(
 	const FString& Operation)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(
-		RegionPath(Context),
+		NamedArrayRegionPath(Context),
 		Code,
 		FString::Printf(TEXT("Named array region %s requires an explicit %s hook"), *Context.BodyPath, *Operation));
 }
@@ -160,7 +160,7 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 {
 	TArray<TSharedPtr<FJsonValue>> Values;
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentJsonRegionUtils::RequireArrayValue(Value, RegionPath(Context), Values);
+		FAssetDocumentJsonRegionUtils::RequireArrayValue(Value, NamedArrayRegionPath(Context), Values);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -172,7 +172,7 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 		TSharedPtr<FJsonObject> ElementObject;
 		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(
 			Values[Index],
-			FString::Printf(TEXT("%s/%d"), *RegionPath(Context), Index),
+			FString::Printf(TEXT("%s/%d"), *NamedArrayRegionPath(Context), Index),
 			ElementObject);
 		if (!Result.bSuccess)
 		{
@@ -183,7 +183,7 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 		FString IdentityField;
 		if (!TryReadIdentity(ElementObject.ToSharedRef(), Identity, IdentityField))
 		{
-			return Failure(
+			return NamedArrayFailure(
 				Context,
 				Index,
 				Config.IdentityField,
@@ -194,7 +194,7 @@ FAssetDocumentCapabilityResult FAssetDocumentNamedArrayRegionAdapter::ParseEleme
 		const FString NormalizedIdentity = NormalizeIdentity(Identity);
 		if (SeenIdentities.Contains(NormalizedIdentity))
 		{
-			return Failure(
+			return NamedArrayFailure(
 				Context,
 				Index,
 				IdentityField,

@@ -29,7 +29,7 @@
 
 namespace
 {
-const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId)
+const FAssetDocumentRegionPolicy* BlackboardTestFindPolicyByRegionId(const TArray<FAssetDocumentRegionPolicy>& Policies, FName RegionId)
 {
 	return Policies.FindByPredicate([RegionId](const FAssetDocumentRegionPolicy& Policy)
 	{
@@ -37,7 +37,7 @@ const FAssetDocumentRegionPolicy* FindPolicyByRegionId(const TArray<FAssetDocume
 	});
 }
 
-TSharedRef<FJsonObject> MakeBlackboardKeyJson(
+TSharedRef<FJsonObject> BlackboardTestMakeBlackboardKeyJson(
 	const FString& Name,
 	const FString& Type,
 	const FString& BaseClass = TEXT(""),
@@ -106,17 +106,17 @@ TArray<FAssetDocumentBlackboardKeySpec> ParseKeysForTest(
 	return Specs;
 }
 
-FString MakeObjectPathFromTarget(const FString& Target)
+FString BlackboardTestMakeObjectPathFromTarget(const FString& Target)
 {
 	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 }
 
 UBlackboardData* LoadBlackboardForTarget(const FString& Target)
 {
-	return LoadObject<UBlackboardData>(nullptr, *MakeObjectPathFromTarget(Target));
+	return LoadObject<UBlackboardData>(nullptr, *BlackboardTestMakeObjectPathFromTarget(Target));
 }
 
-TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
+TSharedPtr<FJsonObject> BlackboardTestMakeAssetRef(const FString& Path)
 {
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
@@ -124,7 +124,7 @@ TSharedPtr<FJsonObject> MakeAssetRef(const FString& Path)
 	return Fragment;
 }
 
-TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
+TSharedPtr<FJsonObject> BlackboardTestMakeClassRef(const FString& Path)
 {
 	TSharedPtr<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -132,7 +132,7 @@ TSharedPtr<FJsonObject> MakeClassRef(const FString& Path)
 	return Fragment;
 }
 
-TSharedPtr<FJsonObject> MakeBlackboardDataDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
+TSharedPtr<FJsonObject> BlackboardTestMakeBlackboardDataDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
 {
 	TSharedPtr<FJsonObject> Document = MakeShared<FJsonObject>();
 	Document->SetNumberField(TEXT("SchemaVersion"), 1);
@@ -145,7 +145,7 @@ TSharedPtr<FJsonObject> MakeBlackboardDataDocument(const FString& Target, TShare
 	return Document;
 }
 
-TSharedPtr<FJsonObject> MakeBlackboardDataBody(TSharedPtr<FJsonObject> Parent, TArray<TSharedRef<FJsonObject>> Keys)
+TSharedPtr<FJsonObject> BlackboardTestMakeBlackboardDataBody(TSharedPtr<FJsonObject> Parent, TArray<TSharedRef<FJsonObject>> Keys)
 {
 	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
 	if (Parent.IsValid())
@@ -167,7 +167,7 @@ TSharedPtr<FJsonObject> MakeBlackboardDataBody(TSharedPtr<FJsonObject> Parent, T
 	return Body;
 }
 
-FAssetDocumentApplyRequest MakeApplyRequest(TSharedPtr<FJsonObject> Document)
+FAssetDocumentApplyRequest BlackboardTestMakeApplyRequest(TSharedPtr<FJsonObject> Document)
 {
 	FAssetDocumentApplyRequest Request;
 	Request.Document = Document;
@@ -175,7 +175,7 @@ FAssetDocumentApplyRequest MakeApplyRequest(TSharedPtr<FJsonObject> Document)
 	return Request;
 }
 
-bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedCode, const FString& ExpectedPath)
+bool BlackboardTestResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedCode, const FString& ExpectedPath)
 {
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode, &ExpectedPath](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -198,7 +198,7 @@ TSharedPtr<FJsonObject> GetExtractedBody(const FAssetDocumentResult& ExtractResu
 	return nullptr;
 }
 
-bool DiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Payload)
+bool BlackboardTestDiffPayloadHasNoChangedOrFailedEntries(const TSharedPtr<FJsonObject>& Payload)
 {
 	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
 	const TArray<TSharedPtr<FJsonValue>>* Failed = nullptr;
@@ -231,7 +231,7 @@ bool DiffPayloadHasChangedPath(const TSharedPtr<FJsonObject>& Payload, const FSt
 	});
 }
 
-bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+bool BlackboardTestWriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
 {
 	FString Error;
 	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
@@ -243,7 +243,7 @@ bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, con
 	return bWrote;
 }
 
-bool LoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSharedPtr<FJsonObject>& OutDocument)
+bool BlackboardTestLoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSharedPtr<FJsonObject>& OutDocument)
 {
 	FString Error;
 	const bool bLoaded = FAssetDocumentSidecar::LoadJsonFile(SidecarPath, OutDocument, Error);
@@ -255,7 +255,7 @@ bool LoadSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, TSha
 	return bLoaded;
 }
 
-bool ExpectSyncRegions(
+bool BlackboardTestExpectSyncRegions(
 	FAutomationTestBase* Test,
 	const TSharedPtr<FJsonObject>& Document,
 	const TArray<FString>& ExpectedRegionIds)
@@ -309,12 +309,12 @@ bool ExpectRepeatedApplyPreservesSingleKeyObject(
 	const FString& Target,
 	const TSharedRef<FJsonObject>& KeyJson)
 {
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {KeyJson}));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {KeyJson}));
 
 	FAssetDocumentService Service;
-	const FAssetDocumentResult FirstApplyResult = Service.Apply(MakeApplyRequest(Document));
+	const FAssetDocumentResult FirstApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	Test.TestTrue(TEXT("Initial blackboard apply succeeds"), FirstApplyResult.IsSuccess());
 	if (!FirstApplyResult.IsSuccess())
 	{
@@ -332,7 +332,7 @@ bool ExpectRepeatedApplyPreservesSingleKeyObject(
 	UBlackboardKeyType* FirstKeyType = Blackboard->Keys[0].KeyType;
 	const int32 FirstChildCount = CountBlackboardKeyTypeChildren(Blackboard);
 
-	const FAssetDocumentResult SecondApplyResult = Service.Apply(MakeApplyRequest(Document));
+	const FAssetDocumentResult SecondApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	Test.TestTrue(TEXT("Repeated identical blackboard apply succeeds"), SecondApplyResult.IsSuccess());
 	if (!SecondApplyResult.IsSuccess())
 	{
@@ -354,12 +354,12 @@ bool ExpectApplyThenDiffUnchangedForSingleKey(
 	const FString& Target,
 	const TSharedRef<FJsonObject>& KeyJson)
 {
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {KeyJson}));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {KeyJson}));
 
 	FAssetDocumentService Service;
-	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+	const FAssetDocumentResult ApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	Test.TestTrue(TEXT("Initial blackboard apply succeeds"), ApplyResult.IsSuccess());
 	if (!ApplyResult.IsSuccess())
 	{
@@ -377,7 +377,7 @@ bool ExpectApplyThenDiffUnchangedForSingleKey(
 		return false;
 	}
 
-	Test.TestTrue(TEXT("Diff against same authored document has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	Test.TestTrue(TEXT("Diff against same authored document has no changed or failed entries"), BlackboardTestDiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 }
@@ -420,8 +420,8 @@ bool FAssetDocumentBlackboardDataProfileShapeTest::RunTest(const FString&)
 	TestNotNull(TEXT("Keys resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("Keys")));
 
 	const TArray<FAssetDocumentRegionPolicy> Policies = RegisteredProfile->GetRegionPolicies();
-	TestNotNull(TEXT("Policy includes Body.Parent"), FindPolicyByRegionId(Policies, TEXT("Body.Parent")));
-	TestNotNull(TEXT("Policy includes Body.Keys"), FindPolicyByRegionId(Policies, TEXT("Body.Keys")));
+	TestNotNull(TEXT("Policy includes Body.Parent"), BlackboardTestFindPolicyByRegionId(Policies, TEXT("Body.Parent")));
+	TestNotNull(TEXT("Policy includes Body.Keys"), BlackboardTestFindPolicyByRegionId(Policies, TEXT("Body.Keys")));
 	return true;
 }
 
@@ -453,7 +453,7 @@ bool FAssetDocumentBlackboardKeyAliasResolutionTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(Expectation.Alias + TEXT("Key"), Expectation.Alias),
+			BlackboardTestMakeBlackboardKeyJson(Expectation.Alias + TEXT("Key"), Expectation.Alias),
 			FString::Printf(TEXT("/Body/Keys/%sKey"), *Expectation.Alias),
 			Spec);
 		TestTrue(FString::Printf(TEXT("%s parses"), *Expectation.Alias), ParseResult.bSuccess);
@@ -505,7 +505,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> EmptyNameJson = MakeBlackboardKeyJson(TEXT(""), TEXT("Bool"));
+		TSharedRef<FJsonObject> EmptyNameJson = BlackboardTestMakeBlackboardKeyJson(TEXT(""), TEXT("Bool"));
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
 			*this,
@@ -515,7 +515,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> InvalidDescriptionJson = MakeBlackboardKeyJson(TEXT("BadDescription"), TEXT("Bool"));
+		TSharedRef<FJsonObject> InvalidDescriptionJson = BlackboardTestMakeBlackboardKeyJson(TEXT("BadDescription"), TEXT("Bool"));
 		InvalidDescriptionJson->SetNumberField(TEXT("Description"), 42.0);
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
@@ -526,7 +526,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> InvalidInstanceSyncedJson = MakeBlackboardKeyJson(TEXT("BadSync"), TEXT("Bool"));
+		TSharedRef<FJsonObject> InvalidInstanceSyncedJson = BlackboardTestMakeBlackboardKeyJson(TEXT("BadSync"), TEXT("Bool"));
 		InvalidInstanceSyncedJson->SetStringField(TEXT("bInstanceSynced"), TEXT("true"));
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
@@ -537,7 +537,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> InvalidBaseClassJson = MakeBlackboardKeyJson(TEXT("BadBaseClass"), TEXT("Object"));
+		TSharedRef<FJsonObject> InvalidBaseClassJson = BlackboardTestMakeBlackboardKeyJson(TEXT("BadBaseClass"), TEXT("Object"));
 		InvalidBaseClassJson->SetBoolField(TEXT("BaseClass"), true);
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
@@ -572,7 +572,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> InvalidEnumJson = MakeBlackboardKeyJson(TEXT("BadEnum"), TEXT("Enum"));
+		TSharedRef<FJsonObject> InvalidEnumJson = BlackboardTestMakeBlackboardKeyJson(TEXT("BadEnum"), TEXT("Enum"));
 		InvalidEnumJson->SetNumberField(TEXT("Enum"), 42.0);
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
@@ -583,7 +583,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	}
 
 	{
-		TSharedRef<FJsonObject> UnknownFieldJson = MakeBlackboardKeyJson(TEXT("Typo"), TEXT("Bool"));
+		TSharedRef<FJsonObject> UnknownFieldJson = BlackboardTestMakeBlackboardKeyJson(TEXT("Typo"), TEXT("Bool"));
 		UnknownFieldJson->SetStringField(TEXT("Typo/Field"), TEXT("Oops"));
 		FAssetDocumentBlackboardKeySpec Spec;
 		ExpectSingleDiagnostic(
@@ -596,7 +596,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("Target"), TEXT("Object")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Object")),
 			TEXT("/Body/Keys/Target"),
 			Spec);
 		TestTrue(TEXT("Object key parses before validation"), ParseResult.bSuccess);
@@ -610,7 +610,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("ChosenClass"), TEXT("Class")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("ChosenClass"), TEXT("Class")),
 			TEXT("/Body/Keys/ChosenClass"),
 			Spec);
 		TestTrue(TEXT("Class key parses before validation"), ParseResult.bSuccess);
@@ -624,7 +624,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("Mode"), TEXT("Enum")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Mode"), TEXT("Enum")),
 			TEXT("/Body/Keys/Mode"),
 			Spec);
 		TestTrue(TEXT("Enum key parses before validation"), ParseResult.bSuccess);
@@ -638,7 +638,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(
+			BlackboardTestMakeBlackboardKeyJson(
 				TEXT("NativeMode"),
 				TEXT(""),
 				TEXT(""),
@@ -657,7 +657,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus")),
 			TEXT("/Body/Keys/Broken"),
 			Spec);
 		TestTrue(TEXT("Unknown type parses before resolution"), ParseResult.bSuccess);
@@ -674,7 +674,7 @@ bool FAssetDocumentBlackboardKeyRequiredReferenceTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("BrokenCustomPath"), TEXT("Bogus")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("BrokenCustomPath"), TEXT("Bogus")),
 			TEXT("/Custom/Keys/BrokenCustomPath"),
 			Spec);
 		TestTrue(TEXT("Unknown type parses before path-aware validation"), ParseResult.bSuccess);
@@ -698,7 +698,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 {
 	FAssetDocumentBlackboardKeySpec Spec;
 	const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT(""),
 			TEXT(""),
@@ -718,7 +718,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 
 	FAssetDocumentBlackboardKeySpec MatchingSpec;
 	const FAssetDocumentCapabilityResult MatchingParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("MatchingExplicitBool"),
 			TEXT("Bool"),
 			TEXT(""),
@@ -733,7 +733,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 
 	FAssetDocumentBlackboardKeySpec ConflictingSpec;
 	const FAssetDocumentCapabilityResult ConflictingParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ConflictingExplicitBool"),
 			TEXT("Bool"),
 			TEXT(""),
@@ -750,7 +750,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 
 	FAssetDocumentBlackboardKeySpec LoadableSpec;
 	const FAssetDocumentCapabilityResult LoadableParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitNativeEnum"),
 			TEXT(""),
 			TEXT(""),
@@ -770,7 +770,7 @@ bool FAssetDocumentBlackboardKeyExplicitClassTest::RunTest(const FString&)
 
 	FAssetDocumentBlackboardKeySpec InvalidSpec;
 	const FAssetDocumentCapabilityResult InvalidParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("InvalidExplicit"),
 			TEXT(""),
 			TEXT(""),
@@ -809,7 +809,7 @@ bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("Target"), TEXT("Object"), ActorClassPath),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Object"), ActorClassPath),
 			TEXT("/Body/Keys/Target"),
 			Spec);
 		TestTrue(TEXT("Object metadata key parses"), ParseResult.bSuccess);
@@ -827,7 +827,7 @@ bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("ChosenClass"), TEXT("Class"), ActorClassPath),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("ChosenClass"), TEXT("Class"), ActorClassPath),
 			TEXT("/Body/Keys/ChosenClass"),
 			Spec);
 		TestTrue(TEXT("Class metadata key parses"), ParseResult.bSuccess);
@@ -843,7 +843,7 @@ bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(TEXT("Mode"), TEXT("Enum"), TEXT(""), EnumPath),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Mode"), TEXT("Enum"), TEXT(""), EnumPath),
 			TEXT("/Body/Keys/Mode"),
 			Spec);
 		TestTrue(TEXT("Enum metadata key parses"), ParseResult.bSuccess);
@@ -859,7 +859,7 @@ bool FAssetDocumentBlackboardKeyResolvedMetadataTest::RunTest(const FString&)
 	{
 		FAssetDocumentBlackboardKeySpec Spec;
 		const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-			MakeBlackboardKeyJson(
+			BlackboardTestMakeBlackboardKeyJson(
 				TEXT("NativeMode"),
 				TEXT(""),
 				TEXT(""),
@@ -894,18 +894,18 @@ bool FAssetDocumentBlackboardKeyPublicObjectRefsTest::RunTest(const FString&)
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_PublicObjectRefs");
 	const FString EnumPath = StaticEnum<EBasicKeyOperation::Type>()->GetPathName();
 
-	TSharedRef<FJsonObject> ObjectKey = MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"));
-	ObjectKey->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+	TSharedRef<FJsonObject> ObjectKey = BlackboardTestMakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"));
+	ObjectKey->SetObjectField(TEXT("BaseClass"), BlackboardTestMakeClassRef(AActor::StaticClass()->GetPathName()));
 
-	TSharedRef<FJsonObject> NativeEnumKey = MakeBlackboardKeyJson(TEXT("NativeMode"), TEXT(""));
-	NativeEnumKey->SetObjectField(TEXT("KeyTypeClass"), MakeClassRef(UBlackboardKeyType_NativeEnum::StaticClass()->GetPathName()));
-	NativeEnumKey->SetObjectField(TEXT("Enum"), MakeAssetRef(EnumPath));
+	TSharedRef<FJsonObject> NativeEnumKey = BlackboardTestMakeBlackboardKeyJson(TEXT("NativeMode"), TEXT(""));
+	NativeEnumKey->SetObjectField(TEXT("KeyTypeClass"), BlackboardTestMakeClassRef(UBlackboardKeyType_NativeEnum::StaticClass()->GetPathName()));
+	NativeEnumKey->SetObjectField(TEXT("Enum"), BlackboardTestMakeAssetRef(EnumPath));
 
 	FAssetDocumentService Service;
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {ObjectKey, NativeEnumKey}));
-	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {ObjectKey, NativeEnumKey}));
+	const FAssetDocumentResult ApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	TestTrue(TEXT("public object-form blackboard apply succeeds"), ApplyResult.IsSuccess());
 	if (!ApplyResult.IsSuccess())
 	{
@@ -954,7 +954,7 @@ bool FAssetDocumentBlackboardKeyPublicObjectRefsTest::RunTest(const FString&)
 	DiffRequest.Document = Document;
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("public object-form blackboard diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("public object-form blackboard diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	TestTrue(TEXT("public object-form blackboard diff is unchanged"), BlackboardTestDiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 
@@ -967,7 +967,7 @@ bool FAssetDocumentBlackboardKeyMetadataTest::RunTest(const FString&)
 {
 	FAssetDocumentBlackboardKeySpec Spec;
 	const FAssetDocumentCapabilityResult ParseResult = FAssetDocumentBlackboardKeySchemaUtils::ParseKey(
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("Target"),
 			TEXT("Bool"),
 			TEXT(""),
@@ -1055,8 +1055,8 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentBlackboardKeyDuplicateLocalNamesTest::RunTest(const FString&)
 {
 	const TArray<TSharedRef<FJsonObject>> Keys = {
-		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
-		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Int")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Int")),
 	};
 	const TArray<FAssetDocumentBlackboardKeySpec> Specs = ParseKeysForTest(*this, Keys);
 	ExpectSingleDiagnostic(
@@ -1158,9 +1158,9 @@ bool FAssetDocumentBlackboardDataParentInheritanceTest::RunTest(const FString&)
 	const FString ChildTarget = TEXT("/Game/AssetDocumentTests/BB_AD_ParentInheritance");
 
 	FAssetDocumentService Service;
-	const FAssetDocumentResult ParentApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ParentApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ParentTarget,
-		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Bool"))}))));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Bool"))}))));
 	TestTrue(TEXT("Parent blackboard apply succeeds"), ParentApplyResult.IsSuccess());
 	if (!ParentApplyResult.IsSuccess())
 	{
@@ -1168,11 +1168,11 @@ bool FAssetDocumentBlackboardDataParentInheritanceTest::RunTest(const FString&)
 		return false;
 	}
 
-	const FAssetDocumentResult ChildApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ChildApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ChildTarget,
-		MakeBlackboardDataBody(
-			MakeAssetRef(ParentTarget),
-			{MakeBlackboardKeyJson(TEXT("LocalCount"), TEXT("Int"))}))));
+		BlackboardTestMakeBlackboardDataBody(
+			BlackboardTestMakeAssetRef(ParentTarget),
+			{BlackboardTestMakeBlackboardKeyJson(TEXT("LocalCount"), TEXT("Int"))}))));
 	TestTrue(TEXT("Child blackboard apply succeeds"), ChildApplyResult.IsSuccess());
 	if (!ChildApplyResult.IsSuccess())
 	{
@@ -1222,9 +1222,9 @@ bool FAssetDocumentBlackboardDataApplyExtractDiffTest::RunTest(const FString&)
 	const FString ParentTarget = TEXT("/Game/AssetDocumentTests/BB_AD_ApplyExtractDiff_Parent");
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_ApplyExtractDiff");
 	FAssetDocumentService Service;
-	const FAssetDocumentResult ParentApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ParentApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ParentTarget,
-		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("InheritedTeam"), TEXT("Name"))}))));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("InheritedTeam"), TEXT("Name"))}))));
 	TestTrue(TEXT("Roundtrip parent blackboard apply succeeds"), ParentApplyResult.IsSuccess());
 	if (!ParentApplyResult.IsSuccess())
 	{
@@ -1232,14 +1232,14 @@ bool FAssetDocumentBlackboardDataApplyExtractDiffTest::RunTest(const FString&)
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(MakeAssetRef(ParentTarget), {
-		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Object"), AActor::StaticClass()->GetPathName(), TEXT(""), TEXT(""), TEXT("Current target")),
-		MakeBlackboardKeyJson(TEXT("IsVisible"), TEXT("Bool")),
+	TSharedPtr<FJsonObject> Body = BlackboardTestMakeBlackboardDataBody(BlackboardTestMakeAssetRef(ParentTarget), {
+		BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Object"), AActor::StaticClass()->GetPathName(), TEXT(""), TEXT(""), TEXT("Current target")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("IsVisible"), TEXT("Bool")),
 	});
 	Body->GetArrayField(TEXT("Keys"))[1]->AsObject()->SetBoolField(TEXT("bInstanceSynced"), true);
 
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(Target, Body);
-	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(Document));
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(Target, Body);
+	const FAssetDocumentResult ApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	TestTrue(TEXT("Blackboard apply succeeds"), ApplyResult.IsSuccess());
 	if (!ApplyResult.IsSuccess())
 	{
@@ -1278,7 +1278,7 @@ bool FAssetDocumentBlackboardDataApplyExtractDiffTest::RunTest(const FString&)
 	if (ExtractedParent && ExtractedParent->IsValid())
 	{
 		TestEqual(TEXT("Extracted Parent is AssetRef"), (*ExtractedParent)->GetStringField(TEXT("Kind")), FString(TEXT("AssetRef")));
-		TestEqual(TEXT("Extracted Parent path is canonical object path"), (*ExtractedParent)->GetStringField(TEXT("Path")), MakeObjectPathFromTarget(ParentTarget));
+		TestEqual(TEXT("Extracted Parent path is canonical object path"), (*ExtractedParent)->GetStringField(TEXT("Path")), BlackboardTestMakeObjectPathFromTarget(ParentTarget));
 	}
 	const TArray<TSharedPtr<FJsonValue>>* ExtractedKeys = nullptr;
 	TestTrue(TEXT("Extracted body has Keys"), ExtractedBody.IsValid() && ExtractedBody->TryGetArrayField(TEXT("Keys"), ExtractedKeys));
@@ -1288,7 +1288,7 @@ bool FAssetDocumentBlackboardDataApplyExtractDiffTest::RunTest(const FString&)
 	DiffRequest.Document = Document;
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("Blackboard diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("Apply/extract diff is unchanged"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	TestTrue(TEXT("Apply/extract diff is unchanged"), BlackboardTestDiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 
@@ -1300,14 +1300,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentBlackboardDataRepeatedApplyPreservesKeyObjectsTest::RunTest(const FString&)
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesKeyObjects");
-	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(nullptr, {
-		MakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
-		MakeBlackboardKeyJson(TEXT("Count"), TEXT("Int")),
+	TSharedPtr<FJsonObject> Body = BlackboardTestMakeBlackboardDataBody(nullptr, {
+		BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("Count"), TEXT("Int")),
 	});
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(Target, Body);
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(Target, Body);
 
 	FAssetDocumentService Service;
-	const FAssetDocumentResult FirstApplyResult = Service.Apply(MakeApplyRequest(Document));
+	const FAssetDocumentResult FirstApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	TestTrue(TEXT("Initial blackboard apply succeeds"), FirstApplyResult.IsSuccess());
 	if (!FirstApplyResult.IsSuccess())
 	{
@@ -1326,7 +1326,7 @@ bool FAssetDocumentBlackboardDataRepeatedApplyPreservesKeyObjectsTest::RunTest(c
 	UBlackboardKeyType* FirstCountKeyType = Blackboard->Keys[1].KeyType;
 	const int32 FirstChildCount = CountBlackboardKeyTypeChildren(Blackboard);
 
-	const FAssetDocumentResult SecondApplyResult = Service.Apply(MakeApplyRequest(Document));
+	const FAssetDocumentResult SecondApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(Document));
 	TestTrue(TEXT("Repeated identical blackboard apply succeeds"), SecondApplyResult.IsSuccess());
 	if (!SecondApplyResult.IsSuccess())
 	{
@@ -1354,7 +1354,7 @@ bool FAssetDocumentBlackboardDataRepeatedApplyPreservesExplicitKeyTypeClassTest:
 	return ExpectRepeatedApplyPreservesSingleKeyObject(
 		*this,
 		TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesExplicitKeyTypeClass"),
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT(""),
 			TEXT(""),
@@ -1372,7 +1372,7 @@ bool FAssetDocumentBlackboardDataRepeatedApplyPreservesMatchingTypeAndKeyTypeCla
 	return ExpectRepeatedApplyPreservesSingleKeyObject(
 		*this,
 		TEXT("/Game/AssetDocumentTests/BB_AD_RepeatedApplyPreservesMatchingTypeAndKeyTypeClass"),
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT("Name"),
 			TEXT(""),
@@ -1390,7 +1390,7 @@ bool FAssetDocumentBlackboardDataDiffUnchangedForExplicitKeyTypeClassTest::RunTe
 	return ExpectApplyThenDiffUnchangedForSingleKey(
 		*this,
 		TEXT("/Game/AssetDocumentTests/BB_AD_DiffUnchangedForExplicitKeyTypeClass"),
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT(""),
 			TEXT(""),
@@ -1408,7 +1408,7 @@ bool FAssetDocumentBlackboardDataDiffUnchangedForMatchingTypeAndKeyTypeClassTest
 	return ExpectApplyThenDiffUnchangedForSingleKey(
 		*this,
 		TEXT("/Game/AssetDocumentTests/BB_AD_DiffUnchangedForMatchingTypeAndKeyTypeClass"),
-		MakeBlackboardKeyJson(
+		BlackboardTestMakeBlackboardKeyJson(
 			TEXT("ExplicitName"),
 			TEXT("Name"),
 			TEXT(""),
@@ -1430,8 +1430,8 @@ bool FAssetDocumentBlackboardDataDryRunDoesNotMaterializeKeysTest::RunTest(const
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(nullptr, {
-		MakeBlackboardKeyJson(TEXT("DryRunKey"), TEXT("Bool")),
+	TSharedPtr<FJsonObject> Body = BlackboardTestMakeBlackboardDataBody(nullptr, {
+		BlackboardTestMakeBlackboardKeyJson(TEXT("DryRunKey"), TEXT("Bool")),
 	});
 
 	FBlackboardDataAssetDocumentCapability Capability;
@@ -1459,13 +1459,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentBlackboardDataDiffReportsKeyReorderTest::RunTest(const FString&)
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_DiffReportsKeyReorder");
-	TSharedPtr<FJsonObject> InitialBody = MakeBlackboardDataBody(nullptr, {
-		MakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
-		MakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
+	TSharedPtr<FJsonObject> InitialBody = BlackboardTestMakeBlackboardDataBody(nullptr, {
+		BlackboardTestMakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
 	});
 
 	FAssetDocumentService Service;
-	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(Target, InitialBody)));
+	const FAssetDocumentResult ApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(Target, InitialBody)));
 	TestTrue(TEXT("Initial ordered apply succeeds"), ApplyResult.IsSuccess());
 	if (!ApplyResult.IsSuccess())
 	{
@@ -1473,12 +1473,12 @@ bool FAssetDocumentBlackboardDataDiffReportsKeyReorderTest::RunTest(const FStrin
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> ReorderedBody = MakeBlackboardDataBody(nullptr, {
-		MakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
-		MakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
+	TSharedPtr<FJsonObject> ReorderedBody = BlackboardTestMakeBlackboardDataBody(nullptr, {
+		BlackboardTestMakeBlackboardKeyJson(TEXT("B"), TEXT("Int")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("A"), TEXT("Bool")),
 	});
 	FAssetDocumentDiffRequest DiffRequest;
-	DiffRequest.Document = MakeBlackboardDataDocument(Target, ReorderedBody);
+	DiffRequest.Document = BlackboardTestMakeBlackboardDataDocument(Target, ReorderedBody);
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 
 	TestTrue(TEXT("Reorder diff succeeds"), DiffResult.IsSuccess());
@@ -1495,9 +1495,9 @@ bool FAssetDocumentBlackboardDataRejectsParentSelfCycleTest::RunTest(const FStri
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsParentSelfCycle");
 	FAssetDocumentService Service;
-	const FAssetDocumentResult InitialResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult InitialResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
 	TestTrue(TEXT("Initial self-cycle fixture apply succeeds"), InitialResult.IsSuccess());
 	if (!InitialResult.IsSuccess())
 	{
@@ -1505,12 +1505,12 @@ bool FAssetDocumentBlackboardDataRejectsParentSelfCycleTest::RunTest(const FStri
 		return false;
 	}
 
-	const FAssetDocumentResult SelfParentResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult SelfParentResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(MakeAssetRef(Target), {MakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
+		BlackboardTestMakeBlackboardDataBody(BlackboardTestMakeAssetRef(Target), {BlackboardTestMakeBlackboardKeyJson(TEXT("Local"), TEXT("Bool"))}))));
 
 	TestFalse(TEXT("Self-parent apply fails"), SelfParentResult.IsSuccess());
-	TestTrue(TEXT("Self-parent reports cycle diagnostic"), ResultHasDiagnostic(SelfParentResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
+	TestTrue(TEXT("Self-parent reports cycle diagnostic"), BlackboardTestResultHasDiagnostic(SelfParentResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
 	return true;
 }
 
@@ -1525,9 +1525,9 @@ bool FAssetDocumentBlackboardDataRejectsParentChainCycleTest::RunTest(const FStr
 	const FString ChildTarget = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsParentChainCycle");
 	FAssetDocumentService Service;
 
-	const FAssetDocumentResult ParentResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ParentResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ParentTarget,
-		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
 	TestTrue(TEXT("Parent fixture apply succeeds"), ParentResult.IsSuccess());
 	if (!ParentResult.IsSuccess())
 	{
@@ -1535,9 +1535,9 @@ bool FAssetDocumentBlackboardDataRejectsParentChainCycleTest::RunTest(const FStr
 		return false;
 	}
 
-	const FAssetDocumentResult ChildResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ChildResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ChildTarget,
-		MakeBlackboardDataBody(MakeAssetRef(ParentTarget), {MakeBlackboardKeyJson(TEXT("ChildKey"), TEXT("Int"))}))));
+		BlackboardTestMakeBlackboardDataBody(BlackboardTestMakeAssetRef(ParentTarget), {BlackboardTestMakeBlackboardKeyJson(TEXT("ChildKey"), TEXT("Int"))}))));
 	TestTrue(TEXT("Child fixture apply succeeds"), ChildResult.IsSuccess());
 	if (!ChildResult.IsSuccess())
 	{
@@ -1545,12 +1545,12 @@ bool FAssetDocumentBlackboardDataRejectsParentChainCycleTest::RunTest(const FStr
 		return false;
 	}
 
-	const FAssetDocumentResult CycleResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult CycleResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ParentTarget,
-		MakeBlackboardDataBody(MakeAssetRef(ChildTarget), {MakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
+		BlackboardTestMakeBlackboardDataBody(BlackboardTestMakeAssetRef(ChildTarget), {BlackboardTestMakeBlackboardKeyJson(TEXT("ParentKey"), TEXT("Bool"))}))));
 
 	TestFalse(TEXT("Parent-chain cycle apply fails"), CycleResult.IsSuccess());
-	TestTrue(TEXT("Parent-chain cycle reports diagnostic"), ResultHasDiagnostic(CycleResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
+	TestTrue(TEXT("Parent-chain cycle reports diagnostic"), BlackboardTestResultHasDiagnostic(CycleResult, TEXT("BlackboardParentCycle"), TEXT("/Body/Parent")));
 	return true;
 }
 
@@ -1563,14 +1563,14 @@ bool FAssetDocumentBlackboardDataRejectsDuplicateKeysTest::RunTest(const FString
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsDuplicateKeys");
 	FAssetDocumentService Service;
-	const FAssetDocumentResult Result = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult Result = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {
-			MakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
-			MakeBlackboardKeyJson(TEXT("Target"), TEXT("Int")),
+		BlackboardTestMakeBlackboardDataBody(nullptr, {
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Bool")),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("Target"), TEXT("Int")),
 		}))));
 	TestFalse(TEXT("Duplicate blackboard key apply fails"), Result.IsSuccess());
-	TestTrue(TEXT("Duplicate failure has exact diagnostic"), ResultHasDiagnostic(Result, TEXT("DuplicateBlackboardKey"), TEXT("/Body/Keys/1/Name")));
+	TestTrue(TEXT("Duplicate failure has exact diagnostic"), BlackboardTestResultHasDiagnostic(Result, TEXT("DuplicateBlackboardKey"), TEXT("/Body/Keys/1/Name")));
 	return true;
 }
 
@@ -1583,11 +1583,11 @@ bool FAssetDocumentBlackboardDataRejectsInvalidKeyTypeTest::RunTest(const FStrin
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_RejectsInvalidKeyType");
 	FAssetDocumentService Service;
-	const FAssetDocumentResult Result = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult Result = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		Target,
-		MakeBlackboardDataBody(nullptr, {MakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus"))}))));
+		BlackboardTestMakeBlackboardDataBody(nullptr, {BlackboardTestMakeBlackboardKeyJson(TEXT("Broken"), TEXT("Bogus"))}))));
 	TestFalse(TEXT("Invalid blackboard key type apply fails"), Result.IsSuccess());
-	TestTrue(TEXT("Invalid type failure has exact diagnostic"), ResultHasDiagnostic(Result, TEXT("InvalidBlackboardKeyType"), TEXT("/Body/Keys/Broken/Type")));
+	TestTrue(TEXT("Invalid type failure has exact diagnostic"), BlackboardTestResultHasDiagnostic(Result, TEXT("InvalidBlackboardKeyType"), TEXT("/Body/Keys/Broken/Type")));
 	return true;
 }
 
@@ -1601,16 +1601,16 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	const FString ParentTarget = TEXT("/Game/AssetDocumentTests/BB_AD_Task10_ApplyFileWriteback_Parent");
 	const FString Target = TEXT("/Game/AssetDocumentTests/BB_AD_Task10_ApplyFileWriteback");
 	FAssetDocumentService Service;
-	const FAssetDocumentResult ParentApplyResult = Service.Apply(MakeApplyRequest(MakeBlackboardDataDocument(
+	const FAssetDocumentResult ParentApplyResult = Service.Apply(BlackboardTestMakeApplyRequest(BlackboardTestMakeBlackboardDataDocument(
 		ParentTarget,
-		MakeBlackboardDataBody(nullptr, {
+		BlackboardTestMakeBlackboardDataBody(nullptr, {
 			[&]()
 			{
-				TSharedRef<FJsonObject> Key = MakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Object"));
-				Key->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+				TSharedRef<FJsonObject> Key = BlackboardTestMakeBlackboardKeyJson(TEXT("InheritedTarget"), TEXT("Object"));
+				Key->SetObjectField(TEXT("BaseClass"), BlackboardTestMakeClassRef(AActor::StaticClass()->GetPathName()));
 				return Key;
 			}(),
-			MakeBlackboardKeyJson(TEXT("InheritedGate"), TEXT("Bool"),
+			BlackboardTestMakeBlackboardKeyJson(TEXT("InheritedGate"), TEXT("Bool"),
 				TEXT(""),
 				TEXT(""),
 				TEXT(""),
@@ -1623,20 +1623,20 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> Body = MakeBlackboardDataBody(MakeAssetRef(MakeObjectPathFromTarget(ParentTarget)), {
+	TSharedPtr<FJsonObject> Body = BlackboardTestMakeBlackboardDataBody(BlackboardTestMakeAssetRef(BlackboardTestMakeObjectPathFromTarget(ParentTarget)), {
 		[&]()
 		{
-			TSharedRef<FJsonObject> Key = MakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), TEXT(""), TEXT(""), TEXT(""), TEXT("Local target"));
-			Key->SetObjectField(TEXT("BaseClass"), MakeClassRef(AActor::StaticClass()->GetPathName()));
+			TSharedRef<FJsonObject> Key = BlackboardTestMakeBlackboardKeyJson(TEXT("TargetActor"), TEXT("Object"), TEXT(""), TEXT(""), TEXT(""), TEXT("Local target"));
+			Key->SetObjectField(TEXT("BaseClass"), BlackboardTestMakeClassRef(AActor::StaticClass()->GetPathName()));
 			return Key;
 		}(),
-		MakeBlackboardKeyJson(TEXT("MoveLocation"), TEXT("Vector")),
-		MakeBlackboardKeyJson(TEXT("AlertName"), TEXT("Name")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("MoveLocation"), TEXT("Vector")),
+		BlackboardTestMakeBlackboardKeyJson(TEXT("AlertName"), TEXT("Name")),
 	});
 	Body->GetArrayField(TEXT("Keys"))[2]->AsObject()->SetBoolField(TEXT("bInstanceSynced"), true);
-	TSharedPtr<FJsonObject> Document = MakeBlackboardDataDocument(Target, Body);
+	TSharedPtr<FJsonObject> Document = BlackboardTestMakeBlackboardDataDocument(Target, Body);
 	const FString SidecarPath = FAssetDocumentSidecar::ResolveSidecarPathFromObjectPath(Target);
-	if (!WriteSidecarJson(this, SidecarPath, Document))
+	if (!BlackboardTestWriteSidecarJson(this, SidecarPath, Document))
 	{
 		return false;
 	}
@@ -1681,7 +1681,7 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	}
 
 	TSharedPtr<FJsonObject> ReloadedSidecar;
-	if (!LoadSidecarJson(this, SidecarPath, ReloadedSidecar))
+	if (!BlackboardTestLoadSidecarJson(this, SidecarPath, ReloadedSidecar))
 	{
 		return false;
 	}
@@ -1697,7 +1697,7 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 			&& ReloadedBaseClass->GetStringField(TEXT("Kind")) == TEXT("ClassRef")
 			&& ReloadedBaseClass->GetStringField(TEXT("Path")) == AActor::StaticClass()->GetPathName());
 	}
-	ExpectSyncRegions(this, ReloadedSidecar, {
+	BlackboardTestExpectSyncRegions(this, ReloadedSidecar, {
 		TEXT("Body.Parent"),
 		TEXT("Body.Keys"),
 	});
@@ -1706,7 +1706,7 @@ bool FAssetDocumentBlackboardDataApplyFileCanonicalWritebackTest::RunTest(const 
 	DiffRequest.FilePath = SidecarPath;
 	const FAssetDocumentResult DiffResult = Service.Diff(DiffRequest);
 	TestTrue(TEXT("BlackboardData ApplyFile diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("BlackboardData ApplyFile diff has no changed or failed entries"), DiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
+	TestTrue(TEXT("BlackboardData ApplyFile diff has no changed or failed entries"), BlackboardTestDiffPayloadHasNoChangedOrFailedEntries(DiffResult.Payload));
 	return true;
 }
 

@@ -10,16 +10,16 @@
 
 namespace
 {
-FString GetClassPath(const UClass* Class)
+FString EventGetClassPath(const UClass* Class)
 {
 	return Class ? Class->GetPathName() : FString();
 }
 
-TSharedRef<FJsonObject> MakeMemberRef(const UClass* OwnerClass, FName Name, const FGuid& Guid)
+TSharedRef<FJsonObject> EventMakeMemberRef(const UClass* OwnerClass, FName Name, const FGuid& Guid)
 {
 	TSharedRef<FJsonObject> Member = MakeShared<FJsonObject>();
 	Member->SetStringField(TEXT("Kind"), TEXT("MemberRef"));
-	Member->SetStringField(TEXT("OwnerClass"), GetClassPath(OwnerClass));
+	Member->SetStringField(TEXT("OwnerClass"), EventGetClassPath(OwnerClass));
 	Member->SetStringField(TEXT("Name"), Name.ToString());
 	if (Guid.IsValid())
 	{
@@ -28,7 +28,7 @@ TSharedRef<FJsonObject> MakeMemberRef(const UClass* OwnerClass, FName Name, cons
 	return Member;
 }
 
-bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
+bool EventTryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerClass, FString& OutName)
 {
 	if (!Member.IsValid())
 	{
@@ -44,12 +44,12 @@ bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerCl
 		&& !OutName.IsEmpty();
 }
 
-UClass* ResolveClass(const FString& ClassPath)
+UClass* EventResolveClass(const FString& ClassPath)
 {
 	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 }
 
-UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
+UClass* EventResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& OwnerClassPath)
 {
 	if (OwnerClassPath == TEXT("Self"))
 	{
@@ -59,10 +59,10 @@ UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& Owne
 		}
 		return Blueprint ? Blueprint->ParentClass.Get() : nullptr;
 	}
-	return ResolveClass(OwnerClassPath);
+	return EventResolveClass(OwnerClassPath);
 }
 
-FAssetDocumentCapabilityResult MissingMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+FAssetDocumentCapabilityResult EventMissingMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
 {
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph node '%s' requires a reflected MemberRef"), *Node.Id),
@@ -70,7 +70,7 @@ FAssetDocumentCapabilityResult MissingMemberFailure(const FAssetDocumentNodeAppl
 		TEXT("MissingGraphMemberReference"));
 }
 
-FAssetDocumentCapabilityResult UnresolvedMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
+FAssetDocumentCapabilityResult EventUnresolvedMemberFailure(const FAssetDocumentNodeApplyContext& Context, const FAssetDocumentNodeSpec& Node)
 {
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph node '%s' MemberRef could not be resolved"), *Node.Id),
@@ -95,16 +95,16 @@ FAssetDocumentCapabilityResult FAssetDocumentK2EventNodeAdapter::ConfigureNodeFo
 
 	FString OwnerClassPath;
 	FString FunctionName;
-	if (!TryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName))
+	if (!EventTryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName))
 	{
-		return MissingMemberFailure(Context, NodeSpec);
+		return EventMissingMemberFailure(Context, NodeSpec);
 	}
 
-	UClass* OwnerClass = ResolveMemberOwnerClass(Context.Blueprint, OwnerClassPath);
+	UClass* OwnerClass = EventResolveMemberOwnerClass(Context.Blueprint, OwnerClassPath);
 	UFunction* Function = OwnerClass ? OwnerClass->FindFunctionByName(FName(*FunctionName)) : nullptr;
 	if (!OwnerClass || !Function)
 	{
-		return UnresolvedMemberFailure(Context, NodeSpec);
+		return EventUnresolvedMemberFailure(Context, NodeSpec);
 	}
 
 	EventNode->EventReference.SetExternalMember(FName(*FunctionName), OwnerClass);
@@ -125,7 +125,7 @@ bool FAssetDocumentK2EventNodeAdapter::DoesNodeMatchSpec(
 
 	FString OwnerClassPath;
 	FString FunctionName;
-	return TryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName)
+	return EventTryReadMemberRef(NodeSpec.Member, OwnerClassPath, FunctionName)
 		&& EventNode->GetFunctionName() == FName(*FunctionName);
 }
 
@@ -150,6 +150,6 @@ bool FAssetDocumentK2EventNodeAdapter::ExtractNode(const UBlueprint* Blueprint, 
 	}
 
 	OutNode.Capability = GetCapability();
-	OutNode.Member = MakeMemberRef(OwnerClass, FunctionName, Node->EventReference.GetMemberGuid());
+	OutNode.Member = EventMakeMemberRef(OwnerClass, FunctionName, Node->EventReference.GetMemberGuid());
 	return true;
 }

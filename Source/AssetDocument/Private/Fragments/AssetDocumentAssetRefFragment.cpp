@@ -24,7 +24,7 @@ FString GetRequiredStringField(const TSharedRef<FJsonObject>& FragmentJson, cons
 	return Value;
 }
 
-FString NormalizeObjectPath(const FString& Path)
+FString AssetRefNormalizeObjectPath(const FString& Path)
 {
 	FString ObjectPath = Path;
 	ObjectPath.TrimStartAndEndInline();
@@ -68,7 +68,7 @@ public:
 			return Failure;
 		}
 
-		const FString ObjectPath = NormalizeObjectPath(OriginalPath);
+		const FString ObjectPath = AssetRefNormalizeObjectPath(OriginalPath);
 		UObject* LoadedAsset = LoadObject<UObject>(nullptr, *ObjectPath);
 		if (!LoadedAsset)
 		{

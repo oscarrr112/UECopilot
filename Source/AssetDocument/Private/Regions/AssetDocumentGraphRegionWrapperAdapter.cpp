@@ -6,7 +6,7 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString GraphWrapperRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -24,13 +24,13 @@ FAssetDocumentCapabilityContext ToCapabilityContext(const FAssetDocumentRegionCo
 	return CapabilityContext;
 }
 
-FAssetDocumentCapabilityResult UnsupportedLifecycleFailure(
+FAssetDocumentCapabilityResult GraphWrapperUnsupportedLifecycleFailure(
 	const FAssetDocumentRegionContext& Context,
 	const TCHAR* Lifecycle)
 {
 	return FAssetDocumentCapabilityResult::Failure(
 		FString::Printf(TEXT("Graph region wrapper '%s' does not implement %s"), *Context.RegionId.ToString(), Lifecycle),
-		RegionPath(Context),
+		GraphWrapperRegionPath(Context),
 		TEXT("UnsupportedGraphRegionLifecycle"));
 }
 
@@ -39,7 +39,7 @@ FAssetDocumentCapabilityResult RequireGraphBodyObject(
 	const TSharedPtr<FJsonValue>& DesiredValue,
 	TSharedPtr<FJsonObject>& OutBodyObject)
 {
-	return FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, RegionPath(Context), OutBodyObject);
+	return FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, GraphWrapperRegionPath(Context), OutBodyObject);
 }
 }
 
@@ -89,7 +89,7 @@ FAssetDocumentCapabilityResult FAssetDocumentGraphRegionWrapperAdapter::Validate
 
 	if (!Hooks.Validate)
 	{
-		return UnsupportedLifecycleFailure(Context, TEXT("validate"));
+		return GraphWrapperUnsupportedLifecycleFailure(Context, TEXT("validate"));
 	}
 
 	return Hooks.Validate(ToCapabilityContext(Context), BodyObject.ToSharedRef());
@@ -108,7 +108,7 @@ FAssetDocumentCapabilityResult FAssetDocumentGraphRegionWrapperAdapter::Prefligh
 
 	if (!Hooks.Preflight)
 	{
-		return UnsupportedLifecycleFailure(Context, TEXT("preflight"));
+		return GraphWrapperUnsupportedLifecycleFailure(Context, TEXT("preflight"));
 	}
 
 	FAssetDocumentCapabilityContext CapabilityContext = ToCapabilityContext(Context);
@@ -130,7 +130,7 @@ FAssetDocumentCapabilityResult FAssetDocumentGraphRegionWrapperAdapter::ApplyReg
 
 	if (!Hooks.Apply)
 	{
-		return UnsupportedLifecycleFailure(Context, TEXT("apply"));
+		return GraphWrapperUnsupportedLifecycleFailure(Context, TEXT("apply"));
 	}
 
 	FAssetDocumentCapabilityContext CapabilityContext = ToCapabilityContext(Context);
@@ -144,7 +144,7 @@ FAssetDocumentCapabilityResult FAssetDocumentGraphRegionWrapperAdapter::ExtractR
 	OutCurrentValue.Reset();
 	if (!Hooks.Extract)
 	{
-		return UnsupportedLifecycleFailure(Context, TEXT("extract"));
+		return GraphWrapperUnsupportedLifecycleFailure(Context, TEXT("extract"));
 	}
 
 	TSharedRef<FJsonObject> BodyObject = MakeShared<FJsonObject>();
@@ -172,7 +172,7 @@ FAssetDocumentCapabilityResult FAssetDocumentGraphRegionWrapperAdapter::DiffRegi
 
 	if (!Hooks.Diff)
 	{
-		return UnsupportedLifecycleFailure(Context, TEXT("diff"));
+		return GraphWrapperUnsupportedLifecycleFailure(Context, TEXT("diff"));
 	}
 
 	return Hooks.Diff(ToCapabilityContext(Context), BodyObject.ToSharedRef(), OutDiffEntries);

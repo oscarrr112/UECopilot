@@ -415,7 +415,7 @@ bool SkippedGraphsContainClass(const TSharedRef<FJsonObject>& Body, const FStrin
 	});
 }
 
-TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+TSharedPtr<FJsonObject> UBlueprintGraphTestFindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Entries)
 	{
@@ -791,7 +791,7 @@ FString MakeObjectPathFromTarget(const FString& Target)
 	return FString::Printf(TEXT("%s.%s"), *Target, *FPackageName::GetLongPackageAssetName(Target));
 }
 
-bool WriteJsonObjectToFile(TSharedPtr<FJsonObject> Document, const FString& FilePath)
+bool UBlueprintGraphTestWriteJsonObjectToFile(TSharedPtr<FJsonObject> Document, const FString& FilePath)
 {
 	FString JsonText;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
@@ -1416,7 +1416,7 @@ bool FAssetDocumentUBlueprintGraphDiffUnchangedAfterExtractTest::RunTest(const F
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
 
-	const TSharedPtr<FJsonObject> GraphDiff = FindDiffEntryByPath(DiffEntries, GraphPath(TEXT("EventGraph")));
+	const TSharedPtr<FJsonObject> GraphDiff = UBlueprintGraphTestFindDiffEntryByPath(DiffEntries, GraphPath(TEXT("EventGraph")));
 	TestTrue(TEXT("Graph diff includes EventGraph"), GraphDiff.IsValid());
 	if (GraphDiff.IsValid())
 	{
@@ -1466,7 +1466,7 @@ bool FAssetDocumentUBlueprintGraphDiffReportsMissingNodeTest::RunTest(const FStr
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
-	const TSharedPtr<FJsonObject> MissingNode = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), TEXT("PrintString")));
+	const TSharedPtr<FJsonObject> MissingNode = UBlueprintGraphTestFindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), TEXT("PrintString")));
 	TestTrue(TEXT("Diff reports missing PrintString node"), MissingNode.IsValid());
 	if (MissingNode.IsValid())
 	{
@@ -1505,7 +1505,7 @@ bool FAssetDocumentUBlueprintGraphDiffReportsExtraNodeTest::RunTest(const FStrin
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
-	const TSharedPtr<FJsonObject> ExtraNode = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
+	const TSharedPtr<FJsonObject> ExtraNode = UBlueprintGraphTestFindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
 	TestTrue(TEXT("Diff reports extra PrintString node"), ExtraNode.IsValid());
 	if (ExtraNode.IsValid())
 	{
@@ -1543,7 +1543,7 @@ bool FAssetDocumentUBlueprintGraphDiffReportsChangedPinDefaultTest::RunTest(cons
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
-	const TSharedPtr<FJsonObject> ChangedPin = FindDiffEntryByPath(DiffEntries, PinPath(TEXT("EventGraph"), PrintNodeId, TEXT("InString")));
+	const TSharedPtr<FJsonObject> ChangedPin = UBlueprintGraphTestFindDiffEntryByPath(DiffEntries, PinPath(TEXT("EventGraph"), PrintNodeId, TEXT("InString")));
 	TestTrue(TEXT("Diff reports changed InString default"), ChangedPin.IsValid());
 	if (ChangedPin.IsValid())
 	{
@@ -1583,7 +1583,7 @@ bool FAssetDocumentUBlueprintGraphDiffReportsMissingLinkTest::RunTest(const FStr
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
-	const TSharedPtr<FJsonObject> MissingLink = FindDiffEntryByPath(
+	const TSharedPtr<FJsonObject> MissingLink = UBlueprintGraphTestFindDiffEntryByPath(
 		DiffEntries,
 		LinkPath(TEXT("EventGraph"), BeginPlayNodeId, UEdGraphSchema_K2::PN_Then.ToString(), PrintNodeId, UEdGraphSchema_K2::PN_Execute.ToString()));
 	TestTrue(TEXT("Diff reports missing execution link"), MissingLink.IsValid());
@@ -1691,7 +1691,7 @@ bool FAssetDocumentUBlueprintGraphDiffTreatsDefinitionRefAndInlineMemberRefAsEqu
 	TArray<TSharedPtr<FJsonValue>> DiffEntries;
 	const FAssetDocumentCapabilityResult DiffResult = DiffBlueprintBody(Blueprint, DesiredBody, DiffEntries, &Definitions);
 	TestTrue(TEXT("Graph diff succeeds"), DiffResult.bSuccess);
-	const TSharedPtr<FJsonObject> PrintNodeDiff = FindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
+	const TSharedPtr<FJsonObject> PrintNodeDiff = UBlueprintGraphTestFindDiffEntryByPath(DiffEntries, NodePath(TEXT("EventGraph"), PrintNodeId));
 	TestTrue(TEXT("Diff includes PrintString node"), PrintNodeDiff.IsValid());
 	if (PrintNodeDiff.IsValid())
 	{
@@ -2220,7 +2220,7 @@ bool FAssetDocumentUBlueprintGraphApplyFileWritesSyncStateForGeneratedMetadataOn
 	TSharedPtr<FJsonObject> Document = MakeUBlueprintGraphSidecarDocument(
 		Target,
 		MakeBeginPlayPrintStringBody(TEXT("Hello from graph apply-file sync"), true, true));
-	if (!TestTrue(TEXT("Graph ApplyFile sidecar writes"), WriteJsonObjectToFile(Document, SidecarPath)))
+	if (!TestTrue(TEXT("Graph ApplyFile sidecar writes"), UBlueprintGraphTestWriteJsonObjectToFile(Document, SidecarPath)))
 	{
 		return false;
 	}

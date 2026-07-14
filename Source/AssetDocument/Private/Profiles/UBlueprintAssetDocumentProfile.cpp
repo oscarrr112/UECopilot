@@ -14,7 +14,7 @@ TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
 	return TArray<TSharedPtr<FJsonValue>>();
 }
 
-bool MakeRegionPolicy(
+bool UBlueprintMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
@@ -115,42 +115,42 @@ TArray<FAssetDocumentRegionPolicy> FUBlueprintAssetDocumentProfile::GetRegionPol
 	Policies.Reserve(9);
 
 	FAssetDocumentRegionPolicy Policy;
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ParentClass"), EAssetDocumentRegionKind::Object, {TEXT("ParentClass")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ParentClass"), EAssetDocumentRegionKind::Object, {TEXT("ParentClass")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ImplementedInterfaces"), EAssetDocumentRegionKind::Array, {TEXT("ImplementedInterfaces")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ImplementedInterfaces"), EAssetDocumentRegionKind::Array, {TEXT("ImplementedInterfaces")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Variables"), EAssetDocumentRegionKind::Array, {TEXT("NewVariables")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Variables"), EAssetDocumentRegionKind::Array, {TEXT("NewVariables")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Components"), EAssetDocumentRegionKind::Array, {TEXT("SimpleConstructionScript"), TEXT("InheritableComponentHandler")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Components"), EAssetDocumentRegionKind::Array, {TEXT("SimpleConstructionScript"), TEXT("InheritableComponentHandler")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ClassDefaults"), EAssetDocumentRegionKind::Object, {}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ClassDefaults"), EAssetDocumentRegionKind::Object, {}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.UbergraphPages"), EAssetDocumentRegionKind::Graph, {TEXT("UbergraphPages")}, Policy))
-	{
-		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.UbergraphPages"), EAssetDocumentRegionKind::Graph, {TEXT("UbergraphPages")}, Policy))
 	{
 		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy))
 	{
 		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Timelines"), EAssetDocumentRegionKind::Timeline, {TEXT("Timelines")}, Policy))
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy))
+	{
+		Policy.CanonicalizerHookName = TEXT("UBlueprintGraph");
+		Policies.Add(Policy);
+	}
+	if (UBlueprintMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Timelines"), EAssetDocumentRegionKind::Timeline, {TEXT("Timelines")}, Policy))
 	{
 		MarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);

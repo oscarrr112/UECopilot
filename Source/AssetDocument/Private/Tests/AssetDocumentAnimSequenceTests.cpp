@@ -32,11 +32,11 @@
 
 namespace
 {
-const TCHAR* TestSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
-const TCHAR* TestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
-const TCHAR* TestConcreteNotifyClassPath = TEXT("/Script/Engine.AnimNotify_PlaySound");
-const TCHAR* TestManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotify_");
-const TCHAR* TestManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotifyState_");
+const TCHAR* SequenceTestSkeletonPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton");
+const TCHAR* SequenceTestPreviewMeshPath = TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP.TutorialTPP");
+const TCHAR* SequenceTestConcreteNotifyClassPath = TEXT("/Script/Engine.AnimNotify_PlaySound");
+const TCHAR* SequenceTestManagedNotifyObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotify_");
+const TCHAR* SequenceTestManagedNotifyStateObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceNotifyState_");
 const TCHAR* TestManagedMetadataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceMetadata_");
 const TCHAR* TestManagedAssetUserDataObjectPrefix = TEXT("AssetDocumentManaged_AnimSequenceAssetUserData_");
 const TCHAR* TestAssetUserDataClassPath = TEXT("/Script/Engine.AnimCurveMetaData");
@@ -156,7 +156,7 @@ TSharedPtr<FJsonObject> FindObjectByStringField(const TArray<TSharedPtr<FJsonVal
 	return nullptr;
 }
 
-bool JsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedValue)
+bool SequenceTestJsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedValue)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
 	{
@@ -187,7 +187,7 @@ bool PolicyContainsManagedPath(const FAssetDocumentRegionPolicy* Policy, const F
 	return Policy && Policy->ManagedUePropertyPaths.Contains(ExpectedPath);
 }
 
-TSharedRef<FJsonObject> MakeAssetRef(const FString& Path)
+TSharedRef<FJsonObject> SequenceTestMakeAssetRef(const FString& Path)
 {
 	TSharedRef<FJsonObject> Fragment = MakeShared<FJsonObject>();
 	Fragment->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
@@ -205,12 +205,12 @@ TSharedRef<FJsonObject> MakeScalarRegionsBody(const FString& PreviewMeshPath)
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 
 	TSharedRef<FJsonObject> References = MakeShared<FJsonObject>();
-	References->SetObjectField(TEXT("Skeleton"), MakeAssetRef(TestSkeletonPath));
+	References->SetObjectField(TEXT("Skeleton"), SequenceTestMakeAssetRef(SequenceTestSkeletonPath));
 	References->SetStringField(TEXT("RetargetSource"), TEXT("Default"));
 	Body->SetObjectField(TEXT("References"), References);
 
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
-	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(PreviewMeshPath));
+	Preview->SetObjectField(TEXT("PreviewMesh"), SequenceTestMakeAssetRef(PreviewMeshPath));
 	Body->SetObjectField(TEXT("Preview"), Preview);
 
 	TSharedRef<FJsonObject> Playback = MakeShared<FJsonObject>();
@@ -242,7 +242,7 @@ TSharedRef<FJsonObject> MakeScalarRegionsBody(const FString& PreviewMeshPath)
 UAnimSequence* CreateTransientSequence(const TCHAR* Name)
 {
 	UAnimSequence* Sequence = NewObject<UAnimSequence>(GetTransientPackage(), Name, RF_Transient);
-	USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, TestSkeletonPath);
+	USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, SequenceTestSkeletonPath);
 	if (Sequence && Skeleton)
 	{
 		Sequence->SetSkeleton(Skeleton);
@@ -290,7 +290,7 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
-bool HasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
+bool SequenceTestHasDiagnostic(const FAssetDocumentCapabilityResult& Result, const FString& Path, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate([&Path, &Code](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -322,7 +322,7 @@ bool ResultMessageContains(const FAssetDocumentResult& Result, const FString& Ex
 	return false;
 }
 
-bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath, const FString& ExpectedStatus)
+bool SequenceTestJsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath, const FString& ExpectedStatus)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
 	{
@@ -345,7 +345,7 @@ bool JsonArrayContainsPathStatus(const TArray<TSharedPtr<FJsonValue>>& Values, c
 	return false;
 }
 
-bool JsonArrayContainsPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
+bool SequenceTestJsonArrayContainsPath(const TArray<TSharedPtr<FJsonValue>>& Values, const FString& ExpectedPath)
 {
 	for (const TSharedPtr<FJsonValue>& Value : Values)
 	{
@@ -373,8 +373,8 @@ int32 CountManagedNotifyObjectsWithOuter(const UObject* Outer)
 	for (const UObject* ChildObject : ChildObjects)
 	{
 		if (ChildObject
-			&& (ChildObject->GetName().StartsWith(TestManagedNotifyObjectPrefix)
-				|| ChildObject->GetName().StartsWith(TestManagedNotifyStateObjectPrefix)))
+			&& (ChildObject->GetName().StartsWith(SequenceTestManagedNotifyObjectPrefix)
+				|| ChildObject->GetName().StartsWith(SequenceTestManagedNotifyStateObjectPrefix)))
 		{
 			++Count;
 		}
@@ -542,7 +542,7 @@ void SetSequencePlayLength(UAnimSequence* Sequence, float PlayLength)
 	Controller.CloseBracket(false);
 }
 
-TSharedRef<FJsonObject> MakeClassRef(const FString& Path)
+TSharedRef<FJsonObject> SequenceTestMakeClassRef(const FString& Path)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -558,7 +558,7 @@ TSharedRef<FJsonObject> MakeFragmentClassRef(const FString& ClassPath)
 	return ClassRef;
 }
 
-TSharedRef<FJsonObject> MakeEmbeddedObjectRef(const FString& ClassPath)
+TSharedRef<FJsonObject> SequenceTestMakeEmbeddedObjectRef(const FString& ClassPath)
 {
 	TSharedRef<FJsonObject> EmbeddedObject = MakeShared<FJsonObject>();
 	EmbeddedObject->SetStringField(TEXT("Kind"), TEXT("EmbeddedObject"));
@@ -571,11 +571,11 @@ TSharedRef<FJsonObject> MakeNamedObjectFragment(const FString& Name, const FStri
 {
 	TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 	Entry->SetStringField(TEXT("Name"), Name);
-	Entry->SetObjectField(TEXT("Object"), MakeEmbeddedObjectRef(ClassPath));
+	Entry->SetObjectField(TEXT("Object"), SequenceTestMakeEmbeddedObjectRef(ClassPath));
 	return Entry;
 }
 
-TSharedRef<FJsonObject> MakeNotifyPlacement(const FString& Name, double Time, const FString& NotifyName, const FString& Track)
+TSharedRef<FJsonObject> SequenceTestMakeNotifyPlacement(const FString& Name, double Time, const FString& NotifyName, const FString& Track)
 {
 	TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
 	Placement->SetStringField(TEXT("Name"), Name);
@@ -587,18 +587,18 @@ TSharedRef<FJsonObject> MakeNotifyPlacement(const FString& Name, double Time, co
 
 TSharedRef<FJsonObject> MakeEmbeddedNotifyPlacement(const FString& Name, double Time, const FString& NotifyName, const FString& Track)
 {
-	TSharedRef<FJsonObject> Placement = MakeNotifyPlacement(Name, Time, NotifyName, Track);
-	Placement->SetObjectField(TEXT("Notify"), MakeEmbeddedObjectRef(TestConcreteNotifyClassPath));
+	TSharedRef<FJsonObject> Placement = SequenceTestMakeNotifyPlacement(Name, Time, NotifyName, Track);
+	Placement->SetObjectField(TEXT("Notify"), SequenceTestMakeEmbeddedObjectRef(SequenceTestConcreteNotifyClassPath));
 	return Placement;
 }
 
-TSharedRef<FJsonObject> MakeNotifyStatePlacement(const FString& Name, double Time, double Duration, const FString& ClassPath, const FString& Track)
+TSharedRef<FJsonObject> SequenceTestMakeNotifyStatePlacement(const FString& Name, double Time, double Duration, const FString& ClassPath, const FString& Track)
 {
 	TSharedRef<FJsonObject> Placement = MakeShared<FJsonObject>();
 	Placement->SetStringField(TEXT("Name"), Name);
 	Placement->SetNumberField(TEXT("Time"), Time);
 	Placement->SetNumberField(TEXT("Duration"), Duration);
-	Placement->SetObjectField(TEXT("Class"), MakeClassRef(ClassPath));
+	Placement->SetObjectField(TEXT("Class"), SequenceTestMakeClassRef(ClassPath));
 	Placement->SetStringField(TEXT("TrackName"), Track);
 	return Placement;
 }
@@ -609,7 +609,7 @@ TSharedRef<FJsonObject> MakeEmbeddedNotifyStatePlacement(const FString& Name, do
 	Placement->SetStringField(TEXT("Name"), Name);
 	Placement->SetNumberField(TEXT("Time"), Time);
 	Placement->SetNumberField(TEXT("Duration"), Duration);
-	Placement->SetObjectField(TEXT("NotifyState"), MakeEmbeddedObjectRef(ClassPath));
+	Placement->SetObjectField(TEXT("NotifyState"), SequenceTestMakeEmbeddedObjectRef(ClassPath));
 	Placement->SetStringField(TEXT("TrackName"), Track);
 	return Placement;
 }
@@ -674,7 +674,7 @@ TSharedPtr<FJsonObject> MakeAnimSequenceDocument(const FString& Target, const TS
 
 TSharedRef<FJsonObject> MakeFullRoundtripBody()
 {
-	TSharedRef<FJsonObject> Body = MakeScalarRegionsBody(TestPreviewMeshPath);
+	TSharedRef<FJsonObject> Body = MakeScalarRegionsBody(SequenceTestPreviewMeshPath);
 	Body->SetArrayField(TEXT("Curves"), ObjectArray({
 		MakeFloatCurve(TEXT("Speed"), {
 			MakeCurveKey(0.0, 0.0, TEXT("Linear")),
@@ -707,7 +707,7 @@ TSharedRef<FJsonObject> MakeFullRoundtripBody()
 	return Body;
 }
 
-FString MakeObjectPathFromTarget(const FString& Target)
+FString SequenceTestMakeObjectPathFromTarget(const FString& Target)
 {
 	const FString AssetName = FPackageName::GetLongPackageAssetName(Target);
 	return FString::Printf(TEXT("%s.%s"), *Target, *AssetName);
@@ -715,7 +715,7 @@ FString MakeObjectPathFromTarget(const FString& Target)
 
 UAnimSequence* EnsurePersistentSequenceFixture(const FString& Target)
 {
-	const FString ObjectPath = MakeObjectPathFromTarget(Target);
+	const FString ObjectPath = SequenceTestMakeObjectPathFromTarget(Target);
 	UAnimSequence* Sequence = LoadObject<UAnimSequence>(nullptr, *ObjectPath);
 	UPackage* Package = Sequence ? Sequence->GetOutermost() : CreatePackage(*Target);
 	if (!Sequence && Package)
@@ -730,7 +730,7 @@ UAnimSequence* EnsurePersistentSequenceFixture(const FString& Target)
 	}
 
 	Sequence->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
-	if (USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, TestSkeletonPath))
+	if (USkeleton* Skeleton = LoadObject<USkeleton>(nullptr, SequenceTestSkeletonPath))
 	{
 		Sequence->SetSkeleton(Skeleton);
 	}
@@ -761,7 +761,7 @@ UAnimSequence* EnsurePersistentSequenceFixture(const FString& Target)
 	return Sequence;
 }
 
-bool WriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
+bool SequenceTestWriteSidecarJson(FAutomationTestBase* Test, const FString& SidecarPath, const TSharedPtr<FJsonObject>& Document)
 {
 	FString Error;
 	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarPath, Document, Error);
@@ -1062,7 +1062,7 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 
 	FAnimSequenceAssetDocumentCapability Capability;
 	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequencePilotApply"));
-	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, TestPreviewMeshPath);
+	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, SequenceTestPreviewMeshPath);
 	TestNotNull(TEXT("Pilot apply fixture creates sequence"), Sequence);
 	TestNotNull(TEXT("Pilot apply fixture loads preview mesh"), PreviewMesh);
 	if (!Sequence || !PreviewMesh)
@@ -1082,7 +1082,7 @@ bool FAssetDocumentAnimSequencePilotRegionCompositionTest::RunTest(const FString
 	};
 	TSharedRef<FJsonObject> Body = MakePlaybackRateBody(2.5);
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
-	Preview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	Preview->SetObjectField(TEXT("PreviewMesh"), SequenceTestMakeAssetRef(SequenceTestPreviewMeshPath));
 	Body->SetObjectField(TEXT("Preview"), Preview);
 	Body->SetArrayField(TEXT("NotifyTracks"), ObjectArray({
 		MakeTrackObject(TEXT("Upper")),
@@ -1140,7 +1140,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 
 	FAnimSequenceAssetDocumentCapability Capability;
 	UAnimSequence* Sequence = CreateTransientSequence(TEXT("AssetDocumentAnimSequenceScalarRegions"));
-	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, TestPreviewMeshPath);
+	USkeletalMesh* PreviewMesh = LoadObject<USkeletalMesh>(nullptr, SequenceTestPreviewMeshPath);
 	TestNotNull(TEXT("Fixture creates transient AnimSequence"), Sequence);
 	TestNotNull(TEXT("Tutorial skeleton fixture is available"), Sequence ? Sequence->GetSkeleton() : nullptr);
 	TestNotNull(TEXT("Tutorial preview mesh fixture is available"), PreviewMesh);
@@ -1170,7 +1170,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	const TSharedPtr<FJsonObject> InitialPlayback = GetRequiredObject(InitialExtract, TEXT("Playback"));
 	TestFalse(TEXT("Extract does not expose derived PlayLength as authored Playback field"), InitialPlayback.IsValid() && InitialPlayback->HasField(TEXT("PlayLength")));
 
-	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(MakeScalarRegionsBody(TestPreviewMeshPath)));
+	const FAssetDocumentCapabilityResult ApplyResult = Capability.Apply(Context, MakeBodyValue(MakeScalarRegionsBody(SequenceTestPreviewMeshPath)));
 	TestTrue(TEXT("Apply succeeds after full scalar parse"), ApplyResult.bSuccess);
 	TestEqual(TEXT("Apply updates Preview.PreviewMesh"), Sequence->GetPreviewMesh(), PreviewMesh);
 	TestEqual(TEXT("Apply updates Playback.RateScale"), Sequence->RateScale, 1.75f);
@@ -1245,7 +1245,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 
 	TSharedRef<FJsonObject> PreviewDiffBody = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> PreviewDiff = MakeShared<FJsonObject>();
-	PreviewDiff->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	PreviewDiff->SetObjectField(TEXT("PreviewMesh"), SequenceTestMakeAssetRef(SequenceTestPreviewMeshPath));
 	PreviewDiffBody->SetObjectField(TEXT("Preview"), PreviewDiff);
 	DiffEntries.Reset();
 	const FAssetDocumentCapabilityResult PreviewDiffResult = Capability.Diff(Context, MakeBodyValue(PreviewDiffBody), DiffEntries);
@@ -1301,7 +1301,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 		const FString FieldPath = FString::Printf(TEXT("/Body/%s/%s"), *RejectedField.Key, *RejectedField.Value);
 		const FAssetDocumentCapabilityResult InvalidFieldValidateResult = Capability.Validate(Context, MakeBodyValue(InvalidBody));
 		TestFalse(FString::Printf(TEXT("Validate rejects Body.%s.%s"), *RejectedField.Key, *RejectedField.Value), InvalidFieldValidateResult.bSuccess);
-		TestTrue(FString::Printf(TEXT("Validate diagnostic points at Body.%s.%s"), *RejectedField.Key, *RejectedField.Value), HasDiagnostic(InvalidFieldValidateResult, FieldPath, TEXT("UnsupportedAuthoredField")));
+		TestTrue(FString::Printf(TEXT("Validate diagnostic points at Body.%s.%s"), *RejectedField.Key, *RejectedField.Value), SequenceTestHasDiagnostic(InvalidFieldValidateResult, FieldPath, TEXT("UnsupportedAuthoredField")));
 		const float RateScaleBeforeInvalidField = Sequence->RateScale;
 		const FAssetDocumentCapabilityResult InvalidFieldApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidBody));
 		TestFalse(FString::Printf(TEXT("Apply rejects Body.%s.%s"), *RejectedField.Key, *RejectedField.Value), InvalidFieldApplyResult.bSuccess);
@@ -1317,7 +1317,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	TestFalse(TEXT("Validate rejects unknown Body.Preview field"), UnknownPreviewResult.bSuccess);
 	TestTrue(
 		TEXT("Unknown Body.Preview field diagnostic uses escaped field path"),
-		HasDiagnostic(UnknownPreviewResult, TEXT("/Body/Preview/PreviewMesh~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+		SequenceTestHasDiagnostic(UnknownPreviewResult, TEXT("/Body/Preview/PreviewMesh~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
 
 	TSharedRef<FJsonObject> UnknownPlaybackFieldBody = MakePlaybackRateBody(4.7);
 	UnknownPlaybackFieldBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale/Bad~Field"), TEXT("unexpected"));
@@ -1326,7 +1326,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	TestFalse(TEXT("Validate rejects unknown Body.Playback field"), UnknownPlaybackResult.bSuccess);
 	TestTrue(
 		TEXT("Unknown Body.Playback field diagnostic uses escaped field path"),
-		HasDiagnostic(UnknownPlaybackResult, TEXT("/Body/Playback/RateScale~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
+		SequenceTestHasDiagnostic(UnknownPlaybackResult, TEXT("/Body/Playback/RateScale~1Bad~0Field"), TEXT("UnsupportedAuthoredField")));
 
 	TSharedRef<FJsonObject> InvalidPlaybackRateTypeBody = MakePlaybackRateBody(4.8);
 	InvalidPlaybackRateTypeBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
@@ -1335,7 +1335,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	TestFalse(TEXT("Validate rejects non-number Body.Playback.RateScale"), InvalidPlaybackRateTypeResult.bSuccess);
 	TestTrue(
 		TEXT("Invalid Body.Playback.RateScale diagnostic is stable"),
-		HasDiagnostic(InvalidPlaybackRateTypeResult, TEXT("/Body/Playback/RateScale"), TEXT("InvalidNumericField")));
+		SequenceTestHasDiagnostic(InvalidPlaybackRateTypeResult, TEXT("/Body/Playback/RateScale"), TEXT("InvalidNumericField")));
 
 	TSharedRef<FJsonObject> InvalidPlaybackBody = MakeShared<FJsonObject>();
 	TSharedRef<FJsonObject> InvalidPlayback = MakeShared<FJsonObject>();
@@ -1356,7 +1356,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	const float RateScaleBeforeNullSkeleton = Sequence->RateScale;
 	const FAssetDocumentCapabilityResult NullSkeletonApplyResult = Capability.Apply(Context, MakeBodyValue(NullSkeletonBody));
 	TestFalse(TEXT("Apply rejects authored References.Skeleton null"), NullSkeletonApplyResult.bSuccess);
-	TestTrue(TEXT("Skeleton null diagnostic points at References.Skeleton"), HasDiagnostic(NullSkeletonApplyResult, TEXT("/Body/References/Skeleton"), TEXT("NullNotAllowed")));
+	TestTrue(TEXT("Skeleton null diagnostic points at References.Skeleton"), SequenceTestHasDiagnostic(NullSkeletonApplyResult, TEXT("/Body/References/Skeleton"), TEXT("NullNotAllowed")));
 	TestEqual(TEXT("Skeleton null does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeNullSkeleton);
 
 	TSharedRef<FJsonObject> InvalidRefFrameBody = MakePlaybackRateBody(4.25);
@@ -1366,7 +1366,7 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	const float RateScaleBeforeInvalidRefFrame = Sequence->RateScale;
 	const FAssetDocumentCapabilityResult InvalidRefFrameApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidRefFrameBody));
 	TestFalse(TEXT("Apply rejects out-of-range Additive.RefFrameIndex"), InvalidRefFrameApplyResult.bSuccess);
-	TestTrue(TEXT("RefFrameIndex diagnostic points at Additive.RefFrameIndex"), HasDiagnostic(InvalidRefFrameApplyResult, TEXT("/Body/Additive/RefFrameIndex"), TEXT("InvalidRefFrameIndex")));
+	TestTrue(TEXT("RefFrameIndex diagnostic points at Additive.RefFrameIndex"), SequenceTestHasDiagnostic(InvalidRefFrameApplyResult, TEXT("/Body/Additive/RefFrameIndex"), TEXT("InvalidRefFrameIndex")));
 	TestEqual(TEXT("Invalid RefFrameIndex does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalidRefFrame);
 
 	UAnimSequence* IncompatiblePreviewSequence = NewObject<UAnimSequence>(GetTransientPackage(), TEXT("AssetDocumentAnimSequenceIncompatiblePreview"), RF_Transient);
@@ -1374,17 +1374,17 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	FAssetDocumentCapabilityContext IncompatiblePreviewContext = MakeSequenceContext(IncompatiblePreviewSequence);
 	TSharedRef<FJsonObject> IncompatiblePreviewBody = MakePlaybackRateBody(4.5);
 	TSharedRef<FJsonObject> IncompatiblePreview = MakeShared<FJsonObject>();
-	IncompatiblePreview->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestPreviewMeshPath));
+	IncompatiblePreview->SetObjectField(TEXT("PreviewMesh"), SequenceTestMakeAssetRef(SequenceTestPreviewMeshPath));
 	IncompatiblePreviewBody->SetObjectField(TEXT("Preview"), IncompatiblePreview);
 	const FAssetDocumentCapabilityResult IncompatiblePreviewApplyResult = Capability.Apply(IncompatiblePreviewContext, MakeBodyValue(IncompatiblePreviewBody));
 	TestFalse(TEXT("Apply rejects incompatible Preview.PreviewMesh skeleton"), IncompatiblePreviewApplyResult.bSuccess);
-	TestTrue(TEXT("PreviewMesh skeleton diagnostic points at Preview.PreviewMesh"), HasDiagnostic(IncompatiblePreviewApplyResult, TEXT("/Body/Preview/PreviewMesh"), TEXT("PreviewMeshSkeletonMismatch")));
+	TestTrue(TEXT("PreviewMesh skeleton diagnostic points at Preview.PreviewMesh"), SequenceTestHasDiagnostic(IncompatiblePreviewApplyResult, TEXT("/Body/Preview/PreviewMesh"), TEXT("PreviewMeshSkeletonMismatch")));
 	TestEqual(TEXT("Incompatible PreviewMesh does not partially mutate RateScale"), IncompatiblePreviewSequence->RateScale, 1.0f);
 	TestNull(TEXT("Incompatible PreviewMesh does not apply preview mesh"), IncompatiblePreviewSequence->GetPreviewMesh());
 
 	const float RateScaleBeforeInvalid = Sequence->RateScale;
 	const bool bEnableRootMotionBeforeInvalid = Sequence->bEnableRootMotion;
-	TSharedRef<FJsonObject> InvalidBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	TSharedRef<FJsonObject> InvalidBody = MakeScalarRegionsBody(SequenceTestPreviewMeshPath);
 	InvalidBody->GetObjectField(TEXT("Playback"))->SetNumberField(TEXT("RateScale"), 2.25);
 	InvalidBody->GetObjectField(TEXT("Preview"))->SetStringField(TEXT("PreviewMesh"), TEXT("not an asset ref object"));
 	const FAssetDocumentCapabilityResult InvalidTypeApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidBody));
@@ -1398,14 +1398,14 @@ bool FAssetDocumentAnimSequenceScalarRegionsTest::RunTest(const FString&)
 	TestFalse(TEXT("Apply rejects invalid asset reference"), MissingRefApplyResult.bSuccess);
 	TestEqual(TEXT("Invalid asset reference does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 
-	TSharedRef<FJsonObject> InvalidClassBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	TSharedRef<FJsonObject> InvalidClassBody = MakeScalarRegionsBody(SequenceTestPreviewMeshPath);
 	InvalidClassBody->GetObjectField(TEXT("Playback"))->SetNumberField(TEXT("RateScale"), 2.75);
-	InvalidClassBody->GetObjectField(TEXT("Preview"))->SetObjectField(TEXT("PreviewMesh"), MakeAssetRef(TestSkeletonPath));
+	InvalidClassBody->GetObjectField(TEXT("Preview"))->SetObjectField(TEXT("PreviewMesh"), SequenceTestMakeAssetRef(SequenceTestSkeletonPath));
 	const FAssetDocumentCapabilityResult InvalidClassApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidClassBody));
 	TestFalse(TEXT("Apply rejects asset reference that resolves to wrong class"), InvalidClassApplyResult.bSuccess);
 	TestEqual(TEXT("Invalid reference class does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 
-	TSharedRef<FJsonObject> InvalidNumberBody = MakeScalarRegionsBody(TestPreviewMeshPath);
+	TSharedRef<FJsonObject> InvalidNumberBody = MakeScalarRegionsBody(SequenceTestPreviewMeshPath);
 	InvalidNumberBody->GetObjectField(TEXT("Playback"))->SetStringField(TEXT("RateScale"), TEXT("fast"));
 	TestFalse(TEXT("Apply rejects invalid numeric value"), Capability.Apply(Context, MakeBodyValue(InvalidNumberBody)).bSuccess);
 	TestEqual(TEXT("Invalid numeric value does not partially mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
@@ -1549,7 +1549,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult DuplicateResult = Capability.Apply(Context, MakeBodyValue(DuplicateNamesBody));
 	TestFalse(TEXT("Apply rejects duplicate curve names"), DuplicateResult.bSuccess);
-	TestTrue(TEXT("Duplicate diagnostic points at second curve name"), HasDiagnostic(DuplicateResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
+	TestTrue(TEXT("Duplicate diagnostic points at second curve name"), SequenceTestHasDiagnostic(DuplicateResult, TEXT("/Body/Curves/1/Name"), TEXT("DuplicateCurveName")));
 	TestEqual(TEXT("Duplicate curve rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> NoneNameBody = MakePlaybackRateBody(3.5);
@@ -1558,7 +1558,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult NoneNameResult = Capability.Apply(Context, MakeBodyValue(NoneNameBody));
 	TestFalse(TEXT("Apply rejects NAME_None curve name"), NoneNameResult.bSuccess);
-	TestTrue(TEXT("NAME_None diagnostic is precise"), HasDiagnostic(NoneNameResult, TEXT("/Body/Curves/0/Name"), TEXT("InvalidCurveName")));
+	TestTrue(TEXT("NAME_None diagnostic is precise"), SequenceTestHasDiagnostic(NoneNameResult, TEXT("/Body/Curves/0/Name"), TEXT("InvalidCurveName")));
 	TestEqual(TEXT("NAME_None rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(4.0);
@@ -1567,7 +1567,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	UnknownFieldBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({ UnknownCurve })->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult UnknownFieldResult = Capability.Apply(Context, MakeBodyValue(UnknownFieldBody));
 	TestFalse(TEXT("Apply rejects unknown curve field"), UnknownFieldResult.bSuccess);
-	TestTrue(TEXT("Unknown curve field diagnostic is precise"), HasDiagnostic(UnknownFieldResult, TEXT("/Body/Curves/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
+	TestTrue(TEXT("Unknown curve field diagnostic is precise"), SequenceTestHasDiagnostic(UnknownFieldResult, TEXT("/Body/Curves/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
 	TestEqual(TEXT("Unknown curve field does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> InvalidKeyTimeBody = MakePlaybackRateBody(5.0);
@@ -1576,7 +1576,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult InvalidKeyTimeResult = Capability.Apply(Context, MakeBodyValue(InvalidKeyTimeBody));
 	TestFalse(TEXT("Apply rejects negative curve key time"), InvalidKeyTimeResult.bSuccess);
-	TestTrue(TEXT("Negative key time diagnostic is precise"), HasDiagnostic(InvalidKeyTimeResult, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime")));
+	TestTrue(TEXT("Negative key time diagnostic is precise"), SequenceTestHasDiagnostic(InvalidKeyTimeResult, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime")));
 	TestEqual(TEXT("Invalid key time does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> OverflowValueBody = MakePlaybackRateBody(5.5);
@@ -1585,7 +1585,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult OverflowValueResult = Capability.Apply(Context, MakeBodyValue(OverflowValueBody));
 	TestFalse(TEXT("Apply rejects curve key value float overflow"), OverflowValueResult.bSuccess);
-	TestTrue(TEXT("Overflow value diagnostic is precise"), HasDiagnostic(OverflowValueResult, TEXT("/Body/Curves/0/Keys/0/Value"), TEXT("InvalidCurveKeyValue")));
+	TestTrue(TEXT("Overflow value diagnostic is precise"), SequenceTestHasDiagnostic(OverflowValueResult, TEXT("/Body/Curves/0/Keys/0/Value"), TEXT("InvalidCurveKeyValue")));
 	TestEqual(TEXT("Overflow value rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> OverflowTimeBody = MakePlaybackRateBody(5.75);
@@ -1594,7 +1594,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult OverflowTimeResult = Capability.Apply(Context, MakeBodyValue(OverflowTimeBody));
 	TestFalse(TEXT("Apply rejects curve key time float overflow"), OverflowTimeResult.bSuccess);
-	TestTrue(TEXT("Overflow time diagnostic is precise"), HasDiagnostic(OverflowTimeResult, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime")));
+	TestTrue(TEXT("Overflow time diagnostic is precise"), SequenceTestHasDiagnostic(OverflowTimeResult, TEXT("/Body/Curves/0/Keys/0/Time"), TEXT("InvalidCurveKeyTime")));
 	TestEqual(TEXT("Overflow time rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> DuplicateKeyTimeBody = MakePlaybackRateBody(5.9);
@@ -1609,7 +1609,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult DuplicateKeyTimeResult = Capability.Apply(Context, MakeBodyValue(DuplicateKeyTimeBody));
 	TestFalse(TEXT("Apply rejects duplicate key times"), DuplicateKeyTimeResult.bSuccess);
-	TestTrue(TEXT("Duplicate key time diagnostic points at original duplicate index"), HasDiagnostic(DuplicateKeyTimeResult, TEXT("/Body/Curves/0/Keys/2/Time"), TEXT("DuplicateCurveKeyTime")));
+	TestTrue(TEXT("Duplicate key time diagnostic points at original duplicate index"), SequenceTestHasDiagnostic(DuplicateKeyTimeResult, TEXT("/Body/Curves/0/Keys/2/Time"), TEXT("DuplicateCurveKeyTime")));
 	TestEqual(TEXT("Duplicate key time rejection does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> InvalidInterpolationBody = MakePlaybackRateBody(6.0);
@@ -1618,7 +1618,7 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	})->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult InvalidInterpolationResult = Capability.Apply(Context, MakeBodyValue(InvalidInterpolationBody));
 	TestFalse(TEXT("Apply rejects invalid interpolation"), InvalidInterpolationResult.bSuccess);
-	TestTrue(TEXT("Invalid interpolation diagnostic is precise"), HasDiagnostic(InvalidInterpolationResult, TEXT("/Body/Curves/0/Keys/0/InterpMode"), TEXT("InvalidCurveInterpolation")));
+	TestTrue(TEXT("Invalid interpolation diagnostic is precise"), SequenceTestHasDiagnostic(InvalidInterpolationResult, TEXT("/Body/Curves/0/Keys/0/InterpMode"), TEXT("InvalidCurveInterpolation")));
 	TestEqual(TEXT("Invalid interpolation does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> UnsupportedCurveTypeBody = MakePlaybackRateBody(7.0);
@@ -1627,14 +1627,14 @@ bool FAssetDocumentAnimSequenceCurvesTest::RunTest(const FString&)
 	UnsupportedCurveTypeBody->SetArrayField(TEXT("Curves"), MakeCurvesBody({ TransformCurve })->GetArrayField(TEXT("Curves")));
 	const FAssetDocumentCapabilityResult UnsupportedCurveTypeResult = Capability.Apply(Context, MakeBodyValue(UnsupportedCurveTypeBody));
 	TestFalse(TEXT("Apply rejects non-float curve type"), UnsupportedCurveTypeResult.bSuccess);
-	TestTrue(TEXT("Non-float curve type diagnostic is precise"), HasDiagnostic(UnsupportedCurveTypeResult, TEXT("/Body/Curves/0/CurveType"), TEXT("DeferredCurveType")));
+	TestTrue(TEXT("Non-float curve type diagnostic is precise"), SequenceTestHasDiagnostic(UnsupportedCurveTypeResult, TEXT("/Body/Curves/0/CurveType"), TEXT("DeferredCurveType")));
 	TestEqual(TEXT("Unsupported curve type does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	TSharedRef<FJsonObject> UnsupportedCurveSectionBody = MakePlaybackRateBody(8.0);
 	UnsupportedCurveSectionBody->SetObjectField(TEXT("Attributes"), MakeShared<FJsonObject>());
 	const FAssetDocumentCapabilityResult UnsupportedAttributesResult = Capability.Apply(Context, MakeBodyValue(UnsupportedCurveSectionBody));
 	TestFalse(TEXT("Apply still rejects deferred Attributes region"), UnsupportedAttributesResult.bSuccess);
-	TestTrue(TEXT("Deferred Attributes diagnostic is precise"), HasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
+	TestTrue(TEXT("Deferred Attributes diagnostic is precise"), SequenceTestHasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
 	TestEqual(TEXT("Deferred Attributes does not mutate RateScale"), Sequence->RateScale, 1.0f);
 
 	Extracted = MakeShared<FJsonObject>();
@@ -1696,7 +1696,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	{
 		TestEqual(TEXT("Point notify time"), PointNotify->GetTime(), 0.25f);
 		TestEqual(TEXT("Point notify track index"), PointNotify->TrackIndex, 0);
-		TestTrue(TEXT("Point notify object uses requested class"), PointNotify->Notify->GetClass()->GetPathName() == FString(TestConcreteNotifyClassPath));
+		TestTrue(TEXT("Point notify object uses requested class"), PointNotify->Notify->GetClass()->GetPathName() == FString(SequenceTestConcreteNotifyClassPath));
 	}
 
 	const FAnimNotifyEvent* NotifyState = Sequence->Notifies.FindByPredicate([](const FAnimNotifyEvent& Event)
@@ -1868,34 +1868,34 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	const int32 TrackCountBeforeInvalid = Sequence->AnimNotifyTracks.Num();
 	const int32 ManagedNotifyObjectCountBeforeInvalid = CountManagedNotifyObjectsWithOuter(Sequence);
 	TSharedRef<FJsonObject> InvalidClassBody = MakePlaybackRateBody(3.0);
-	TSharedRef<FJsonObject> InvalidNotifyClass = MakeNotifyPlacement(TEXT("BadClass"), 0.25, TEXT("BadClass"), TEXT("Default"));
-	InvalidNotifyClass->SetObjectField(TEXT("Class"), MakeClassRef(TEXT("/Script/Engine.AnimNotifyState")));
+	TSharedRef<FJsonObject> InvalidNotifyClass = SequenceTestMakeNotifyPlacement(TEXT("BadClass"), 0.25, TEXT("BadClass"), TEXT("Default"));
+	InvalidNotifyClass->SetObjectField(TEXT("Class"), SequenceTestMakeClassRef(TEXT("/Script/Engine.AnimNotifyState")));
 	InvalidClassBody->SetArrayField(TEXT("Notifies"), ObjectArray({
 		InvalidNotifyClass,
 	}));
 	const FAssetDocumentCapabilityResult InvalidClassResult = Capability.Apply(Context, MakeBodyValue(InvalidClassBody));
 	TestFalse(TEXT("Apply rejects invalid notify class"), InvalidClassResult.bSuccess);
-	TestTrue(TEXT("Invalid notify class diagnostic is precise"), HasDiagnostic(InvalidClassResult, TEXT("/Body/Notifies/0/Class"), TEXT("InvalidNotifyClass")));
+	TestTrue(TEXT("Invalid notify class diagnostic is precise"), SequenceTestHasDiagnostic(InvalidClassResult, TEXT("/Body/Notifies/0/Class"), TEXT("InvalidNotifyClass")));
 	TestEqual(TEXT("Invalid notify class does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Invalid notify class does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 	TestEqual(TEXT("Invalid notify class does not mutate markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> InvalidStateClassBody = MakePlaybackRateBody(3.5);
 	InvalidStateClassBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
-		MakeNotifyStatePlacement(TEXT("BadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
+		SequenceTestMakeNotifyStatePlacement(TEXT("BadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
 	}));
 	const FAssetDocumentCapabilityResult InvalidStateClassResult = Capability.Apply(Context, MakeBodyValue(InvalidStateClassBody));
 	TestFalse(TEXT("Apply rejects invalid notify state class"), InvalidStateClassResult.bSuccess);
-	TestTrue(TEXT("Invalid notify state class diagnostic is precise"), HasDiagnostic(InvalidStateClassResult, TEXT("/Body/NotifyStates/0/Class"), TEXT("InvalidNotifyStateClass")));
+	TestTrue(TEXT("Invalid notify state class diagnostic is precise"), SequenceTestHasDiagnostic(InvalidStateClassResult, TEXT("/Body/NotifyStates/0/Class"), TEXT("InvalidNotifyStateClass")));
 	TestEqual(TEXT("Invalid state class does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> NegativeTimeBody = MakePlaybackRateBody(4.0);
 	NegativeTimeBody->SetArrayField(TEXT("Notifies"), ObjectArray({
-		MakeNotifyPlacement(TEXT("BadTime"), -0.01, TEXT("BadTime"), TEXT("Default")),
+		SequenceTestMakeNotifyPlacement(TEXT("BadTime"), -0.01, TEXT("BadTime"), TEXT("Default")),
 	}));
 	const FAssetDocumentCapabilityResult NegativeTimeResult = Capability.Apply(Context, MakeBodyValue(NegativeTimeBody));
 	TestFalse(TEXT("Apply rejects negative notify time"), NegativeTimeResult.bSuccess);
-	TestTrue(TEXT("Negative notify time diagnostic is precise"), HasDiagnostic(NegativeTimeResult, TEXT("/Body/Notifies/0/Time"), TEXT("InvalidNotifyTime")));
+	TestTrue(TEXT("Negative notify time diagnostic is precise"), SequenceTestHasDiagnostic(NegativeTimeResult, TEXT("/Body/Notifies/0/Time"), TEXT("InvalidNotifyTime")));
 	TestEqual(TEXT("Negative time does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> OutOfRangeMarkerBody = MakePlaybackRateBody(4.5);
@@ -1904,7 +1904,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult OutOfRangeMarkerResult = Capability.Apply(Context, MakeBodyValue(OutOfRangeMarkerBody));
 	TestFalse(TEXT("Apply rejects out-of-range marker time"), OutOfRangeMarkerResult.bSuccess);
-	TestTrue(TEXT("Out-of-range marker diagnostic is precise"), HasDiagnostic(OutOfRangeMarkerResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidSyncMarkerTime")));
+	TestTrue(TEXT("Out-of-range marker diagnostic is precise"), SequenceTestHasDiagnostic(OutOfRangeMarkerResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidSyncMarkerTime")));
 	TestEqual(TEXT("Out-of-range marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> OverflowMarkerBody = MakePlaybackRateBody(4.75);
@@ -1913,19 +1913,19 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult OverflowMarkerValidateResult = Capability.Validate(Context, MakeBodyValue(OverflowMarkerBody));
 	TestFalse(TEXT("Validate rejects sync marker time that cannot fit in float"), OverflowMarkerValidateResult.bSuccess);
-	TestTrue(TEXT("Overflow marker validate diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerValidateResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	TestTrue(TEXT("Overflow marker validate diagnostic preserves numeric code"), SequenceTestHasDiagnostic(OverflowMarkerValidateResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
 	const FAssetDocumentCapabilityResult OverflowMarkerApplyResult = Capability.Apply(Context, MakeBodyValue(OverflowMarkerBody));
 	TestFalse(TEXT("Apply rejects sync marker time that cannot fit in float"), OverflowMarkerApplyResult.bSuccess);
-	TestTrue(TEXT("Overflow marker apply diagnostic preserves numeric code"), HasDiagnostic(OverflowMarkerApplyResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
+	TestTrue(TEXT("Overflow marker apply diagnostic preserves numeric code"), SequenceTestHasDiagnostic(OverflowMarkerApplyResult, TEXT("/Body/SyncMarkers/0/Time"), TEXT("InvalidNumericField")));
 	TestEqual(TEXT("Overflow marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> NegativeDurationBody = MakePlaybackRateBody(5.0);
 	NegativeDurationBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
-		MakeNotifyStatePlacement(TEXT("BadDuration"), 0.25, -0.10, TEXT("/Script/Engine.AnimNotifyState"), TEXT("Default")),
+		SequenceTestMakeNotifyStatePlacement(TEXT("BadDuration"), 0.25, -0.10, TEXT("/Script/Engine.AnimNotifyState"), TEXT("Default")),
 	}));
 	const FAssetDocumentCapabilityResult NegativeDurationResult = Capability.Apply(Context, MakeBodyValue(NegativeDurationBody));
 	TestFalse(TEXT("Apply rejects negative notify state duration"), NegativeDurationResult.bSuccess);
-	TestTrue(TEXT("Negative duration diagnostic is precise"), HasDiagnostic(NegativeDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNotifyStateDuration")));
+	TestTrue(TEXT("Negative duration diagnostic is precise"), SequenceTestHasDiagnostic(NegativeDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNotifyStateDuration")));
 	TestEqual(TEXT("Negative duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> CrossRegionPartialMutationBody = MakePlaybackRateBody(7.0);
@@ -1946,13 +1946,13 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult CrossRegionValidateResult = Capability.Validate(Context, MakeBodyValue(CrossRegionPartialMutationBody));
 	TestFalse(TEXT("Validate rejects invalid embedded notify properties"), CrossRegionValidateResult.bSuccess);
-	TestTrue(TEXT("Validate diagnostic points at notify fragment"), HasDiagnostic(CrossRegionValidateResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Validate diagnostic points at notify fragment"), SequenceTestHasDiagnostic(CrossRegionValidateResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
 	const FAssetDocumentCapabilityResult CrossRegionPreflightResult = Capability.Preflight(Context, MakeBodyValue(CrossRegionPartialMutationBody));
 	TestFalse(TEXT("Preflight rejects invalid embedded notify properties"), CrossRegionPreflightResult.bSuccess);
-	TestTrue(TEXT("Preflight diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPreflightResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Preflight diagnostic points at notify fragment"), SequenceTestHasDiagnostic(CrossRegionPreflightResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
 	const FAssetDocumentCapabilityResult CrossRegionPartialMutationResult = Capability.Apply(Context, MakeBodyValue(CrossRegionPartialMutationBody));
 	TestFalse(TEXT("Apply rejects invalid embedded notify properties before any region mutates"), CrossRegionPartialMutationResult.bSuccess);
-	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), HasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Invalid embedded notify properties diagnostic points at notify fragment"), SequenceTestHasDiagnostic(CrossRegionPartialMutationResult, TEXT("/Body/Notifies/1/Notify"), TEXT("embeddedobject-preflight-failed")));
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 	TestEqual(TEXT("Invalid embedded notify properties does not mutate markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
@@ -1973,13 +1973,13 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	InvalidEmbeddedStateBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ InvalidEmbeddedState }));
 	const FAssetDocumentCapabilityResult InvalidStateValidateResult = Capability.Validate(Context, MakeBodyValue(InvalidEmbeddedStateBody));
 	TestFalse(TEXT("Validate rejects invalid embedded notify state properties"), InvalidStateValidateResult.bSuccess);
-	TestTrue(TEXT("Validate diagnostic points at notify state fragment"), HasDiagnostic(InvalidStateValidateResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Validate diagnostic points at notify state fragment"), SequenceTestHasDiagnostic(InvalidStateValidateResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
 	const FAssetDocumentCapabilityResult InvalidStatePreflightResult = Capability.Preflight(Context, MakeBodyValue(InvalidEmbeddedStateBody));
 	TestFalse(TEXT("Preflight rejects invalid embedded notify state properties"), InvalidStatePreflightResult.bSuccess);
-	TestTrue(TEXT("Preflight diagnostic points at notify state fragment"), HasDiagnostic(InvalidStatePreflightResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Preflight diagnostic points at notify state fragment"), SequenceTestHasDiagnostic(InvalidStatePreflightResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
 	const FAssetDocumentCapabilityResult InvalidStateApplyResult = Capability.Apply(Context, MakeBodyValue(InvalidEmbeddedStateBody));
 	TestFalse(TEXT("Apply rejects invalid embedded notify state properties"), InvalidStateApplyResult.bSuccess);
-	TestTrue(TEXT("Apply diagnostic points at notify state fragment"), HasDiagnostic(InvalidStateApplyResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Apply diagnostic points at notify state fragment"), SequenceTestHasDiagnostic(InvalidStateApplyResult, TEXT("/Body/NotifyStates/0/NotifyState"), TEXT("embeddedobject-preflight-failed")));
 
 	TSharedRef<FJsonObject> AmbiguousNotifyTrackBody = MakePlaybackRateBody(5.1);
 	TSharedRef<FJsonObject> AmbiguousNotify = MakeEmbeddedNotifyPlacement(TEXT("AmbiguousTrack"), 0.25, TEXT("AmbiguousTrack"), TEXT("Default"));
@@ -1987,7 +1987,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	AmbiguousNotifyTrackBody->SetArrayField(TEXT("Notifies"), ObjectArray({ AmbiguousNotify }));
 	const FAssetDocumentCapabilityResult AmbiguousNotifyTrackResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyTrackBody));
 	TestFalse(TEXT("Apply rejects notify with Track and TrackName"), AmbiguousNotifyTrackResult.bSuccess);
-	TestTrue(TEXT("Ambiguous notify track diagnostic is precise"), HasDiagnostic(AmbiguousNotifyTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestTrue(TEXT("Ambiguous notify track diagnostic is precise"), SequenceTestHasDiagnostic(AmbiguousNotifyTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
 	TestEqual(TEXT("Ambiguous notify track does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> AmbiguousNotifyTracksBody = MakePlaybackRateBody(5.2);
@@ -1996,7 +1996,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	AmbiguousNotifyTracksBody->SetArrayField(TEXT("NotifyTracks"), ObjectArray({ AmbiguousTrack }));
 	const FAssetDocumentCapabilityResult AmbiguousNotifyTracksResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyTracksBody));
 	TestFalse(TEXT("Apply rejects NotifyTracks item with Name and TrackName"), AmbiguousNotifyTracksResult.bSuccess);
-	TestTrue(TEXT("Ambiguous NotifyTracks diagnostic is precise"), HasDiagnostic(AmbiguousNotifyTracksResult, TEXT("/Body/NotifyTracks/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestTrue(TEXT("Ambiguous NotifyTracks diagnostic is precise"), SequenceTestHasDiagnostic(AmbiguousNotifyTracksResult, TEXT("/Body/NotifyTracks/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
 	TestEqual(TEXT("Ambiguous NotifyTracks does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> UnknownTrackBody = MakePlaybackRateBody(5.25);
@@ -2008,7 +2008,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult UnknownTrackResult = Capability.Apply(Context, MakeBodyValue(UnknownTrackBody));
 	TestFalse(TEXT("Apply rejects notify track names not declared in explicit NotifyTracks"), UnknownTrackResult.bSuccess);
-	TestTrue(TEXT("Unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestTrue(TEXT("Unknown notify track diagnostic is precise"), SequenceTestHasDiagnostic(UnknownTrackResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
 	TestEqual(TEXT("Unknown track does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
@@ -2020,11 +2020,11 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 		MakeEmbeddedNotifyPlacement(TEXT("EarlyUnknownTrack"), 0.25, TEXT("EarlyUnknownTrack"), TEXT("Typo")),
 	}));
 	UnknownTrackPreemptsLaterInvalidBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({
-		MakeNotifyStatePlacement(TEXT("LaterBadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
+		SequenceTestMakeNotifyStatePlacement(TEXT("LaterBadStateClass"), 0.25, 0.10, TEXT("/Script/Engine.AnimNotify"), TEXT("Default")),
 	}));
 	const FAssetDocumentCapabilityResult UnknownTrackPreemptsLaterInvalidResult = Capability.Apply(Context, MakeBodyValue(UnknownTrackPreemptsLaterInvalidBody));
 	TestFalse(TEXT("Apply rejects unknown notify track during timeline parse before later regions"), UnknownTrackPreemptsLaterInvalidResult.bSuccess);
-	TestTrue(TEXT("Timeline resolver unknown notify track diagnostic is precise"), HasDiagnostic(UnknownTrackPreemptsLaterInvalidResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestTrue(TEXT("Timeline resolver unknown notify track diagnostic is precise"), SequenceTestHasDiagnostic(UnknownTrackPreemptsLaterInvalidResult, TEXT("/Body/Notifies/0/TrackName"), TEXT("UnknownNotifyTrack")));
 	TestEqual(TEXT("Timeline resolver unknown track does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 	TestEqual(TEXT("Timeline resolver unknown track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
@@ -2037,7 +2037,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult UnknownStateTrackResult = Capability.Apply(Context, MakeBodyValue(UnknownStateTrackBody));
 	TestFalse(TEXT("Apply rejects notify state track names not declared in explicit NotifyTracks"), UnknownStateTrackResult.bSuccess);
-	TestTrue(TEXT("Unknown notify state track diagnostic is precise"), HasDiagnostic(UnknownStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("UnknownNotifyTrack")));
+	TestTrue(TEXT("Unknown notify state track diagnostic is precise"), SequenceTestHasDiagnostic(UnknownStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("UnknownNotifyTrack")));
 	TestEqual(TEXT("Unknown notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> NonFiniteTimeBody = MakePlaybackRateBody(5.35);
@@ -2046,7 +2046,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	NonFiniteTimeBody->SetArrayField(TEXT("Notifies"), ObjectArray({ NonFiniteNotify }));
 	const FAssetDocumentCapabilityResult NonFiniteTimeResult = Capability.Apply(Context, MakeBodyValue(NonFiniteTimeBody));
 	TestFalse(TEXT("Apply rejects non-finite notify time"), NonFiniteTimeResult.bSuccess);
-	TestTrue(TEXT("Non-finite time diagnostic is precise"), HasDiagnostic(NonFiniteTimeResult, TEXT("/Body/Notifies/0/Time"), TEXT("InvalidNumericField")));
+	TestTrue(TEXT("Non-finite time diagnostic is precise"), SequenceTestHasDiagnostic(NonFiniteTimeResult, TEXT("/Body/Notifies/0/Time"), TEXT("InvalidNumericField")));
 	TestEqual(TEXT("Non-finite time does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> OverflowDurationBody = MakePlaybackRateBody(5.45);
@@ -2055,7 +2055,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	OverflowDurationBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ OverflowState }));
 	const FAssetDocumentCapabilityResult OverflowDurationResult = Capability.Apply(Context, MakeBodyValue(OverflowDurationBody));
 	TestFalse(TEXT("Apply rejects overflow notify state duration"), OverflowDurationResult.bSuccess);
-	TestTrue(TEXT("Overflow duration diagnostic is precise"), HasDiagnostic(OverflowDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNumericField")));
+	TestTrue(TEXT("Overflow duration diagnostic is precise"), SequenceTestHasDiagnostic(OverflowDurationResult, TEXT("/Body/NotifyStates/0/Duration"), TEXT("InvalidNumericField")));
 	TestEqual(TEXT("Overflow duration does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> AmbiguousNotifyStateTrackBody = MakePlaybackRateBody(5.48);
@@ -2064,16 +2064,16 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	AmbiguousNotifyStateTrackBody->SetArrayField(TEXT("NotifyStates"), ObjectArray({ AmbiguousNotifyState }));
 	const FAssetDocumentCapabilityResult AmbiguousNotifyStateTrackResult = Capability.Apply(Context, MakeBodyValue(AmbiguousNotifyStateTrackBody));
 	TestFalse(TEXT("Apply rejects notify state with Track and TrackName"), AmbiguousNotifyStateTrackResult.bSuccess);
-	TestTrue(TEXT("Ambiguous notify state track diagnostic is precise"), HasDiagnostic(AmbiguousNotifyStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
+	TestTrue(TEXT("Ambiguous notify state track diagnostic is precise"), SequenceTestHasDiagnostic(AmbiguousNotifyStateTrackResult, TEXT("/Body/NotifyStates/0/TrackName"), TEXT("AmbiguousTrackNameAlias")));
 	TestEqual(TEXT("Ambiguous notify state track does not mutate notify tracks"), Sequence->AnimNotifyTracks.Num(), TrackCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> UnknownFieldBody = MakePlaybackRateBody(5.5);
-	TSharedRef<FJsonObject> UnknownNotify = MakeNotifyPlacement(TEXT("Unknown"), 0.25, TEXT("Unknown"), TEXT("Default"));
+	TSharedRef<FJsonObject> UnknownNotify = SequenceTestMakeNotifyPlacement(TEXT("Unknown"), 0.25, TEXT("Unknown"), TEXT("Default"));
 	UnknownNotify->SetStringField(TEXT("Unexpected"), TEXT("nope"));
 	UnknownFieldBody->SetArrayField(TEXT("Notifies"), ObjectArray({ UnknownNotify }));
 	const FAssetDocumentCapabilityResult UnknownFieldResult = Capability.Apply(Context, MakeBodyValue(UnknownFieldBody));
 	TestFalse(TEXT("Apply rejects unknown notify field"), UnknownFieldResult.bSuccess);
-	TestTrue(TEXT("Unknown notify field diagnostic is precise"), HasDiagnostic(UnknownFieldResult, TEXT("/Body/Notifies/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
+	TestTrue(TEXT("Unknown notify field diagnostic is precise"), SequenceTestHasDiagnostic(UnknownFieldResult, TEXT("/Body/Notifies/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
 	TestEqual(TEXT("Unknown field does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> DuplicateNotifyBody = MakePlaybackRateBody(6.0);
@@ -2083,7 +2083,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult DuplicateNotifyResult = Capability.Apply(Context, MakeBodyValue(DuplicateNotifyBody));
 	TestFalse(TEXT("Apply rejects duplicate notify semantic keys"), DuplicateNotifyResult.bSuccess);
-	TestTrue(TEXT("Duplicate notify diagnostic is precise"), HasDiagnostic(DuplicateNotifyResult, TEXT("/Body/Notifies/1/Name"), TEXT("DuplicateNotifyKey")));
+	TestTrue(TEXT("Duplicate notify diagnostic is precise"), SequenceTestHasDiagnostic(DuplicateNotifyResult, TEXT("/Body/Notifies/1/Name"), TEXT("DuplicateNotifyKey")));
 	TestEqual(TEXT("Duplicate notify does not mutate RateScale"), Sequence->RateScale, 2.0f);
 
 	TSharedRef<FJsonObject> DuplicateNotifyStateBody = MakePlaybackRateBody(6.2);
@@ -2093,7 +2093,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult DuplicateNotifyStateResult = Capability.Apply(Context, MakeBodyValue(DuplicateNotifyStateBody));
 	TestFalse(TEXT("Apply rejects duplicate notify state semantic keys"), DuplicateNotifyStateResult.bSuccess);
-	TestTrue(TEXT("Duplicate notify state diagnostic is precise"), HasDiagnostic(DuplicateNotifyStateResult, TEXT("/Body/NotifyStates/1/Name"), TEXT("DuplicateNotifyStateKey")));
+	TestTrue(TEXT("Duplicate notify state diagnostic is precise"), SequenceTestHasDiagnostic(DuplicateNotifyStateResult, TEXT("/Body/NotifyStates/1/Name"), TEXT("DuplicateNotifyStateKey")));
 	TestEqual(TEXT("Duplicate notify state does not mutate notifies"), Sequence->Notifies.Num(), NotifyCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> DuplicateMarkerBody = MakePlaybackRateBody(6.5);
@@ -2103,7 +2103,7 @@ bool FAssetDocumentAnimSequenceNotifiesAndMarkersTest::RunTest(const FString&)
 	}));
 	const FAssetDocumentCapabilityResult DuplicateMarkerResult = Capability.Apply(Context, MakeBodyValue(DuplicateMarkerBody));
 	TestFalse(TEXT("Apply rejects duplicate sync marker identities"), DuplicateMarkerResult.bSuccess);
-	TestTrue(TEXT("Duplicate marker diagnostic is precise"), HasDiagnostic(DuplicateMarkerResult, TEXT("/Body/SyncMarkers/1/Name"), TEXT("DuplicateSyncMarkerKey")));
+	TestTrue(TEXT("Duplicate marker diagnostic is precise"), SequenceTestHasDiagnostic(DuplicateMarkerResult, TEXT("/Body/SyncMarkers/1/Name"), TEXT("DuplicateSyncMarkerKey")));
 	TestEqual(TEXT("Duplicate marker does not mutate RateScale"), Sequence->RateScale, 2.0f);
 	TestEqual(TEXT("Duplicate marker does not mutate authored markers"), Sequence->AuthoredSyncMarkers.Num(), MarkerCountBeforeInvalid);
 
@@ -2163,10 +2163,10 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 
 	TSharedRef<FJsonObject> ObjectFragmentBody = MakePlaybackRateBody(2.0);
 	ObjectFragmentBody->SetArrayField(TEXT("Metadata"), ObjectArray({
-		MakeEmbeddedObjectRef(MetadataFixture.ClassPath),
+		SequenceTestMakeEmbeddedObjectRef(MetadataFixture.ClassPath),
 	}));
 	ObjectFragmentBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({
-		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+		SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath),
 	}));
 
 	TestTrue(TEXT("Validate accepts metadata/userdata object fragments"), Capability.Validate(Context, MakeBodyValue(ObjectFragmentBody)).bSuccess);
@@ -2344,55 +2344,55 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	const int32 ManagedUserDataCountBeforeInvalid = CountManagedAssetUserData(Sequence);
 
 	TSharedRef<FJsonObject> UnknownMetadataFieldBody = MakePlaybackRateBody(3.0);
-	TSharedRef<FJsonObject> UnknownMetadataField = MakeEmbeddedObjectRef(MetadataFixture.ClassPath);
+	TSharedRef<FJsonObject> UnknownMetadataField = SequenceTestMakeEmbeddedObjectRef(MetadataFixture.ClassPath);
 	UnknownMetadataField->SetStringField(TEXT("Unexpected"), TEXT("nope"));
 	UnknownMetadataFieldBody->SetArrayField(TEXT("Metadata"), ObjectArray({ UnknownMetadataField }));
 	const FAssetDocumentCapabilityResult UnknownMetadataFieldResult = Capability.Apply(Context, MakeBodyValue(UnknownMetadataFieldBody));
 	TestFalse(TEXT("Apply rejects unknown metadata item field"), UnknownMetadataFieldResult.bSuccess);
-	TestTrue(TEXT("Unknown metadata field diagnostic is precise"), HasDiagnostic(UnknownMetadataFieldResult, TEXT("/Body/Metadata/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
+	TestTrue(TEXT("Unknown metadata field diagnostic is precise"), SequenceTestHasDiagnostic(UnknownMetadataFieldResult, TEXT("/Body/Metadata/0/Unexpected"), TEXT("UnsupportedAuthoredField")));
 	TestEqual(TEXT("Unknown metadata field does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 	TestEqual(TEXT("Unknown metadata field does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> InvalidMetadataClassBody = MakePlaybackRateBody(3.1);
-	InvalidMetadataClassBody->SetArrayField(TEXT("Metadata"), ObjectArray({ MakeEmbeddedObjectRef(TestAssetUserDataClassPath) }));
+	InvalidMetadataClassBody->SetArrayField(TEXT("Metadata"), ObjectArray({ SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath) }));
 	const FAssetDocumentCapabilityResult InvalidMetadataValidateResult = Capability.Validate(Context, MakeBodyValue(InvalidMetadataClassBody));
 	TestFalse(TEXT("Validate rejects metadata fragment with non-UAnimMetaData class"), InvalidMetadataValidateResult.bSuccess);
-	TestTrue(TEXT("Invalid metadata validate base diagnostic is precise"), HasDiagnostic(InvalidMetadataValidateResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestTrue(TEXT("Invalid metadata validate base diagnostic is precise"), SequenceTestHasDiagnostic(InvalidMetadataValidateResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
 	const FAssetDocumentCapabilityResult InvalidMetadataClassResult = Capability.Apply(Context, MakeBodyValue(InvalidMetadataClassBody));
 	TestFalse(TEXT("Apply rejects metadata fragment with non-UAnimMetaData class"), InvalidMetadataClassResult.bSuccess);
-	TestTrue(TEXT("Invalid metadata base diagnostic is precise"), HasDiagnostic(InvalidMetadataClassResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestTrue(TEXT("Invalid metadata base diagnostic is precise"), SequenceTestHasDiagnostic(InvalidMetadataClassResult, TEXT("/Body/Metadata/0"), TEXT("embeddedobject-base-class-mismatch")));
 	TestEqual(TEXT("Invalid metadata class does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> DuplicateUserDataBody = MakePlaybackRateBody(3.2);
 	DuplicateUserDataBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({
-		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
-		MakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+		SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath),
+		SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath),
 	}));
 	const FAssetDocumentCapabilityResult DuplicateUserDataResult = Capability.Apply(Context, MakeBodyValue(DuplicateUserDataBody));
 	TestFalse(TEXT("Apply rejects duplicate AssetUserData semantic class key"), DuplicateUserDataResult.bSuccess);
-	TestTrue(TEXT("Duplicate AssetUserData diagnostic is precise"), HasDiagnostic(DuplicateUserDataResult, TEXT("/Body/AssetUserData/1/Class"), TEXT("DuplicateAssetUserDataKey")));
+	TestTrue(TEXT("Duplicate AssetUserData diagnostic is precise"), SequenceTestHasDiagnostic(DuplicateUserDataResult, TEXT("/Body/AssetUserData/1/Class"), TEXT("DuplicateAssetUserDataKey")));
 	TestEqual(TEXT("Duplicate AssetUserData does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 	TestEqual(TEXT("Duplicate AssetUserData does not add managed user data"), CountManagedAssetUserData(Sequence), ManagedUserDataCountBeforeInvalid);
 
 	TSharedRef<FJsonObject> InvalidUserDataClassBody = MakePlaybackRateBody(3.3);
-	InvalidUserDataClassBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ MakeEmbeddedObjectRef(MetadataFixture.ClassPath) }));
+	InvalidUserDataClassBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ SequenceTestMakeEmbeddedObjectRef(MetadataFixture.ClassPath) }));
 	const FAssetDocumentCapabilityResult InvalidUserDataValidateResult = Capability.Validate(Context, MakeBodyValue(InvalidUserDataClassBody));
 	TestFalse(TEXT("Validate rejects AssetUserData fragment with non-UAssetUserData class"), InvalidUserDataValidateResult.bSuccess);
-	TestTrue(TEXT("Invalid AssetUserData validate base diagnostic is precise"), HasDiagnostic(InvalidUserDataValidateResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestTrue(TEXT("Invalid AssetUserData validate base diagnostic is precise"), SequenceTestHasDiagnostic(InvalidUserDataValidateResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-base-class-mismatch")));
 	const FAssetDocumentCapabilityResult InvalidUserDataClassResult = Capability.Apply(Context, MakeBodyValue(InvalidUserDataClassBody));
 	TestFalse(TEXT("Apply rejects AssetUserData fragment with non-UAssetUserData class"), InvalidUserDataClassResult.bSuccess);
-	TestTrue(TEXT("Invalid AssetUserData base diagnostic is precise"), HasDiagnostic(InvalidUserDataClassResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-base-class-mismatch")));
+	TestTrue(TEXT("Invalid AssetUserData base diagnostic is precise"), SequenceTestHasDiagnostic(InvalidUserDataClassResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-base-class-mismatch")));
 	TestEqual(TEXT("Invalid AssetUserData class does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 
 	TSharedRef<FJsonObject> BadFragmentBody = MakePlaybackRateBody(3.4);
-	TSharedRef<FJsonObject> BadFragment = MakeEmbeddedObjectRef(TestAssetUserDataClassPath);
+	TSharedRef<FJsonObject> BadFragment = SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath);
 	TSharedRef<FJsonObject> BadProperties = MakeShared<FJsonObject>();
 	BadProperties->SetBoolField(TEXT("NoSuchAssetUserDataProperty"), true);
 	BadFragment->SetObjectField(TEXT("Properties"), BadProperties);
 	BadFragmentBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ BadFragment }));
 	const FAssetDocumentCapabilityResult BadFragmentResult = Capability.Apply(Context, MakeBodyValue(BadFragmentBody));
 	TestFalse(TEXT("Apply rejects bad AssetUserData embedded object fragment"), BadFragmentResult.bSuccess);
-	TestTrue(TEXT("Bad fragment diagnostic points at AssetUserData item"), HasDiagnostic(BadFragmentResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-preflight-failed")));
+	TestTrue(TEXT("Bad fragment diagnostic points at AssetUserData item"), SequenceTestHasDiagnostic(BadFragmentResult, TEXT("/Body/AssetUserData/0"), TEXT("embeddedobject-preflight-failed")));
 	TestEqual(TEXT("Bad fragment does not mutate RateScale"), Sequence->RateScale, RateScaleBeforeInvalid);
 	TestEqual(TEXT("Bad fragment does not mutate metadata"), Sequence->GetMetaData().Num(), MetadataCountBeforeInvalid);
 	TestEqual(TEXT("Bad fragment does not mutate managed user data"), CountManagedAssetUserData(Sequence), ManagedUserDataCountBeforeInvalid);
@@ -2401,13 +2401,13 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	NullMetadataItemBody->SetArrayField(TEXT("Metadata"), { MakeShared<FJsonValueNull>() });
 	const FAssetDocumentCapabilityResult NullMetadataItemResult = Capability.Validate(Context, MakeBodyValue(NullMetadataItemBody));
 	TestFalse(TEXT("Validate rejects null Metadata item"), NullMetadataItemResult.bSuccess);
-	TestTrue(TEXT("Null Metadata item diagnostic is precise"), HasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidFragmentArrayEntryType")));
+	TestTrue(TEXT("Null Metadata item diagnostic is precise"), SequenceTestHasDiagnostic(NullMetadataItemResult, TEXT("/Body/Metadata/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NonObjectUserDataItemBody = MakePlaybackRateBody(3.46);
 	NonObjectUserDataItemBody->SetArrayField(TEXT("AssetUserData"), { MakeShared<FJsonValueString>(TEXT("not an object")) });
 	const FAssetDocumentCapabilityResult NonObjectUserDataItemResult = Capability.Validate(Context, MakeBodyValue(NonObjectUserDataItemBody));
 	TestFalse(TEXT("Validate rejects non-object AssetUserData item"), NonObjectUserDataItemResult.bSuccess);
-	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), HasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidFragmentArrayEntryType")));
+	TestTrue(TEXT("Non-object AssetUserData item diagnostic is precise"), SequenceTestHasDiagnostic(NonObjectUserDataItemResult, TEXT("/Body/AssetUserData/0"), TEXT("InvalidFragmentArrayEntryType")));
 
 	TSharedRef<FJsonObject> NullWrappedObjectBody = MakePlaybackRateBody(3.47);
 	TSharedRef<FJsonObject> NullWrappedObject = MakeShared<FJsonObject>();
@@ -2416,21 +2416,21 @@ bool FAssetDocumentAnimSequenceMetadataAndUserDataTest::RunTest(const FString&)
 	NullWrappedObjectBody->SetArrayField(TEXT("Metadata"), ObjectArray({ NullWrappedObject }));
 	const FAssetDocumentCapabilityResult NullWrappedObjectResult = Capability.Validate(Context, MakeBodyValue(NullWrappedObjectBody));
 	TestFalse(TEXT("Validate rejects Object:null metadata entry"), NullWrappedObjectResult.bSuccess);
-	TestTrue(TEXT("Object:null diagnostic is precise"), HasDiagnostic(NullWrappedObjectResult, TEXT("/Body/Metadata/0/Object"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Object:null diagnostic is precise"), SequenceTestHasDiagnostic(NullWrappedObjectResult, TEXT("/Body/Metadata/0/Object"), TEXT("InvalidBodySectionType")));
 
 	TSharedRef<FJsonObject> NonObjectPropertiesBody = MakePlaybackRateBody(3.48);
-	TSharedRef<FJsonObject> NonObjectProperties = MakeEmbeddedObjectRef(TestAssetUserDataClassPath);
+	TSharedRef<FJsonObject> NonObjectProperties = SequenceTestMakeEmbeddedObjectRef(TestAssetUserDataClassPath);
 	NonObjectProperties->SetStringField(TEXT("Properties"), TEXT("not an object"));
 	NonObjectPropertiesBody->SetArrayField(TEXT("AssetUserData"), ObjectArray({ NonObjectProperties }));
 	const FAssetDocumentCapabilityResult NonObjectPropertiesResult = Capability.Validate(Context, MakeBodyValue(NonObjectPropertiesBody));
 	TestFalse(TEXT("Validate rejects AssetUserData Properties that is not an object"), NonObjectPropertiesResult.bSuccess);
-	TestTrue(TEXT("Non-object Properties diagnostic is precise"), HasDiagnostic(NonObjectPropertiesResult, TEXT("/Body/AssetUserData/0/Properties"), TEXT("InvalidBodySectionType")));
+	TestTrue(TEXT("Non-object Properties diagnostic is precise"), SequenceTestHasDiagnostic(NonObjectPropertiesResult, TEXT("/Body/AssetUserData/0/Properties"), TEXT("InvalidBodySectionType")));
 
 	TSharedRef<FJsonObject> UnsupportedAttributesBody = MakePlaybackRateBody(3.5);
 	UnsupportedAttributesBody->SetObjectField(TEXT("Attributes"), MakeShared<FJsonObject>());
 	const FAssetDocumentCapabilityResult UnsupportedAttributesResult = Capability.Validate(Context, MakeBodyValue(UnsupportedAttributesBody));
 	TestFalse(TEXT("Task 5 does not newly support unrelated Attributes section"), UnsupportedAttributesResult.bSuccess);
-	TestTrue(TEXT("Unrelated Attributes section remains rejected"), HasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
+	TestTrue(TEXT("Unrelated Attributes section remains rejected"), SequenceTestHasDiagnostic(UnsupportedAttributesResult, TEXT("/Body/Attributes"), TEXT("UnknownBodyKey")));
 
 	return true;
 }
@@ -2521,7 +2521,7 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> Document = MakeAnimSequenceDocument(Target, MakeFullRoundtripBody());
-	if (!WriteSidecarJson(this, SidecarPath, Document))
+	if (!SequenceTestWriteSidecarJson(this, SidecarPath, Document))
 	{
 		return false;
 	}
@@ -2654,8 +2654,8 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 	for (const FString& Section : ExpectedBodySections)
 	{
 		const FString Path = FString::Printf(TEXT("/Body/%s"), *Section);
-		TestFalse(FString::Printf(TEXT("Roundtrip diff does not mark %s changed"), *Path), Changed && JsonArrayContainsPathStatus(*Changed, Path, TEXT("changed")));
-		TestTrue(FString::Printf(TEXT("Roundtrip diff marks %s unchanged"), *Path), Unchanged && JsonArrayContainsPathStatus(*Unchanged, Path, TEXT("unchanged")));
+		TestFalse(FString::Printf(TEXT("Roundtrip diff does not mark %s changed"), *Path), Changed && SequenceTestJsonArrayContainsPathStatus(*Changed, Path, TEXT("changed")));
+		TestTrue(FString::Printf(TEXT("Roundtrip diff marks %s unchanged"), *Path), Unchanged && SequenceTestJsonArrayContainsPathStatus(*Unchanged, Path, TEXT("unchanged")));
 	}
 
 	TSharedPtr<FJsonObject> SkippedDocument = MakeAnimSequenceDocument(Target, MakeFullRoundtripBody());
@@ -2685,9 +2685,9 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 		TestTrue(TEXT("Skipped diff payload includes changed array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("changed"), SkippedChanged));
 		TestTrue(TEXT("Skipped diff payload includes unchanged array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("unchanged"), SkippedUnchanged));
 		TestTrue(TEXT("Skipped diff payload includes failed array"), SkippedDiffResult.Payload->TryGetArrayField(TEXT("failed"), SkippedFailed));
-		TestFalse(TEXT("Diff does not report changed Body._Skipped"), SkippedChanged && JsonArrayContainsPath(*SkippedChanged, TEXT("/Body/_Skipped")));
-		TestFalse(TEXT("Diff does not report unchanged Body._Skipped"), SkippedUnchanged && JsonArrayContainsPath(*SkippedUnchanged, TEXT("/Body/_Skipped")));
-		TestFalse(TEXT("Diff does not report failed Body._Skipped"), SkippedFailed && JsonArrayContainsPath(*SkippedFailed, TEXT("/Body/_Skipped")));
+		TestFalse(TEXT("Diff does not report changed Body._Skipped"), SkippedChanged && SequenceTestJsonArrayContainsPath(*SkippedChanged, TEXT("/Body/_Skipped")));
+		TestFalse(TEXT("Diff does not report unchanged Body._Skipped"), SkippedUnchanged && SequenceTestJsonArrayContainsPath(*SkippedUnchanged, TEXT("/Body/_Skipped")));
+		TestFalse(TEXT("Diff does not report failed Body._Skipped"), SkippedFailed && SequenceTestJsonArrayContainsPath(*SkippedFailed, TEXT("/Body/_Skipped")));
 	}
 
 	FAssetDocumentExtractRequest DiffOnlyExtractRequest;
@@ -2733,9 +2733,9 @@ bool FAssetDocumentAnimSequenceRoundtripTest::RunTest(const FString&)
 			TestTrue(TEXT("Diff-only skipped diff payload includes changed array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("changed"), DiffOnlySkippedChanged));
 			TestTrue(TEXT("Diff-only skipped diff payload includes unchanged array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("unchanged"), DiffOnlySkippedUnchanged));
 			TestTrue(TEXT("Diff-only skipped diff payload includes failed array"), DiffOnlySkippedDiffResult.Payload->TryGetArrayField(TEXT("failed"), DiffOnlySkippedFailed));
-			TestFalse(TEXT("Diff-only Extract->Diff does not report changed Body._Skipped"), DiffOnlySkippedChanged && JsonArrayContainsPath(*DiffOnlySkippedChanged, TEXT("/Body/_Skipped")));
-			TestFalse(TEXT("Diff-only Extract->Diff does not report unchanged Body._Skipped"), DiffOnlySkippedUnchanged && JsonArrayContainsPath(*DiffOnlySkippedUnchanged, TEXT("/Body/_Skipped")));
-			TestFalse(TEXT("Diff-only Extract->Diff does not report failed Body._Skipped"), DiffOnlySkippedFailed && JsonArrayContainsPath(*DiffOnlySkippedFailed, TEXT("/Body/_Skipped")));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report changed Body._Skipped"), DiffOnlySkippedChanged && SequenceTestJsonArrayContainsPath(*DiffOnlySkippedChanged, TEXT("/Body/_Skipped")));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report unchanged Body._Skipped"), DiffOnlySkippedUnchanged && SequenceTestJsonArrayContainsPath(*DiffOnlySkippedUnchanged, TEXT("/Body/_Skipped")));
+			TestFalse(TEXT("Diff-only Extract->Diff does not report failed Body._Skipped"), DiffOnlySkippedFailed && SequenceTestJsonArrayContainsPath(*DiffOnlySkippedFailed, TEXT("/Body/_Skipped")));
 		}
 	}
 
@@ -2790,9 +2790,9 @@ bool FAssetDocumentAnimSequenceRegisteredProfileSchemaTest::RunTest(const FStrin
 		TestTrue(TEXT("AnimSequence entry includes BodySections"), AnimSequenceEntry->TryGetArrayField(TEXT("BodySections"), BodySections));
 		if (BodySections)
 		{
-			TestTrue(TEXT("AnimSequence BodySections include References"), JsonArrayContainsString(*BodySections, TEXT("References")));
-			TestTrue(TEXT("AnimSequence BodySections include AssetUserData"), JsonArrayContainsString(*BodySections, TEXT("AssetUserData")));
-			TestFalse(TEXT("AnimSequence BodySections omit extract-only _Skipped"), JsonArrayContainsString(*BodySections, TEXT("_Skipped")));
+			TestTrue(TEXT("AnimSequence BodySections include References"), SequenceTestJsonArrayContainsString(*BodySections, TEXT("References")));
+			TestTrue(TEXT("AnimSequence BodySections include AssetUserData"), SequenceTestJsonArrayContainsString(*BodySections, TEXT("AssetUserData")));
+			TestFalse(TEXT("AnimSequence BodySections omit extract-only _Skipped"), SequenceTestJsonArrayContainsString(*BodySections, TEXT("_Skipped")));
 		}
 
 		const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;

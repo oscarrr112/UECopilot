@@ -73,7 +73,7 @@ TSharedPtr<FJsonObject> CloneJsonObject(const TSharedPtr<FJsonObject>& Object)
 	return AssetDocumentGraphJson::CloneJsonObject(Object);
 }
 
-FString NodePath(const FUBlueprintGraphRegion& Region, int32 GraphIndex, int32 NodeIndex)
+FString UBlueprintGraphNodePath(const FUBlueprintGraphRegion& Region, int32 GraphIndex, int32 NodeIndex)
 {
 	return FString::Printf(TEXT("%s/%d/Nodes/%d"), *Region.Path, GraphIndex, NodeIndex);
 }
@@ -382,7 +382,7 @@ FAssetDocumentCapabilityResult ValidateGraphRegion(
 			for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
 			{
 				const FAssetDocumentNodeSpec& Node = Graph.Nodes[NodeIndex];
-				const FString Path = NodePath(Region, GraphIndex, NodeIndex);
+				const FString Path = UBlueprintGraphNodePath(Region, GraphIndex, NodeIndex);
 			UClass* NodeClass = ResolveClass(Node.Class);
 			if (!NodeClass)
 			{

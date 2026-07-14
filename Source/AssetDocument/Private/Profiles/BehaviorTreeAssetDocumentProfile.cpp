@@ -16,7 +16,7 @@
 
 namespace
 {
-bool MakeRegionPolicy(
+bool BehaviorTreeMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
@@ -45,22 +45,22 @@ bool MakeRegionPolicy(
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
 
-bool MakeRegionPolicy(
+bool BehaviorTreeMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
 	TArray<FString> ManagedUePropertyPaths,
 	FAssetDocumentRegionPolicy& OutPolicy)
 {
-	return MakeRegionPolicy(PresetName, RegionId, RegionKind, MoveTemp(ManagedUePropertyPaths), NAME_None, OutPolicy);
+	return BehaviorTreeMakeRegionPolicy(PresetName, RegionId, RegionKind, MoveTemp(ManagedUePropertyPaths), NAME_None, OutPolicy);
 }
 
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString BehaviorTreeRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
 
-FString NormalizeObjectPath(const FString& Path)
+FString BehaviorTreeNormalizeObjectPath(const FString& Path)
 {
 	FString ObjectPath = Path.TrimStartAndEnd();
 	if (ObjectPath.StartsWith(TEXT("/")) && !ObjectPath.Contains(TEXT(".")))
@@ -138,7 +138,7 @@ FAssetDocumentCapabilityResult ResolveBehaviorTreeBlackboardRef(
 			TEXT("BehaviorTree Blackboard.Path is required"));
 	}
 
-	OutBlackboard = LoadObject<UBlackboardData>(nullptr, *NormalizeObjectPath(AssetPath));
+	OutBlackboard = LoadObject<UBlackboardData>(nullptr, *BehaviorTreeNormalizeObjectPath(AssetPath));
 	if (!OutBlackboard)
 	{
 		return FAssetDocumentJsonRegionUtils::Failure(
@@ -280,7 +280,7 @@ public:
 		const TSharedPtr<FJsonValue>& DesiredValue) const override
 	{
 		UBlackboardData* Blackboard = nullptr;
-		return ResolveBehaviorTreeBlackboardRef(DesiredValue, RegionPath(Context), Blackboard);
+		return ResolveBehaviorTreeBlackboardRef(DesiredValue, BehaviorTreeRegionPath(Context), Blackboard);
 	}
 
 	virtual FAssetDocumentCapabilityResult ApplyRegion(
@@ -293,13 +293,13 @@ public:
 		if (!BehaviorTree)
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(
-				RegionPath(Context),
+				BehaviorTreeRegionPath(Context),
 				TEXT("UnsupportedAsset"),
 				TEXT("BehaviorTree Blackboard apply requires UBehaviorTree asset"));
 		}
 
 		UBlackboardData* Blackboard = nullptr;
-		FAssetDocumentCapabilityResult Result = ResolveBehaviorTreeBlackboardRef(DesiredValue, RegionPath(Context), Blackboard);
+		FAssetDocumentCapabilityResult Result = ResolveBehaviorTreeBlackboardRef(DesiredValue, BehaviorTreeRegionPath(Context), Blackboard);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -332,7 +332,7 @@ public:
 		TArray<TSharedPtr<FJsonValue>>& OutDiffEntries) const override
 	{
 		UBlackboardData* DesiredBlackboard = nullptr;
-		FAssetDocumentCapabilityResult Result = ResolveBehaviorTreeBlackboardRef(DesiredValue, RegionPath(Context), DesiredBlackboard);
+		FAssetDocumentCapabilityResult Result = ResolveBehaviorTreeBlackboardRef(DesiredValue, BehaviorTreeRegionPath(Context), DesiredBlackboard);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -351,7 +351,7 @@ public:
 			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredCanonicalValue);
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Context),
+			BehaviorTreeRegionPath(Context),
 			bSame ? TEXT("unchanged") : TEXT("changed"),
 			CurrentValue,
 			DesiredCanonicalValue);
@@ -477,7 +477,7 @@ public:
 					FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredCanonicalValue);
 				FAssetDocumentJsonRegionUtils::AddDiffEntry(
 					OutDiffEntries,
-					RegionPath(Context),
+					BehaviorTreeRegionPath(Context),
 					bSame ? TEXT("unchanged") : TEXT("changed"),
 					CurrentValue,
 					DesiredCanonicalValue);
@@ -526,12 +526,12 @@ public:
 		const TSharedPtr<FJsonValue>& DesiredValue) const override
 	{
 		TSharedPtr<FJsonObject> Tree;
-		FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, RegionPath(Context), Tree);
+		FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, BehaviorTreeRegionPath(Context), Tree);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		return ValidateStrictEmptyTree(Tree, RegionPath(Context));
+		return ValidateStrictEmptyTree(Tree, BehaviorTreeRegionPath(Context));
 	}
 
 	virtual FAssetDocumentCapabilityResult ApplyRegion(
@@ -568,7 +568,7 @@ public:
 			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue);
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Context),
+			BehaviorTreeRegionPath(Context),
 			bSame ? TEXT("unchanged") : TEXT("changed"),
 			CurrentValue,
 			DesiredValue);
@@ -610,7 +610,7 @@ public:
 		const TSharedPtr<FJsonValue>& DesiredValue) const override
 	{
 		TSharedPtr<FJsonObject> Object;
-		FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, RegionPath(Context), Object);
+		FAssetDocumentCapabilityResult Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(DesiredValue, BehaviorTreeRegionPath(Context), Object);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -618,7 +618,7 @@ public:
 		if (Object->Values.Num() > 0)
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(
-				RegionPath(Context),
+				BehaviorTreeRegionPath(Context),
 				TEXT("UnsupportedBehaviorTreeRegion"),
 				TEXT("BehaviorTree EditorLayout materialization is deferred to Task 9"));
 		}
@@ -658,7 +658,7 @@ public:
 			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredValue);
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Context),
+			BehaviorTreeRegionPath(Context),
 			bSame ? TEXT("unchanged") : TEXT("changed"),
 			CurrentValue,
 			DesiredValue);
@@ -954,12 +954,12 @@ TArray<FAssetDocumentRegionPolicy> FBehaviorTreeAssetDocumentProfile::GetRegionP
 	Policies.Reserve(3);
 
 	FAssetDocumentRegionPolicy Policy;
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blackboard"), EAssetDocumentRegionKind::Object, {TEXT("BlackboardAsset")}, Policy))
+	if (BehaviorTreeMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blackboard"), EAssetDocumentRegionKind::Object, {TEXT("BlackboardAsset")}, Policy))
 	{
 		Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (BehaviorTreeMakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.Tree"),
 		EAssetDocumentRegionKind::Object,
@@ -969,7 +969,7 @@ TArray<FAssetDocumentRegionPolicy> FBehaviorTreeAssetDocumentProfile::GetRegionP
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (BehaviorTreeMakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.EditorLayout"),
 		EAssetDocumentRegionKind::Object,

@@ -20,7 +20,7 @@ FAssetDocumentRegionPolicy MakePolicy(const FString& BodyPath, EAssetDocumentApp
 	return Policy;
 }
 
-TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
+TSharedPtr<FJsonValue> SidecarDeltaTestMakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
@@ -81,7 +81,7 @@ bool FAssetDocumentSidecarDeltaHashIgnoresSkippedTest::RunTest(const FString& Pa
 	BaselineNotify->SetNumberField(TEXT("Frame"), 12.0);
 
 	TSharedRef<FJsonObject> BaselineBody = MakeShared<FJsonObject>();
-	BaselineBody->SetArrayField(TEXT("Notifies"), { MakeObjectValue(BaselineNotify) });
+	BaselineBody->SetArrayField(TEXT("Notifies"), { SidecarDeltaTestMakeObjectValue(BaselineNotify) });
 	TSharedRef<FJsonObject> BaselineDocument = MakeShared<FJsonObject>();
 	BaselineDocument->SetObjectField(TEXT("Body"), BaselineBody);
 
@@ -92,7 +92,7 @@ bool FAssetDocumentSidecarDeltaHashIgnoresSkippedTest::RunTest(const FString& Pa
 	WithSkippedNotify->SetStringField(TEXT("_ProjectionMetrics"), TEXT("diagnostic"));
 
 	TSharedRef<FJsonObject> WithSkippedBody = MakeShared<FJsonObject>();
-	WithSkippedBody->SetArrayField(TEXT("Notifies"), { MakeObjectValue(WithSkippedNotify) });
+	WithSkippedBody->SetArrayField(TEXT("Notifies"), { SidecarDeltaTestMakeObjectValue(WithSkippedNotify) });
 	TSharedRef<FJsonObject> WithSkippedDocument = MakeShared<FJsonObject>();
 	WithSkippedDocument->SetObjectField(TEXT("Body"), WithSkippedBody);
 
@@ -270,7 +270,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentSidecarDeltaEmptySentinelsRequirePolicyTest::RunTest(const FString& Parameters)
 {
 	TSharedPtr<FJsonValue> NullValue = MakeShared<FJsonValueNull>();
-	TSharedPtr<FJsonValue> EmptyObjectValue = MakeObjectValue(MakeShared<FJsonObject>());
+	TSharedPtr<FJsonValue> EmptyObjectValue = SidecarDeltaTestMakeObjectValue(MakeShared<FJsonObject>());
 	TSharedPtr<FJsonValue> EmptyArrayValue = MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>());
 
 	FAssetDocumentRegionPolicy DefaultPolicy = MakePolicy(TEXT("Body.Blend"));

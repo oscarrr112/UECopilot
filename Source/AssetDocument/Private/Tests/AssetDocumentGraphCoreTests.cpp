@@ -52,7 +52,7 @@ FAssetDocumentGraphParseResult ParseGraphs(TArray<TSharedPtr<FJsonValue>> Values
 	return FAssetDocumentGraphParser::ParseGraphArray(Values, Options);
 }
 
-bool HasDiagnosticCode(const FAssetDocumentGraphParseResult& Result, const FString& Code)
+bool GraphCoreHasDiagnosticCode(const FAssetDocumentGraphParseResult& Result, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate(
 		[&Code](const FAssetDocumentGraphDiagnostic& Diagnostic)
@@ -70,7 +70,7 @@ bool HasDiagnosticCodeAtPath(const FAssetDocumentGraphParseResult& Result, const
 		});
 }
 
-bool HasDiagnosticCode(const FAssetDocumentGraphDefinitionResolveResult& Result, const FString& Code)
+bool GraphCoreHasDiagnosticCode(const FAssetDocumentGraphDefinitionResolveResult& Result, const FString& Code)
 {
 	return Result.Diagnostics.ContainsByPredicate(
 		[&Code](const FAssetDocumentGraphDiagnostic& Diagnostic)
@@ -258,7 +258,7 @@ bool FAssetDocumentGraphCoreRejectDuplicateGraphNamesTest::RunTest(const FString
 	});
 
 	TestFalse(TEXT("Duplicate graph names fail"), Result.IsValid());
-	TestTrue(TEXT("DuplicateGraphName diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("DuplicateGraphName")));
+	TestTrue(TEXT("DuplicateGraphName diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("DuplicateGraphName")));
 
 	return true;
 }
@@ -285,7 +285,7 @@ bool FAssetDocumentGraphCoreRejectDuplicateNodeIdsTest::RunTest(const FString& P
 	const FAssetDocumentGraphParseResult Result = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
 
 	TestFalse(TEXT("Duplicate node ids fail"), Result.IsValid());
-	TestTrue(TEXT("DuplicateGraphNodeId diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("DuplicateGraphNodeId")));
+	TestTrue(TEXT("DuplicateGraphNodeId diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("DuplicateGraphNodeId")));
 
 	return true;
 }
@@ -311,7 +311,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNodeIdTest::RunTest(const FString& Para
 	const FAssetDocumentGraphParseResult Result = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
 
 	TestFalse(TEXT("Invalid node id fails"), Result.IsValid());
-	TestTrue(TEXT("InvalidGraphNodeId diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("InvalidGraphNodeId")));
+	TestTrue(TEXT("InvalidGraphNodeId diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("InvalidGraphNodeId")));
 
 	return true;
 }
@@ -341,7 +341,7 @@ bool FAssetDocumentGraphCoreRejectDuplicateLinksTest::RunTest(const FString& Par
 	const FAssetDocumentGraphParseResult Result = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
 
 	TestFalse(TEXT("Duplicate links fail"), Result.IsValid());
-	TestTrue(TEXT("DuplicateGraphLink diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("DuplicateGraphLink")));
+	TestTrue(TEXT("DuplicateGraphLink diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("DuplicateGraphLink")));
 
 	return true;
 }
@@ -407,7 +407,7 @@ bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest::RunTest(const FStr
 	TestFalse(TEXT("Expanded endpoint with invalid node token fails"), ExpandedInvalidNodeResult.IsValid());
 	TestTrue(
 		TEXT("Expanded endpoint invalid node token uses InvalidGraphNodeId"),
-		HasDiagnosticCode(ExpandedInvalidNodeResult, TEXT("InvalidGraphNodeId")));
+		GraphCoreHasDiagnosticCode(ExpandedInvalidNodeResult, TEXT("InvalidGraphNodeId")));
 
 	const TSharedPtr<FJsonObject> ExpandedInvalidPinGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -427,7 +427,7 @@ bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest::RunTest(const FStr
 	TestFalse(TEXT("Expanded endpoint with invalid pin token fails"), ExpandedInvalidPinResult.IsValid());
 	TestTrue(
 		TEXT("Expanded endpoint invalid pin token uses InvalidGraphPinId"),
-		HasDiagnosticCode(ExpandedInvalidPinResult, TEXT("InvalidGraphPinId")));
+		GraphCoreHasDiagnosticCode(ExpandedInvalidPinResult, TEXT("InvalidGraphPinId")));
 
 	const TSharedPtr<FJsonObject> CompactInvalidNodeGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -447,7 +447,7 @@ bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest::RunTest(const FStr
 	TestFalse(TEXT("Compact endpoint with invalid node token fails"), CompactInvalidNodeResult.IsValid());
 	TestTrue(
 		TEXT("Compact endpoint invalid node token uses InvalidGraphNodeId"),
-		HasDiagnosticCode(CompactInvalidNodeResult, TEXT("InvalidGraphNodeId")));
+		GraphCoreHasDiagnosticCode(CompactInvalidNodeResult, TEXT("InvalidGraphNodeId")));
 
 	const TSharedPtr<FJsonObject> CompactInvalidPinGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -467,7 +467,7 @@ bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointIdsTest::RunTest(const FStr
 	TestFalse(TEXT("Compact endpoint with invalid pin token fails"), CompactInvalidPinResult.IsValid());
 	TestTrue(
 		TEXT("Compact endpoint invalid pin token uses InvalidGraphPinId"),
-		HasDiagnosticCode(CompactInvalidPinResult, TEXT("InvalidGraphPinId")));
+		GraphCoreHasDiagnosticCode(CompactInvalidPinResult, TEXT("InvalidGraphPinId")));
 
 	return true;
 }
@@ -485,7 +485,7 @@ bool FAssetDocumentGraphCoreRejectUnknownGraphFieldTest::RunTest(const FString& 
 	const FAssetDocumentGraphParseResult Result = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
 
 	TestFalse(TEXT("Unknown graph fields fail"), Result.IsValid());
-	TestTrue(TEXT("UnknownGraphField diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("UnknownGraphField")));
+	TestTrue(TEXT("UnknownGraphField diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("UnknownGraphField")));
 
 	return true;
 }
@@ -511,7 +511,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Graph Signature with invalid type fails"), InvalidSignatureResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphSignature diagnostic is emitted"),
-		HasDiagnosticCode(InvalidSignatureResult, TEXT("InvalidGraphSignature")));
+		GraphCoreHasDiagnosticCode(InvalidSignatureResult, TEXT("InvalidGraphSignature")));
 
 	const TSharedPtr<FJsonObject> InvalidMemberGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -532,7 +532,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Node Member with invalid type fails"), InvalidMemberResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphMemberReference diagnostic is emitted"),
-		HasDiagnosticCode(InvalidMemberResult, TEXT("InvalidGraphMemberReference")));
+		GraphCoreHasDiagnosticCode(InvalidMemberResult, TEXT("InvalidGraphMemberReference")));
 
 	const TSharedPtr<FJsonObject> InvalidPositionGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -553,7 +553,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Node Position with invalid type fails"), InvalidPositionResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPosition diagnostic is emitted"),
-		HasDiagnosticCode(InvalidPositionResult, TEXT("InvalidGraphPosition")));
+		GraphCoreHasDiagnosticCode(InvalidPositionResult, TEXT("InvalidGraphPosition")));
 
 	const TSharedPtr<FJsonObject> InvalidPinOverridesGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -574,7 +574,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Node PinOverrides with invalid type fails"), InvalidPinOverridesResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid PinOverrides"),
-		HasDiagnosticCode(InvalidPinOverridesResult, TEXT("InvalidGraphPin")));
+		GraphCoreHasDiagnosticCode(InvalidPinOverridesResult, TEXT("InvalidGraphPin")));
 
 	const TSharedPtr<FJsonObject> InvalidPinTypeGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -597,7 +597,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Pin override Type with invalid type fails"), InvalidPinTypeResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Type"),
-		HasDiagnosticCode(InvalidPinTypeResult, TEXT("InvalidGraphPin")));
+		GraphCoreHasDiagnosticCode(InvalidPinTypeResult, TEXT("InvalidGraphPin")));
 
 	const TSharedPtr<FJsonObject> InvalidPinDirectionGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -620,7 +620,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Pin override Direction with invalid type fails"), InvalidPinDirectionResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Direction"),
-		HasDiagnosticCode(InvalidPinDirectionResult, TEXT("InvalidGraphPin")));
+		GraphCoreHasDiagnosticCode(InvalidPinDirectionResult, TEXT("InvalidGraphPin")));
 
 	const TSharedPtr<FJsonObject> InvalidPinHiddenGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -643,7 +643,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Pin override Hidden with invalid type fails"), InvalidPinHiddenResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin Hidden"),
-		HasDiagnosticCode(InvalidPinHiddenResult, TEXT("InvalidGraphPin")));
+		GraphCoreHasDiagnosticCode(InvalidPinHiddenResult, TEXT("InvalidGraphPin")));
 
 	const TSharedPtr<FJsonObject> InvalidPinAdvancedViewGraph = ParseJsonObject(TEXT(R"JSON(
 {
@@ -666,7 +666,7 @@ bool FAssetDocumentGraphCoreRejectInvalidNestedFieldTypesTest::RunTest(const FSt
 	TestFalse(TEXT("Pin override AdvancedView with invalid type fails"), InvalidPinAdvancedViewResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphPin diagnostic is emitted for invalid pin AdvancedView"),
-		HasDiagnosticCode(InvalidPinAdvancedViewResult, TEXT("InvalidGraphPin")));
+		GraphCoreHasDiagnosticCode(InvalidPinAdvancedViewResult, TEXT("InvalidGraphPin")));
 
 	return true;
 }
@@ -699,7 +699,7 @@ bool FAssetDocumentGraphCoreRejectUnknownLinkFieldTest::RunTest(const FString& P
 	const FAssetDocumentGraphParseResult Result = ParseGraphs({ MakeShared<FJsonValueObject>(Graph.ToSharedRef()) });
 
 	TestFalse(TEXT("Unknown link fields fail"), Result.IsValid());
-	TestTrue(TEXT("UnknownGraphLinkField diagnostic is emitted"), HasDiagnosticCode(Result, TEXT("UnknownGraphLinkField")));
+	TestTrue(TEXT("UnknownGraphLinkField diagnostic is emitted"), GraphCoreHasDiagnosticCode(Result, TEXT("UnknownGraphLinkField")));
 
 	return true;
 }
@@ -733,7 +733,7 @@ bool FAssetDocumentGraphCoreRejectInvalidLinkEndpointTypeTest::RunTest(const FSt
 	TestFalse(TEXT("Invalid endpoint value type fails"), Result.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphLinkEndpointSyntax diagnostic is emitted"),
-		HasDiagnosticCode(Result, TEXT("InvalidGraphLinkEndpointSyntax")));
+		GraphCoreHasDiagnosticCode(Result, TEXT("InvalidGraphLinkEndpointSyntax")));
 
 	return true;
 }
@@ -767,7 +767,7 @@ bool FAssetDocumentGraphCoreRejectUnknownEndpointObjectFieldTest::RunTest(const 
 	TestFalse(TEXT("Unknown endpoint object fields fail"), Result.IsValid());
 	TestTrue(
 		TEXT("UnknownGraphLinkEndpointField diagnostic is emitted"),
-		HasDiagnosticCode(Result, TEXT("UnknownGraphLinkEndpointField")));
+		GraphCoreHasDiagnosticCode(Result, TEXT("UnknownGraphLinkEndpointField")));
 
 	return true;
 }
@@ -834,7 +834,7 @@ bool FAssetDocumentGraphCoreRejectCircularDefinitionRefsTest::RunTest(const FStr
 	TestFalse(TEXT("Circular DefinitionRefs fail"), ResolveResult.IsValid());
 	TestTrue(
 		TEXT("CircularDefinitionReference diagnostic is emitted"),
-		HasDiagnosticCode(ResolveResult, TEXT("CircularDefinitionReference")));
+		GraphCoreHasDiagnosticCode(ResolveResult, TEXT("CircularDefinitionReference")));
 
 	return true;
 }
@@ -857,7 +857,7 @@ bool FAssetDocumentGraphCoreRejectUnresolvedDefinitionRefTest::RunTest(const FSt
 	TestFalse(TEXT("Unresolved DefinitionRef fails"), ResolveResult.IsValid());
 	TestTrue(
 		TEXT("UnresolvedDefinitionReference diagnostic is emitted"),
-		HasDiagnosticCode(ResolveResult, TEXT("UnresolvedDefinitionReference")));
+		GraphCoreHasDiagnosticCode(ResolveResult, TEXT("UnresolvedDefinitionReference")));
 
 	const TSharedPtr<FJsonObject> UnknownKindDefinitions = ParseJsonObject(TEXT(R"JSON(
 {
@@ -869,7 +869,7 @@ bool FAssetDocumentGraphCoreRejectUnresolvedDefinitionRefTest::RunTest(const FSt
 	TestFalse(TEXT("Unknown definition kind fails"), UnknownKindResult.IsValid());
 	TestTrue(
 		TEXT("UnknownDefinitionKind diagnostic is emitted"),
-		HasDiagnosticCode(UnknownKindResult, TEXT("UnknownDefinitionKind")));
+		GraphCoreHasDiagnosticCode(UnknownKindResult, TEXT("UnknownDefinitionKind")));
 
 	const TSharedPtr<FJsonObject> EscapedPathDefinitions = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1146,7 +1146,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Duplicate sibling graph ids fail"), DuplicateGraphResult.IsValid());
 	TestTrue(
 		TEXT("DuplicateGraphId diagnostic is emitted"),
-		HasDiagnosticCode(DuplicateGraphResult, TEXT("DuplicateGraphId")));
+		GraphCoreHasDiagnosticCode(DuplicateGraphResult, TEXT("DuplicateGraphId")));
 
 	const TSharedPtr<FJsonObject> DuplicateNodes = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1169,7 +1169,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Duplicate node ids fail"), DuplicateNodeResult.IsValid());
 	TestTrue(
 		TEXT("DuplicateGraphNodeId diagnostic is emitted"),
-		HasDiagnosticCode(DuplicateNodeResult, TEXT("DuplicateGraphNodeId")));
+		GraphCoreHasDiagnosticCode(DuplicateNodeResult, TEXT("DuplicateGraphNodeId")));
 
 	const TSharedPtr<FJsonObject> InvalidSubgraphs = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1183,7 +1183,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Invalid Subgraphs shape fails"), InvalidSubgraphsResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphRegionType diagnostic is emitted for Subgraphs"),
-		HasDiagnosticCode(InvalidSubgraphsResult, TEXT("InvalidGraphRegionType")));
+		GraphCoreHasDiagnosticCode(InvalidSubgraphsResult, TEXT("InvalidGraphRegionType")));
 
 	const TSharedPtr<FJsonObject> InvalidOwner = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1197,7 +1197,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Invalid Owner shape fails"), InvalidOwnerResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphOwner diagnostic is emitted"),
-		HasDiagnosticCode(InvalidOwnerResult, TEXT("InvalidGraphOwner")));
+		GraphCoreHasDiagnosticCode(InvalidOwnerResult, TEXT("InvalidGraphOwner")));
 
 	const TSharedPtr<FJsonObject> InvalidGraphId = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1211,7 +1211,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Invalid graph ids fail"), InvalidGraphIdResult.IsValid());
 	TestTrue(
 		TEXT("InvalidGraphId diagnostic is emitted"),
-		HasDiagnosticCode(InvalidGraphIdResult, TEXT("InvalidGraphId")));
+		GraphCoreHasDiagnosticCode(InvalidGraphIdResult, TEXT("InvalidGraphId")));
 
 	const TSharedPtr<FJsonObject> UnknownGraphKind = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1225,7 +1225,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Unknown graph kind fails"), UnknownGraphKindResult.IsValid());
 	TestTrue(
 		TEXT("UnknownGraphKind diagnostic is emitted"),
-		HasDiagnosticCode(UnknownGraphKindResult, TEXT("UnknownGraphKind")));
+		GraphCoreHasDiagnosticCode(UnknownGraphKindResult, TEXT("UnknownGraphKind")));
 
 	const TSharedPtr<FJsonObject> UnknownOwnerReference = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1246,7 +1246,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Unknown owner reference fails"), UnknownOwnerReferenceResult.IsValid());
 	TestTrue(
 		TEXT("UnknownGraphOwnerReference diagnostic is emitted"),
-		HasDiagnosticCode(UnknownOwnerReferenceResult, TEXT("UnknownGraphOwnerReference")));
+		GraphCoreHasDiagnosticCode(UnknownOwnerReferenceResult, TEXT("UnknownGraphOwnerReference")));
 
 	const TSharedPtr<FJsonObject> DuplicatePinOverrides = ParseJsonObject(TEXT(R"JSON(
 {
@@ -1275,7 +1275,7 @@ bool FAssetDocumentGraphCoreRejectInvalidRecursiveGraphRegionTest::RunTest(const
 	TestFalse(TEXT("Duplicate pin override ids fail"), DuplicatePinOverridesResult.IsValid());
 	TestTrue(
 		TEXT("DuplicateGraphPinId diagnostic is emitted"),
-		HasDiagnosticCode(DuplicatePinOverridesResult, TEXT("DuplicateGraphPinId")));
+		GraphCoreHasDiagnosticCode(DuplicatePinOverridesResult, TEXT("DuplicateGraphPinId")));
 
 	const TSharedPtr<FJsonObject> UnknownEscapedField = ParseJsonObject(TEXT(R"JSON(
 {

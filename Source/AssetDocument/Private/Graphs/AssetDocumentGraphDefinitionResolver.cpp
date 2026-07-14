@@ -44,7 +44,7 @@ bool IsKnownDefinitionKind(const FString& Kind)
 		Kind == TEXT("Literal");
 }
 
-FString JoinPath(const FString& BasePath, const FString& Segment)
+FString GraphDefinitionJoinPath(const FString& BasePath, const FString& Segment)
 {
 	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
@@ -56,7 +56,7 @@ FString JoinPath(const FString& BasePath, const FString& Segment)
 
 FString IndexPath(const FString& BasePath, int32 Index)
 {
-	return JoinPath(BasePath, FString::FromInt(Index));
+	return GraphDefinitionJoinPath(BasePath, FString::FromInt(Index));
 }
 
 class FResolverContext
@@ -81,7 +81,7 @@ public:
 
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Definitions->Values)
 		{
-			const FString DefinitionPath = JoinPath(Options.DefinitionsPath, Pair.Key);
+			const FString DefinitionPath = GraphDefinitionJoinPath(Options.DefinitionsPath, Pair.Key);
 			if (!IsDefinitionId(Pair.Key))
 			{
 				Result.AddDiagnostic(
@@ -106,7 +106,7 @@ public:
 			{
 				Result.AddDiagnostic(
 					TEXT("UnknownDefinitionKind"),
-					JoinPath(DefinitionPath, TEXT("Kind")),
+					GraphDefinitionJoinPath(DefinitionPath, TEXT("Kind")),
 					FString::Printf(TEXT("Unknown definition kind '%s'."), *Kind));
 			}
 		}
@@ -158,7 +158,7 @@ public:
 			{
 				Result.AddDiagnostic(
 					TEXT("UnknownDefinitionKind"),
-					JoinPath(Path, TEXT("Kind")),
+					GraphDefinitionJoinPath(Path, TEXT("Kind")),
 					FString::Printf(TEXT("Unknown definition kind '%s'."), *Kind));
 			}
 
@@ -169,7 +169,7 @@ public:
 				{
 					Result.AddDiagnostic(
 						TEXT("UnresolvedDefinitionReference"),
-						JoinPath(Path, TEXT("Id")),
+						GraphDefinitionJoinPath(Path, TEXT("Id")),
 						TEXT("DefinitionRef requires a non-empty Id."));
 					return AssetDocumentGraphJson::CloneJsonObject(Object);
 				}
@@ -187,7 +187,7 @@ public:
 		Keys.Sort();
 		for (const FString& Key : Keys)
 		{
-			Resolved->SetField(Key, ResolveValue(Object->Values[Key], JoinPath(Path, Key), Stack));
+			Resolved->SetField(Key, ResolveValue(Object->Values[Key], GraphDefinitionJoinPath(Path, Key), Stack));
 		}
 		return Resolved;
 	}
@@ -228,7 +228,7 @@ public:
 		Stack.Add(Id);
 		const TSharedPtr<FJsonValue> Resolved = ResolveValue(
 			*DefinitionValue,
-			JoinPath(Options.DefinitionsPath, Id),
+			GraphDefinitionJoinPath(Options.DefinitionsPath, Id),
 			Stack);
 		Stack.Pop(EAllowShrinking::No);
 		return Resolved;
@@ -250,29 +250,29 @@ FAssetDocumentGraphSpec ResolveGraph(
 	if (Graph.Owner.IsValid())
 	{
 		TArray<FString> Stack;
-		Resolved.Owner = Context.ResolveObject(Graph.Owner, JoinPath(GraphPath, TEXT("Owner")), Stack);
+		Resolved.Owner = Context.ResolveObject(Graph.Owner, GraphDefinitionJoinPath(GraphPath, TEXT("Owner")), Stack);
 	}
 
 	Resolved.Signature = nullptr;
 	if (Graph.Signature.IsValid())
 	{
 		TArray<FString> Stack;
-		Resolved.Signature = Context.ResolveObject(Graph.Signature, JoinPath(GraphPath, TEXT("Signature")), Stack);
+		Resolved.Signature = Context.ResolveObject(Graph.Signature, GraphDefinitionJoinPath(GraphPath, TEXT("Signature")), Stack);
 	}
 
 	Resolved.Position = AssetDocumentGraphJson::CloneJsonObject(Graph.Position);
 	TArray<FString> GraphValueStack;
-	Resolved.EntryPins = Context.ResolveValue(Graph.EntryPins, JoinPath(GraphPath, TEXT("EntryPins")), GraphValueStack);
+	Resolved.EntryPins = Context.ResolveValue(Graph.EntryPins, GraphDefinitionJoinPath(GraphPath, TEXT("EntryPins")), GraphValueStack);
 	GraphValueStack.Reset();
-	Resolved.ResultPins = Context.ResolveValue(Graph.ResultPins, JoinPath(GraphPath, TEXT("ResultPins")), GraphValueStack);
+	Resolved.ResultPins = Context.ResolveValue(Graph.ResultPins, GraphDefinitionJoinPath(GraphPath, TEXT("ResultPins")), GraphValueStack);
 	GraphValueStack.Reset();
-	Resolved.Metadata = Context.ResolveValue(Graph.Metadata, JoinPath(GraphPath, TEXT("Metadata")), GraphValueStack);
+	Resolved.Metadata = Context.ResolveValue(Graph.Metadata, GraphDefinitionJoinPath(GraphPath, TEXT("Metadata")), GraphValueStack);
 	GraphValueStack.Reset();
-	Resolved.Diagnostics = Context.ResolveValue(Graph.Diagnostics, JoinPath(GraphPath, TEXT("Diagnostics")), GraphValueStack);
+	Resolved.Diagnostics = Context.ResolveValue(Graph.Diagnostics, GraphDefinitionJoinPath(GraphPath, TEXT("Diagnostics")), GraphValueStack);
 	GraphValueStack.Reset();
-	Resolved.Skipped = Context.ResolveValue(Graph.Skipped, JoinPath(GraphPath, TEXT("Skipped")), GraphValueStack);
+	Resolved.Skipped = Context.ResolveValue(Graph.Skipped, GraphDefinitionJoinPath(GraphPath, TEXT("Skipped")), GraphValueStack);
 	GraphValueStack.Reset();
-	Resolved.UnderscoreSkipped = Context.ResolveValue(Graph.UnderscoreSkipped, JoinPath(GraphPath, TEXT("_Skipped")), GraphValueStack);
+	Resolved.UnderscoreSkipped = Context.ResolveValue(Graph.UnderscoreSkipped, GraphDefinitionJoinPath(GraphPath, TEXT("_Skipped")), GraphValueStack);
 	GraphValueStack.Reset();
 	Resolved.Evidence = AssetDocumentGraphJson::CloneJsonObject(Graph.Evidence);
 
@@ -280,41 +280,41 @@ FAssetDocumentGraphSpec ResolveGraph(
 	for (int32 NodeIndex = 0; NodeIndex < Graph.Nodes.Num(); ++NodeIndex)
 	{
 		const FAssetDocumentNodeSpec& Node = Graph.Nodes[NodeIndex];
-		const FString NodePath = IndexPath(JoinPath(GraphPath, TEXT("Nodes")), NodeIndex);
+		const FString NodePath = IndexPath(GraphDefinitionJoinPath(GraphPath, TEXT("Nodes")), NodeIndex);
 		FAssetDocumentNodeSpec ResolvedNode = Node;
 		ResolvedNode.Spawner = nullptr;
 		if (Node.Spawner.IsValid())
 		{
 			TArray<FString> Stack;
-			ResolvedNode.Spawner = Context.ResolveObject(Node.Spawner, JoinPath(NodePath, TEXT("Spawner")), Stack);
+			ResolvedNode.Spawner = Context.ResolveObject(Node.Spawner, GraphDefinitionJoinPath(NodePath, TEXT("Spawner")), Stack);
 		}
 
 		ResolvedNode.Fields = nullptr;
 		if (Node.Fields.IsValid())
 		{
 			TArray<FString> Stack;
-			ResolvedNode.Fields = Context.ResolveObject(Node.Fields, JoinPath(NodePath, TEXT("Fields")), Stack);
+			ResolvedNode.Fields = Context.ResolveObject(Node.Fields, GraphDefinitionJoinPath(NodePath, TEXT("Fields")), Stack);
 		}
 
 		ResolvedNode.Pins = nullptr;
 		if (Node.Pins.IsValid())
 		{
 			TArray<FString> Stack;
-			ResolvedNode.Pins = Context.ResolveObject(Node.Pins, JoinPath(NodePath, TEXT("Pins")), Stack);
+			ResolvedNode.Pins = Context.ResolveObject(Node.Pins, GraphDefinitionJoinPath(NodePath, TEXT("Pins")), Stack);
 		}
 
 		ResolvedNode.Member = nullptr;
 		if (Node.Member.IsValid())
 		{
 			TArray<FString> Stack;
-			ResolvedNode.Member = Context.ResolveObject(Node.Member, JoinPath(NodePath, TEXT("Member")), Stack);
+			ResolvedNode.Member = Context.ResolveObject(Node.Member, GraphDefinitionJoinPath(NodePath, TEXT("Member")), Stack);
 		}
 		ResolvedNode.Position = AssetDocumentGraphJson::CloneJsonObject(Node.Position);
 		ResolvedNode.SubgraphRefs = nullptr;
 		if (Node.SubgraphRefs.IsValid())
 		{
 			TArray<FString> Stack;
-			ResolvedNode.SubgraphRefs = Context.ResolveObject(Node.SubgraphRefs, JoinPath(NodePath, TEXT("SubgraphRefs")), Stack);
+			ResolvedNode.SubgraphRefs = Context.ResolveObject(Node.SubgraphRefs, GraphDefinitionJoinPath(NodePath, TEXT("SubgraphRefs")), Stack);
 		}
 		ResolvedNode.Evidence = AssetDocumentGraphJson::CloneJsonObject(Node.Evidence);
 
@@ -322,17 +322,17 @@ FAssetDocumentGraphSpec ResolveGraph(
 		for (int32 PinIndex = 0; PinIndex < Node.PinOverrides.Num(); ++PinIndex)
 		{
 			const FAssetDocumentPinOverrideSpec& PinOverride = Node.PinOverrides[PinIndex];
-			const FString PinPath = IndexPath(JoinPath(NodePath, TEXT("PinOverrides")), PinIndex);
+			const FString PinPath = IndexPath(GraphDefinitionJoinPath(NodePath, TEXT("PinOverrides")), PinIndex);
 			FAssetDocumentPinOverrideSpec ResolvedPin = PinOverride;
 			TArray<FString> Stack;
-			ResolvedPin.Type = Context.ResolveValue(PinOverride.Type, JoinPath(PinPath, TEXT("Type")), Stack);
+			ResolvedPin.Type = Context.ResolveValue(PinOverride.Type, GraphDefinitionJoinPath(PinPath, TEXT("Type")), Stack);
 			Stack.Reset();
-			ResolvedPin.DefaultValue = Context.ResolveValue(PinOverride.DefaultValue, JoinPath(PinPath, TEXT("DefaultValue")), Stack);
+			ResolvedPin.DefaultValue = Context.ResolveValue(PinOverride.DefaultValue, GraphDefinitionJoinPath(PinPath, TEXT("DefaultValue")), Stack);
 			Stack.Reset();
-			ResolvedPin.DefaultObject = Context.ResolveValue(PinOverride.DefaultObject, JoinPath(PinPath, TEXT("DefaultObject")), Stack);
+			ResolvedPin.DefaultObject = Context.ResolveValue(PinOverride.DefaultObject, GraphDefinitionJoinPath(PinPath, TEXT("DefaultObject")), Stack);
 			Stack.Reset();
 			ResolvedPin.DefaultTextValue =
-				Context.ResolveValue(PinOverride.DefaultTextValue, JoinPath(PinPath, TEXT("DefaultTextValue")), Stack);
+				Context.ResolveValue(PinOverride.DefaultTextValue, GraphDefinitionJoinPath(PinPath, TEXT("DefaultTextValue")), Stack);
 			ResolvedNode.PinOverrides.Add(MoveTemp(ResolvedPin));
 		}
 
@@ -344,7 +344,7 @@ FAssetDocumentGraphSpec ResolveGraph(
 	{
 		Resolved.Subgraphs.Add(ResolveGraph(
 			Graph.Subgraphs[SubgraphIndex],
-			IndexPath(JoinPath(GraphPath, TEXT("Subgraphs")), SubgraphIndex),
+			IndexPath(GraphDefinitionJoinPath(GraphPath, TEXT("Subgraphs")), SubgraphIndex),
 			Context));
 	}
 
@@ -378,7 +378,7 @@ FAssetDocumentGraphDefinitionResolveResult FAssetDocumentGraphDefinitionResolver
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Definitions->Values)
 		{
 			TArray<FString> Stack;
-			Context.ResolveValue(Pair.Value, JoinPath(Options.DefinitionsPath, Pair.Key), Stack);
+			Context.ResolveValue(Pair.Value, GraphDefinitionJoinPath(Options.DefinitionsPath, Pair.Key), Stack);
 		}
 	}
 

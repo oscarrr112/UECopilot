@@ -14,12 +14,12 @@
 
 namespace
 {
-TSharedPtr<FJsonValue> MakeObjectValue(TSharedRef<FJsonObject> Object)
+TSharedPtr<FJsonValue> SyncStateTestMakeObjectValue(TSharedRef<FJsonObject> Object)
 {
 	return MakeShared<FJsonValueObject>(Object);
 }
 
-FAssetDocumentRegionPolicy MakePolicy(const FString& BodyPath)
+FAssetDocumentRegionPolicy SyncStateTestMakePolicy(const FString& BodyPath)
 {
 	FAssetDocumentRegionPolicy Policy;
 	Policy.RegionId = FName(*BodyPath);
@@ -203,7 +203,7 @@ bool FAssetDocumentSyncStateMetaIgnoredByHashTest::RunTest(const FString& Parame
 	TSharedRef<FJsonObject> Document = MakeShared<FJsonObject>();
 	Document->SetObjectField(TEXT("Body"), Body);
 
-	const FAssetDocumentRegionPolicy Policy = MakePolicy(TEXT("Body.Blend"));
+	const FAssetDocumentRegionPolicy Policy = SyncStateTestMakePolicy(TEXT("Body.Blend"));
 	const FString BaselineHash = FAssetDocumentSidecarDelta::HashSidecarRegion(Document, Policy);
 
 	FAssetDocumentSyncState State;

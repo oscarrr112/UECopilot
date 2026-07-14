@@ -8,7 +8,7 @@ namespace
 {
 constexpr const TCHAR* TreeOperationField = TEXT("Operation");
 
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString TreeAdapterRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -23,12 +23,12 @@ FString AppendPath(const FString& BasePath, const int32 Index)
 	return FString::Printf(TEXT("%s/%d"), *BasePath, Index);
 }
 
-bool IsObjectRegion(const FAssetDocumentRegionContext& Context)
+bool TreeAdapterIsObjectRegion(const FAssetDocumentRegionContext& Context)
 {
 	return !Context.Policy || Context.Policy->RegionKind == EAssetDocumentRegionKind::Object;
 }
 
-FAssetDocumentCapabilityResult Failure(
+FAssetDocumentCapabilityResult TreeRegionFailure(
 	const FString& Path,
 	const FString& Code,
 	const FString& Message)
@@ -36,18 +36,18 @@ FAssetDocumentCapabilityResult Failure(
 	return FAssetDocumentJsonRegionUtils::Failure(Path, Code, Message);
 }
 
-FAssetDocumentCapabilityResult MissingHookFailure(
+FAssetDocumentCapabilityResult TreeAdapterMissingHookFailure(
 	const FAssetDocumentRegionContext& Context,
 	const FString& Code,
 	const FString& Operation)
 {
-	return Failure(
-		RegionPath(Context),
+	return TreeRegionFailure(
+		TreeAdapterRegionPath(Context),
 		Code,
 		FString::Printf(TEXT("Tree region %s requires an explicit %s hook"), *Context.BodyPath, *Operation));
 }
 
-FAssetDocumentCapabilityResult RequireObjectField(
+FAssetDocumentCapabilityResult TreeRequireObjectField(
 	const TSharedRef<FJsonObject>& Object,
 	const FString& FieldName,
 	const FString& Path,
@@ -57,13 +57,13 @@ FAssetDocumentCapabilityResult RequireObjectField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (!FieldValue.IsValid() || FieldValue->Type != EJson::Object)
 	{
-		return Failure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
+		return TreeRegionFailure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
 	}
 
 	OutObject = FieldValue->AsObject();
 	if (!OutObject.IsValid())
 	{
-		return Failure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
+		return TreeRegionFailure(Path, Code, FString::Printf(TEXT("%s must be a JSON object"), *FieldName));
 	}
 	return FAssetDocumentCapabilityResult::Success();
 }
@@ -77,7 +77,7 @@ FAssetDocumentCapabilityResult ValidateOptionalStringField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (FieldValue.IsValid() && FieldValue->Type != EJson::String)
 	{
-		return Failure(
+		return TreeRegionFailure(
 			AppendPath(ObjectPath, FieldName),
 			Code,
 			FString::Printf(TEXT("%s must be a string when present"), *FieldName));
@@ -94,7 +94,7 @@ FAssetDocumentCapabilityResult ValidateOptionalObjectField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (FieldValue.IsValid() && FieldValue->Type != EJson::Object)
 	{
-		return Failure(
+		return TreeRegionFailure(
 			AppendPath(ObjectPath, FieldName),
 			Code,
 			FString::Printf(TEXT("%s must be a JSON object when present"), *FieldName));
@@ -111,7 +111,7 @@ FAssetDocumentCapabilityResult ValidateOptionalNumberField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (FieldValue.IsValid() && FieldValue->Type != EJson::Number)
 	{
-		return Failure(
+		return TreeRegionFailure(
 			AppendPath(ObjectPath, FieldName),
 			Code,
 			FString::Printf(TEXT("%s must be a number when present"), *FieldName));
@@ -135,7 +135,7 @@ FAssetDocumentCapabilityResult ValidateKnownFields(
 	{
 		if (!AllowedFieldSet.Contains(Field.Key))
 		{
-			return Failure(
+			return TreeRegionFailure(
 				AppendPath(ObjectPath, Field.Key),
 				TEXT("UnknownField"),
 				FString::Printf(TEXT("Unknown tree field %s"), *Field.Key));
@@ -155,7 +155,7 @@ FAssetDocumentCapabilityResult RequireArrayField(
 	const TSharedPtr<FJsonValue> FieldValue = Object->TryGetField(FieldName);
 	if (!FieldValue.IsValid() || FieldValue->Type != EJson::Array)
 	{
-		return Failure(Path, Code, FString::Printf(TEXT("%s must be a JSON array"), *FieldName));
+		return TreeRegionFailure(Path, Code, FString::Printf(TEXT("%s must be a JSON array"), *FieldName));
 	}
 
 	OutArray = FieldValue->AsArray();
@@ -202,7 +202,7 @@ FAssetDocumentCapabilityResult AddIdentity(
 	if (OutSemanticPaths.Contains(Id))
 	{
 		const FString DiagnosticPath = Config.bDuplicateNodeIdUsesSemanticPath ? SemanticPath : DuplicateDiagnosticPath;
-		return Failure(
+		return TreeRegionFailure(
 			DiagnosticPath,
 			Config.DuplicateNodeIdCode,
 			FString::Printf(TEXT("Duplicate tree node id %s"), *Id));
@@ -274,7 +274,7 @@ FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(LogicValues[Index], EntryPath, LogicObject);
 		if (!Result.bSuccess)
 		{
-			return Failure(EntryPath, TEXT("InvalidTreeDecoratorLogic"), TEXT("Decorator logic entries must be objects"));
+			return TreeRegionFailure(EntryPath, TEXT("InvalidTreeDecoratorLogic"), TEXT("Decorator logic entries must be objects"));
 		}
 
 		Result = ValidateKnownFields(LogicObject.ToSharedRef(), EntryPath, {TreeOperationField, Config.DecoratorLogicNumberField});
@@ -307,7 +307,7 @@ FAssetDocumentCapabilityResult ValidateDecoratorLogicArray(
 
 		if (!IsSupportedDecoratorLogicOperation(Operation))
 		{
-			return Failure(
+			return TreeRegionFailure(
 				AppendPath(EntryPath, TreeOperationField),
 				TEXT("InvalidTreeDecoratorLogicOperation"),
 				FString::Printf(TEXT("Unsupported decorator logic operation %s"), *Operation));
@@ -342,7 +342,7 @@ FAssetDocumentCapabilityResult ValidateIdentityArray(
 		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Values[Index], EntryPath, EntryObject);
 		if (!Result.bSuccess)
 		{
-			return Failure(EntryPath, InvalidArrayCode, FString::Printf(TEXT("%s entries must be objects"), *FieldName));
+			return TreeRegionFailure(EntryPath, InvalidArrayCode, FString::Printf(TEXT("%s entries must be objects"), *FieldName));
 		}
 
 		Result = ValidateKnownFields(EntryObject.ToSharedRef(), EntryPath, {Config.IdField, Config.ClassField, Config.PropertiesField});
@@ -499,7 +499,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		Result = FAssetDocumentJsonRegionUtils::RequireObjectValue(Children[Index], EdgePathBeforeChildId, EdgeObject);
 		if (!Result.bSuccess)
 		{
-			return Failure(EdgePathBeforeChildId, TEXT("InvalidTreeChildEdge"), TEXT("Tree child edge entries must be objects"));
+			return TreeRegionFailure(EdgePathBeforeChildId, TEXT("InvalidTreeChildEdge"), TEXT("Tree child edge entries must be objects"));
 		}
 
 		Result = ValidateKnownFields(
@@ -512,7 +512,7 @@ FAssetDocumentCapabilityResult ValidateNode(
 		}
 
 		TSharedPtr<FJsonObject> ChildObject;
-		Result = RequireObjectField(
+		Result = TreeRequireObjectField(
 			EdgeObject.ToSharedRef(),
 			Config.ChildField,
 			AppendPath(EdgePathBeforeChildId, Config.ChildField),
@@ -639,7 +639,7 @@ FString FAssetDocumentTreeRegionAdapter::MakeNodePath(
 	const FAssetDocumentRegionContext& Context,
 	const FString& NodeId)
 {
-	return AppendPath(RegionPath(Context), NodeId);
+	return AppendPath(TreeAdapterRegionPath(Context), NodeId);
 }
 
 FString FAssetDocumentTreeRegionAdapter::MakeChildEdgePath(
@@ -674,7 +674,7 @@ FName FAssetDocumentTreeRegionAdapter::GetName() const
 
 bool FAssetDocumentTreeRegionAdapter::SupportsRegion(const FAssetDocumentRegionContext& Context) const
 {
-	return IsObjectRegion(Context);
+	return TreeAdapterIsObjectRegion(Context);
 }
 
 TSharedRef<FJsonObject> FAssetDocumentTreeRegionAdapter::GetSchemaHint(const FAssetDocumentRegionContext& Context) const
@@ -704,7 +704,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::ParseTree(
 	TSharedPtr<FJsonObject>& OutTree) const
 {
 	FAssetDocumentCapabilityResult Result =
-		FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, RegionPath(Context), OutTree);
+		FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, TreeAdapterRegionPath(Context), OutTree);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -767,7 +767,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::ApplyRegion(
 		return Hooks.ApplyTree(Context, Tree.ToSharedRef(), bOutChanged);
 	}
 
-	return MissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
+	return TreeAdapterMissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::ExtractRegion(
@@ -777,7 +777,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::ExtractRegion(
 	OutCurrentValue.Reset();
 	if (!Hooks.ExtractTree)
 	{
-		return MissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
+		return TreeAdapterMissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
 	}
 
 	TSharedRef<FJsonObject> CurrentTree = MakeShared<FJsonObject>();
@@ -824,7 +824,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::DiffRegion(
 		return Hooks.DiffTree(Context, Tree.ToSharedRef(), OutDiffEntries);
 	}
 
-	return MissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
+	return TreeAdapterMissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticPaths(
@@ -835,10 +835,10 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 	OutSemanticPaths.Reset();
 
 	TSharedPtr<FJsonObject> RootObject;
-	FAssetDocumentCapabilityResult Result = RequireObjectField(
+	FAssetDocumentCapabilityResult Result = TreeRequireObjectField(
 		Tree,
 		Config.RootField,
-		AppendPath(RegionPath(Context), Config.RootField),
+		AppendPath(TreeAdapterRegionPath(Context), Config.RootField),
 		TEXT("MissingTreeRoot"),
 		RootObject);
 	if (!Result.bSuccess)
@@ -846,7 +846,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		return Result;
 	}
 
-	Result = ValidateKnownFields(Tree, RegionPath(Context), {Config.RootField, Config.RootDecoratorsField, Config.RootDecoratorLogicField});
+	Result = ValidateKnownFields(Tree, TreeAdapterRegionPath(Context), {Config.RootField, Config.RootDecoratorsField, Config.RootDecoratorLogicField});
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -857,7 +857,7 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		Config,
 		Context,
 		RootObject.ToSharedRef(),
-		AppendPath(RegionPath(Context), Config.RootField),
+		AppendPath(TreeAdapterRegionPath(Context), Config.RootField),
 		OutSemanticPaths,
 		RootId);
 	if (!Result.bSuccess)
@@ -865,13 +865,13 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		return Result;
 	}
 
-	const FString RootDecoratorsSemanticBasePath = AppendPath(RegionPath(Context), Config.RootDecoratorsField);
+	const FString RootDecoratorsSemanticBasePath = AppendPath(TreeAdapterRegionPath(Context), Config.RootDecoratorsField);
 	Result = ValidateIdentityArray(
 		Config,
 		Context,
 		Tree,
 		Config.RootDecoratorsField,
-		AppendPath(RegionPath(Context), Config.RootDecoratorsField),
+		AppendPath(TreeAdapterRegionPath(Context), Config.RootDecoratorsField),
 		TEXT("InvalidTreeDecorators"),
 		[&RootDecoratorsSemanticBasePath](const FString& DecoratorId)
 		{
@@ -883,5 +883,5 @@ FAssetDocumentCapabilityResult FAssetDocumentTreeRegionAdapter::CollectSemanticP
 		return Result;
 	}
 
-	return ValidateDecoratorLogicArray(Config, Tree, RegionPath(Context), Config.RootDecoratorLogicField);
+	return ValidateDecoratorLogicArray(Config, Tree, TreeAdapterRegionPath(Context), Config.RootDecoratorLogicField);
 }

@@ -31,12 +31,12 @@ const TSet<FName>& GetBodyTreeOwnedPropertyNames()
 	return Names;
 }
 
-FString JoinPath(const FString& Path, const FString& Token)
+FString ReflectedPropertyJoinPath(const FString& Path, const FString& Token)
 {
 	return FString::Printf(TEXT("%s/%s"), *Path, *FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Token));
 }
 
-FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
+FAssetDocumentCapabilityResult ReflectedPropertyFailure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
@@ -150,7 +150,7 @@ FAssetDocumentCapabilityResult ValidateReferenceValue(const TSharedPtr<FJsonValu
 {
 	if (!Value.IsValid())
 	{
-		return Failure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value is required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value is required"));
 	}
 	if (Value->Type == EJson::Null)
 	{
@@ -166,7 +166,7 @@ FAssetDocumentCapabilityResult ValidateReferenceValue(const TSharedPtr<FJsonValu
 	TSharedPtr<FJsonObject> Object;
 	if (!TryGetJsonObject(Value, Object))
 	{
-		return Failure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value must be a string, null, or reference object"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidPropertyValue"), TEXT("Reference value must be a string, null, or reference object"));
 	}
 
 	static const TSet<FString> SupportedFields =
@@ -179,20 +179,20 @@ FAssetDocumentCapabilityResult ValidateReferenceValue(const TSharedPtr<FJsonValu
 	{
 		if (!SupportedFields.Contains(Pair.Key))
 		{
-			return Failure(JoinPath(Path, Pair.Key), TEXT("UnknownField"), FString::Printf(TEXT("Unknown reference field '%s'"), *Pair.Key));
+			return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, Pair.Key), TEXT("UnknownField"), FString::Printf(TEXT("Unknown reference field '%s'"), *Pair.Key));
 		}
 	}
 
 	FString Kind;
 	if (!Object->TryGetStringField(TEXT("Kind"), Kind) || Kind != ExpectedKind)
 	{
-		return Failure(JoinPath(Path, TEXT("Kind")), TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Reference Kind must be '%s'"), *ExpectedKind));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Kind")), TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Reference Kind must be '%s'"), *ExpectedKind));
 	}
 
 	FString ReferencePath;
 	if (!Object->TryGetStringField(TEXT("Path"), ReferencePath))
 	{
-		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidPropertyValue"), TEXT("Reference Path must be a string"));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Path")), TEXT("InvalidPropertyValue"), TEXT("Reference Path must be a string"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -427,38 +427,38 @@ FAssetDocumentCapabilityResult ValidateBlackboardAllowedTypeEntry(
 	TSharedPtr<FJsonObject> EntryObject;
 	if (!TryGetJsonObject(Value, EntryObject))
 	{
-		return Failure(Path, TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must be ClassRef objects"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must be ClassRef objects"));
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : EntryObject->Values)
 	{
 		if (!SupportedFields.Contains(Pair.Key))
 		{
-			return Failure(JoinPath(Path, Pair.Key), TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown AllowedTypes entry field '%s'"), *Pair.Key));
+			return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, Pair.Key), TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown AllowedTypes entry field '%s'"), *Pair.Key));
 		}
 	}
 
 	FString Kind;
 	if (!EntryObject->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("ClassRef"))
 	{
-		return Failure(JoinPath(Path, TEXT("Kind")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must use Kind 'ClassRef'"));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Kind")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries must use Kind 'ClassRef'"));
 	}
 
 	FString ClassPath;
 	if (!EntryObject->TryGetStringField(TEXT("Path"), ClassPath))
 	{
-		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a class Path"));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a class Path"));
 	}
 	ClassPath.TrimStartAndEndInline();
 	if (ClassPath.IsEmpty())
 	{
-		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a non-empty class Path"));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), TEXT("AllowedTypes entries require a non-empty class Path"));
 	}
 
 	OutKeyTypeClass = LoadBlackboardKeyTypeClass(ClassPath);
 	if (!OutKeyTypeClass)
 	{
-		return Failure(JoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), FString::Printf(TEXT("AllowedTypes class '%s' is not a UBlackboardKeyType"), *ClassPath));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Path")), TEXT("InvalidClassRef"), FString::Printf(TEXT("AllowedTypes class '%s' is not a UBlackboardKeyType"), *ClassPath));
 	}
 
 	if (EntryObject->HasField(TEXT("Properties")))
@@ -466,18 +466,18 @@ FAssetDocumentCapabilityResult ValidateBlackboardAllowedTypeEntry(
 		const TSharedPtr<FJsonObject>* PropertiesObject = nullptr;
 		if (!EntryObject->TryGetObjectField(TEXT("Properties"), PropertiesObject) || !PropertiesObject || !PropertiesObject->IsValid())
 		{
-			return Failure(JoinPath(Path, TEXT("Properties")), TEXT("InvalidPropertyValue"), TEXT("AllowedTypes Properties must be an object"));
+			return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Properties")), TEXT("InvalidPropertyValue"), TEXT("AllowedTypes Properties must be an object"));
 		}
 
 		OutProperties = *PropertiesObject;
 		UBlackboardKeyType* ValidationKeyType = NewObject<UBlackboardKeyType>(GetTransientPackage(), OutKeyTypeClass);
 		if (!ValidationKeyType)
 		{
-			return Failure(Path, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *ClassPath));
+			return ReflectedPropertyFailure(Path, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *ClassPath));
 		}
 
 		const FAssetDocumentCapabilityResult PropertiesResult =
-			FAssetDocumentReflectedPropertyUtils::ValidateProperties(ValidationKeyType, OutProperties.ToSharedRef(), JoinPath(Path, TEXT("Properties")));
+			FAssetDocumentReflectedPropertyUtils::ValidateProperties(ValidationKeyType, OutProperties.ToSharedRef(), ReflectedPropertyJoinPath(Path, TEXT("Properties")));
 		if (!PropertiesResult.bSuccess)
 		{
 			return PropertiesResult;
@@ -499,10 +499,10 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Json->Values)
 	{
-		const FString FieldPath = JoinPath(Path, Pair.Key);
+		const FString FieldPath = ReflectedPropertyJoinPath(Path, Pair.Key);
 		if (!SupportedFields.Contains(Pair.Key))
 		{
-			return Failure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown BlackboardKeySelector field '%s'"), *Pair.Key));
+			return ReflectedPropertyFailure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Unknown BlackboardKeySelector field '%s'"), *Pair.Key));
 		}
 
 		if (Pair.Key == TEXT("Key") || Pair.Key == TEXT("SelectedKeyName"))
@@ -510,7 +510,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 			FString Unused;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetString(Unused))
 			{
-				return Failure(FieldPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("%s must be a string"), *Pair.Key));
+				return ReflectedPropertyFailure(FieldPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("%s must be a string"), *Pair.Key));
 			}
 		}
 		else if (Pair.Key == TEXT("bNoneIsAllowedValue"))
@@ -518,7 +518,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 			bool Unused = false;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetBool(Unused))
 			{
-				return Failure(FieldPath, TEXT("InvalidPropertyValue"), TEXT("bNoneIsAllowedValue must be a boolean"));
+				return ReflectedPropertyFailure(FieldPath, TEXT("InvalidPropertyValue"), TEXT("bNoneIsAllowedValue must be a boolean"));
 			}
 		}
 		else if (Pair.Key == TEXT("AllowedTypes"))
@@ -526,7 +526,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 			const TArray<TSharedPtr<FJsonValue>>* Array = nullptr;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetArray(Array))
 			{
-				return Failure(FieldPath, TEXT("InvalidPropertyValue"), TEXT("AllowedTypes must be an array"));
+				return ReflectedPropertyFailure(FieldPath, TEXT("InvalidPropertyValue"), TEXT("AllowedTypes must be an array"));
 			}
 			for (int32 Index = 0; Index < Array->Num(); ++Index)
 			{
@@ -534,7 +534,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 				TSharedPtr<FJsonObject> KeyTypeProperties;
 				const FAssetDocumentCapabilityResult EntryResult = ValidateBlackboardAllowedTypeEntry(
 					(*Array)[Index],
-					JoinPath(FieldPath, FString::FromInt(Index)),
+					ReflectedPropertyJoinPath(FieldPath, FString::FromInt(Index)),
 					KeyTypeClass,
 					KeyTypeProperties);
 				if (!EntryResult.bSuccess)
@@ -549,7 +549,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardKeySelectorJson(const TSharedRe
 	FString LegacyKey;
 	if (Json->TryGetStringField(TEXT("Key"), PublicKey) && Json->TryGetStringField(TEXT("SelectedKeyName"), LegacyKey) && PublicKey != LegacyKey)
 	{
-		return Failure(JoinPath(Path, TEXT("Key")), TEXT("InvalidPropertyValue"), TEXT("Key and SelectedKeyName must match when both are authored"));
+		return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("Key")), TEXT("InvalidPropertyValue"), TEXT("Key and SelectedKeyName must match when both are authored"));
 	}
 
 	return FAssetDocumentCapabilityResult::Success();
@@ -579,12 +579,12 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 {
 	if (!Property)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Property is required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Property is required"));
 	}
 
 	if (!IsPropertyRuntimeSupported(Property))
 	{
-		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
+		return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
 	}
 
 	if (IsClassReferenceProperty(Property) || IsObjectReferenceProperty(Property))
@@ -604,7 +604,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 
 		if (IsInstancedStructProperty(StructProperty))
 		{
-			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *Property->GetName()));
+			return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *Property->GetName()));
 		}
 
 		const TSharedPtr<FJsonObject>* StructObject = nullptr;
@@ -615,15 +615,15 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*StructObject)->Values)
 		{
-			const FString FieldPath = JoinPath(Path, Pair.Key);
+			const FString FieldPath = ReflectedPropertyJoinPath(Path, Pair.Key);
 			FProperty* FieldProperty = FindFProperty<FProperty>(StructProperty->Struct, *Pair.Key);
 			if (!FieldProperty)
 			{
-				return Failure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Struct field '%s' does not exist"), *Pair.Key));
+				return ReflectedPropertyFailure(FieldPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Struct field '%s' does not exist"), *Pair.Key));
 			}
 			if (!IsAuthoredEditableProperty(FieldProperty))
 			{
-				return Failure(FieldPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Struct field '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(FieldProperty)));
+				return ReflectedPropertyFailure(FieldPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Struct field '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(FieldProperty)));
 			}
 
 			const FAssetDocumentCapabilityResult FieldResult = ValidateAuthoredPropertyValue(FieldProperty, Pair.Value, FieldPath);
@@ -646,7 +646,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 		for (int32 Index = 0; Index < ArrayValues->Num(); ++Index)
 		{
 			const FAssetDocumentCapabilityResult ElementResult =
-				ValidateAuthoredPropertyValue(ArrayProperty->Inner, (*ArrayValues)[Index], JoinPath(Path, FString::FromInt(Index)));
+				ValidateAuthoredPropertyValue(ArrayProperty->Inner, (*ArrayValues)[Index], ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
 			if (!ElementResult.bSuccess)
 			{
 				return ElementResult;
@@ -660,7 +660,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 		if (!IsSupportedMapKeyProperty(MapProperty->KeyProp))
 		{
 			const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
-			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *Property->GetName(), *KeyTypeName));
+			return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *Property->GetName(), *KeyTypeName));
 		}
 
 		const TSharedPtr<FJsonObject>* MapObject = nullptr;
@@ -672,7 +672,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*MapObject)->Values)
 		{
 			const FAssetDocumentCapabilityResult ValueResult =
-				ValidateAuthoredPropertyValue(MapProperty->ValueProp, Pair.Value, JoinPath(Path, Pair.Key));
+				ValidateAuthoredPropertyValue(MapProperty->ValueProp, Pair.Value, ReflectedPropertyJoinPath(Path, Pair.Key));
 			if (!ValueResult.bSuccess)
 			{
 				return ValueResult;
@@ -692,7 +692,7 @@ FAssetDocumentCapabilityResult ValidateAuthoredPropertyValue(FProperty* Property
 		for (int32 Index = 0; Index < SetValues->Num(); ++Index)
 		{
 			const FAssetDocumentCapabilityResult ElementResult =
-				ValidateAuthoredPropertyValue(SetProperty->ElementProp, (*SetValues)[Index], JoinPath(Path, FString::FromInt(Index)));
+				ValidateAuthoredPropertyValue(SetProperty->ElementProp, (*SetValues)[Index], ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
 			if (!ElementResult.bSuccess)
 			{
 				return ElementResult;
@@ -707,11 +707,11 @@ FAssetDocumentCapabilityResult ExtractStructAuthoredProperties(FStructProperty* 
 {
 	if (!StructProperty || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Struct property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Struct property and value are required"));
 	}
 	if (IsInstancedStructProperty(StructProperty))
 	{
-		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *StructProperty->GetName()));
+		return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Struct property '%s' uses FInstancedStruct, which is not supported"), *StructProperty->GetName()));
 	}
 
 	TSharedPtr<FJsonObject> StructJson = MakeShared<FJsonObject>();
@@ -724,7 +724,7 @@ FAssetDocumentCapabilityResult ExtractStructAuthoredProperties(FStructProperty* 
 		}
 
 		TSharedPtr<FJsonValue> FieldValue;
-		const FString FieldPath = JoinPath(Path, FieldProperty->GetName());
+		const FString FieldPath = ReflectedPropertyJoinPath(Path, FieldProperty->GetName());
 		const FAssetDocumentCapabilityResult FieldResult =
 			ExtractAuthoredPropertyValue(FieldProperty, FieldProperty->ContainerPtrToValuePtr<void>(ValuePtr), FieldValue, FieldPath);
 		if (!FieldResult.bSuccess)
@@ -745,7 +745,7 @@ FAssetDocumentCapabilityResult ExtractArrayAuthoredValues(FArrayProperty* ArrayP
 {
 	if (!ArrayProperty || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Array property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Array property and value are required"));
 	}
 
 	FScriptArrayHelper ArrayHelper(ArrayProperty, ValuePtr);
@@ -755,7 +755,7 @@ FAssetDocumentCapabilityResult ExtractArrayAuthoredValues(FArrayProperty* ArrayP
 	{
 		TSharedPtr<FJsonValue> ElementValue;
 		const FAssetDocumentCapabilityResult ElementResult =
-			ExtractAuthoredPropertyValue(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), ElementValue, JoinPath(Path, FString::FromInt(Index)));
+			ExtractAuthoredPropertyValue(ArrayProperty->Inner, ArrayHelper.GetRawPtr(Index), ElementValue, ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
 		if (!ElementResult.bSuccess)
 		{
 			return ElementResult;
@@ -801,12 +801,12 @@ FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapPropert
 {
 	if (!MapProperty || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Map property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Map property and value are required"));
 	}
 	if (!IsSupportedMapKeyProperty(MapProperty->KeyProp))
 	{
 		const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
-		return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
+		return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
 	}
 
 	FScriptMapHelper MapHelper(MapProperty, ValuePtr);
@@ -822,12 +822,12 @@ FAssetDocumentCapabilityResult ExtractMapAuthoredValues(FMapProperty* MapPropert
 		if (!TryExtractMapKeyToString(MapProperty->KeyProp, MapHelper.GetKeyPtr(Index), KeyString))
 		{
 			const FString KeyTypeName = MapProperty->KeyProp ? MapProperty->KeyProp->GetClass()->GetName() : TEXT("None");
-			return Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
+			return ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Map property '%s' has unsupported key type '%s'"), *MapProperty->GetName(), *KeyTypeName));
 		}
 
 		TSharedPtr<FJsonValue> ValueJson;
 		const FAssetDocumentCapabilityResult ValueResult =
-			ExtractAuthoredPropertyValue(MapProperty->ValueProp, MapHelper.GetValuePtr(Index), ValueJson, JoinPath(Path, KeyString));
+			ExtractAuthoredPropertyValue(MapProperty->ValueProp, MapHelper.GetValuePtr(Index), ValueJson, ReflectedPropertyJoinPath(Path, KeyString));
 		if (!ValueResult.bSuccess)
 		{
 			return ValueResult;
@@ -846,7 +846,7 @@ FAssetDocumentCapabilityResult ExtractSetAuthoredValues(FSetProperty* SetPropert
 {
 	if (!SetProperty || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Set property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Set property and value are required"));
 	}
 
 	FScriptSetHelper SetHelper(SetProperty, ValuePtr);
@@ -860,7 +860,7 @@ FAssetDocumentCapabilityResult ExtractSetAuthoredValues(FSetProperty* SetPropert
 
 		TSharedPtr<FJsonValue> ElementJson;
 		const FAssetDocumentCapabilityResult ElementResult =
-			ExtractAuthoredPropertyValue(SetProperty->ElementProp, SetHelper.GetElementPtr(Index), ElementJson, JoinPath(Path, FString::FromInt(Index)));
+			ExtractAuthoredPropertyValue(SetProperty->ElementProp, SetHelper.GetElementPtr(Index), ElementJson, ReflectedPropertyJoinPath(Path, FString::FromInt(Index)));
 		if (!ElementResult.bSuccess)
 		{
 			return ElementResult;
@@ -884,7 +884,7 @@ FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property,
 {
 	if (!Property || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("Property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("Property and value are required"));
 	}
 
 	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
@@ -899,7 +899,7 @@ FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property,
 		OutValue = ExtractReferenceProperty(Property, ValuePtr);
 		return OutValue.IsValid()
 			? FAssetDocumentCapabilityResult::Success()
-			: Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' could not be extracted"), *Property->GetName()));
+			: ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' could not be extracted"), *Property->GetName()));
 	}
 
 	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
@@ -920,7 +920,7 @@ FAssetDocumentCapabilityResult ExtractAuthoredPropertyValue(FProperty* Property,
 	OutValue = FPropertySetterUtils::ExtractPropertyToJson(Property, ValuePtr);
 	return OutValue.IsValid()
 		? FAssetDocumentCapabilityResult::Success()
-		: Failure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
+		: ReflectedPropertyFailure(Path, TEXT("UnsupportedProperty"), FString::Printf(TEXT("Property '%s' is not supported"), *Property->GetName()));
 }
 
 FAssetDocumentCapabilityResult ExtractSingleProperty(FProperty* Property, const void* ValuePtr, TSharedPtr<FJsonValue>& OutValue, const FString& Path)
@@ -932,26 +932,26 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 {
 	if (!Object)
 	{
-		return Failure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
 	}
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Properties->Values)
 	{
-		const FString PropertyPath = JoinPath(Path, Pair.Key);
+		const FString PropertyPath = ReflectedPropertyJoinPath(Path, Pair.Key);
 		FProperty* Property = FindFProperty<FProperty>(Object->GetClass(), *Pair.Key);
 		if (!Property)
 		{
-			return Failure(PropertyPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Property '%s' does not exist"), *Pair.Key));
+			return ReflectedPropertyFailure(PropertyPath, TEXT("UnknownProperty"), FString::Printf(TEXT("Property '%s' does not exist"), *Pair.Key));
 		}
 
 		if (IsBodyTreeOwnedProperty(Property))
 		{
-			return Failure(PropertyPath, TEXT("BodyTreeProperty"), FString::Printf(TEXT("Property '%s' is owned by Body.Tree"), *Pair.Key));
+			return ReflectedPropertyFailure(PropertyPath, TEXT("BodyTreeProperty"), FString::Printf(TEXT("Property '%s' is owned by Body.Tree"), *Pair.Key));
 		}
 
 		if (!IsAuthoredEditableProperty(Property))
 		{
-			return Failure(PropertyPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Property '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(Property)));
+			return ReflectedPropertyFailure(PropertyPath, TEXT("NonAuthoredProperty"), FString::Printf(TEXT("Property '%s' is not authored: %s"), *Pair.Key, *GetNonAuthoredReason(Property)));
 		}
 
 		if (FStructProperty* StructProperty = CastField<FStructProperty>(Property); IsBlackboardKeySelectorProperty(StructProperty))
@@ -959,7 +959,7 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 			const TSharedPtr<FJsonObject>* SelectorObject = nullptr;
 			if (!Pair.Value.IsValid() || !Pair.Value->TryGetObject(SelectorObject) || !SelectorObject || !SelectorObject->IsValid())
 			{
-				return Failure(PropertyPath, TEXT("InvalidPropertyValue"), TEXT("BlackboardKeySelector must be an object"));
+				return ReflectedPropertyFailure(PropertyPath, TEXT("InvalidPropertyValue"), TEXT("BlackboardKeySelector must be an object"));
 			}
 
 			const FAssetDocumentCapabilityResult SelectorResult = bApply
@@ -981,7 +981,7 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 		const TSharedPtr<FJsonValue> ValueToApply = NormalizeAuthoredValueForSetter(Property, Pair.Value);
 		if (!ValueToApply.IsValid())
 		{
-			return Failure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Property '%s' value is invalid"), *Pair.Key));
+			return ReflectedPropertyFailure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Property '%s' value is invalid"), *Pair.Key));
 		}
 
 		UObject* TargetObject = Object;
@@ -992,14 +992,14 @@ FAssetDocumentCapabilityResult ProcessProperties(UObject* Object, const TSharedR
 			TargetObject = Duplicate.Get();
 			if (!TargetObject)
 			{
-				return Failure(Path, TEXT("PreflightFailed"), TEXT("Failed to create property validation duplicate"));
+				return ReflectedPropertyFailure(Path, TEXT("PreflightFailed"), TEXT("Failed to create property validation duplicate"));
 			}
 			Property = FindFProperty<FProperty>(TargetObject->GetClass(), *Pair.Key);
 		}
 
 		if (!FPropertySetterUtils::SetPropertyFromJson(TargetObject, Property, ValueToApply))
 		{
-			return Failure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Failed to set property '%s'"), *Pair.Key));
+			return ReflectedPropertyFailure(PropertyPath, TEXT("InvalidPropertyValue"), FString::Printf(TEXT("Failed to set property '%s'"), *Pair.Key));
 		}
 	}
 
@@ -1035,7 +1035,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractAuth
 {
 	if (!Object)
 	{
-		return Failure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
 	}
 
 	for (TFieldIterator<FProperty> It(Object->GetClass()); It; ++It)
@@ -1047,7 +1047,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractAuth
 		}
 
 		TSharedPtr<FJsonValue> ExtractedValue;
-		const FString PropertyPath = JoinPath(Path, Property->GetName());
+		const FString PropertyPath = ReflectedPropertyJoinPath(Path, Property->GetName());
 		const FAssetDocumentCapabilityResult ExtractResult =
 			ExtractSingleProperty(Property, Property->ContainerPtrToValuePtr<void>(Object), ExtractedValue, PropertyPath);
 		if (!ExtractResult.bSuccess)
@@ -1071,7 +1071,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::DiffPropert
 {
 	if (!Object)
 	{
-		return Failure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidObject"), TEXT("Object is required"));
 	}
 
 	TSharedRef<FJsonObject> CurrentProperties = MakeShared<FJsonObject>();
@@ -1084,7 +1084,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::DiffPropert
 	TStrongObjectPtr<UObject> DesiredObject(DuplicateObject<UObject>(Object, GetTransientPackage()));
 	if (!DesiredObject.IsValid())
 	{
-		return Failure(Path, TEXT("PreflightFailed"), TEXT("Failed to create property diff duplicate"));
+		return ReflectedPropertyFailure(Path, TEXT("PreflightFailed"), TEXT("Failed to create property diff duplicate"));
 	}
 
 	Result = ApplyProperties(DesiredObject.Get(), DesiredProperties, Path);
@@ -1102,7 +1102,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::DiffPropert
 
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : DesiredProperties->Values)
 	{
-		const FString PropertyPath = JoinPath(Path, Pair.Key);
+		const FString PropertyPath = ReflectedPropertyJoinPath(Path, Pair.Key);
 		const TSharedPtr<FJsonValue> CurrentValue = CurrentProperties->TryGetField(Pair.Key);
 		const TSharedPtr<FJsonValue> DesiredValue = DesiredCanonicalProperties->TryGetField(Pair.Key);
 		if (FAssetDocumentCanonicalJson::WriteCanonicalJson(CurrentValue.IsValid() ? CurrentValue : MakeShared<FJsonValueNull>())
@@ -1123,7 +1123,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 {
 	if (!IsBlackboardKeySelectorProperty(Property) || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("FBlackboardKeySelector property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("FBlackboardKeySelector property and value are required"));
 	}
 
 	const FAssetDocumentCapabilityResult ValidateResult = ValidateBlackboardKeySelectorJson(Json, Path);
@@ -1142,11 +1142,11 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 		InnerObjectProperty = AllowedTypesProperty ? CastField<FObjectPropertyBase>(AllowedTypesProperty->Inner) : nullptr;
 		if (!AllowedTypesProperty)
 		{
-			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes property is unavailable"));
+			return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes property is unavailable"));
 		}
 		if (!InnerObjectProperty)
 		{
-			return Failure(JoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes inner property is unavailable"));
+			return ReflectedPropertyFailure(ReflectedPropertyJoinPath(Path, TEXT("AllowedTypes")), TEXT("InvalidProperty"), TEXT("AllowedTypes inner property is unavailable"));
 		}
 
 		const TArray<TSharedPtr<FJsonValue>>* AllowedTypeRefs = nullptr;
@@ -1156,7 +1156,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 		{
 			UClass* KeyTypeClass = nullptr;
 			TSharedPtr<FJsonObject> KeyTypeProperties;
-			const FString EntryPath = JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index));
+			const FString EntryPath = ReflectedPropertyJoinPath(ReflectedPropertyJoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index));
 			const FAssetDocumentCapabilityResult EntryResult =
 				ValidateBlackboardAllowedTypeEntry((*AllowedTypeRefs)[Index], EntryPath, KeyTypeClass, KeyTypeProperties);
 			if (!EntryResult.bSuccess)
@@ -1167,13 +1167,13 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ApplyBlackb
 			UBlackboardKeyType* KeyType = NewObject<UBlackboardKeyType>(GetTransientPackage(), KeyTypeClass);
 			if (!KeyType)
 			{
-				return Failure(EntryPath, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *KeyTypeClass->GetPathName()));
+				return ReflectedPropertyFailure(EntryPath, TEXT("InvalidClassRef"), FString::Printf(TEXT("Failed to instantiate AllowedTypes class '%s'"), *KeyTypeClass->GetPathName()));
 			}
 
 			if (KeyTypeProperties.IsValid())
 			{
 				const FAssetDocumentCapabilityResult PropertiesResult =
-					FAssetDocumentReflectedPropertyUtils::ApplyProperties(KeyType, KeyTypeProperties.ToSharedRef(), JoinPath(EntryPath, TEXT("Properties")));
+					FAssetDocumentReflectedPropertyUtils::ApplyProperties(KeyType, KeyTypeProperties.ToSharedRef(), ReflectedPropertyJoinPath(EntryPath, TEXT("Properties")));
 				if (!PropertiesResult.bSuccess)
 				{
 					return PropertiesResult;
@@ -1223,7 +1223,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractBlac
 {
 	if (!IsBlackboardKeySelectorProperty(Property) || !ValuePtr)
 	{
-		return Failure(Path, TEXT("InvalidProperty"), TEXT("FBlackboardKeySelector property and value are required"));
+		return ReflectedPropertyFailure(Path, TEXT("InvalidProperty"), TEXT("FBlackboardKeySelector property and value are required"));
 	}
 
 	const FBlackboardKeySelector* Selector = static_cast<const FBlackboardKeySelector*>(ValuePtr);
@@ -1253,7 +1253,7 @@ FAssetDocumentCapabilityResult FAssetDocumentReflectedPropertyUtils::ExtractBlac
 					TSharedPtr<FJsonObject> AllowedTypeJson = MakeReferenceObject(TEXT("ClassRef"), AllowedType->GetClass()->GetPathName());
 					TSharedRef<FJsonObject> AllowedTypeProperties = MakeShared<FJsonObject>();
 					const FAssetDocumentCapabilityResult PropertiesResult =
-						ExtractAuthoredProperties(AllowedType, AllowedTypeProperties, JoinPath(JoinPath(JoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index)), TEXT("Properties")));
+						ExtractAuthoredProperties(AllowedType, AllowedTypeProperties, ReflectedPropertyJoinPath(ReflectedPropertyJoinPath(ReflectedPropertyJoinPath(Path, TEXT("AllowedTypes")), FString::FromInt(Index)), TEXT("Properties")));
 					if (!PropertiesResult.bSuccess)
 					{
 						return PropertiesResult;

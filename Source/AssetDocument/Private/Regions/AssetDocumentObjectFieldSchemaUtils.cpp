@@ -6,7 +6,7 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString ObjectFieldSchemaRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -63,7 +63,7 @@ FString FAssetDocumentObjectFieldSchemaUtils::MakeFieldPath(
 {
 	return FString::Printf(
 		TEXT("%s/%s"),
-		*RegionPath(Context),
+		*ObjectFieldSchemaRegionPath(Context),
 		*FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(FieldName));
 }
 
@@ -78,7 +78,7 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectFieldSchemaUtils::ValidateObj
 		if (Field.Name.IsEmpty() || Field.Type == EJson::None)
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(
-				RegionPath(Context),
+				ObjectFieldSchemaRegionPath(Context),
 				TEXT("InvalidObjectFieldSchema"),
 				TEXT("Object field schema contains an invalid field spec"));
 		}

@@ -206,7 +206,7 @@ FAssetDocumentResult ResolveClassTarget(const FString& ClassName, UClass*& OutCl
 	return FAssetDocumentResult::Success(TEXT("Resolved class target"));
 }
 
-TArray<TSharedPtr<FJsonValue>> MakeStringArray(std::initializer_list<const TCHAR*> Values)
+TArray<TSharedPtr<FJsonValue>> ServiceMakeStringArray(std::initializer_list<const TCHAR*> Values)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
 	for (const TCHAR* Value : Values)
@@ -218,7 +218,7 @@ TArray<TSharedPtr<FJsonValue>> MakeStringArray(std::initializer_list<const TCHAR
 
 TArray<TSharedPtr<FJsonValue>> MakeFragmentKindArray()
 {
-	return MakeStringArray({
+	return ServiceMakeStringArray({
 		TEXT("AssetRef"),
 		TEXT("ClassRef"),
 		TEXT("StructValue"),
@@ -1512,7 +1512,7 @@ FAssetDocumentResult FAssetDocumentService::GetSchema() const
 	TSharedPtr<FJsonObject> Payload = MakeShared<FJsonObject>();
 	Payload->SetNumberField(TEXT("schema_version"), 1);
 	Payload->SetStringField(TEXT("asset_type"), TEXT("GenericAsset"));
-	Payload->SetArrayField(TEXT("asset_document_tools"), MakeStringArray({
+	Payload->SetArrayField(TEXT("asset_document_tools"), ServiceMakeStringArray({
 		TEXT("get_asset_document_schema"),
 		TEXT("inspect_asset_document_target"),
 		TEXT("inspect_asset_document_profile"),

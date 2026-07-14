@@ -6,12 +6,12 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString ObjectAdapterRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
 
-bool IsObjectRegion(const FAssetDocumentRegionContext& Context)
+bool ObjectAdapterIsObjectRegion(const FAssetDocumentRegionContext& Context)
 {
 	return !Context.Policy || Context.Policy->RegionKind == EAssetDocumentRegionKind::Object;
 }
@@ -21,16 +21,16 @@ FAssetDocumentCapabilityResult RequireObjectRegionValue(
 	const TSharedPtr<FJsonValue>& Value,
 	TSharedPtr<FJsonObject>& OutObject)
 {
-	return FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, RegionPath(Context), OutObject);
+	return FAssetDocumentJsonRegionUtils::RequireObjectValue(Value, ObjectAdapterRegionPath(Context), OutObject);
 }
 
-FAssetDocumentCapabilityResult MissingHookFailure(
+FAssetDocumentCapabilityResult ObjectAdapterMissingHookFailure(
 	const FAssetDocumentRegionContext& Context,
 	const FString& Code,
 	const FString& Operation)
 {
 	return FAssetDocumentJsonRegionUtils::Failure(
-		RegionPath(Context),
+		ObjectAdapterRegionPath(Context),
 		Code,
 		FString::Printf(TEXT("Object region %s requires an explicit %s hook"), *Context.BodyPath, *Operation));
 }
@@ -56,7 +56,7 @@ FName FAssetDocumentObjectRegionAdapter::GetName() const
 
 bool FAssetDocumentObjectRegionAdapter::SupportsRegion(const FAssetDocumentRegionContext& Context) const
 {
-	return IsObjectRegion(Context);
+	return ObjectAdapterIsObjectRegion(Context);
 }
 
 TSharedRef<FJsonObject> FAssetDocumentObjectRegionAdapter::GetSchemaHint(const FAssetDocumentRegionContext& Context) const
@@ -115,7 +115,7 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::ApplyRegion(
 		return Hooks.ApplyObject(Context, DesiredObject.ToSharedRef(), bOutChanged);
 	}
 
-	return MissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
+	return ObjectAdapterMissingHookFailure(Context, TEXT("MissingRegionApplyHook"), TEXT("apply"));
 }
 
 FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::ExtractRegion(
@@ -125,7 +125,7 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::ExtractRegion(
 	OutCurrentValue.Reset();
 	if (!Hooks.ExtractObject)
 	{
-		return MissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
+		return ObjectAdapterMissingHookFailure(Context, TEXT("MissingRegionExtractHook"), TEXT("extract"));
 	}
 
 	TSharedRef<FJsonObject> CurrentObject = MakeShared<FJsonObject>();
@@ -165,5 +165,5 @@ FAssetDocumentCapabilityResult FAssetDocumentObjectRegionAdapter::DiffRegion(
 		return Hooks.DiffObject(Context, DesiredObject.ToSharedRef(), OutDiffEntries);
 	}
 
-	return MissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
+	return ObjectAdapterMissingHookFailure(Context, TEXT("MissingRegionDiffHook"), TEXT("diff"));
 }

@@ -591,7 +591,7 @@ void AppendQuotedJsonString(const FString& String, FString& Out)
 	Out += TEXT("\"");
 }
 
-FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
+FString MontageProjectorJsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 {
 	TFunction<void(TSharedPtr<FJsonValue>, FString&)> AppendValue;
 	AppendValue = [&AppendValue](TSharedPtr<FJsonValue> JsonValue, FString& Out)
@@ -920,8 +920,8 @@ FAnimMontageProjectorSliceResult FAnimMontageProjectorSlice::DiffBody(const UAni
 
 		const TSharedPtr<FJsonValue>* CurrentValue = CurrentBody->Values.Find(Pair.Key);
 		const TSharedPtr<FJsonValue>* PreviewValue = PreviewBody->Values.Find(Pair.Key);
-		if (JsonValueToComparableString(CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>())
-			!= JsonValueToComparableString(PreviewValue ? *PreviewValue : MakeShared<FJsonValueNull>()))
+		if (MontageProjectorJsonValueToComparableString(CurrentValue ? *CurrentValue : MakeShared<FJsonValueNull>())
+			!= MontageProjectorJsonValueToComparableString(PreviewValue ? *PreviewValue : MakeShared<FJsonValueNull>()))
 		{
 			OutChangedPaths.AddUnique(MakeBodyFieldPath(Pair.Key));
 		}

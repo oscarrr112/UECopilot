@@ -468,7 +468,7 @@ TSharedPtr<FJsonValue> BindingsToJsonValue(const TArray<FDelegateEditorBinding>&
 	return MakeShared<FJsonValueArray>(Values);
 }
 
-FString JsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
+FString WidgetBindingJsonValueToComparableString(const TSharedPtr<FJsonValue>& Value)
 {
 	FString JsonText;
 	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonText);
@@ -537,8 +537,8 @@ FAssetDocumentCapabilityResult FWidgetBlueprintBindingAdapter::Apply(UWidgetBlue
 	}
 
 #if WITH_EDITORONLY_DATA
-	const FString CurrentComparable = JsonValueToComparableString(BindingsToJsonValue(WidgetBlueprint ? WidgetBlueprint->Bindings : TArray<FDelegateEditorBinding>()));
-	const FString DesiredComparable = JsonValueToComparableString(BindingsToJsonValue(DesiredBindings));
+	const FString CurrentComparable = WidgetBindingJsonValueToComparableString(BindingsToJsonValue(WidgetBlueprint ? WidgetBlueprint->Bindings : TArray<FDelegateEditorBinding>()));
+	const FString DesiredComparable = WidgetBindingJsonValueToComparableString(BindingsToJsonValue(DesiredBindings));
 	if (CurrentComparable != DesiredComparable)
 	{
 		if (!WidgetBlueprint)

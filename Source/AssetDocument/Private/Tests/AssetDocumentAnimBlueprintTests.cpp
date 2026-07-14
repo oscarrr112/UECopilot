@@ -691,7 +691,7 @@ TSharedRef<FJsonValue> MakeBodyWithUnknownKey(const TCHAR* UnknownKey = TEXT("Un
 	return MakeShared<FJsonValueObject>(Body);
 }
 
-TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
+TSharedRef<FJsonObject> AnimBlueprintTestMakeClassRef(const FString& ClassPath)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -699,7 +699,7 @@ TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 	return ClassRef;
 }
 
-TSharedRef<FJsonObject> MakeAssetRef(const FString& AssetPath)
+TSharedRef<FJsonObject> AnimBlueprintTestMakeAssetRef(const FString& AssetPath)
 {
 	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
 	AssetRef->SetStringField(TEXT("Kind"), TEXT("AssetRef"));
@@ -720,7 +720,7 @@ TSharedRef<FJsonValue> MakeBodyWithMissingParentClass()
 TSharedRef<FJsonValue> MakeBodyWithParentClass(const FString& ClassPath)
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(ClassPath));
+	Body->SetObjectField(TEXT("ParentClass"), AnimBlueprintTestMakeClassRef(ClassPath));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -733,7 +733,7 @@ TSharedRef<FJsonValue> MakeBodyWithTemplateAndTargetSkeleton()
 	Body->SetObjectField(TEXT("Template"), Template);
 	Body->SetObjectField(
 		TEXT("TargetSkeleton"),
-		MakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
+		AnimBlueprintTestMakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -741,7 +741,7 @@ TSharedRef<FJsonValue> MakeBodyWithTargetSkeleton(
 	const FString& TargetSkeletonPath = TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton"))
 {
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetObjectField(TEXT("TargetSkeleton"), MakeAssetRef(TargetSkeletonPath));
+	Body->SetObjectField(TEXT("TargetSkeleton"), AnimBlueprintTestMakeAssetRef(TargetSkeletonPath));
 	return MakeShared<FJsonValueObject>(Body);
 }
 
@@ -763,7 +763,7 @@ TSharedRef<FJsonValue> MakeBodyWithTargetSkeletonAndPreviewApplicationMethod(con
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetObjectField(
 		TEXT("TargetSkeleton"),
-		MakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton")));
+		AnimBlueprintTestMakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh_Skeleton.DefaultSkeletalMesh_Skeleton")));
 	Body->SetObjectField(TEXT("Preview"), Preview);
 	return MakeShared<FJsonValueObject>(Body);
 }
@@ -803,12 +803,12 @@ TSharedRef<FJsonValue> MakeBodyWithMismatchedPreviewSkeleton()
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
 	Preview->SetObjectField(
 		TEXT("PreviewSkeletalMesh"),
-		MakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh")));
+		AnimBlueprintTestMakeAssetRef(TEXT("/Engine/EditorMeshes/SkeletalMesh/DefaultSkeletalMesh.DefaultSkeletalMesh")));
 
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetObjectField(
 		TEXT("TargetSkeleton"),
-		MakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
+		AnimBlueprintTestMakeAssetRef(TEXT("/Engine/Tutorial/SubEditors/TutorialAssets/Character/TutorialTPP_Skeleton.TutorialTPP_Skeleton")));
 	Body->SetObjectField(TEXT("Preview"), Preview);
 	return MakeShared<FJsonValueObject>(Body);
 }
@@ -850,14 +850,14 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Document->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
 
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(ParentClassPath));
+	Body->SetObjectField(TEXT("ParentClass"), AnimBlueprintTestMakeClassRef(ParentClassPath));
 	if (bIsTemplate)
 	{
 		Body->SetField(TEXT("TargetSkeleton"), MakeShared<FJsonValueNull>());
 	}
 	else
 	{
-		Body->SetObjectField(TEXT("TargetSkeleton"), MakeAssetRef(TargetSkeletonPath));
+		Body->SetObjectField(TEXT("TargetSkeleton"), AnimBlueprintTestMakeAssetRef(TargetSkeletonPath));
 	}
 
 	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
@@ -865,7 +865,7 @@ TSharedRef<FJsonObject> MakeAnimBlueprintApplyDocument(
 	Body->SetObjectField(TEXT("Template"), Template);
 
 	TSharedRef<FJsonObject> Preview = MakeShared<FJsonObject>();
-	Preview->SetObjectField(TEXT("PreviewSkeletalMesh"), MakeAssetRef(PreviewMeshPath));
+	Preview->SetObjectField(TEXT("PreviewSkeletalMesh"), AnimBlueprintTestMakeAssetRef(PreviewMeshPath));
 	Preview->SetField(TEXT("PreviewAnimationBlueprint"), MakeShared<FJsonValueNull>());
 	Preview->SetStringField(TEXT("PreviewAnimationBlueprintApplicationMethod"), TEXT("LinkedLayers"));
 	Preview->SetStringField(TEXT("PreviewAnimationBlueprintTag"), TEXT(""));
@@ -936,7 +936,7 @@ TArray<TSharedPtr<FJsonValue>> MakeVariableArray(std::initializer_list<TSharedPt
 TSharedPtr<FJsonObject> MakeImplementedInterface(const FString& InterfacePath)
 {
 	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
-	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(InterfacePath));
+	InterfaceEntry->SetObjectField(TEXT("Interface"), AnimBlueprintTestMakeClassRef(InterfacePath));
 	return InterfaceEntry;
 }
 
@@ -2984,7 +2984,7 @@ bool FAssetDocumentAnimBlueprintCreateUpdateLifecycleTest::RunTest(const FString
 	TSharedPtr<FJsonObject> PreviewUpdateBody = PreviewUpdateDocument->GetObjectField(TEXT("Body"));
 	PreviewUpdateBody->Values.Empty();
 	TSharedRef<FJsonObject> PreviewUpdate = MakeShared<FJsonObject>();
-	PreviewUpdate->SetObjectField(TEXT("PreviewSkeletalMesh"), MakeAssetRef(MismatchedPreviewMeshPath));
+	PreviewUpdate->SetObjectField(TEXT("PreviewSkeletalMesh"), AnimBlueprintTestMakeAssetRef(MismatchedPreviewMeshPath));
 	PreviewUpdateBody->SetObjectField(TEXT("Preview"), PreviewUpdate);
 
 	FAssetDocumentApplyRequest PreviewUpdateRequest;

@@ -14,19 +14,19 @@ FAssetDocumentCapabilityResult InvalidHookFailure(const FString& HookName)
 		FString::Printf(TEXT("Preview apply diff adapter is missing %s hook"), *HookName));
 }
 
-TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value);
+TSharedPtr<FJsonValue> PreviewCloneJsonValue(const TSharedPtr<FJsonValue>& Value);
 
 TSharedRef<FJsonObject> CloneJsonObject(const TSharedRef<FJsonObject>& Object)
 {
 	TSharedRef<FJsonObject> Clone = MakeShared<FJsonObject>();
 	for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Object->Values)
 	{
-		Clone->SetField(Pair.Key, CloneJsonValue(Pair.Value));
+		Clone->SetField(Pair.Key, PreviewCloneJsonValue(Pair.Value));
 	}
 	return Clone;
 }
 
-TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
+TSharedPtr<FJsonValue> PreviewCloneJsonValue(const TSharedPtr<FJsonValue>& Value)
 {
 	if (!Value.IsValid())
 	{
@@ -49,7 +49,7 @@ TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
 		TArray<TSharedPtr<FJsonValue>> ClonedArray;
 		for (const TSharedPtr<FJsonValue>& Item : Value->AsArray())
 		{
-			ClonedArray.Add(CloneJsonValue(Item));
+			ClonedArray.Add(PreviewCloneJsonValue(Item));
 		}
 		return MakeShared<FJsonValueArray>(MoveTemp(ClonedArray));
 	}

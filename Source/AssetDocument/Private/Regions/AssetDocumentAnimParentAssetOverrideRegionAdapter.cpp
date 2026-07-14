@@ -18,7 +18,7 @@ constexpr const TCHAR* ParentAssetOverridesRegionId = TEXT("Body.ParentAssetOver
 constexpr const TCHAR* RootAnimGraphId = TEXT("AnimGraph");
 constexpr const TCHAR* RootAnimGraphKind = TEXT("AnimGraph");
 
-FAssetDocumentCapabilityResult Failure(const FString& Path, const FString& Code, const FString& Message)
+FAssetDocumentCapabilityResult AnimParentOverrideFailure(const FString& Path, const FString& Code, const FString& Message)
 {
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
@@ -221,18 +221,18 @@ FAssetDocumentCapabilityResult ResolveAnimationAssetRef(
 	OutAsset = nullptr;
 	if (!Value.IsValid() || Value->Type == EJson::Null)
 	{
-		return Failure(Path, TEXT("MissingParentAssetOverrideAsset"), TEXT("ParentAssetOverrides.NewAsset is required"));
+		return AnimParentOverrideFailure(Path, TEXT("MissingParentAssetOverrideAsset"), TEXT("ParentAssetOverrides.NewAsset is required"));
 	}
 	if (Value->Type != EJson::Object)
 	{
-		return Failure(Path, TEXT("InvalidParentAssetOverrideAsset"), TEXT("ParentAssetOverrides.NewAsset must be an AssetRef object"));
+		return AnimParentOverrideFailure(Path, TEXT("InvalidParentAssetOverrideAsset"), TEXT("ParentAssetOverrides.NewAsset must be an AssetRef object"));
 	}
 
 	const TSharedPtr<FJsonObject> AssetRef = Value->AsObject();
 	FString Kind;
 	if (!AssetRef.IsValid() || !AssetRef->TryGetStringField(TEXT("Kind"), Kind) || Kind != TEXT("AssetRef"))
 	{
-		return Failure(Path / TEXT("Kind"), TEXT("InvalidParentAssetOverrideAssetKind"), TEXT("ParentAssetOverrides.NewAsset.Kind must be AssetRef"));
+		return AnimParentOverrideFailure(Path / TEXT("Kind"), TEXT("InvalidParentAssetOverrideAssetKind"), TEXT("ParentAssetOverrides.NewAsset.Kind must be AssetRef"));
 	}
 
 	FString AssetPath;
@@ -240,7 +240,7 @@ FAssetDocumentCapabilityResult ResolveAnimationAssetRef(
 	{
 		if (!AssetRef->TryGetStringField(TEXT("Asset"), AssetPath) || AssetPath.TrimStartAndEnd().IsEmpty())
 		{
-			return Failure(Path / TEXT("Path"), TEXT("MissingParentAssetOverrideAssetPath"), TEXT("ParentAssetOverrides.NewAsset.Path is required"));
+			return AnimParentOverrideFailure(Path / TEXT("Path"), TEXT("MissingParentAssetOverrideAssetPath"), TEXT("ParentAssetOverrides.NewAsset.Path is required"));
 		}
 	}
 
@@ -248,7 +248,7 @@ FAssetDocumentCapabilityResult ResolveAnimationAssetRef(
 	OutAsset = Cast<UAnimationAsset>(LoadedObject);
 	if (!OutAsset)
 	{
-		return Failure(
+		return AnimParentOverrideFailure(
 			Path,
 			TEXT("UnresolvedParentAssetOverrideAsset"),
 			FString::Printf(TEXT("Failed to resolve ParentAssetOverrides.NewAsset '%s' as UAnimationAsset"), *AssetPath));
@@ -269,7 +269,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 	OutOverride = FParsedParentAssetOverride();
 	if (!Object.IsValid())
 	{
-		return Failure(
+		return AnimParentOverrideFailure(
 			FString::Printf(TEXT("/Body/ParentAssetOverrides/%d"), Index),
 			TEXT("InvalidParentAssetOverride"),
 			TEXT("ParentAssetOverrides entries must be objects"));
@@ -279,7 +279,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 	{
 		if (Pair.Key != TEXT("Node") && Pair.Key != TEXT("ParentNodeGuid") && Pair.Key != TEXT("NewAsset") && Pair.Key != TEXT("Evidence"))
 		{
-			return Failure(
+			return AnimParentOverrideFailure(
 				FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/%s"), Index, *Escape(Pair.Key)),
 				TEXT("UnknownParentAssetOverrideField"),
 				FString::Printf(TEXT("Unknown ParentAssetOverrides field '%s'"), *Pair.Key));
@@ -302,7 +302,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 			}
 			else
 			{
-				return Failure(
+				return AnimParentOverrideFailure(
 					FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias)),
 					TEXT("UnknownParentOverrideNode"),
 					FString::Printf(TEXT("ParentAssetOverrides.Node '%s' does not resolve to an authored animation graph node."), *OutOverride.NodeAlias));
@@ -310,7 +310,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 		}
 		if (SeenAliases.Contains(OutOverride.NodeAlias))
 		{
-			return Failure(
+			return AnimParentOverrideFailure(
 				FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias)),
 				TEXT("DuplicateParentAssetOverrideNode"),
 				FString::Printf(TEXT("Duplicate ParentAssetOverrides node identity '%s'"), *OutOverride.NodeAlias));
@@ -330,7 +330,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 		}
 		if (!OutOverride.Override.ParentNodeGuid.IsValid() && !ParseGuidIdentity(GuidString, OutOverride.Override.ParentNodeGuid))
 		{
-			return Failure(
+			return AnimParentOverrideFailure(
 				FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
 				TEXT("InvalidParentNodeGuid"),
 				TEXT("ParentAssetOverrides.ParentNodeGuid must be a GUID string when Node is not authored"));
@@ -339,7 +339,7 @@ FAssetDocumentCapabilityResult ValidateOverrideObject(
 
 	if (SeenGuids.Contains(OutOverride.Override.ParentNodeGuid))
 	{
-		return Failure(
+		return AnimParentOverrideFailure(
 			OutOverride.bHasNodeAlias
 				? FString::Printf(TEXT("/Body/ParentAssetOverrides/%s/Node"), *Escape(OutOverride.NodeAlias))
 				: FString::Printf(TEXT("/Body/ParentAssetOverrides/%d/ParentNodeGuid"), Index),
@@ -382,11 +382,11 @@ FAssetDocumentCapabilityResult ParseDesiredOverrides(
 		{
 			return FAssetDocumentCapabilityResult::Success();
 		}
-		return Failure(TEXT("/Body/ParentAssetOverrides"), TEXT("InvalidParentAssetOverridesRegionType"), TEXT("Body.ParentAssetOverrides must be an array"));
+		return AnimParentOverrideFailure(TEXT("/Body/ParentAssetOverrides"), TEXT("InvalidParentAssetOverridesRegionType"), TEXT("Body.ParentAssetOverrides must be an array"));
 	}
 	if (DesiredValue->Type != EJson::Array)
 	{
-		return Failure(TEXT("/Body/ParentAssetOverrides"), TEXT("InvalidParentAssetOverridesRegionType"), TEXT("Body.ParentAssetOverrides must be an array"));
+		return AnimParentOverrideFailure(TEXT("/Body/ParentAssetOverrides"), TEXT("InvalidParentAssetOverridesRegionType"), TEXT("Body.ParentAssetOverrides must be an array"));
 	}
 
 	TSet<FGuid> SeenGuids;

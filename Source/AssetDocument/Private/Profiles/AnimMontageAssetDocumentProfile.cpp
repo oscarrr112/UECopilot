@@ -9,12 +9,12 @@
 
 namespace
 {
-TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
+TArray<TSharedPtr<FJsonValue>> MontageMakeEmptyArray()
 {
 	return TArray<TSharedPtr<FJsonValue>>();
 }
 
-bool MakeRegionPolicy(
+bool MontageMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
@@ -62,14 +62,14 @@ TSharedRef<FJsonObject> FAnimMontageAssetDocumentProfile::CreateTemplate(const F
 	Body->SetObjectField(TEXT("Preview"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("Sync"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("RootMotion"), MakeShared<FJsonObject>());
-	Body->SetArrayField(TEXT("Metadata"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("Metadata"), MontageMakeEmptyArray());
 	Body->SetObjectField(TEXT("SectionMetadata"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("TimeStretch"), MakeShared<FJsonObject>());
-	Body->SetArrayField(TEXT("Curves"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("SlotAnimTracks"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("CompositeSections"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("Notifies"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("NotifyStates"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("Curves"), MontageMakeEmptyArray());
+	Body->SetArrayField(TEXT("SlotAnimTracks"), MontageMakeEmptyArray());
+	Body->SetArrayField(TEXT("CompositeSections"), MontageMakeEmptyArray());
+	Body->SetArrayField(TEXT("Notifies"), MontageMakeEmptyArray());
+	Body->SetArrayField(TEXT("NotifyStates"), MontageMakeEmptyArray());
 	Body->SetObjectField(TEXT("Blend"), MakeShared<FJsonObject>());
 
 	TSharedRef<FJsonObject> Template = MakeShared<FJsonObject>();
@@ -112,11 +112,11 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	Policies.Reserve(13);
 
 	FAssetDocumentRegionPolicy Policy;
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blend"), EAssetDocumentRegionKind::Object, {}, Policy))
+	if (MontageMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Blend"), EAssetDocumentRegionKind::Object, {}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.References"),
 		EAssetDocumentRegionKind::Object,
@@ -125,7 +125,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.Preview"),
 		EAssetDocumentRegionKind::Object,
@@ -134,7 +134,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.Sync"),
 		EAssetDocumentRegionKind::Object,
@@ -143,7 +143,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.RootMotion"),
 		EAssetDocumentRegionKind::Object,
@@ -152,7 +152,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.Metadata"),
 		EAssetDocumentRegionKind::Array,
@@ -161,7 +161,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.SectionMetadata"),
 		EAssetDocumentRegionKind::Object,
@@ -170,7 +170,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("DefaultDiff"),
 		TEXT("Body.TimeStretch"),
 		EAssetDocumentRegionKind::Object,
@@ -179,7 +179,7 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(
+	if (MontageMakeRegionPolicy(
 		TEXT("ManagedRegion"),
 		TEXT("Body.Curves"),
 		EAssetDocumentRegionKind::Array,
@@ -188,19 +188,19 @@ TArray<FAssetDocumentRegionPolicy> FAnimMontageAssetDocumentProfile::GetRegionPo
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.SlotAnimTracks"), EAssetDocumentRegionKind::Array, {TEXT("SlotAnimTracks")}, Policy))
+	if (MontageMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.SlotAnimTracks"), EAssetDocumentRegionKind::Array, {TEXT("SlotAnimTracks")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.CompositeSections"), EAssetDocumentRegionKind::Timeline, {TEXT("CompositeSections")}, Policy))
+	if (MontageMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.CompositeSections"), EAssetDocumentRegionKind::Timeline, {TEXT("CompositeSections")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Notifies"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	if (MontageMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Notifies"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
+	if (MontageMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.NotifyStates"), EAssetDocumentRegionKind::Timeline, {TEXT("Notifies")}, Policy))
 	{
 		Policies.Add(Policy);
 	}

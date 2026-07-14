@@ -137,7 +137,7 @@ bool IsKnownGraphKind(const FString& Kind)
 		Kind == TEXT("MacroGraph");
 }
 
-FString JoinPath(const FString& BasePath, const FString& Segment)
+FString GraphParserJoinPath(const FString& BasePath, const FString& Segment)
 {
 	const FString EscapedSegment = FAssetDocumentJsonRegionUtils::EscapeJsonPointerToken(Segment);
 	if (BasePath.IsEmpty())
@@ -147,9 +147,9 @@ FString JoinPath(const FString& BasePath, const FString& Segment)
 	return FString::Printf(TEXT("%s/%s"), *BasePath, *EscapedSegment);
 }
 
-FString IndexPath(const FString& BasePath, int32 Index)
+FString GraphParserIndexPath(const FString& BasePath, int32 Index)
 {
-	return JoinPath(BasePath, FString::FromInt(Index));
+	return GraphParserJoinPath(BasePath, FString::FromInt(Index));
 }
 
 TSharedPtr<FJsonValue> CloneJsonValue(const TSharedPtr<FJsonValue>& Value)
@@ -230,7 +230,7 @@ void ValidateUnknownFields(
 		{
 			Result.AddDiagnostic(
 				Code,
-				JoinPath(Path, Pair.Key),
+				GraphParserJoinPath(Path, Pair.Key),
 				FString::Printf(TEXT("Unknown graph field '%s'."), *Pair.Key));
 		}
 	}
@@ -248,7 +248,7 @@ bool TryGetStringField(
 	{
 		Result.AddDiagnostic(
 			MissingCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Required string field '%s' is missing or empty."), Field));
 		return false;
 	}
@@ -273,7 +273,7 @@ bool TryGetObjectFieldIfPresent(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Field '%s' must be an object."), Field));
 		return false;
 	}
@@ -306,7 +306,7 @@ bool TryGetNullableObjectFieldIfPresent(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Field '%s' must be an object or null."), Field));
 		return false;
 	}
@@ -333,7 +333,7 @@ bool TryGetArrayFieldIfPresent(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Field '%s' must be an array."), Field));
 		return false;
 	}
@@ -354,7 +354,7 @@ bool TryGetRequiredArrayField(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("%s must be an array."), Field));
 		return false;
 	}
@@ -379,7 +379,7 @@ bool TryGetStringFieldIfPresent(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Field '%s' must be a string."), Field));
 		return false;
 	}
@@ -406,7 +406,7 @@ bool TryGetBoolFieldIfPresent(
 	{
 		Result.AddDiagnostic(
 			InvalidTypeCode,
-			JoinPath(Path, Field),
+			GraphParserJoinPath(Path, Field),
 			FString::Printf(TEXT("Field '%s' must be a boolean."), Field));
 		return false;
 	}
@@ -467,7 +467,7 @@ bool ValidateOwnerIdField(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphOwner"),
-			JoinPath(OwnerPath, Field),
+			GraphParserJoinPath(OwnerPath, Field),
 			FString::Printf(TEXT("Owner field '%s' must be a string stable id."), Field));
 		return false;
 	}
@@ -477,7 +477,7 @@ bool ValidateOwnerIdField(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphOwner"),
-			JoinPath(OwnerPath, Field),
+			GraphParserJoinPath(OwnerPath, Field),
 			FString::Printf(TEXT("Owner field '%s' must match ^[A-Za-z_][A-Za-z0-9_-]*$."), Field));
 		return false;
 	}
@@ -496,7 +496,7 @@ void ValidateGraphOwner(
 		return;
 	}
 
-	const FString OwnerPath = JoinPath(GraphPath, TEXT("Owner"));
+	const FString OwnerPath = GraphParserJoinPath(GraphPath, TEXT("Owner"));
 	ValidateUnknownFields(
 		Owner.ToSharedRef(),
 		OwnerPath,
@@ -512,7 +512,7 @@ void ValidateGraphOwner(
 	{
 		Result.AddDiagnostic(
 			TEXT("UnknownGraphOwnerReference"),
-			JoinPath(OwnerPath, TEXT("StateMachine")),
+			GraphParserJoinPath(OwnerPath, TEXT("StateMachine")),
 			FString::Printf(TEXT("Owner StateMachine '%s' does not refer to the current graph family."), *StateMachineId));
 	}
 
@@ -555,7 +555,7 @@ bool ParseSharedGraphFields(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphOwner"),
-			JoinPath(GraphPath, TEXT("OwnerNodeId")),
+			GraphParserJoinPath(GraphPath, TEXT("OwnerNodeId")),
 			TEXT("OwnerNodeId must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		bParsed = false;
 	}
@@ -570,7 +570,7 @@ bool ParseSharedGraphFields(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphOwner"),
-			JoinPath(GraphPath, TEXT("OwnerPin")),
+			GraphParserJoinPath(GraphPath, TEXT("OwnerPin")),
 			TEXT("OwnerPin must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		bParsed = false;
 	}
@@ -608,7 +608,7 @@ bool TryParseEndpointObject(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphNodeId"),
-			JoinPath(Path, TEXT("Node")),
+			GraphParserJoinPath(Path, TEXT("Node")),
 			TEXT("Expanded link endpoint node id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
@@ -617,7 +617,7 @@ bool TryParseEndpointObject(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphPinId"),
-			JoinPath(Path, TEXT("Pin")),
+			GraphParserJoinPath(Path, TEXT("Pin")),
 			TEXT("Expanded link endpoint pin id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
@@ -719,7 +719,7 @@ bool ParsePinOverride(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphPinId"),
-			JoinPath(Path, TEXT("Pin")),
+			GraphParserJoinPath(Path, TEXT("Pin")),
 			TEXT("Pin id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
@@ -741,7 +741,7 @@ bool ParsePinOverride(
 		{
 			Result.AddDiagnostic(
 				TEXT("InvalidGraphPin"),
-				JoinPath(Path, TEXT("Type")),
+				GraphParserJoinPath(Path, TEXT("Type")),
 				TEXT("Pin override Type must be an object."));
 			return false;
 		}
@@ -807,7 +807,7 @@ bool ParseNode(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphNodeId"),
-			JoinPath(Path, TEXT("Id")),
+			GraphParserJoinPath(Path, TEXT("Id")),
 			TEXT("Node id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		return false;
 	}
@@ -874,19 +874,19 @@ bool ParseNode(
 			{
 				Result.AddDiagnostic(
 					TEXT("InvalidGraphPin"),
-					IndexPath(JoinPath(Path, TEXT("PinOverrides")), Index),
+					GraphParserIndexPath(GraphParserJoinPath(Path, TEXT("PinOverrides")), Index),
 					TEXT("Pin override must be an object."));
 				continue;
 			}
 
 			FAssetDocumentPinOverrideSpec PinOverride;
-			if (ParsePinOverride(PinObject.ToSharedRef(), IndexPath(JoinPath(Path, TEXT("PinOverrides")), Index), PinOverride, Result))
+			if (ParsePinOverride(PinObject.ToSharedRef(), GraphParserIndexPath(GraphParserJoinPath(Path, TEXT("PinOverrides")), Index), PinOverride, Result))
 			{
 				if (PinOverrideIds.Contains(PinOverride.Pin))
 				{
 					Result.AddDiagnostic(
 						TEXT("DuplicateGraphPinId"),
-						JoinPath(IndexPath(JoinPath(Path, TEXT("PinOverrides")), Index), TEXT("Pin")),
+						GraphParserJoinPath(GraphParserIndexPath(GraphParserJoinPath(Path, TEXT("PinOverrides")), Index), TEXT("Pin")),
 						FString::Printf(TEXT("Duplicate pin override id '%s'."), *PinOverride.Pin));
 				}
 				else
@@ -917,8 +917,8 @@ bool ParseLink(
 
 	const TSharedPtr<FJsonValue>* From = Object->Values.Find(TEXT("From"));
 	const TSharedPtr<FJsonValue>* To = Object->Values.Find(TEXT("To"));
-	const bool bParsedFrom = TryParseEndpoint(From ? *From : nullptr, JoinPath(Path, TEXT("From")), OutLink.From, Result);
-	const bool bParsedTo = TryParseEndpoint(To ? *To : nullptr, JoinPath(Path, TEXT("To")), OutLink.To, Result);
+	const bool bParsedFrom = TryParseEndpoint(From ? *From : nullptr, GraphParserJoinPath(Path, TEXT("From")), OutLink.From, Result);
+	const bool bParsedTo = TryParseEndpoint(To ? *To : nullptr, GraphParserJoinPath(Path, TEXT("To")), OutLink.To, Result);
 	return bParsedFrom && bParsedTo;
 }
 
@@ -931,7 +931,7 @@ void ParseNodeArray(
 	TSet<FString> NodeIds;
 	for (int32 Index = 0; Index < Nodes.Num(); ++Index)
 	{
-		const FString NodePath = IndexPath(JoinPath(GraphPath, TEXT("Nodes")), Index);
+		const FString NodePath = GraphParserIndexPath(GraphParserJoinPath(GraphPath, TEXT("Nodes")), Index);
 		const TSharedPtr<FJsonObject> NodeObject = Nodes[Index].IsValid() ? Nodes[Index]->AsObject() : nullptr;
 		if (!NodeObject.IsValid())
 		{
@@ -949,7 +949,7 @@ void ParseNodeArray(
 		{
 			Result.AddDiagnostic(
 				TEXT("DuplicateGraphNodeId"),
-				JoinPath(NodePath, TEXT("Id")),
+				GraphParserJoinPath(NodePath, TEXT("Id")),
 				FString::Printf(TEXT("Duplicate node id '%s'."), *Node.Id));
 		}
 		else
@@ -969,7 +969,7 @@ void ParseLinkArray(
 	TSet<FString> LinkKeys;
 	for (int32 Index = 0; Index < Links.Num(); ++Index)
 	{
-		const FString LinkPath = IndexPath(JoinPath(GraphPath, TEXT("Links")), Index);
+		const FString LinkPath = GraphParserIndexPath(GraphParserJoinPath(GraphPath, TEXT("Links")), Index);
 		const TSharedPtr<FJsonObject> LinkObject = Links[Index].IsValid() ? Links[Index]->AsObject() : nullptr;
 		if (!LinkObject.IsValid())
 		{
@@ -1018,7 +1018,7 @@ void ParseSubgraphArray(
 	TSet<FString> GraphIds;
 	for (int32 Index = 0; Index < Subgraphs.Num(); ++Index)
 	{
-		const FString SubgraphPath = IndexPath(JoinPath(GraphPath, TEXT("Subgraphs")), Index);
+		const FString SubgraphPath = GraphParserIndexPath(GraphParserJoinPath(GraphPath, TEXT("Subgraphs")), Index);
 		const TSharedPtr<FJsonObject> SubgraphObject = Subgraphs[Index].IsValid() ? Subgraphs[Index]->AsObject() : nullptr;
 		if (!SubgraphObject.IsValid())
 		{
@@ -1038,7 +1038,7 @@ void ParseSubgraphArray(
 		{
 			Result.AddDiagnostic(
 				TEXT("DuplicateGraphId"),
-				JoinPath(SubgraphPath, TEXT("Id")),
+				GraphParserJoinPath(SubgraphPath, TEXT("Id")),
 				FString::Printf(TEXT("Duplicate graph id '%s'."), *Subgraph.Id));
 		}
 		else
@@ -1075,7 +1075,7 @@ bool ParseRecursiveGraph(
 	{
 		Result.AddDiagnostic(
 			TEXT("InvalidGraphId"),
-			JoinPath(GraphPath, TEXT("Id")),
+			GraphParserJoinPath(GraphPath, TEXT("Id")),
 			TEXT("Graph id must match ^[A-Za-z_][A-Za-z0-9_-]*$."));
 		bParsed = false;
 	}
@@ -1083,7 +1083,7 @@ bool ParseRecursiveGraph(
 	{
 		Result.AddDiagnostic(
 			TEXT("UnknownGraphKind"),
-			JoinPath(GraphPath, TEXT("Kind")),
+			GraphParserJoinPath(GraphPath, TEXT("Kind")),
 			FString::Printf(TEXT("Unknown graph kind '%s'."), *OutGraph.Kind));
 		bParsed = false;
 	}
@@ -1165,7 +1165,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseGraphArray(
 
 	for (int32 Index = 0; Index < GraphValues.Num(); ++Index)
 	{
-		const FString GraphPath = IndexPath(Options.Path, Index);
+		const FString GraphPath = GraphParserIndexPath(Options.Path, Index);
 		const TSharedPtr<FJsonObject> GraphObject = GraphValues[Index].IsValid() ? GraphValues[Index]->AsObject() : nullptr;
 		if (!GraphObject.IsValid())
 		{
@@ -1187,7 +1187,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseGraphArray(
 		{
 			Result.AddDiagnostic(
 				TEXT("DuplicateGraphName"),
-				JoinPath(GraphPath, TEXT("Name")),
+				GraphParserJoinPath(GraphPath, TEXT("Name")),
 				FString::Printf(TEXT("Duplicate graph name '%s'."), *Graph.Name));
 		}
 		else
@@ -1257,7 +1257,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseSingleGraph(
 	}
 	else
 	{
-		Result.AddDiagnostic(TEXT("InvalidGraphRegionType"), JoinPath(Options.Path, TEXT("Nodes")), TEXT("Nodes must be an array."));
+		Result.AddDiagnostic(TEXT("InvalidGraphRegionType"), GraphParserJoinPath(Options.Path, TEXT("Nodes")), TEXT("Nodes must be an array."));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Links = nullptr;
@@ -1267,7 +1267,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseSingleGraph(
 	}
 	else
 	{
-		Result.AddDiagnostic(TEXT("InvalidGraphRegionType"), JoinPath(Options.Path, TEXT("Links")), TEXT("Links must be an array."));
+		Result.AddDiagnostic(TEXT("InvalidGraphRegionType"), GraphParserJoinPath(Options.Path, TEXT("Links")), TEXT("Links must be an array."));
 	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Subgraphs = nullptr;
@@ -1306,7 +1306,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseGraphRegion(
 	TSet<FString> GraphIds;
 	for (int32 Index = 0; Index < Graphs->Num(); ++Index)
 	{
-		const FString GraphPath = IndexPath(JoinPath(Options.Path, TEXT("Graphs")), Index);
+		const FString GraphPath = GraphParserIndexPath(GraphParserJoinPath(Options.Path, TEXT("Graphs")), Index);
 		const TSharedPtr<FJsonObject> GraphObject = (*Graphs)[Index].IsValid() ? (*Graphs)[Index]->AsObject() : nullptr;
 		if (!GraphObject.IsValid())
 		{
@@ -1331,7 +1331,7 @@ FAssetDocumentGraphParseResult FAssetDocumentGraphParser::ParseGraphRegion(
 		{
 			Result.AddDiagnostic(
 				TEXT("DuplicateGraphId"),
-				JoinPath(GraphPath, TEXT("Id")),
+				GraphParserJoinPath(GraphPath, TEXT("Id")),
 				FString::Printf(TEXT("Duplicate graph id '%s'."), *Graph.Id));
 		}
 		else

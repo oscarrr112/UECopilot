@@ -29,7 +29,7 @@ bool SupportsBodyKey(const FAssetDocumentRegionContext& Context, const TCHAR* Bo
 		|| Context.JsonPointer == JsonPointer;
 }
 
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString WidgetWrapperRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
@@ -46,7 +46,7 @@ void AddCanonicalDiffEntry(
 		: TEXT("changed");
 	FAssetDocumentJsonRegionUtils::AddDiffEntry(
 		OutDiffEntries,
-		RegionPath(Context),
+		WidgetWrapperRegionPath(Context),
 		Status,
 		CurrentValue,
 		DesiredValue);

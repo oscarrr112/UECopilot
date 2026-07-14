@@ -13,7 +13,7 @@
 
 namespace
 {
-FString GetClassPath(const UClass* Class)
+FString CallFunctionGetClassPath(const UClass* Class)
 {
 	return Class ? Class->GetPathName() : FString();
 }
@@ -22,7 +22,7 @@ TSharedRef<FJsonObject> MakeMemberRef(const UFunction* Function, const FGuid& Gu
 {
 	TSharedRef<FJsonObject> Member = MakeShared<FJsonObject>();
 	Member->SetStringField(TEXT("Kind"), TEXT("MemberRef"));
-	Member->SetStringField(TEXT("OwnerClass"), GetClassPath(Function ? Function->GetOwnerClass() : nullptr));
+	Member->SetStringField(TEXT("OwnerClass"), CallFunctionGetClassPath(Function ? Function->GetOwnerClass() : nullptr));
 	Member->SetStringField(TEXT("Name"), Function ? Function->GetName() : FString());
 	if (Guid.IsValid())
 	{
@@ -47,7 +47,7 @@ bool TryReadMemberRef(const TSharedPtr<FJsonObject>& Member, FString& OutOwnerCl
 		&& !OutName.IsEmpty();
 }
 
-UClass* ResolveClass(const FString& ClassPath)
+UClass* CallFunctionResolveClass(const FString& ClassPath)
 {
 	return ClassPath.IsEmpty() ? nullptr : StaticLoadClass(UObject::StaticClass(), nullptr, *ClassPath);
 }
@@ -62,7 +62,7 @@ UClass* ResolveMemberOwnerClass(const UBlueprint* Blueprint, const FString& Owne
 		}
 		return Blueprint ? Blueprint->ParentClass.Get() : nullptr;
 	}
-	return ResolveClass(OwnerClassPath);
+	return CallFunctionResolveClass(OwnerClassPath);
 }
 
 UFunction* ResolveMemberFunction(const UBlueprint* Blueprint, const TSharedPtr<FJsonObject>& Member)

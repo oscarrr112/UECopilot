@@ -86,7 +86,7 @@ TSharedRef<FJsonValue> MakeBodyJsonValue(const TSharedRef<FJsonObject>& Body)
 	return StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueObject>(Body));
 }
 
-static TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
+static TSharedRef<FJsonObject> WidgetTestMakeClassRef(const FString& ClassPath)
 {
 	TSharedRef<FJsonObject> ClassRef = MakeShared<FJsonObject>();
 	ClassRef->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
@@ -97,7 +97,7 @@ static TSharedRef<FJsonObject> MakeClassRef(const FString& ClassPath)
 TSharedPtr<FJsonObject> MakeImplementedInterface(const FString& ClassPath)
 {
 	TSharedPtr<FJsonObject> InterfaceEntry = MakeShared<FJsonObject>();
-	InterfaceEntry->SetObjectField(TEXT("Interface"), MakeClassRef(ClassPath));
+	InterfaceEntry->SetObjectField(TEXT("Interface"), WidgetTestMakeClassRef(ClassPath));
 	return InterfaceEntry;
 }
 
@@ -113,7 +113,7 @@ void SetImplementedInterfaces(TSharedRef<FJsonObject> Body, std::initializer_lis
 
 TSharedRef<FJsonObject> MakeTestUserWidgetParentClassRef()
 {
-	return MakeClassRef(UTestUserWidget::StaticClass()->GetPathName());
+	return WidgetTestMakeClassRef(UTestUserWidget::StaticClass()->GetPathName());
 }
 
 static TSharedPtr<FJsonObject> MakeWidgetBlueprintDocument(const FString& Target, TSharedPtr<FJsonObject> Body)
@@ -213,7 +213,7 @@ UWidgetBlueprint* LoadWidgetBlueprintForTarget(const FString& Target)
 	return LoadObject<UWidgetBlueprint>(nullptr, *MakeObjectPathFromTarget(Target));
 }
 
-bool ResultHasDiagnosticCode(const FAssetDocumentResult& Result, const FString& ExpectedCode)
+bool WidgetTestResultHasDiagnosticCode(const FAssetDocumentResult& Result, const FString& ExpectedCode)
 {
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -229,7 +229,7 @@ bool ResultHasDiagnosticPath(const FAssetDocumentResult& Result, const FString& 
 	});
 }
 
-bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedPath, const FString& ExpectedCode)
+bool WidgetTestResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& ExpectedPath, const FString& ExpectedCode)
 {
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedPath, &ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -237,7 +237,7 @@ bool ResultHasDiagnostic(const FAssetDocumentResult& Result, const FString& Expe
 	});
 }
 
-bool ResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& ExpectedCode)
+bool WidgetTestResultHasDiagnosticCode(const FAssetDocumentCapabilityResult& Result, const FString& ExpectedCode)
 {
 	return Result.Diagnostics.ContainsByPredicate([&ExpectedCode](const FAssetDocumentDiagnostic& Diagnostic)
 	{
@@ -275,7 +275,7 @@ bool DiffPayloadHasChangedEntries(const TSharedPtr<FJsonObject>& Payload)
 		&& Changed->Num() > 0;
 }
 
-TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
+TSharedPtr<FJsonObject> WidgetTestFindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>& Entries, const FString& ExpectedPath)
 {
 	for (const TSharedPtr<FJsonValue>& EntryValue : Entries)
 	{
@@ -289,7 +289,7 @@ TSharedPtr<FJsonObject> FindDiffEntryByPath(const TArray<TSharedPtr<FJsonValue>>
 	return nullptr;
 }
 
-void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
+void WidgetTestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName)
 {
 	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
 	Test->TestTrue(
@@ -297,7 +297,7 @@ void TestDiffEntryFieldIsNull(FAutomationTestBase* Test, const TSharedPtr<FJsonO
 		Value.IsValid() && Value->IsNull());
 }
 
-void TestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
+void WidgetTestTestInterfaceDiffValue(FAutomationTestBase* Test, const TSharedPtr<FJsonObject>& Entry, const TCHAR* FieldName, const FString& ExpectedClassPath)
 {
 	const TSharedPtr<FJsonValue> Value = Entry.IsValid() ? Entry->TryGetField(FieldName) : nullptr;
 	const TSharedPtr<FJsonObject> ValueObject = Value.IsValid() ? Value->AsObject() : nullptr;
@@ -373,7 +373,7 @@ TSharedPtr<FJsonObject> GetExtractedBody(const FAssetDocumentResult& ExtractResu
 	return nullptr;
 }
 
-TSharedRef<FJsonObject> MakeFloatPinType()
+TSharedRef<FJsonObject> WidgetTestMakeFloatPinType()
 {
 	TSharedRef<FJsonObject> Type = MakeShared<FJsonObject>();
 	Type->SetStringField(TEXT("PinCategory"), TEXT("real"));
@@ -381,11 +381,11 @@ TSharedRef<FJsonObject> MakeFloatPinType()
 	return Type;
 }
 
-TSharedPtr<FJsonObject> MakeFloatVariable(const TCHAR* Name, const TCHAR* DefaultValue, const TCHAR* Category = nullptr, const TCHAR* Tooltip = nullptr)
+TSharedPtr<FJsonObject> WidgetTestMakeFloatVariable(const TCHAR* Name, const TCHAR* DefaultValue, const TCHAR* Category = nullptr, const TCHAR* Tooltip = nullptr)
 {
 	TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
 	Variable->SetStringField(TEXT("Name"), Name);
-	Variable->SetObjectField(TEXT("Type"), MakeFloatPinType());
+	Variable->SetObjectField(TEXT("Type"), WidgetTestMakeFloatPinType());
 	Variable->SetStringField(TEXT("DefaultValue"), DefaultValue);
 	if (Category)
 	{
@@ -398,7 +398,7 @@ TSharedPtr<FJsonObject> MakeFloatVariable(const TCHAR* Name, const TCHAR* Defaul
 	return Variable;
 }
 
-TArray<TSharedPtr<FJsonValue>> MakeVariableArray(std::initializer_list<TSharedPtr<FJsonObject>> Variables)
+TArray<TSharedPtr<FJsonValue>> WidgetTestMakeVariableArray(std::initializer_list<TSharedPtr<FJsonObject>> Variables)
 {
 	TArray<TSharedPtr<FJsonValue>> Result;
 	for (const TSharedPtr<FJsonObject>& Variable : Variables)
@@ -971,10 +971,10 @@ bool FAssetDocumentWidgetBlueprintDeferredGraphRegionsTest::RunTest(const FStrin
 			NonEmptyResult.bSuccess);
 		TestFalse(
 			FString::Printf(TEXT("Non-empty %s is not rejected by deferred adapter"), *DeferredRegion),
-			ResultHasDiagnosticCode(NonEmptyResult, TEXT("UnsupportedWidgetBlueprintRegion")));
+			WidgetTestResultHasDiagnosticCode(NonEmptyResult, TEXT("UnsupportedWidgetBlueprintRegion")));
 		TestTrue(
 			FString::Printf(TEXT("Non-empty %s reaches graph adapter diagnostics"), *DeferredRegion),
-			ResultHasDiagnosticCode(NonEmptyResult, TEXT("MissingGraphName")));
+			WidgetTestResultHasDiagnosticCode(NonEmptyResult, TEXT("MissingGraphName")));
 	}
 
 	return true;
@@ -1241,7 +1241,7 @@ bool FAssetDocumentWidgetBlueprintMetadataClassDefaultsParentChangeTest::RunTest
 	TestTrue(TEXT("Initial default WidgetBlueprint apply succeeds"), InitialResult.IsSuccess());
 
 	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
-	Body->SetObjectField(TEXT("ParentClass"), MakeClassRef(UTestUserWidget::StaticClass()->GetPathName()));
+	Body->SetObjectField(TEXT("ParentClass"), WidgetTestMakeClassRef(UTestUserWidget::StaticClass()->GetPathName()));
 	Body->GetObjectField(TEXT("ClassDefaults"))->SetBoolField(TEXT("bTextEnabled"), false);
 
 	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
@@ -1389,10 +1389,10 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteUnknown")),
 		PaletteUnknownBody)));
 	TestFalse(TEXT("Unknown Palette field rejects apply"), PaletteUnknownResult.IsSuccess());
-	TestTrue(TEXT("Unknown Palette diagnostic is reported"), ResultHasDiagnosticCode(PaletteUnknownResult, TEXT("UnknownPaletteField")));
+	TestTrue(TEXT("Unknown Palette diagnostic is reported"), WidgetTestResultHasDiagnosticCode(PaletteUnknownResult, TEXT("UnknownPaletteField")));
 	TestTrue(
 		TEXT("Unknown Palette diagnostic path is reported"),
-		ResultHasDiagnostic(PaletteUnknownResult, TEXT("/Body/Palette/Unexpected~1Bad~0Field"), TEXT("UnknownPaletteField")));
+		WidgetTestResultHasDiagnostic(PaletteUnknownResult, TEXT("/Body/Palette/Unexpected~1Bad~0Field"), TEXT("UnknownPaletteField")));
 
 	TSharedRef<FJsonObject> PaletteTypeBody = MakeDefaultWidgetBlueprintBody();
 	PaletteTypeBody->GetObjectField(TEXT("Palette"))->SetBoolField(TEXT("Category"), true);
@@ -1400,10 +1400,10 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataPaletteType")),
 		PaletteTypeBody)));
 	TestFalse(TEXT("Non-string Palette.Category rejects apply"), PaletteTypeResult.IsSuccess());
-	TestTrue(TEXT("Invalid Palette.Category diagnostic is reported"), ResultHasDiagnosticCode(PaletteTypeResult, TEXT("InvalidPaletteCategory")));
+	TestTrue(TEXT("Invalid Palette.Category diagnostic is reported"), WidgetTestResultHasDiagnosticCode(PaletteTypeResult, TEXT("InvalidPaletteCategory")));
 	TestTrue(
 		TEXT("Invalid Palette.Category diagnostic path is reported"),
-		ResultHasDiagnostic(PaletteTypeResult, TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory")));
+		WidgetTestResultHasDiagnostic(PaletteTypeResult, TEXT("/Body/Palette/Category"), TEXT("InvalidPaletteCategory")));
 
 	TSharedRef<FJsonObject> EditorUnknownBody = MakeDefaultWidgetBlueprintBody();
 	EditorUnknownBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("Unexpected/Bad~Field"), TEXT("value"));
@@ -1411,10 +1411,10 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorUnknown")),
 		EditorUnknownBody)));
 	TestFalse(TEXT("Unknown EditorOptions field rejects apply"), EditorUnknownResult.IsSuccess());
-	TestTrue(TEXT("Unknown EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorUnknownResult, TEXT("UnknownEditorOption")));
+	TestTrue(TEXT("Unknown EditorOptions diagnostic is reported"), WidgetTestResultHasDiagnosticCode(EditorUnknownResult, TEXT("UnknownEditorOption")));
 	TestTrue(
 		TEXT("Unknown EditorOptions diagnostic path is reported"),
-		ResultHasDiagnostic(EditorUnknownResult, TEXT("/Body/EditorOptions/Unexpected~1Bad~0Field"), TEXT("UnknownEditorOption")));
+		WidgetTestResultHasDiagnostic(EditorUnknownResult, TEXT("/Body/EditorOptions/Unexpected~1Bad~0Field"), TEXT("UnknownEditorOption")));
 
 	TSharedRef<FJsonObject> EditorTypeBody = MakeDefaultWidgetBlueprintBody();
 	EditorTypeBody->GetObjectField(TEXT("EditorOptions"))->SetStringField(TEXT("bCanCallInitializedWithoutPlayerContext"), TEXT("true"));
@@ -1422,10 +1422,10 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsInvalidPaletteEditorOptionsTest
 		MakeUniqueWidgetBlueprintTarget(TEXT("WBP_MetadataEditorType")),
 		EditorTypeBody)));
 	TestFalse(TEXT("Non-bool EditorOptions flag rejects apply"), EditorTypeResult.IsSuccess());
-	TestTrue(TEXT("Invalid EditorOptions diagnostic is reported"), ResultHasDiagnosticCode(EditorTypeResult, TEXT("InvalidEditorOption")));
+	TestTrue(TEXT("Invalid EditorOptions diagnostic is reported"), WidgetTestResultHasDiagnosticCode(EditorTypeResult, TEXT("InvalidEditorOption")));
 	TestTrue(
 		TEXT("Invalid EditorOptions diagnostic path is reported"),
-		ResultHasDiagnostic(EditorTypeResult, TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"), TEXT("InvalidEditorOption")));
+		WidgetTestResultHasDiagnostic(EditorTypeResult, TEXT("/Body/EditorOptions/bCanCallInitializedWithoutPlayerContext"), TEXT("InvalidEditorOption")));
 	return true;
 }
 
@@ -1551,7 +1551,7 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsUnknownWidgetVariableGuidTest::
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Unknown WidgetVariableGuids key rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Unknown WidgetVariableGuids diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("UnknownWidgetVariableGuid")));
+	TestTrue(TEXT("Unknown WidgetVariableGuids diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("UnknownWidgetVariableGuid")));
 	return true;
 }
 
@@ -1570,14 +1570,14 @@ bool FAssetDocumentWidgetBlueprintMetadataRejectsVariableWidgetNameConflictTest:
 	TSharedRef<FJsonObject> Body = MakeWidgetTreeBody(MakeWidgetTree(Root));
 	TSharedPtr<FJsonObject> Variable = MakeShared<FJsonObject>();
 	Variable->SetStringField(TEXT("Name"), TEXT("TitleText"));
-	Variable->SetObjectField(TEXT("Type"), MakeFloatPinType());
+	Variable->SetObjectField(TEXT("Type"), WidgetTestMakeFloatPinType());
 	Variable->SetStringField(TEXT("DefaultValue"), TEXT("1.0"));
 	Body->SetArrayField(TEXT("Variables"), {MakeShared<FJsonValueObject>(Variable)});
 
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Explicit variable conflicting with variable widget rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Conflict diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("VariableWidgetNameConflict")));
+	TestTrue(TEXT("Conflict diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("VariableWidgetNameConflict")));
 	return true;
 }
 
@@ -1592,7 +1592,7 @@ bool FAssetDocumentWidgetBlueprintMetadataVariableRoundTripTest::RunTest(const F
 	TSharedRef<FJsonObject> Body = MakeDefaultWidgetBlueprintBody();
 	Body->SetArrayField(
 		TEXT("Variables"),
-		MakeVariableArray({MakeFloatVariable(TEXT("Health"), TEXT("100.0"), TEXT("Stats"), TEXT("Hit points"))}));
+		WidgetTestMakeVariableArray({WidgetTestMakeFloatVariable(TEXT("Health"), TEXT("100.0"), TEXT("Stats"), TEXT("Hit points"))}));
 
 	FAssetDocumentService Service;
 	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
@@ -1848,7 +1848,7 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsMissingWidgetTest::RunTest(cons
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Missing binding widget rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Missing binding widget diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MissingBindingWidget")));
+	TestTrue(TEXT("Missing binding widget diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("MissingBindingWidget")));
 	return true;
 }
 
@@ -1866,7 +1866,7 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsInvalidFunctionSignatureTest::R
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Invalid binding function signature rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Invalid binding function diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("InvalidBindingFunctionSignature")));
+	TestTrue(TEXT("Invalid binding function diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("InvalidBindingFunctionSignature")));
 	return true;
 }
 
@@ -1887,7 +1887,7 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsDuplicateTargetTest::RunTest(co
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Duplicate binding target rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Duplicate binding target diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("DuplicateBindingTarget")));
+	TestTrue(TEXT("Duplicate binding target diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("DuplicateBindingTarget")));
 	return true;
 }
 
@@ -1929,7 +1929,7 @@ bool FAssetDocumentWidgetBlueprintBindingsInvalidPreflightPreservesExistingAsset
 	SetBindings(InvalidBody, {MakeFunctionBinding(TEXT("MissingText"), TEXT("Text"), TEXT("GetDisplayText"))});
 	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Invalid binding rejects apply"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Invalid binding reports missing widget"), ResultHasDiagnosticCode(InvalidResult, TEXT("MissingBindingWidget")));
+	TestTrue(TEXT("Invalid binding reports missing widget"), WidgetTestResultHasDiagnosticCode(InvalidResult, TEXT("MissingBindingWidget")));
 	TestTrue(TEXT("Invalid binding diagnostic points at widget field"), ResultHasDiagnosticPath(InvalidResult, TEXT("/Body/Bindings/0/Widget")));
 
 	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
@@ -1964,7 +1964,7 @@ bool FAssetDocumentWidgetBlueprintBindingsRejectsMismatchedMemberGuidTest::RunTe
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Mismatched function MemberGuid rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Mismatched function MemberGuid diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MismatchedBindingMemberGuid")));
+	TestTrue(TEXT("Mismatched function MemberGuid diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("MismatchedBindingMemberGuid")));
 	TestTrue(TEXT("Mismatched function MemberGuid diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Bindings/0/MemberGuid")));
 	return true;
 }
@@ -2228,7 +2228,7 @@ bool FAssetDocumentWidgetBlueprintAnimationsRejectsMissingWidgetBindingTest::Run
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 	TestFalse(TEXT("Missing animation widget rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Missing widget diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("MissingWidgetAnimationBinding")));
+	TestTrue(TEXT("Missing widget diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("MissingWidgetAnimationBinding")));
 	TestTrue(TEXT("Missing widget diagnostic path is precise"), ResultHasDiagnosticPath(Result, TEXT("/Body/Animations/0/Tracks/0/Widget")));
 	return true;
 }
@@ -2264,7 +2264,7 @@ bool FAssetDocumentWidgetBlueprintAnimationsUnsupportedTrackBlocksCompleteDiffTe
 	});
 	const FAssetDocumentResult UnsupportedApplyResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, UnsupportedBody)));
 	TestFalse(TEXT("Authored unsupported animation track rejects apply"), UnsupportedApplyResult.IsSuccess());
-	TestTrue(TEXT("Authored unsupported diagnostic is reported"), ResultHasDiagnosticCode(UnsupportedApplyResult, TEXT("UnsupportedWidgetAnimationTrack")));
+	TestTrue(TEXT("Authored unsupported diagnostic is reported"), WidgetTestResultHasDiagnosticCode(UnsupportedApplyResult, TEXT("UnsupportedWidgetAnimationTrack")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	if (WidgetBlueprint && WidgetBlueprint->Animations.Num() > 0 && WidgetBlueprint->Animations[0] && WidgetBlueprint->Animations[0]->MovieScene)
@@ -2340,7 +2340,7 @@ bool FAssetDocumentWidgetBlueprintAnimationsApplyFailurePreservesExistingAnimati
 	});
 	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, ReplacementBody)));
 	TestFalse(TEXT("Injected MovieScene track failure rejects apply"), FailedResult.IsSuccess());
-	TestTrue(TEXT("Track creation failure diagnostic is reported"), ResultHasDiagnosticCode(FailedResult, TEXT("CreateWidgetAnimationTrackFailed")));
+	TestTrue(TEXT("Track creation failure diagnostic is reported"), WidgetTestResultHasDiagnosticCode(FailedResult, TEXT("CreateWidgetAnimationTrackFailed")));
 
 	WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	TestNotNull(TEXT("WidgetBlueprint still exists after failed apply"), WidgetBlueprint);
@@ -2473,7 +2473,7 @@ bool FAssetDocumentWidgetBlueprintAnimationsRejectsMalformedNumbersTest::RunTest
 		const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_AnimationsMalformed"));
 		const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, Body)));
 		TestFalse(FString::Printf(TEXT("%s rejects apply"), Case.Label), Result.IsSuccess());
-		TestTrue(FString::Printf(TEXT("%s diagnostic code"), Case.Label), ResultHasDiagnosticCode(Result, Case.ExpectedCode));
+		TestTrue(FString::Printf(TEXT("%s diagnostic code"), Case.Label), WidgetTestResultHasDiagnosticCode(Result, Case.ExpectedCode));
 		TestTrue(FString::Printf(TEXT("%s diagnostic path"), Case.Label), ResultHasDiagnosticPath(Result, Case.ExpectedPath));
 	}
 	return true;
@@ -2500,7 +2500,7 @@ bool FAssetDocumentWidgetBlueprintGraphsFunctionGraphForBindingRoundTripTest::Ru
 	TSharedPtr<FJsonObject> Document = MakeWidgetBlueprintDocument(Target, Body);
 	const FAssetDocumentResult ApplyResult = Service.Apply(MakeApplyFileRequest(Document));
 	TestFalse(TEXT("Binding to authored graph without supported signature rejects apply"), ApplyResult.IsSuccess());
-	TestTrue(TEXT("Unsupported authored binding function reports signature diagnostic"), ResultHasDiagnosticCode(ApplyResult, TEXT("InvalidBindingFunctionSignature")));
+	TestTrue(TEXT("Unsupported authored binding function reports signature diagnostic"), WidgetTestResultHasDiagnosticCode(ApplyResult, TEXT("InvalidBindingFunctionSignature")));
 	return true;
 }
 
@@ -2632,7 +2632,7 @@ bool FAssetDocumentWidgetBlueprintGraphsDesiredVariableSelfMemberRoundTripTest::
 {
 	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsDesiredVariableSelfMember"));
 	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
-	Body->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	Body->SetArrayField(TEXT("Variables"), WidgetTestMakeVariableArray({WidgetTestMakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
 	SetGraphRegion(Body, TEXT("UbergraphPages"), {
 		MakeGraph(
 			TEXT("EventGraph"),
@@ -2684,7 +2684,7 @@ bool FAssetDocumentWidgetBlueprintGraphsMemberOwnerAndNameDiffTest::RunTest(cons
 {
 	const FString Target = MakeUniqueWidgetBlueprintTarget(TEXT("WBP_GraphsMemberOwnerAndNameDiff"));
 	TSharedRef<FJsonObject> Body = MakeBindingFixtureBody();
-	Body->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	Body->SetArrayField(TEXT("Variables"), WidgetTestMakeVariableArray({WidgetTestMakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
 	SetGraphRegion(Body, TEXT("UbergraphPages"), {
 		MakeGraph(
 			TEXT("EventGraph"),
@@ -2713,7 +2713,7 @@ bool FAssetDocumentWidgetBlueprintGraphsMemberOwnerAndNameDiffTest::RunTest(cons
 	}
 
 	TSharedRef<FJsonObject> OwnerChangedBody = MakeBindingFixtureBody();
-	OwnerChangedBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	OwnerChangedBody->SetArrayField(TEXT("Variables"), WidgetTestMakeVariableArray({WidgetTestMakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
 	SetGraphRegion(OwnerChangedBody, TEXT("UbergraphPages"), {
 		MakeGraph(
 			TEXT("EventGraph"),
@@ -2732,7 +2732,7 @@ bool FAssetDocumentWidgetBlueprintGraphsMemberOwnerAndNameDiffTest::RunTest(cons
 	TestTrue(TEXT("Member OwnerClass difference reports semantic diff"), DiffPayloadHasChangedEntries(OwnerChangedDiffResult.Payload));
 
 	TSharedRef<FJsonObject> NameChangedBody = MakeBindingFixtureBody();
-	NameChangedBody->SetArrayField(TEXT("Variables"), MakeVariableArray({MakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
+	NameChangedBody->SetArrayField(TEXT("Variables"), WidgetTestMakeVariableArray({WidgetTestMakeFloatVariable(TEXT("Score"), TEXT("42.0"))}));
 	SetGraphRegion(NameChangedBody, TEXT("UbergraphPages"), {
 		MakeGraph(
 			TEXT("EventGraph"),
@@ -2795,7 +2795,7 @@ bool FAssetDocumentWidgetBlueprintGraphsUnsupportedExistingNodePreflightPreserve
 	TSharedRef<FJsonObject> InvalidBody = MakeWidgetTreeBody(MakeWidgetTree(ChangedTitle));
 	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Unsupported existing graph node rejects apply during preflight"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Unsupported existing graph node diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+	TestTrue(TEXT("Unsupported existing graph node diagnostic is reported"), WidgetTestResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
 
 	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
 	UTextBlock* AfterFailureTitleText = AfterFailureBlueprint && AfterFailureBlueprint->WidgetTree
@@ -2855,7 +2855,7 @@ bool FAssetDocumentWidgetBlueprintGraphsSameGraphResidualUnsupportedNodePreserve
 	});
 	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Unsupported residual node in same graph rejects apply during preflight"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Same-graph residual diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+	TestTrue(TEXT("Same-graph residual diagnostic is reported"), WidgetTestResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
 
 	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
 	UTextBlock* AfterFailureTitleText = AfterFailureBlueprint && AfterFailureBlueprint->WidgetTree
@@ -2924,7 +2924,7 @@ bool FAssetDocumentWidgetBlueprintGraphsUnsupportedNodeRejectsApplyTest::RunTest
 	});
 	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Unsupported graph node rejects apply"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Unsupported graph node diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
+	TestTrue(TEXT("Unsupported graph node diagnostic is reported"), WidgetTestResultHasDiagnosticCode(InvalidResult, TEXT("UnsupportedGraphNodeClass")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	UEdGraph* EventGraph = FindWidgetBlueprintGraphByName(WidgetBlueprint, TEXT("EventGraph"));
@@ -3407,7 +3407,7 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsMismatchedVariableNameTest::R
 	FAssetDocumentService Service;
 	const FAssetDocumentResult Result = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(Root)))));
 	TestFalse(TEXT("Mismatched VariableName rejects apply"), Result.IsSuccess());
-	TestTrue(TEXT("Mismatched VariableName diagnostic is reported"), ResultHasDiagnosticCode(Result, TEXT("UnsupportedWidgetVariableName")));
+	TestTrue(TEXT("Mismatched VariableName diagnostic is reported"), WidgetTestResultHasDiagnosticCode(Result, TEXT("UnsupportedWidgetVariableName")));
 	return true;
 }
 
@@ -3426,7 +3426,7 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsInvalidClassTest::RunTest(con
 	TSharedRef<FJsonObject> InvalidRoot = MakeWidgetNode(TEXT("BadRoot"), TEXT("/Script/Engine.Actor"));
 	const FAssetDocumentResult BadResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(InvalidRoot)))));
 	TestFalse(TEXT("Invalid widget class rejects apply"), BadResult.IsSuccess());
-	TestTrue(TEXT("Invalid class diagnostic is reported"), ResultHasDiagnosticCode(BadResult, TEXT("InvalidWidgetClass")) || ResultHasDiagnosticCode(BadResult, TEXT("UnresolvedWidgetClass")));
+	TestTrue(TEXT("Invalid class diagnostic is reported"), WidgetTestResultHasDiagnosticCode(BadResult, TEXT("InvalidWidgetClass")) || WidgetTestResultHasDiagnosticCode(BadResult, TEXT("UnresolvedWidgetClass")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	TestNotNull(TEXT("WidgetBlueprint remains loadable after invalid apply"), WidgetBlueprint);
@@ -3492,7 +3492,7 @@ bool FAssetDocumentWidgetBlueprintWidgetTreeRejectsDuplicateNamesTest::RunTest(c
 
 	const FAssetDocumentResult BadResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, MakeWidgetTreeBody(MakeWidgetTree(DuplicateRoot)))));
 	TestFalse(TEXT("Duplicate widget names reject apply"), BadResult.IsSuccess());
-	TestTrue(TEXT("Duplicate name diagnostic is reported"), ResultHasDiagnosticCode(BadResult, TEXT("DuplicateWidgetName")));
+	TestTrue(TEXT("Duplicate name diagnostic is reported"), WidgetTestResultHasDiagnosticCode(BadResult, TEXT("DuplicateWidgetName")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	TestNotNull(TEXT("WidgetBlueprint remains loadable after duplicate-name apply"), WidgetBlueprint);
@@ -3618,15 +3618,15 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest::RunTest(const F
 	const TArray<TSharedPtr<FJsonValue>>* Changed = nullptr;
 	TestTrue(TEXT("diff payload includes changed"), DiffResult.Payload.IsValid() && DiffResult.Payload->TryGetArrayField(TEXT("changed"), Changed));
 	TSharedPtr<FJsonObject> InterfaceDiff = Changed
-		? FindDiffEntryByPath(*Changed, TEXT("/Body/ImplementedInterfaces//Script/Engine.ActorSoundParameterInterface"))
+		? WidgetTestFindDiffEntryByPath(*Changed, TEXT("/Body/ImplementedInterfaces//Script/Engine.ActorSoundParameterInterface"))
 		: nullptr;
 	TestTrue(TEXT("changed includes current-only interface semantic path"), InterfaceDiff.IsValid());
 	if (InterfaceDiff.IsValid())
 	{
 		TestEqual(TEXT("current-only implemented interface is changed"), InterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("changed")));
 		TestFalse(TEXT("WidgetBlueprint implemented interface diff keeps no change field"), InterfaceDiff->HasField(TEXT("change")));
-		TestInterfaceDiffValue(this, InterfaceDiff, TEXT("current"), InterfacePath);
-		TestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("desired"));
+		WidgetTestTestInterfaceDiffValue(this, InterfaceDiff, TEXT("current"), InterfacePath);
+		WidgetTestDiffEntryFieldIsNull(this, InterfaceDiff, TEXT("desired"));
 	}
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
@@ -3643,14 +3643,14 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfacesDiffTest::RunTest(const F
 			Capability.Diff(Context, MakeBodyJsonValue(InterfaceBody), MatchedDiffEntries);
 		TestTrue(TEXT("Matched WidgetBlueprint interface diff succeeds"), MatchedDiffResult.bSuccess);
 		TSharedPtr<FJsonObject> MatchedInterfaceDiff =
-			FindDiffEntryByPath(MatchedDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
+			WidgetTestFindDiffEntryByPath(MatchedDiffEntries, FString::Printf(TEXT("/Body/ImplementedInterfaces/%s"), *InterfacePath));
 		TestTrue(TEXT("Matched WidgetBlueprint interface is reported as unchanged"), MatchedInterfaceDiff.IsValid());
 		if (MatchedInterfaceDiff.IsValid())
 		{
 			TestEqual(TEXT("matched implemented interface is unchanged"), MatchedInterfaceDiff->GetStringField(TEXT("status")), FString(TEXT("unchanged")));
 			TestFalse(TEXT("matched WidgetBlueprint interface diff keeps no change field"), MatchedInterfaceDiff->HasField(TEXT("change")));
-			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
-			TestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
+			WidgetTestTestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("current"), InterfacePath);
+			WidgetTestTestInterfaceDiffValue(this, MatchedInterfaceDiff, TEXT("desired"), InterfacePath);
 		}
 	}
 	return true;
@@ -3715,7 +3715,7 @@ bool FAssetDocumentWidgetBlueprintInvalidImplementedInterfaceRejectsTest::RunTes
 	SetImplementedInterfaces(InvalidBody, {MakeImplementedInterface(TEXT("/Script/Engine.Actor"))});
 	const FAssetDocumentResult InvalidResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Non-interface class is rejected"), InvalidResult.IsSuccess());
-	TestTrue(TEXT("Invalid interface diagnostic is reported"), ResultHasDiagnosticCode(InvalidResult, TEXT("InvalidInterfaceClass")));
+	TestTrue(TEXT("Invalid interface diagnostic is reported"), WidgetTestResultHasDiagnosticCode(InvalidResult, TEXT("InvalidInterfaceClass")));
 	TestTrue(TEXT("Invalid interface diagnostic path is precise"), ResultHasDiagnosticPath(InvalidResult, TEXT("/Body/ImplementedInterfaces/0/Interface/Class")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
@@ -3765,7 +3765,7 @@ bool FAssetDocumentWidgetBlueprintImplementedInterfacesFailedApplyLeavesNoResidu
 	SetImplementedInterfaces(InterfaceBody, {MakeImplementedInterface(InterfacePath)});
 	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InterfaceBody)));
 	TestFalse(TEXT("Apply that adds an interface and deletes unsupported current graph is rejected"), FailedResult.IsSuccess());
-	TestTrue(TEXT("Rejected apply reports unsupported graph diagnostic"), ResultHasDiagnosticCode(FailedResult, TEXT("UnsupportedGraphNodeClass")));
+	TestTrue(TEXT("Rejected apply reports unsupported graph diagnostic"), WidgetTestResultHasDiagnosticCode(FailedResult, TEXT("UnsupportedGraphNodeClass")));
 
 	UWidgetBlueprint* AfterFailureBlueprint = LoadWidgetBlueprintForTarget(Target);
 	UClass* InterfaceClass = LoadObject<UClass>(nullptr, *InterfacePath);
@@ -3902,10 +3902,10 @@ bool FAssetDocumentWidgetBlueprintApplyFailureRollsBackTest::RunTest(const FStri
 	}
 
 	TSharedRef<FJsonObject> InvalidBody = MakeIntegratedWidgetBlueprintBody();
-	InvalidBody->SetObjectField(TEXT("ParentClass"), MakeClassRef(TEXT("/Script/Engine.Actor")));
+	InvalidBody->SetObjectField(TEXT("ParentClass"), WidgetTestMakeClassRef(TEXT("/Script/Engine.Actor")));
 	const FAssetDocumentResult FailedResult = Service.Apply(MakeApplyFileRequest(MakeWidgetBlueprintDocument(Target, InvalidBody)));
 	TestFalse(TEXT("Invalid full WidgetBlueprint apply fails"), FailedResult.IsSuccess());
-	TestTrue(TEXT("Invalid parent diagnostic is reported"), ResultHasDiagnosticCode(FailedResult, TEXT("InvalidParentClass")));
+	TestTrue(TEXT("Invalid parent diagnostic is reported"), WidgetTestResultHasDiagnosticCode(FailedResult, TEXT("InvalidParentClass")));
 
 	UWidgetBlueprint* WidgetBlueprint = LoadWidgetBlueprintForTarget(Target);
 	TestNotNull(TEXT("WidgetBlueprint loads after failed apply"), WidgetBlueprint);

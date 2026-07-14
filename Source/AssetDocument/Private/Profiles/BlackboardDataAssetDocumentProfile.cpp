@@ -13,12 +13,12 @@
 
 namespace
 {
-FString RegionPath(const FAssetDocumentRegionContext& Context)
+FString BlackboardRegionPath(const FAssetDocumentRegionContext& Context)
 {
 	return Context.JsonPointer.IsEmpty() ? Context.BodyPath : Context.JsonPointer;
 }
 
-FString NormalizeObjectPath(const FString& Path)
+FString BlackboardNormalizeObjectPath(const FString& Path)
 {
 	FString ObjectPath = Path.TrimStartAndEnd();
 	if (ObjectPath.StartsWith(TEXT("/")) && !ObjectPath.Contains(TEXT(".")))
@@ -32,7 +32,7 @@ FString NormalizeObjectPath(const FString& Path)
 	return ObjectPath;
 }
 
-bool MakeRegionPolicy(
+bool BlackboardMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
@@ -56,7 +56,7 @@ bool MakeRegionPolicy(
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
 
-FAssetDocumentCapabilityResult RemapDispatcherCompatibilityCodes(FAssetDocumentCapabilityResult Result)
+FAssetDocumentCapabilityResult BlackboardRemapDispatcherCompatibilityCodes(FAssetDocumentCapabilityResult Result)
 {
 	if (Result.bSuccess)
 	{
@@ -112,7 +112,7 @@ FAssetDocumentCapabilityResult ResolveBlackboardAssetRef(
 		}
 	}
 
-	OutParent = LoadObject<UBlackboardData>(nullptr, *NormalizeObjectPath(AssetPath));
+	OutParent = LoadObject<UBlackboardData>(nullptr, *BlackboardNormalizeObjectPath(AssetPath));
 	if (!OutParent)
 	{
 		return FAssetDocumentJsonRegionUtils::Failure(
@@ -157,7 +157,7 @@ FAssetDocumentCapabilityResult ValidateBlackboardParentChain(
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BlackboardData parent chain"));
 }
 
-TSharedPtr<FJsonValue> MakeBlackboardAssetRefValue(const UBlackboardData* Blackboard)
+TSharedPtr<FJsonValue> BlackboardMakeAssetRefValue(const UBlackboardData* Blackboard)
 {
 	if (!Blackboard)
 	{
@@ -172,7 +172,7 @@ TSharedPtr<FJsonValue> MakeBlackboardAssetRefValue(const UBlackboardData* Blackb
 
 TSharedPtr<FJsonValue> ExtractBlackboardParentValue(const UBlackboardData* Blackboard)
 {
-	return MakeBlackboardAssetRefValue(Blackboard ? Blackboard->Parent.Get() : nullptr);
+	return BlackboardMakeAssetRefValue(Blackboard ? Blackboard->Parent.Get() : nullptr);
 }
 
 class FBlackboardDataParentRegionAdapter final : public IAssetDocumentRegionAdapter
@@ -206,12 +206,12 @@ public:
 		const TSharedPtr<FJsonValue>& DesiredValue) const override
 	{
 		UBlackboardData* Parent = nullptr;
-		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), Parent);
+		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, BlackboardRegionPath(Context), Parent);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		return ValidateBlackboardParentChain(Cast<UBlackboardData>(Context.Asset), Parent, RegionPath(Context));
+		return ValidateBlackboardParentChain(Cast<UBlackboardData>(Context.Asset), Parent, BlackboardRegionPath(Context));
 	}
 
 	virtual FAssetDocumentCapabilityResult ApplyRegion(
@@ -224,18 +224,18 @@ public:
 		if (!Blackboard)
 		{
 			return FAssetDocumentJsonRegionUtils::Failure(
-				RegionPath(Context),
+				BlackboardRegionPath(Context),
 				TEXT("UnsupportedAsset"),
 				TEXT("Blackboard Parent apply requires UBlackboardData asset"));
 		}
 
 		UBlackboardData* Parent = nullptr;
-		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), Parent);
+		FAssetDocumentCapabilityResult Result = ResolveBlackboardAssetRef(DesiredValue, BlackboardRegionPath(Context), Parent);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		Result = ValidateBlackboardParentChain(Blackboard, Parent, RegionPath(Context));
+		Result = ValidateBlackboardParentChain(Blackboard, Parent, BlackboardRegionPath(Context));
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -273,20 +273,20 @@ public:
 		}
 
 		UBlackboardData* DesiredParent = nullptr;
-		Result = ResolveBlackboardAssetRef(DesiredValue, RegionPath(Context), DesiredParent);
+		Result = ResolveBlackboardAssetRef(DesiredValue, BlackboardRegionPath(Context), DesiredParent);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
 
 		const TSharedPtr<FJsonValue> CurrentValue = ExtractBlackboardParentValue(Cast<UBlackboardData>(Context.Asset));
-		const TSharedPtr<FJsonValue> DesiredCanonicalValue = MakeBlackboardAssetRefValue(DesiredParent);
+		const TSharedPtr<FJsonValue> DesiredCanonicalValue = BlackboardMakeAssetRefValue(DesiredParent);
 		const bool bSame =
 			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(CurrentValue) ==
 			FAssetDocumentJsonRegionUtils::JsonValueToComparableString(DesiredCanonicalValue);
 		FAssetDocumentJsonRegionUtils::AddDiffEntry(
 			OutDiffEntries,
-			RegionPath(Context),
+			BlackboardRegionPath(Context),
 			bSame ? TEXT("unchanged") : TEXT("changed"),
 			CurrentValue,
 			DesiredCanonicalValue);
@@ -386,7 +386,7 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Validate(
 	{
 		return Result;
 	}
-	return RemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &BodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.ValidateBody(Context, BodyJson);
@@ -402,7 +402,7 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 	}
 
 	TSet<FName> AppliedRegions;
-	return RemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &BodyJson, &AppliedRegions](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.ApplyBody(Context, BodyJson, AppliedRegions);
@@ -416,7 +416,7 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Extract(c
 	{
 		return Result;
 	}
-	return RemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &OutBodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.ExtractBody(Context, OutBodyJson);
@@ -433,7 +433,7 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Diff(
 	{
 		return Result;
 	}
-	return RemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+	return BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
 		[&Context, &DesiredJson, &OutDiffEntries](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
 		{
 			return Dispatcher.DiffBody(Context, DesiredJson, OutDiffEntries);
@@ -518,12 +518,12 @@ TArray<FAssetDocumentRegionPolicy> FBlackboardDataAssetDocumentProfile::GetRegio
 	Policies.Reserve(2);
 
 	FAssetDocumentRegionPolicy Policy;
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Parent"), EAssetDocumentRegionKind::Object, {TEXT("Parent")}, Policy))
+	if (BlackboardMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Parent"), EAssetDocumentRegionKind::Object, {TEXT("Parent")}, Policy))
 	{
 		Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Keys"), EAssetDocumentRegionKind::Array, {TEXT("Keys")}, Policy))
+	if (BlackboardMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Keys"), EAssetDocumentRegionKind::Array, {TEXT("Keys")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
