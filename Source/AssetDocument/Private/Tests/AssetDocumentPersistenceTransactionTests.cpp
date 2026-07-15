@@ -6,6 +6,7 @@
 #include "AssetDocumentServiceTestHooks.h"
 #include "TestDataAsset.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/BehaviorTree.h"
@@ -24,6 +25,7 @@
 #include "EdGraph/EdGraph.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/Linker.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
@@ -58,16 +60,16 @@ void PersistenceTestCleanup(const FString& Target, const FString& SidecarPath = 
 	{
 		Asset = LoadObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target));
 	}
-	// Persistence rollback intentionally replaces the package inode/timestamp.
-	// Remove the test file before marking the loaded asset deleted so the asset
-	// registry cannot mistake that controlled replacement for an external edit.
-	IFileManager::Get().Delete(*PackagePath, false, true);
 	if (Asset)
 	{
+		ResetLoaders(Asset->GetOutermost());
 		TArray<UObject*> Objects{Asset};
 		ObjectTools::DeleteObjectsUnchecked(Objects);
 	}
 	IFileManager::Get().Delete(*PackagePath, false, true);
+	// Synchronize the explicit delete before the directory watcher can replay a
+	// queued save/replace notification against AssetDeleted's empty-package mark.
+	FAssetRegistryModule::GetRegistry().ScanModifiedAssetFiles({PackagePath});
 	if (!SidecarPath.IsEmpty())
 	{
 		IFileManager::Get().Delete(*SidecarPath, false, true);
@@ -272,6 +274,10 @@ FPersistenceTestPackageMetadata PersistenceTestCapturePackageMetadata(const UPac
 	if (Package)
 	{
 		Metadata.LoadedFilename = Package->GetLoadedPath().GetLocalFullPath();
+		if (!Metadata.LoadedFilename.IsEmpty())
+		{
+			Metadata.LoadedFilename = FPaths::ConvertRelativePathToFull(Metadata.LoadedFilename);
+		}
 		FPaths::NormalizeFilename(Metadata.LoadedFilename);
 		Metadata.PackageFlags = Package->GetPackageFlags();
 		Metadata.ChunkIDs = Package->GetChunkIDs();
@@ -825,7 +831,7 @@ bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&
 			if (Package && Package->GetName() == Target)
 			{
 				++MatchingEventCount;
-				LastEventFilename = Filename;
+				LastEventFilename = FPaths::ConvertRelativePathToFull(Filename);
 				FPaths::NormalizeFilename(LastEventFilename);
 				bLastEventWasAutosave = Context.IsFromAutoSave();
 				bLastEventUpdatedLoadedPath = Context.IsUpdatingLoadedPath();
