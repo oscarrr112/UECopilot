@@ -24,9 +24,12 @@ public:
 		const FString& DestinationPath,
 		TArrayView64<const uint8> Bytes,
 		FString& OutError);
+	static bool FlushParentDirectory(const FString& Path, FString& OutError);
 
 #if WITH_DEV_AUTOMATION_TESTS
 	static void FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint FailurePoint);
+	static void ForceNextHardLinkBackupFallbackForTest();
+	static void ForceNextCommittedRenameRollbackFailureForTest();
 	static void ResetFailureForTest();
 #endif
 };

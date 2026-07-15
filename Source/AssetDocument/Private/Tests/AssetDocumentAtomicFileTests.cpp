@@ -9,6 +9,10 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopeExit.h"
 
+#if PLATFORM_MAC || PLATFORM_LINUX
+#include <sys/stat.h>
+#endif
+
 #if WITH_DEV_AUTOMATION_TESTS
 
 namespace
@@ -50,6 +54,17 @@ bool WriteFixtureBytes(const FString& Path, TArrayView64<const uint8> Bytes)
 {
 	return FFileHelper::SaveArrayToFile(Bytes, *Path);
 }
+
+#if PLATFORM_MAC || PLATFORM_LINUX
+uint32 AssetDocumentAtomicFileTestGetMode(const FString& Path)
+{
+	FTCHARToUTF8 NativePath(*Path);
+	struct stat FileStat;
+	return ::stat(NativePath.Get(), &FileStat) == 0
+		? static_cast<uint32>(FileStat.st_mode & 07777)
+		: 0;
+}
+#endif
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -406,5 +421,76 @@ bool FAssetDocumentAtomicFileMissingParentTest::RunTest(const FString& Parameter
 	TestFalse(TEXT("Missing-parent failure keeps destination absent"), FileManager.FileExists(*DestinationPath));
 	return true;
 }
+
+#if PLATFORM_MAC || PLATFORM_LINUX
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAtomicFilePreservesModeTest,
+	"AssetFactory.AssetDocument.AtomicFile.ReplacePreservesExistingMode",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAtomicFilePreservesModeTest::RunTest(const FString&)
+{
+	const FString TestRoot = MakeUniqueAtomicFileTestRoot();
+	const FString DestinationPath = FPaths::Combine(TestRoot, TEXT("mode.bin"));
+	IFileManager& FileManager = IFileManager::Get();
+	ON_SCOPE_EXIT
+	{
+		FAssetDocumentAtomicFile::ResetFailureForTest();
+		FileManager.DeleteDirectory(*TestRoot, false, true);
+	};
+
+	TestTrue(TEXT("Creates the mode test directory"), FileManager.MakeDirectory(*TestRoot, true));
+	const TArray64<uint8> OriginalBytes = {0x01, 0x02};
+	const TArray64<uint8> ReplacementBytes = {0x03, 0x04, 0x05};
+	TestTrue(TEXT("Writes the mode fixture"), WriteFixtureBytes(DestinationPath, OriginalBytes));
+	FTCHARToUTF8 NativeDestinationPath(*DestinationPath);
+	TestEqual(TEXT("Sets the fixture mode"), ::chmod(NativeDestinationPath.Get(), 0640), 0);
+	const uint32 ModeBefore = AssetDocumentAtomicFileTestGetMode(DestinationPath);
+
+	FString Error;
+	TestTrue(
+		TEXT("Atomic replacement succeeds for a custom-mode destination"),
+		FAssetDocumentAtomicFile::WriteBytesAtomically(DestinationPath, ReplacementBytes, Error));
+	TestEqual(TEXT("Atomic replacement preserves the exact existing mode"), AssetDocumentAtomicFileTestGetMode(DestinationPath), ModeBefore);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAtomicFileHardLinkFallbackTest,
+	"AssetFactory.AssetDocument.AtomicFile.HardLinkFailureUsesDurableCopyBackup",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAtomicFileHardLinkFallbackTest::RunTest(const FString&)
+{
+	const FString TestRoot = MakeUniqueAtomicFileTestRoot();
+	const FString DestinationPath = FPaths::Combine(TestRoot, TEXT("fallback.bin"));
+	IFileManager& FileManager = IFileManager::Get();
+	ON_SCOPE_EXIT
+	{
+		FAssetDocumentAtomicFile::ResetFailureForTest();
+		FileManager.DeleteDirectory(*TestRoot, false, true);
+	};
+
+	TestTrue(TEXT("Creates the fallback test directory"), FileManager.MakeDirectory(*TestRoot, true));
+	const TArray64<uint8> OriginalBytes = {0x10, 0x20, 0x30};
+	const TArray64<uint8> ReplacementBytes = {0x40, 0x50, 0x60, 0x70};
+	TestTrue(TEXT("Writes the fallback fixture"), WriteFixtureBytes(DestinationPath, OriginalBytes));
+	FTCHARToUTF8 NativeDestinationPath(*DestinationPath);
+	TestEqual(TEXT("Sets the fallback fixture mode"), ::chmod(NativeDestinationPath.Get(), 0440), 0);
+	const uint32 ModeBefore = AssetDocumentAtomicFileTestGetMode(DestinationPath);
+	FAssetDocumentAtomicFile::ForceNextHardLinkBackupFallbackForTest();
+
+	FString Error;
+	TestTrue(
+		TEXT("A forced hard-link failure succeeds through the full-sync copy fallback"),
+		FAssetDocumentAtomicFile::WriteBytesAtomically(DestinationPath, ReplacementBytes, Error));
+	TArray64<uint8> ActualBytes;
+	TestTrue(TEXT("Reads the hard-link fallback result"), ReadBytes(DestinationPath, ActualBytes));
+	TestTrue(TEXT("Hard-link fallback commits exact replacement bytes"), ActualBytes == ReplacementBytes);
+	TestEqual(TEXT("Hard-link fallback preserves exact existing mode"), AssetDocumentAtomicFileTestGetMode(DestinationPath), ModeBefore);
+	TestFalse(TEXT("Hard-link fallback leaves no recovery artifact"), HasAtomicTemporaryFile(TestRoot));
+	return true;
+}
+#endif
 
 #endif // WITH_DEV_AUTOMATION_TESTS

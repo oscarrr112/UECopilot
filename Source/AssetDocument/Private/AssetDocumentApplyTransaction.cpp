@@ -70,11 +70,30 @@ FAssetDocumentApplyTransaction::FAssetDocumentApplyTransaction(
 		false,
 		&ExcludedPropertyNames);
 	OriginalOwnedObjects = AssetDocumentCollectRecursiveOwned(ExistingAsset);
-	if (!ExistingAsset->IsA<UBehaviorTree>() && !ExistingAsset->IsA<UBlackboardData>())
+	if (ExistingAsset->GetClass() != UBehaviorTree::StaticClass()
+		&& ExistingAsset->GetClass() != UBlackboardData::StaticClass())
 	{
 		return;
 	}
 	bHasObjectSnapshots = true;
+	if (!ExistingPackage)
+	{
+		bSnapshotReady = false;
+		SnapshotError = TEXT("Strict AssetDocument snapshot requires an existing outer package");
+		return;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FAssetDocumentDiagnostic ForcedSnapshotFailure;
+	if (FAssetDocumentServiceTestHooks::ConsumeApplySnapshotFailure(ForcedSnapshotFailure))
+	{
+		bSnapshotReady = false;
+		SnapshotError = ForcedSnapshotFailure.Message.IsEmpty()
+			? TEXT("Injected strict AssetDocument snapshot failure")
+			: ForcedSnapshotFailure.Message;
+		return;
+	}
+#endif
 
 	TArray<UObject*> ObjectsToSnapshot;
 	if (ExistingPackage)
@@ -104,7 +123,17 @@ FAssetDocumentApplyTransaction::FAssetDocumentApplyTransaction(
 			false,
 			false,
 			PPF_DuplicateVerbatim);
-		bObjectSnapshotsComplete &= !Writer.IsError();
+		if (Writer.IsError())
+		{
+			bObjectSnapshotsComplete = false;
+			bSnapshotReady = false;
+			if (SnapshotError.IsEmpty())
+			{
+				SnapshotError = FString::Printf(
+					TEXT("Failed to serialize strict AssetDocument snapshot object '%s'"),
+					*Object->GetPathName());
+			}
+		}
 	}
 	ObjectSnapshots.Sort([](const FObjectSnapshot& A, const FObjectSnapshot& B)
 	{

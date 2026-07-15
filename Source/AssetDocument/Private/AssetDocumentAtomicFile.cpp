@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -23,6 +24,8 @@ namespace
 #if WITH_DEV_AUTOMATION_TESTS
 TAtomic<uint8> GNextAtomicFileFailurePoint(
 	static_cast<uint8>(EAssetDocumentAtomicFileFailurePoint::None));
+TAtomic<bool> GAssetDocumentAtomicFileForceNextHardLinkBackupFallback(false);
+TAtomic<bool> GAssetDocumentAtomicFileForceNextCommittedRenameRollbackFailure(false);
 
 bool ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint FailurePoint)
 {
@@ -198,6 +201,141 @@ bool AssetDocumentAtomicFileSyncParentDirectory(const FString& Directory, int32&
 	}
 	return SyncResult == 0;
 }
+
+bool AssetDocumentAtomicFileCopyBackup(
+	const FString& SourcePath,
+	const FString& BackupPath,
+	mode_t SourceMode,
+	FString& OutError)
+{
+	FTCHARToUTF8 NativeSourcePath(*SourcePath);
+	FTCHARToUTF8 NativeBackupPath(*BackupPath);
+	int32 SourceDescriptor = -1;
+	int32 BackupDescriptor = -1;
+	bool bBackupCreated = false;
+	bool bKeepBackup = false;
+	auto CloseDescriptor = [](int32& Descriptor)
+	{
+		if (Descriptor == -1)
+		{
+			return 0;
+		}
+		const int32 DescriptorToClose = Descriptor;
+		Descriptor = -1;
+		int32 CloseResult = 0;
+		do
+		{
+			CloseResult = ::close(DescriptorToClose);
+		}
+		while (CloseResult < 0 && errno == EINTR);
+		return CloseResult == 0 ? 0 : errno;
+	};
+	ON_SCOPE_EXIT
+	{
+		CloseDescriptor(SourceDescriptor);
+		CloseDescriptor(BackupDescriptor);
+		if (bBackupCreated && !bKeepBackup)
+		{
+			::unlink(NativeBackupPath.Get());
+		}
+	};
+
+	do
+	{
+		SourceDescriptor = ::open(NativeSourcePath.Get(), O_RDONLY | O_CLOEXEC);
+	}
+	while (SourceDescriptor == -1 && errno == EINTR);
+	if (SourceDescriptor == -1)
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.Backup: POSIX open source failed with errno=%d for '%s'"),
+			errno,
+			*SourcePath);
+		return false;
+	}
+
+	do
+	{
+		BackupDescriptor = ::open(
+			NativeBackupPath.Get(),
+			O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+			0600);
+	}
+	while (BackupDescriptor == -1 && errno == EINTR);
+	if (BackupDescriptor == -1)
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.Backup: POSIX open copy backup failed with errno=%d for '%s'"),
+			errno,
+			*BackupPath);
+		return false;
+	}
+	bBackupCreated = true;
+
+	uint8 Buffer[64 * 1024];
+	for (;;)
+	{
+		ssize_t ReadByteCount = 0;
+		do
+		{
+			ReadByteCount = ::read(SourceDescriptor, Buffer, sizeof(Buffer));
+		}
+		while (ReadByteCount < 0 && errno == EINTR);
+		if (ReadByteCount < 0)
+		{
+			OutError = FString::Printf(
+				TEXT("AtomicFile.Backup: POSIX read failed with errno=%d for '%s'"),
+				errno,
+				*SourcePath);
+			return false;
+		}
+		if (ReadByteCount == 0)
+		{
+			break;
+		}
+		FString CopyWriteError;
+		if (!WriteAll(
+				BackupDescriptor,
+				Buffer,
+				static_cast<int64>(ReadByteCount),
+				BackupPath,
+				CopyWriteError))
+		{
+			OutError = FString::Printf(TEXT("AtomicFile.Backup: %s"), *CopyWriteError);
+			return false;
+		}
+	}
+
+	if (::fchmod(BackupDescriptor, SourceMode & 07777) != 0)
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.Backup: POSIX fchmod failed with errno=%d for '%s'"),
+			errno,
+			*BackupPath);
+		return false;
+	}
+	int32 SyncError = 0;
+	if (!FullSync(BackupDescriptor, SyncError))
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.Backup: full sync failed with errno=%d for '%s'"),
+			SyncError,
+			*BackupPath);
+		return false;
+	}
+	const int32 BackupCloseError = CloseDescriptor(BackupDescriptor);
+	const int32 SourceCloseError = CloseDescriptor(SourceDescriptor);
+	if (BackupCloseError != 0 || SourceCloseError != 0)
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.Backup: POSIX close failed with errno=%d for '%s'"),
+			BackupCloseError != 0 ? BackupCloseError : SourceCloseError,
+			*BackupPath);
+		return false;
+	}
+	bKeepBackup = true;
+	return true;
+}
 #endif
 }
 
@@ -294,7 +432,6 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 		OutError = MoveTemp(Error);
 		return false;
 	};
-
 #if WITH_DEV_AUTOMATION_TESTS
 	if (ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint::Open))
 	{
@@ -488,6 +625,16 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 		OutError = MoveTemp(Error);
 		return false;
 	};
+	struct stat DestinationStat = {};
+	const bool bDestinationExisted = ::stat(NativeDestinationPath.Get(), &DestinationStat) == 0;
+	if (!bDestinationExisted && errno != ENOENT)
+	{
+		const int32 StatError = errno;
+		return FailWithCleanup(FString::Printf(
+			TEXT("AtomicFile.Open: POSIX stat failed with errno=%d for '%s'"),
+			StatError,
+			*NormalizedDestinationPath));
+	}
 
 #if WITH_DEV_AUTOMATION_TESTS
 	if (ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint::Open))
@@ -549,6 +696,15 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 	{
 		return FailWithCleanup(MoveTemp(WriteError));
 	}
+	if (bDestinationExisted
+		&& ::fchmod(TemporaryFileDescriptor, DestinationStat.st_mode & 07777) != 0)
+	{
+		const int32 ModeError = errno;
+		return FailWithCleanup(FString::Printf(
+			TEXT("AtomicFile.Flush: POSIX fchmod failed with errno=%d while preserving mode for '%s'"),
+			ModeError,
+			*NormalizedDestinationPath));
+	}
 
 #if WITH_DEV_AUTOMATION_TESTS
 	if (ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint::Flush))
@@ -584,18 +740,39 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 	}
 #endif
 
-	const bool bDestinationExisted = ::access(NativeDestinationPath.Get(), F_OK) == 0;
 	if (bDestinationExisted)
 	{
-		if (::link(NativeDestinationPath.Get(), NativeBackupPath.Get()) != 0)
+		bool bForceCopyFallback = false;
+#if WITH_DEV_AUTOMATION_TESTS
+		bForceCopyFallback = GAssetDocumentAtomicFileForceNextHardLinkBackupFallback.Exchange(false);
+#endif
+		if (!bForceCopyFallback && ::link(NativeDestinationPath.Get(), NativeBackupPath.Get()) == 0)
 		{
-			const int32 LinkError = errno;
-			return FailWithCleanup(FString::Printf(
-				TEXT("AtomicFile.Backup: POSIX link failed with errno=%d for '%s'"),
-				LinkError,
-				*NormalizedDestinationPath));
+			bOwnsBackupFile = true;
 		}
-		bOwnsBackupFile = true;
+		else
+		{
+			FString BackupError;
+			if (!AssetDocumentAtomicFileCopyBackup(
+					NormalizedDestinationPath,
+					BackupPath,
+					DestinationStat.st_mode,
+					BackupError))
+			{
+				return FailWithCleanup(MoveTemp(BackupError));
+			}
+			bOwnsBackupFile = true;
+			int32 BackupDirectorySyncError = 0;
+			if (!AssetDocumentAtomicFileSyncParentDirectory(
+					DestinationDirectory,
+					BackupDirectorySyncError))
+			{
+				return FailWithCleanup(FString::Printf(
+					TEXT("AtomicFile.Backup: parent directory sync failed with errno=%d for '%s'"),
+					BackupDirectorySyncError,
+					*BackupPath));
+			}
+		}
 	}
 	if (::rename(NativeTemporaryPath.Get(), NativeDestinationPath.Get()) != 0)
 	{
@@ -617,6 +794,20 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 	auto RollbackCommittedRename = [&]()
 	{
 		bool bRestored = true;
+#if WITH_DEV_AUTOMATION_TESTS
+		if (GAssetDocumentAtomicFileForceNextCommittedRenameRollbackFailure.Exchange(false))
+		{
+			// Test-only simulation: leave the replacement installed so an owning
+			// transaction must perform its registered outer rollback. Remove the
+			// synthetic recovery artifact to keep automation fixtures self-contained.
+			if (bOwnsBackupFile)
+			{
+				::unlink(NativeBackupPath.Get());
+				bOwnsBackupFile = false;
+			}
+			return false;
+		}
+#endif
 		if (bOwnsBackupFile)
 		{
 			bRestored = ::rename(NativeBackupPath.Get(), NativeDestinationPath.Get()) == 0;
@@ -682,15 +873,48 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 #endif
 }
 
+bool FAssetDocumentAtomicFile::FlushParentDirectory(
+	const FString& Path,
+	FString& OutError)
+{
+	OutError.Reset();
+#if PLATFORM_MAC || PLATFORM_LINUX
+	FString NormalizedPath = FPaths::ConvertRelativePathToFull(Path);
+	FPaths::NormalizeFilename(NormalizedPath);
+	int32 SyncError = 0;
+	if (!AssetDocumentAtomicFileSyncParentDirectory(FPaths::GetPath(NormalizedPath), SyncError))
+	{
+		OutError = FString::Printf(
+			TEXT("AtomicFile.DirectoryFlush: parent directory sync failed with errno=%d for '%s'"),
+			SyncError,
+			*NormalizedPath);
+		return false;
+	}
+#endif
+	return true;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 void FAssetDocumentAtomicFile::FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint FailurePoint)
 {
 	GNextAtomicFileFailurePoint.Exchange(static_cast<uint8>(FailurePoint));
 }
 
+void FAssetDocumentAtomicFile::ForceNextHardLinkBackupFallbackForTest()
+{
+	GAssetDocumentAtomicFileForceNextHardLinkBackupFallback.Exchange(true);
+}
+
+void FAssetDocumentAtomicFile::ForceNextCommittedRenameRollbackFailureForTest()
+{
+	GAssetDocumentAtomicFileForceNextCommittedRenameRollbackFailure.Exchange(true);
+}
+
 void FAssetDocumentAtomicFile::ResetFailureForTest()
 {
 	GNextAtomicFileFailurePoint.Exchange(
 		static_cast<uint8>(EAssetDocumentAtomicFileFailurePoint::None));
+	GAssetDocumentAtomicFileForceNextHardLinkBackupFallback.Exchange(false);
+	GAssetDocumentAtomicFileForceNextCommittedRenameRollbackFailure.Exchange(false);
 }
 #endif

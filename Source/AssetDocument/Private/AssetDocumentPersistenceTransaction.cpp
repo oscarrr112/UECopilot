@@ -8,9 +8,37 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
+#include "Misc/PackagePath.h"
 #include "Misc/Paths.h"
+#include "UObject/Linker.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/UObjectGlobals.h"
+
+namespace
+{
+const TArray<FString>& AssetDocumentPersistencePackageExtensions()
+{
+	static const TArray<FString> Extensions{
+		TEXT("uasset"),
+		TEXT("uexp"),
+		TEXT("ubulk"),
+		TEXT("uptnl")};
+	return Extensions;
+}
+
+TSet<UObject*> AssetDocumentPersistenceCollectPackageObjects(UPackage* Package)
+{
+	TArray<UObject*> Objects;
+	if (Package)
+	{
+		GetObjectsWithOuter(Package, Objects, true);
+	}
+	return TSet<UObject*>(Objects);
+}
+}
 
 FAssetDocumentPersistenceTransaction::FAssetDocumentPersistenceTransaction(
 	const FString& InPackageName,
@@ -60,6 +88,7 @@ bool FAssetDocumentPersistenceTransaction::StagePackage(
 			*PackageName);
 		return false;
 	}
+	OriginalPackageFlags = static_cast<uint32>(Package->GetPackageFlags());
 
 	IFileManager& FileManager = IFileManager::Get();
 	if (!FileManager.MakeDirectory(*StagingDirectory, true))
@@ -92,41 +121,47 @@ bool FAssetDocumentPersistenceTransaction::DiscoverStagedOutputs(FString& OutErr
 	OutError.Reset();
 	Outputs.Reset();
 	const FString CanonicalDirectory = FPaths::GetPath(CanonicalPackageFilename);
+	const FString CanonicalBaseName = FPaths::GetBaseFilename(CanonicalPackageFilename);
+	TMap<FString, FString> StagedByExtension;
 	IFileManager::Get().IterateDirectory(
 		*StagingDirectory,
-		[this, &CanonicalDirectory](const TCHAR* Path, bool bIsDirectory)
+		[this, &CanonicalBaseName, &StagedByExtension](const TCHAR* Path, bool bIsDirectory)
 		{
-			if (!bIsDirectory)
+			FString StagedFilename(Path);
+			FPaths::NormalizeFilename(StagedFilename);
+			const FString Extension = FPaths::GetExtension(StagedFilename, false).ToLower();
+			if (!bIsDirectory
+				&& FPaths::GetBaseFilename(StagedFilename) == CanonicalBaseName
+				&& AssetDocumentPersistencePackageExtensions().Contains(Extension))
 			{
-				FOutputFile& Output = Outputs.AddDefaulted_GetRef();
-				Output.StagedFilename = Path;
-				FPaths::NormalizeFilename(Output.StagedFilename);
-				Output.CanonicalFilename = FPaths::Combine(
-					CanonicalDirectory,
-					FPaths::GetCleanFilename(Output.StagedFilename));
-				FPaths::NormalizeFilename(Output.CanonicalFilename);
+				StagedByExtension.Add(Extension, MoveTemp(StagedFilename));
 			}
 			return true;
 		});
 
-	Outputs.Sort([](const FOutputFile& A, const FOutputFile& B)
+	for (const FString& Extension : AssetDocumentPersistencePackageExtensions())
 	{
-		return A.StagedFilename < B.StagedFilename;
-	});
-	const int32 HeaderIndex = Outputs.IndexOfByPredicate([this](const FOutputFile& Output)
-	{
-		return Output.StagedFilename == StagedHeaderFilename;
-	});
-	if (HeaderIndex == INDEX_NONE)
+		FOutputFile& Output = Outputs.AddDefaulted_GetRef();
+		Output.CanonicalFilename = FPaths::Combine(
+			CanonicalDirectory,
+			FString::Printf(TEXT("%s.%s"), *CanonicalBaseName, *Extension));
+		FPaths::NormalizeFilename(Output.CanonicalFilename);
+		if (const FString* StagedFilename = StagedByExtension.Find(Extension))
+		{
+			Output.StagedFilename = *StagedFilename;
+		}
+		else
+		{
+			Output.bDeleteCanonicalOnInstall = IFileManager::Get().FileExists(*Output.CanonicalFilename);
+		}
+	}
+
+	if (Outputs.Num() == 0 || Outputs[0].StagedFilename != StagedHeaderFilename)
 	{
 		OutError = FString::Printf(
 			TEXT("Persistence.Stage.Output: staged header '%s' was not produced"),
 			*StagedHeaderFilename);
 		return false;
-	}
-	if (HeaderIndex != 0)
-	{
-		Outputs.Swap(0, HeaderIndex);
 	}
 	return true;
 }
@@ -170,9 +205,37 @@ bool FAssetDocumentPersistenceTransaction::InstallStagedPackage(FString& OutErro
 	for (int32 Index = 0; Index < Outputs.Num(); ++Index)
 	{
 		FOutputFile& Output = Outputs[Index];
+		if (Output.StagedFilename.IsEmpty() && !Output.bDeleteCanonicalOnInstall)
+		{
+			continue;
+		}
 		if (!CaptureOriginal(Output, OutError))
 		{
 			return false;
+		}
+
+		if (Output.bDeleteCanonicalOnInstall)
+		{
+			InstalledFileIndices.Add(Index);
+			if (!IFileManager::Get().Delete(*Output.CanonicalFilename, false, true))
+			{
+				OutError = FString::Printf(
+					TEXT("Persistence.Install.DeleteStale: failed to delete stale package output '%s'"),
+					*Output.CanonicalFilename);
+				return false;
+			}
+			FString DirectoryFlushError;
+			if (!FAssetDocumentAtomicFile::FlushParentDirectory(
+					Output.CanonicalFilename,
+					DirectoryFlushError))
+			{
+				OutError = FString::Printf(
+					TEXT("Persistence.Install.DeleteStale: failed to durably delete '%s': %s"),
+					*Output.CanonicalFilename,
+					*DirectoryFlushError);
+				return false;
+			}
+			continue;
 		}
 
 		TArray64<uint8> StagedBytes;
@@ -184,6 +247,9 @@ bool FAssetDocumentPersistenceTransaction::InstallStagedPackage(FString& OutErro
 			return false;
 		}
 
+		// Register before replacement so an internally rolled-back atomic failure is
+		// still covered by the outer package transaction.
+		InstalledFileIndices.Add(Index);
 		FString AtomicError;
 		if (!FAssetDocumentAtomicFile::WriteBytesAtomically(
 				Output.CanonicalFilename,
@@ -196,7 +262,6 @@ bool FAssetDocumentPersistenceTransaction::InstallStagedPackage(FString& OutErro
 				*AtomicError);
 			return false;
 		}
-		InstalledFileIndices.Add(Index);
 	}
 	return true;
 }
@@ -223,17 +288,86 @@ bool FAssetDocumentPersistenceTransaction::RollbackInstalledPackage(
 					*AtomicError));
 			}
 		}
-		else if (IFileManager::Get().FileExists(*Output.CanonicalFilename)
-			&& !IFileManager::Get().Delete(*Output.CanonicalFilename, false, true))
+		else if (IFileManager::Get().FileExists(*Output.CanonicalFilename))
 		{
-			bSuccess = false;
-			OutErrors.Add(FString::Printf(
-				TEXT("Persistence.Rollback.Delete: failed to remove newly installed '%s'"),
-				*Output.CanonicalFilename));
+			if (!IFileManager::Get().Delete(*Output.CanonicalFilename, false, true))
+			{
+				bSuccess = false;
+				OutErrors.Add(FString::Printf(
+					TEXT("Persistence.Rollback.Delete: failed to remove newly installed '%s'"),
+					*Output.CanonicalFilename));
+			}
+			else
+			{
+				FString DirectoryFlushError;
+				if (!FAssetDocumentAtomicFile::FlushParentDirectory(
+						Output.CanonicalFilename,
+						DirectoryFlushError))
+				{
+					bSuccess = false;
+					OutErrors.Add(FString::Printf(
+						TEXT("Persistence.Rollback.Delete: failed to durably remove '%s': %s"),
+						*Output.CanonicalFilename,
+						*DirectoryFlushError));
+				}
+			}
 		}
 	}
 	InstalledFileIndices.Reset();
 	return bSuccess;
+}
+
+bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
+	UPackage* Package,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!Package || Package->GetName() != PackageName)
+	{
+		OutError = TEXT("Persistence.Metadata.Validate: live package does not match the transaction package");
+		return false;
+	}
+
+	const TSet<UObject*> ObjectsBefore = AssetDocumentPersistenceCollectPackageObjects(Package);
+	const FPackagePath CanonicalPath = FPackagePath::FromLocalPath(CanonicalPackageFilename);
+	ResetLoaders(Package);
+	if (!GetPackageLinker(Package, CanonicalPath, LOAD_NoWarn | LOAD_Quiet, nullptr))
+	{
+		OutError = FString::Printf(
+			TEXT("Persistence.Metadata.Linker: failed to read canonical summary from '%s'"),
+			*CanonicalPackageFilename);
+		return false;
+	}
+	Package->SetLoadedPath(CanonicalPath);
+	Package->ClearPackageFlags(PKG_NewlyCreated);
+
+	const TSet<UObject*> ObjectsAfter = AssetDocumentPersistenceCollectPackageObjects(Package);
+	if (!ObjectsBefore.Includes(ObjectsAfter) || !ObjectsAfter.Includes(ObjectsBefore))
+	{
+		OutError = TEXT("Persistence.Metadata.Identity: canonical metadata refresh changed live package UObject identity");
+		return false;
+	}
+	return true;
+}
+
+void FAssetDocumentPersistenceTransaction::BroadcastCanonicalPackageSaved(UPackage* Package) const
+{
+	if (!Package)
+	{
+		return;
+	}
+	FObjectSaveContextData SaveContext(Package, nullptr, *CanonicalPackageFilename, SAVE_None);
+	SaveContext.OriginalPackageFlags = OriginalPackageFlags;
+	SaveContext.Object = nullptr;
+	SaveContext.ObjectSaveContextPhase = EObjectSaveContextPhase::PostSave;
+	SaveContext.bSaveSucceeded = true;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	UPackage::PackageSavedEvent.Broadcast(CanonicalPackageFilename, Package);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	UPackage::PackageSavedWithContextEvent.Broadcast(
+		CanonicalPackageFilename,
+		Package,
+		FObjectPostSaveContext(SaveContext));
 }
 
 void FAssetDocumentPersistenceTransaction::Commit()

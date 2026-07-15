@@ -23,6 +23,8 @@ public:
 #endif
 	void Commit();
 	void Rollback(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
+	bool IsSnapshotReady() const { return bSnapshotReady; }
+	const FString& GetSnapshotError() const { return SnapshotError; }
 
 private:
 	struct FObjectSnapshot
@@ -51,6 +53,8 @@ private:
 	bool bHasObjectSnapshots = false;
 	bool bObjectSnapshotsComplete = true;
 	bool bObjectSnapshotRestoreFailed = false;
+	bool bSnapshotReady = true;
+	FString SnapshotError;
 	FAssetDocumentLifecycleResult LifecycleResult;
 #if WITH_DEV_AUTOMATION_TESTS
 	TOptional<uint64> ForcedFailureGeneration;

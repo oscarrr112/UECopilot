@@ -43,6 +43,7 @@ public:
 		const FAssetDocumentDiagnostic& Diagnostic,
 		bool bEmitDiagnostic = true);
 	static void FailNextLifecycleCleanupVerification(const FAssetDocumentDiagnostic& Diagnostic);
+	static void FailNextApplySnapshot(const FAssetDocumentDiagnostic& Diagnostic);
 	static void FailNextPersistenceAtPhase(
 		EAssetDocumentServicePersistencePhase Phase,
 		const FAssetDocumentDiagnostic& Diagnostic);
@@ -63,6 +64,7 @@ public:
 		FAssetDocumentDiagnostic& OutDiagnostic,
 		bool* bOutEmitDiagnostic = nullptr);
 	static bool ConsumeLifecycleCleanupVerificationFailure(FAssetDocumentDiagnostic& OutDiagnostic);
+	static bool ConsumeApplySnapshotFailure(FAssetDocumentDiagnostic& OutDiagnostic);
 	static bool ConsumePersistenceFailure(
 		EAssetDocumentServicePersistencePhase Phase,
 		FAssetDocumentDiagnostic& OutDiagnostic);

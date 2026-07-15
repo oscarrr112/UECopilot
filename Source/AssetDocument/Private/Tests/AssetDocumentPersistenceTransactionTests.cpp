@@ -14,6 +14,7 @@
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
 #include "HAL/FileManager.h"
+#include "IO/IoHash.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -24,6 +25,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/UObjectHash.h"
+#include "UObject/ObjectSaveContext.h"
+#include "UObject/Package.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
@@ -49,17 +52,22 @@ FString PersistenceTestToPackagePath(const FString& Target)
 
 void PersistenceTestCleanup(const FString& Target, const FString& SidecarPath = FString())
 {
+	const FString PackagePath = PersistenceTestToPackagePath(Target);
 	UObject* Asset = FindObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target));
-	if (!Asset && IFileManager::Get().FileExists(*PersistenceTestToPackagePath(Target)))
+	if (!Asset && IFileManager::Get().FileExists(*PackagePath))
 	{
 		Asset = LoadObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target));
 	}
+	// Persistence rollback intentionally replaces the package inode/timestamp.
+	// Remove the test file before marking the loaded asset deleted so the asset
+	// registry cannot mistake that controlled replacement for an external edit.
+	IFileManager::Get().Delete(*PackagePath, false, true);
 	if (Asset)
 	{
 		TArray<UObject*> Objects{Asset};
 		ObjectTools::DeleteObjectsUnchecked(Objects);
 	}
-	IFileManager::Get().Delete(*PersistenceTestToPackagePath(Target), false, true);
+	IFileManager::Get().Delete(*PackagePath, false, true);
 	if (!SidecarPath.IsEmpty())
 	{
 		IFileManager::Get().Delete(*SidecarPath, false, true);
@@ -221,6 +229,61 @@ TSet<UObject*> PersistenceTestCollectOwned(UObject* Asset)
 	return Result;
 }
 
+UBlackboardKeyType* PersistenceTestFindKeyType(
+	UBlackboardData* Blackboard,
+	const FName EntryName = TEXT("PersistenceKey"))
+{
+	if (!Blackboard)
+	{
+		return nullptr;
+	}
+	for (const FBlackboardEntry& Entry : Blackboard->Keys)
+	{
+		if (Entry.EntryName == EntryName)
+		{
+			return Entry.KeyType.Get();
+		}
+	}
+	return nullptr;
+}
+
+struct FPersistenceTestPackageMetadata
+{
+	FString LoadedFilename;
+	uint32 PackageFlags = 0;
+	FIoHash SavedHash;
+	int64 FileSize = 0;
+	bool bDirty = false;
+};
+
+FPersistenceTestPackageMetadata PersistenceTestCapturePackageMetadata(const UPackage* Package)
+{
+	FPersistenceTestPackageMetadata Metadata;
+	if (Package)
+	{
+		Metadata.LoadedFilename = Package->GetLoadedPath().GetLocalFullPath();
+		FPaths::NormalizeFilename(Metadata.LoadedFilename);
+		Metadata.PackageFlags = Package->GetPackageFlags();
+		Metadata.SavedHash = Package->GetSavedHash();
+		Metadata.FileSize = Package->GetFileSize();
+		Metadata.bDirty = Package->IsDirty();
+	}
+	return Metadata;
+}
+
+void PersistenceTestMetadataEqual(
+	FAutomationTestBase& Test,
+	const FPersistenceTestPackageMetadata& Actual,
+	const FPersistenceTestPackageMetadata& Expected,
+	const TCHAR* Prefix)
+{
+	Test.TestEqual(FString::Printf(TEXT("%s loaded filename"), Prefix), Actual.LoadedFilename, Expected.LoadedFilename);
+	Test.TestEqual(FString::Printf(TEXT("%s package flags"), Prefix), Actual.PackageFlags, Expected.PackageFlags);
+	Test.TestTrue(FString::Printf(TEXT("%s saved hash"), Prefix), Actual.SavedHash == Expected.SavedHash);
+	Test.TestEqual(FString::Printf(TEXT("%s file size"), Prefix), Actual.FileSize, Expected.FileSize);
+	Test.TestEqual(FString::Printf(TEXT("%s dirty state"), Prefix), Actual.bDirty, Expected.bDirty);
+}
+
 FAssetDocumentResult PersistenceTestApply(
 	FAssetDocumentService& Service,
 	const TSharedPtr<FJsonObject>& Document,
@@ -260,22 +323,19 @@ public:
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentPersistenceExistingInstallFailureTest,
-	"AssetFactory.AssetDocument.Persistence.Existing.PackageInstallFailureRestoresLiveAndDisk",
+	FAssetDocumentPersistenceGenericUsesStandardSaveTest,
+	"AssetFactory.AssetDocument.Persistence.Generic.UsesStandardSaveAndBypassesStrictHooks",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentPersistenceExistingInstallFailureTest::RunTest(const FString&)
+bool FAssetDocumentPersistenceGenericUsesStandardSaveTest::RunTest(const FString&)
 {
 	using namespace AssetDocumentPersistenceTransactionTests;
-	const FString Target = PersistenceTestMakeTarget(TEXT("DA_ExistingInstallFailure"));
+	const FString Target = PersistenceTestMakeTarget(TEXT("DA_StandardSave"));
 	PersistenceTestCleanup(Target);
 	FAssetDocumentService Service;
-	TestTrue(TEXT("Creates the durable baseline"), PersistenceTestApply(Service, PersistenceTestMakeGenericDocument(Target, TEXT("Create"), TEXT("before"), 7)).IsSuccess());
-
-	TArray64<uint8> DiskBefore;
-	TestTrue(TEXT("Reads the durable baseline bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), DiskBefore));
+	TestTrue(TEXT("Creates the generic standard-save baseline"), PersistenceTestApply(Service, PersistenceTestMakeGenericDocument(Target, TEXT("Create"), TEXT("before"), 7)).IsSuccess());
 	UTestDataAsset* Asset = FindObject<UTestDataAsset>(nullptr, *PersistenceTestToObjectPath(Target));
-	TestNotNull(TEXT("Finds the live durable baseline"), Asset);
+	TestNotNull(TEXT("Finds the live generic baseline"), Asset);
 	if (!Asset)
 	{
 		PersistenceTestCleanup(Target);
@@ -289,13 +349,13 @@ bool FAssetDocumentPersistenceExistingInstallFailureTest::RunTest(const FString&
 	const FAssetDocumentResult Result = PersistenceTestApply(
 		Service,
 		PersistenceTestMakeGenericDocument(Target, TEXT("Update"), TEXT("after"), 19));
-	TestFalse(TEXT("Failure after package install rejects Apply"), Result.IsSuccess());
-	TestEqual(TEXT("Existing live string is restored"), Asset->TestString, FString(TEXT("before")));
-	TestEqual(TEXT("Existing live integer is restored"), Asset->TestInt, 7);
+	TestTrue(TEXT("Generic Apply bypasses the strict package-install hook"), Result.IsSuccess());
+	TestEqual(TEXT("Generic standard save keeps the applied string"), Asset->TestString, FString(TEXT("after")));
+	TestEqual(TEXT("Generic standard save keeps the applied integer"), Asset->TestInt, 19);
 
 	TArray64<uint8> DiskAfter;
-	TestTrue(TEXT("Reads package bytes after rollback"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), DiskAfter));
-	TestTrue(TEXT("Existing package bytes are restored exactly"), DiskAfter == DiskBefore);
+	TestTrue(TEXT("Generic standard save writes a canonical package"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), DiskAfter));
+	TestTrue(TEXT("Generic standard save writes non-empty package bytes"), DiskAfter.Num() > 0);
 	PersistenceTestCleanup(Target);
 	return true;
 }
@@ -374,32 +434,222 @@ bool FAssetDocumentPersistenceExistingBehaviorTreeIdentityTest::RunTest(const FS
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-	FAssetDocumentPersistenceNewInstallFailureTest,
-	"AssetFactory.AssetDocument.Persistence.New.PackageInstallFailureRemovesLiveAndDisk",
+	FAssetDocumentPersistencePackageAtomicOuterRollbackTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.PackageAtomicInternalRollbackFailureUsesOuterRollback",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FAssetDocumentPersistenceNewInstallFailureTest::RunTest(const FString&)
+bool FAssetDocumentPersistencePackageAtomicOuterRollbackTest::RunTest(const FString&)
 {
 	using namespace AssetDocumentPersistenceTransactionTests;
-	const FString Target = PersistenceTestMakeTarget(TEXT("DA_NewInstallFailure"));
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_PackageAtomicOuterRollback"));
 	PersistenceTestCleanup(Target);
 	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 61);
+	TestTrue(TEXT("Creates package-atomic rollback baseline"), Initial.IsValid() && PersistenceTestApply(Service, Initial).IsSuccess());
+	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
+	const FString CanonicalBefore = PersistenceTestExtractCanonical(*this, Service, Target);
+	TArray64<uint8> PackageBefore;
+	TestNotNull(TEXT("Finds package-atomic rollback baseline"), BlackboardBefore);
+	TestNotNull(TEXT("Finds package-atomic rollback key type"), KeyTypeBefore);
+	TestTrue(TEXT("Reads package-atomic rollback baseline bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBefore));
+
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterFreshReloadBeforeVerification,
+		[]()
+		{
+			FAssetDocumentAtomicFile::FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint::DirectoryFlush);
+			FAssetDocumentAtomicFile::ForceNextCommittedRenameRollbackFailureForTest();
+		});
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 67);
+	const FAssetDocumentResult Result = PersistenceTestApply(Service, Update);
+	TestFalse(TEXT("Package atomic internal rollback failure rejects Apply"), Result.IsSuccess());
+	TestTrue(TEXT("Package atomic failure reports the directory-flush stage"), Result.Message.Contains(TEXT("AtomicFile.DirectoryFlush")));
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	TestTrue(TEXT("Package outer rollback preserves live asset identity"), BlackboardAfter == BlackboardBefore);
+	TestTrue(TEXT("Package outer rollback preserves key-type identity"), PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	TestEqual(TEXT("Package outer rollback restores canonical live state"), PersistenceTestExtractCanonical(*this, Service, Target), CanonicalBefore);
+	TArray64<uint8> PackageAfter;
+	TestTrue(TEXT("Reads package after outer rollback"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageAfter));
+	TestTrue(TEXT("Package outer rollback restores exact canonical bytes"), PackageAfter == PackageBefore);
+	PersistenceTestCleanup(Target);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceSnapshotReadinessTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.SnapshotFailureFailsBeforeLiveMutation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceSnapshotReadinessTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_SnapshotReadiness"));
+	PersistenceTestCleanup(Target);
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 13);
+	TestTrue(TEXT("Creates the snapshot-readiness baseline"), Initial.IsValid() && PersistenceTestApply(Service, Initial).IsSuccess());
+	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
+	const FString CanonicalBefore = PersistenceTestExtractCanonical(*this, Service, Target);
+	TArray64<uint8> DiskBefore;
+	TestNotNull(TEXT("Finds the snapshot-readiness live baseline"), BlackboardBefore);
+	TestNotNull(TEXT("Finds the snapshot-readiness key type"), KeyTypeBefore);
+	TestTrue(TEXT("Reads snapshot-readiness baseline bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), DiskBefore));
+
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::FailNextApplySnapshot(
+		PersistenceTestMakeFailure(
+			TEXT("ForcedAssetDocumentSnapshotFailure"),
+			TEXT("forced snapshot capture failure before live mutation")));
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 37);
+	const FAssetDocumentResult Result = PersistenceTestApply(Service, Update);
+	TestFalse(TEXT("Snapshot capture failure rejects strict Apply"), Result.IsSuccess());
+	TestTrue(TEXT("Snapshot capture failure reports the injected reason"), Result.Message.Contains(TEXT("snapshot capture failure")));
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	TestTrue(TEXT("Snapshot failure preserves live asset identity"), BlackboardAfter == BlackboardBefore);
+	TestTrue(TEXT("Snapshot failure preserves key-type identity"), PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	TestEqual(TEXT("Snapshot failure preserves canonical live state"), PersistenceTestExtractCanonical(*this, Service, Target), CanonicalBefore);
+	TArray64<uint8> DiskAfter;
+	TestTrue(TEXT("Reads package after snapshot failure"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), DiskAfter));
+	TestTrue(TEXT("Snapshot failure preserves exact package bytes"), DiskAfter == DiskBefore);
+	PersistenceTestCleanup(Target);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceNewStrictInstallFailureTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.NewPostInstallFailureRemovesLiveAndDisk",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceNewStrictInstallFailureTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_NewInstallFailure"));
+	PersistenceTestCleanup(Target);
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 41);
 	FPersistenceTestScopedHookReset Hooks;
 	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
 		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
-		PersistenceTestMakeFailure(TEXT("ForcedNewPackageInstallFailure"), TEXT("forced new-package failure after install")));
-	const FAssetDocumentResult Result = PersistenceTestApply(
-		Service,
-		PersistenceTestMakeGenericDocument(Target, TEXT("Create"), TEXT("created"), 23));
-	TestFalse(TEXT("New-package install failure rejects Apply"), Result.IsSuccess());
-	TestFalse(TEXT("New-package install failure removes canonical package"), IFileManager::Get().FileExists(*PersistenceTestToPackagePath(Target)));
-	TestNull(TEXT("New-package install failure removes the live asset"), FindObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target)));
+		PersistenceTestMakeFailure(
+			TEXT("ForcedNewStrictPackageInstallFailure"),
+			TEXT("forced new strict-package failure after install")));
+	const FAssetDocumentResult Result = PersistenceTestApply(Service, Document);
+	TestFalse(TEXT("New strict-package install failure rejects Apply"), Result.IsSuccess());
+	TestFalse(TEXT("New strict-package install failure removes canonical package"), IFileManager::Get().FileExists(*PersistenceTestToPackagePath(Target)));
+	TestNull(TEXT("New strict-package install failure removes the live asset"), FindObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target)));
 
 	FAssetDocumentServiceTestHooks::Clear();
-	TestTrue(
-		TEXT("Retry after new-package install failure succeeds"),
-		PersistenceTestApply(Service, PersistenceTestMakeGenericDocument(Target, TEXT("Create"), TEXT("retry"), 29)).IsSuccess());
+	TestTrue(TEXT("Retry after new strict-package install failure succeeds"), PersistenceTestApply(Service, Document).IsSuccess());
 	PersistenceTestCleanup(Target);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceStaleSiblingTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.StaleSiblingDeleteRollsBackAndCommits",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceStaleSiblingTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_StaleSibling"));
+	const FString StaleSiblingPath = FPaths::ChangeExtension(PersistenceTestToPackagePath(Target), TEXT("uexp"));
+	PersistenceTestCleanup(Target);
+	IFileManager::Get().Delete(*StaleSiblingPath, false, true);
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 2);
+	TestTrue(TEXT("Creates the stale-sibling baseline"), Initial.IsValid() && PersistenceTestApply(Service, Initial).IsSuccess());
+	const TArray64<uint8> StaleBytes = {0xde, 0xad, 0xbe, 0xef};
+	TestTrue(TEXT("Writes a stale canonical package sibling"), FFileHelper::SaveArrayToFile(StaleBytes, *StaleSiblingPath));
+
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 3);
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
+		PersistenceTestMakeFailure(TEXT("ForcedStaleSiblingRollback"), TEXT("forced failure after stale sibling deletion")));
+	const FAssetDocumentResult Failure = PersistenceTestApply(Service, Update);
+	TestFalse(TEXT("Post-install failure rejects stale-sibling update"), Failure.IsSuccess());
+	TArray64<uint8> RestoredSiblingBytes;
+	TestTrue(TEXT("Rollback restores the stale sibling"), PersistenceTestLoadBytes(StaleSiblingPath, RestoredSiblingBytes));
+	TestTrue(TEXT("Rollback restores exact stale sibling bytes"), RestoredSiblingBytes == StaleBytes);
+
+	FAssetDocumentServiceTestHooks::Clear();
+	TestTrue(TEXT("Retry commits the strict package update"), PersistenceTestApply(Service, Update).IsSuccess());
+	TestFalse(TEXT("Successful strict package install deletes stale sibling"), IFileManager::Get().FileExists(*StaleSiblingPath));
+	PersistenceTestCleanup(Target);
+	IFileManager::Get().Delete(*StaleSiblingPath, false, true);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceCanonicalMetadataEventTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.CanonicalMetadataEventAndIdentity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_CanonicalMetadata"));
+	const FString CanonicalFilename = PersistenceTestToPackagePath(Target);
+	PersistenceTestCleanup(Target);
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 53);
+	int32 MatchingEventCount = 0;
+	FString LastEventFilename;
+	bool bLastEventWasAutosave = true;
+	bool bLastEventUpdatedLoadedPath = false;
+	UPackage* LastEventPackage = nullptr;
+	const FDelegateHandle SavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[&](const FString& Filename, UPackage* Package, FObjectPostSaveContext Context)
+		{
+			if (Package && Package->GetName() == Target)
+			{
+				++MatchingEventCount;
+				LastEventFilename = Filename;
+				FPaths::NormalizeFilename(LastEventFilename);
+				bLastEventWasAutosave = Context.IsFromAutoSave();
+				bLastEventUpdatedLoadedPath = Context.IsUpdatingLoadedPath();
+				LastEventPackage = Package;
+			}
+		});
+	ON_SCOPE_EXIT
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(SavedHandle);
+		PersistenceTestCleanup(Target);
+	};
+
+	const FAssetDocumentResult CreateResult = PersistenceTestApply(Service, Document);
+	TestTrue(TEXT("Canonical metadata fixture create succeeds"), CreateResult.IsSuccess());
+	UBlackboardData* Blackboard = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	TestNotNull(TEXT("Finds canonical metadata Blackboard"), Blackboard);
+	UPackage* Package = Blackboard ? Blackboard->GetOutermost() : nullptr;
+	const FPersistenceTestPackageMetadata Metadata = PersistenceTestCapturePackageMetadata(Package);
+	FString ExpectedCanonicalFilename = CanonicalFilename;
+	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
+	TestEqual(TEXT("LoadedPath is canonical after strict success"), Metadata.LoadedFilename, ExpectedCanonicalFilename);
+	TestFalse(TEXT("Strict success clears PKG_NewlyCreated"), Package && Package->HasAnyPackageFlags(PKG_NewlyCreated));
+	TestTrue(TEXT("Strict success records a valid saved hash"), Metadata.SavedHash != FIoHash());
+	TestTrue(TEXT("Strict success records a positive canonical file size"), Metadata.FileSize > 0);
+	TestEqual(TEXT("Strict success file size matches canonical header"), Metadata.FileSize, IFileManager::Get().FileSize(*CanonicalFilename));
+	TestTrue(TEXT("Strict success emits staging and canonical save events"), MatchingEventCount >= 2);
+	TestEqual(TEXT("Last save event filename is canonical"), LastEventFilename, ExpectedCanonicalFilename);
+	TestFalse(TEXT("Last canonical save event is not autosave"), bLastEventWasAutosave);
+	TestTrue(TEXT("Last canonical save event updates LoadedPath"), bLastEventUpdatedLoadedPath);
+	TestTrue(TEXT("Last canonical save event carries the live package"), LastEventPackage == Package);
+
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(Blackboard);
+	const TSet<UObject*> OwnedBefore = PersistenceTestCollectOwned(Blackboard);
+	Document->SetStringField(TEXT("Action"), TEXT("Update"));
+	const FAssetDocumentResult UpdateResult = PersistenceTestApply(Service, Document);
+	TestTrue(TEXT("Canonical metadata no-op update succeeds"), UpdateResult.IsSuccess());
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
+	TestTrue(TEXT("Canonical metadata refresh preserves asset identity"), BlackboardAfter == Blackboard);
+	TestTrue(TEXT("Canonical metadata refresh preserves key-type identity"), PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	const TSet<UObject*> OwnedAfter = PersistenceTestCollectOwned(BlackboardAfter);
+	TestTrue(TEXT("Canonical metadata refresh preserves owned UObject identities"), OwnedAfter.Includes(OwnedBefore) && OwnedBefore.Includes(OwnedAfter));
 	return true;
 }
 
@@ -456,9 +706,8 @@ bool FAssetDocumentPersistenceBlackboardSidecarPreparationFailureTest::RunTest(c
 	TestTrue(TEXT("Reads strict-sidecar preparation baseline package bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBefore));
 	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
 	TestNotNull(TEXT("Finds strict-sidecar preparation live baseline"), BlackboardBefore);
-	UBlackboardKeyType* KeyTypeBefore = BlackboardBefore && BlackboardBefore->Keys.Num() == 1
-		? BlackboardBefore->Keys[0].KeyType.Get()
-		: nullptr;
+	const int32 KeyCountBefore = BlackboardBefore ? BlackboardBefore->Keys.Num() : 0;
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
 	TestNotNull(TEXT("Finds strict-sidecar preparation key-type baseline"), KeyTypeBefore);
 
 	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 23);
@@ -493,11 +742,12 @@ bool FAssetDocumentPersistenceBlackboardSidecarPreparationFailureTest::RunTest(c
 	TestTrue(TEXT("Strict sidecar preparation failure preserves exact sidecar bytes"), SidecarAfter == SidecarBefore);
 	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
 	TestTrue(TEXT("Strict sidecar preparation rollback preserves asset identity"), BlackboardAfter == BlackboardBefore);
-	TestEqual(TEXT("Strict sidecar preparation rollback restores one key"), BlackboardAfter ? BlackboardAfter->Keys.Num() : 0, 1);
-	if (BlackboardAfter && BlackboardAfter->Keys.Num() == 1)
+	TestEqual(TEXT("Strict sidecar preparation rollback restores exact key count"), BlackboardAfter ? BlackboardAfter->Keys.Num() : 0, KeyCountBefore);
+	if (BlackboardAfter)
 	{
-		TestTrue(TEXT("Strict sidecar preparation rollback preserves key-type identity"), BlackboardAfter->Keys[0].KeyType.Get() == KeyTypeBefore);
-		const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(BlackboardAfter->Keys[0].KeyType.Get());
+		UBlackboardKeyType* KeyTypeAfter = PersistenceTestFindKeyType(BlackboardAfter);
+		TestTrue(TEXT("Strict sidecar preparation rollback preserves key-type identity"), KeyTypeAfter == KeyTypeBefore);
+		const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(KeyTypeAfter);
 		TestNotNull(TEXT("Strict sidecar preparation rollback restores Int key type"), IntKey);
 		if (IntKey)
 		{
@@ -528,9 +778,10 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 	TestTrue(TEXT("Reads Blackboard baseline package bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBefore));
 	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
 	TestNotNull(TEXT("Finds Blackboard live baseline"), BlackboardBefore);
-	UBlackboardKeyType* KeyTypeBefore = BlackboardBefore && BlackboardBefore->Keys.Num() == 1
-		? BlackboardBefore->Keys[0].KeyType.Get()
-		: nullptr;
+	const FPersistenceTestPackageMetadata MetadataBefore = PersistenceTestCapturePackageMetadata(
+		BlackboardBefore ? BlackboardBefore->GetOutermost() : nullptr);
+	const int32 KeyCountBefore = BlackboardBefore ? BlackboardBefore->Keys.Num() : 0;
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
 	TestNotNull(TEXT("Finds Blackboard key-type identity baseline"), KeyTypeBefore);
 	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 17);
 	FString SidecarContents;
@@ -545,7 +796,8 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
 		[]()
 		{
-			FAssetDocumentAtomicFile::FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint::Rename);
+			FAssetDocumentAtomicFile::FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint::DirectoryFlush);
+			FAssetDocumentAtomicFile::ForceNextCommittedRenameRollbackFailureForTest();
 		});
 	FAssetDocumentApplyFileRequest Request;
 	Request.FilePath = SidecarPath;
@@ -565,11 +817,17 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 	TestTrue(TEXT("Atomic sidecar failure preserves exact sidecar bytes"), SidecarAfter == SidecarBefore);
 	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *PersistenceTestToObjectPath(Target));
 	TestTrue(TEXT("Blackboard asset pointer identity is exact after rollback"), BlackboardAfter == BlackboardBefore);
-	TestEqual(TEXT("Blackboard local key count is restored"), BlackboardAfter ? BlackboardAfter->Keys.Num() : 0, 1);
-	if (BlackboardAfter && BlackboardAfter->Keys.Num() == 1)
+	PersistenceTestMetadataEqual(
+		*this,
+		PersistenceTestCapturePackageMetadata(BlackboardAfter ? BlackboardAfter->GetOutermost() : nullptr),
+		MetadataBefore,
+		TEXT("Sidecar failure restores package metadata"));
+	TestEqual(TEXT("Blackboard local key count is restored"), BlackboardAfter ? BlackboardAfter->Keys.Num() : 0, KeyCountBefore);
+	if (BlackboardAfter)
 	{
-		TestTrue(TEXT("Blackboard key-type pointer identity is exact after rollback"), BlackboardAfter->Keys[0].KeyType.Get() == KeyTypeBefore);
-		const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(BlackboardAfter->Keys[0].KeyType.Get());
+		UBlackboardKeyType* KeyTypeAfter = PersistenceTestFindKeyType(BlackboardAfter);
+		TestTrue(TEXT("Blackboard key-type pointer identity is exact after rollback"), KeyTypeAfter == KeyTypeBefore);
+		const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(KeyTypeAfter);
 		TestNotNull(TEXT("Restored Blackboard key type remains Int"), IntKey);
 		if (IntKey)
 		{

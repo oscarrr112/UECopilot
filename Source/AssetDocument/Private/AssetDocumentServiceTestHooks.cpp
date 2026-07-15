@@ -17,6 +17,7 @@ TOptional<EAssetDocumentLifecycleCreatePhase> PendingLifecycleCreateFailurePhase
 TOptional<FAssetDocumentDiagnostic> PendingLifecycleCreateFailureDiagnostic;
 bool bPendingLifecycleCreateFailureEmitsDiagnostic = true;
 TOptional<FAssetDocumentDiagnostic> PendingLifecycleCleanupVerificationDiagnostic;
+TOptional<FAssetDocumentDiagnostic> AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic;
 TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPendingPersistenceFailurePhase;
 TOptional<FAssetDocumentDiagnostic> AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic;
 TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase;
@@ -67,6 +68,13 @@ void FAssetDocumentServiceTestHooks::FailNextLifecycleCleanupVerification(
 {
 	CheckAssetDocumentTestHookThread();
 	PendingLifecycleCleanupVerificationDiagnostic = Diagnostic;
+}
+
+void FAssetDocumentServiceTestHooks::FailNextApplySnapshot(
+	const FAssetDocumentDiagnostic& Diagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic = Diagnostic;
 }
 
 void FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
@@ -174,6 +182,19 @@ bool FAssetDocumentServiceTestHooks::ConsumeLifecycleCleanupVerificationFailure(
 	return true;
 }
 
+bool FAssetDocumentServiceTestHooks::ConsumeApplySnapshotFailure(
+	FAssetDocumentDiagnostic& OutDiagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	if (!AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic.IsSet())
+	{
+		return false;
+	}
+	OutDiagnostic = AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic.GetValue();
+	AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic.Reset();
+	return true;
+}
+
 bool FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
 	EAssetDocumentServicePersistencePhase Phase,
 	FAssetDocumentDiagnostic& OutDiagnostic)
@@ -224,6 +245,7 @@ void FAssetDocumentServiceTestHooks::Clear()
 	PendingLifecycleCreateFailureDiagnostic.Reset();
 	bPendingLifecycleCreateFailureEmitsDiagnostic = true;
 	PendingLifecycleCleanupVerificationDiagnostic.Reset();
+	AssetDocumentServiceTestHooksPendingApplySnapshotFailureDiagnostic.Reset();
 	AssetDocumentServiceTestHooksPendingPersistenceFailurePhase.Reset();
 	AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.Reset();
 	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.Reset();

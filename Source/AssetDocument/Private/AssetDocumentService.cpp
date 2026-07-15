@@ -4,6 +4,7 @@
 
 #include "AssetDocumentClassResolver.h"
 #include "AssetDocumentApplyTransaction.h"
+#include "AssetDocumentAtomicFile.h"
 #include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
@@ -21,6 +22,8 @@
 #include "BehaviorTree/BlackboardData.h"
 #include "DiffUtils.h"
 #include "Dom/JsonValue.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/PackagePath.h"
 #include "Misc/Paths.h"
@@ -1822,6 +1825,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 #endif
 
 	if (Request.bSaveAsset
+		&& AssetDocumentPersistenceRequiresStrictFreshVerification(ResolvedClass)
 		&& LifecyclePreflight.Asset
 		&& LifecyclePreflight.Asset->GetOutermost()
 		&& LifecyclePreflight.Asset->GetOutermost()->IsDirty())
@@ -1844,6 +1848,22 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	const TSet<FName> ManagedPropertyNames =
 		FAssetDocumentManagedPropertyPartition::CollectTopLevelPropertyNames(ProfileResolution.ExactProfile.Get());
 	FAssetDocumentApplyTransaction Transaction(LifecyclePreflight.Asset, ManagedPropertyNames);
+	if (AssetDocumentPersistenceRequiresStrictFreshVerification(ResolvedClass)
+		&& !Transaction.IsSnapshotReady())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Transaction.GetSnapshotError());
+		Result.Target = Target;
+		Result.AssetPath = LifecyclePreflight.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		AssetDocumentPersistenceAddDiagnostic(
+			Result.Diagnostics,
+			TEXT("AssetDocumentApplySnapshotUnavailable"),
+			Transaction.GetSnapshotError().IsEmpty()
+				? TEXT("Strict AssetDocument snapshot could not be captured")
+				: Transaction.GetSnapshotError(),
+			TEXT("/Apply/Snapshot"));
+		return Result;
+	}
 
 	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action, Request.Document);
 	Transaction.AttachLifecycleResult(LifecycleResult);
@@ -1973,6 +1993,74 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	Result.Diagnostics = Diagnostics;
 	Result.bWroteSidecar = false;
 	Result.bSavedAsset = false;
+	const bool bStrictPersistence = AssetDocumentPersistenceRequiresStrictFreshVerification(ResolvedClass);
+	if (!bStrictPersistence)
+	{
+		// Preserve the established generic-asset contract: the live transaction is
+		// committed before standard SavePackage, and ApplyFile sidecar rewrite is
+		// best-effort rather than part of package durability.
+		Transaction.Commit();
+		if (Request.bSaveAsset)
+		{
+			LifecycleResult.Asset->MarkPackageDirty();
+			UPackage* Package = LifecycleResult.Asset->GetOutermost();
+			const FString PackageFileName = FPackageName::LongPackageNameToFilename(
+				Package->GetName(),
+				FPackageName::GetAssetPackageExtension());
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			if (!UPackage::SavePackage(Package, LifecycleResult.Asset, *PackageFileName, SaveArgs))
+			{
+				TArray<FAssetDocumentDiagnostic> CleanupDiagnostics;
+				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult, CleanupDiagnostics);
+				Result = FAssetDocumentResult::Failure(FString::Printf(
+					TEXT("Failed to save asset package '%s'"),
+					*Package->GetName()));
+				Result.Target = Target;
+				Result.AssetPath = LifecycleResult.ObjectPath;
+				Result.SidecarFilePath = NormalizedSourceDocumentPath;
+				Result.Diagnostics = Diagnostics;
+				Result.Diagnostics.Append(CleanupDiagnostics);
+				return Result;
+			}
+			Result.bSavedAsset = true;
+		}
+
+		if (Request.bWriteSidecar && Request.bSaveAsset)
+		{
+			TSharedPtr<FJsonObject> GenericSidecarDocument;
+			FString GenericSidecarSkipReason;
+			if (AssetDocumentPersistenceBuildApplyFileSyncState(
+					NormalizedSourceDocumentPath,
+					LifecycleResult.Asset,
+					Result,
+					GenericSidecarDocument,
+					GenericSidecarSkipReason)
+				== EAssetDocumentApplyFileSyncStateBuildResult::Updated
+				&& GenericSidecarDocument.IsValid())
+			{
+				FString SidecarWriteError;
+				FAssetDocumentEditorSync::FScopedSidecarWrite Guard(NormalizedSourceDocumentPath);
+				Result.bWroteSidecar = FAssetDocumentSidecar::WriteJsonFile(
+					NormalizedSourceDocumentPath,
+					GenericSidecarDocument,
+					SidecarWriteError);
+				if (!Result.bWroteSidecar)
+				{
+					GenericSidecarSkipReason = SidecarWriteError.IsEmpty()
+						? TEXT("Best-effort generic sidecar rewrite failed")
+						: SidecarWriteError;
+				}
+			}
+			if (!GenericSidecarSkipReason.IsEmpty())
+			{
+				Result.Payload = MakeShared<FJsonObject>();
+				Result.Payload->SetBoolField(TEXT("sidecar_sync_update_skipped"), true);
+				Result.Payload->SetStringField(TEXT("sidecar_sync_update_skip_reason"), GenericSidecarSkipReason);
+			}
+		}
+		return Result;
+	}
 
 	TSharedPtr<FJsonObject> UpdatedSidecarDocument;
 	FString SidecarSyncUpdateSkipReason;
@@ -1992,8 +2080,54 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 	}
 
 	TUniquePtr<FAssetDocumentPersistenceTransaction> PersistenceTransaction;
-	auto RollbackPersistence = [&Result, &PersistenceTransaction]()
+	bool bSidecarInstalled = false;
+	bool bSidecarOriginalExisted = false;
+	TArray64<uint8> SidecarOriginalBytes;
+	bool bMetadataRefreshAttempted = false;
+	auto RollbackPersistence = [
+		&Result,
+		&PersistenceTransaction,
+		&bSidecarInstalled,
+		&bSidecarOriginalExisted,
+		&SidecarOriginalBytes,
+		&NormalizedSourceDocumentPath]()
 	{
+		if (bSidecarInstalled)
+		{
+			FString SidecarRollbackError;
+			bool bSidecarRestored = true;
+			if (bSidecarOriginalExisted)
+			{
+				bSidecarRestored = FAssetDocumentAtomicFile::WriteBytesAtomically(
+					NormalizedSourceDocumentPath,
+					SidecarOriginalBytes,
+					SidecarRollbackError);
+			}
+			else if (IFileManager::Get().FileExists(*NormalizedSourceDocumentPath))
+			{
+				bSidecarRestored = IFileManager::Get().Delete(*NormalizedSourceDocumentPath, false, true);
+				if (bSidecarRestored)
+				{
+					bSidecarRestored = FAssetDocumentAtomicFile::FlushParentDirectory(
+						NormalizedSourceDocumentPath,
+						SidecarRollbackError);
+				}
+				if (!bSidecarRestored && SidecarRollbackError.IsEmpty())
+				{
+					SidecarRollbackError = FString::Printf(
+						TEXT("Failed to remove newly written sidecar '%s'"),
+						*NormalizedSourceDocumentPath);
+				}
+			}
+			if (!bSidecarRestored)
+			{
+				AssetDocumentPersistenceAddDiagnostic(
+					Result.Diagnostics,
+					TEXT("AssetDocumentSidecarRollbackFailed"),
+					SidecarRollbackError);
+			}
+			bSidecarInstalled = false;
+		}
 		if (!PersistenceTransaction || !PersistenceTransaction->HasInstalledFiles())
 		{
 			return;
@@ -2014,7 +2148,11 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		&RollbackPersistence,
 		&Target,
 		&NormalizedSourceDocumentPath,
-		&LifecycleResult](
+		&LifecycleResult,
+		&LifecyclePreflight,
+		&PersistenceTransaction,
+		&LivePackageGuard,
+		&bMetadataRefreshAttempted](
 		const FString& Message,
 		const FString& Code,
 		const TOptional<FAssetDocumentDiagnostic>& PrimaryDiagnostic = TOptional<FAssetDocumentDiagnostic>()) mutable
@@ -2036,6 +2174,22 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		}
 		RollbackPersistence();
 		RollbackAssetDocumentApply(Transaction, Result);
+		if (bMetadataRefreshAttempted
+			&& LifecyclePreflight.Asset
+			&& PersistenceTransaction
+			&& LivePackageGuard.IsValid())
+		{
+			FString MetadataRollbackError;
+			if (!PersistenceTransaction->RefreshCanonicalPackageMetadata(
+					LivePackageGuard.Get(),
+					MetadataRollbackError))
+			{
+				AssetDocumentPersistenceAddDiagnostic(
+					Result.Diagnostics,
+					TEXT("AssetDocumentMetadataRollbackFailed"),
+					MetadataRollbackError);
+			}
+		}
 		return Result;
 	};
 
@@ -2158,8 +2312,22 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 				ForcedSidecarFailure);
 		}
 #endif
+		bSidecarOriginalExisted = IFileManager::Get().FileExists(*NormalizedSourceDocumentPath);
+		SidecarOriginalBytes.Reset();
+		if (bSidecarOriginalExisted
+			&& !FFileHelper::LoadFileToArray(SidecarOriginalBytes, *NormalizedSourceDocumentPath))
+		{
+			return FailPersistence(
+				FString::Printf(
+					TEXT("Failed to capture original sidecar '%s' before strict persistence"),
+					*NormalizedSourceDocumentPath),
+				TEXT("AssetDocumentSidecarBackupReadFailed"));
+		}
 		FString SidecarWriteError;
 		FAssetDocumentEditorSync::FScopedSidecarWrite Guard(NormalizedSourceDocumentPath);
+		// Register before the atomic replacement so outer rollback remains able to
+		// recover even if the atomic helper reports that its own rollback failed.
+		bSidecarInstalled = true;
 		if (!FAssetDocumentSidecar::WriteJsonFile(
 				NormalizedSourceDocumentPath,
 				UpdatedSidecarDocument,
@@ -2176,6 +2344,19 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 
 	if (Result.bSavedAsset && LifecycleResult.Asset && LifecycleResult.Asset->GetOutermost())
 	{
+		bMetadataRefreshAttempted = true;
+		FString MetadataError;
+		if (!PersistenceTransaction
+			|| !PersistenceTransaction->RefreshCanonicalPackageMetadata(
+				LifecycleResult.Asset->GetOutermost(),
+				MetadataError))
+		{
+			return FailPersistence(
+				MetadataError.IsEmpty()
+					? TEXT("Failed to refresh canonical package metadata")
+					: MetadataError,
+				TEXT("AssetDocumentCanonicalMetadataRefreshFailed"));
+		}
 		LifecycleResult.Asset->GetOutermost()->SetDirtyFlag(false);
 	}
 	if (!SidecarSyncUpdateSkipReason.IsEmpty())
@@ -2194,6 +2375,10 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		PersistenceTransaction->Commit();
 	}
 	Transaction.Commit();
+	if (Result.bSavedAsset && PersistenceTransaction && LivePackageGuard.IsValid())
+	{
+		PersistenceTransaction->BroadcastCanonicalPackageSaved(LivePackageGuard.Get());
+	}
 	return Result;
 }
 

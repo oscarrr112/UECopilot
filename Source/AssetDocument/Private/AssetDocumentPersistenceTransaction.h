@@ -25,6 +25,8 @@ public:
 	bool StagePackage(UPackage* Package, UObject* Asset, FString& OutError);
 	bool InstallStagedPackage(FString& OutError);
 	bool RollbackInstalledPackage(TArray<FString>& OutErrors);
+	bool RefreshCanonicalPackageMetadata(UPackage* Package, FString& OutError);
+	void BroadcastCanonicalPackageSaved(UPackage* Package) const;
 	void Commit();
 
 	const FString& GetStagedHeaderFilename() const { return StagedHeaderFilename; }
@@ -36,6 +38,7 @@ private:
 	{
 		FString StagedFilename;
 		FString CanonicalFilename;
+		bool bDeleteCanonicalOnInstall = false;
 		bool bOriginalExisted = false;
 		TArray64<uint8> OriginalBytes;
 	};
@@ -50,5 +53,6 @@ private:
 	FString StagedHeaderFilename;
 	TArray<FOutputFile> Outputs;
 	TArray<int32> InstalledFileIndices;
+	uint32 OriginalPackageFlags = 0;
 	bool bCommitted = false;
 };
