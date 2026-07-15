@@ -27,6 +27,7 @@ enum class EAssetDocumentServicePersistencePhase : uint8
 	AfterFreshReloadBeforeVerification,
 	AfterPackageInstall,
 	BeforeSidecarWrite,
+	AfterCanonicalMetadataBindBeforeCommit,
 };
 
 class FAssetDocumentServiceTestHooks

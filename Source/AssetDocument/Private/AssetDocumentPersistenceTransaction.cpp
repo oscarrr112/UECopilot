@@ -3,6 +3,7 @@
 #include "AssetDocumentPersistenceTransaction.h"
 
 #include "AssetDocumentAtomicFile.h"
+#include "AssetDocumentServiceTestHooks.h"
 
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -453,6 +454,19 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 	}
 	Package->SetLoadedPath(ResolvedCanonicalPath);
 	Package->ClearPackageFlags(PKG_NewlyCreated);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit);
+	FAssetDocumentDiagnostic ForcedMetadataBindFailure;
+	if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+			EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+			ForcedMetadataBindFailure))
+	{
+		OutError = ForcedMetadataBindFailure.Message;
+		return false;
+	}
+#endif
 
 	const TSet<UObject*> ObjectsAfter = AssetDocumentPersistenceCollectPackageObjects(Package);
 	if (!ObjectsBefore.Includes(ObjectsAfter) || !ObjectsAfter.Includes(ObjectsBefore))

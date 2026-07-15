@@ -255,8 +255,14 @@ struct FPersistenceTestPackageMetadata
 {
 	FString LoadedFilename;
 	uint32 PackageFlags = 0;
+	TArray<int32> ChunkIDs;
 	FIoHash SavedHash;
+	FGuid PersistentGuid;
 	int64 FileSize = 0;
+	FPackageFileVersion LinkerPackageVersion;
+	int32 LinkerLicenseeVersion = 0;
+	FCustomVersionContainer LinkerCustomVersions;
+	bool bIsCookedForEditor = false;
 	bool bDirty = false;
 };
 
@@ -268,11 +274,38 @@ FPersistenceTestPackageMetadata PersistenceTestCapturePackageMetadata(const UPac
 		Metadata.LoadedFilename = Package->GetLoadedPath().GetLocalFullPath();
 		FPaths::NormalizeFilename(Metadata.LoadedFilename);
 		Metadata.PackageFlags = Package->GetPackageFlags();
+		Metadata.ChunkIDs = Package->GetChunkIDs();
 		Metadata.SavedHash = Package->GetSavedHash();
+		Metadata.PersistentGuid = Package->GetPersistentGuid();
 		Metadata.FileSize = Package->GetFileSize();
+		Metadata.LinkerPackageVersion = Package->GetLinkerPackageVersion();
+		Metadata.LinkerLicenseeVersion = Package->GetLinkerLicenseeVersion();
+		Metadata.LinkerCustomVersions = Package->GetLinkerCustomVersions();
+		Metadata.bIsCookedForEditor = Package->bIsCookedForEditor;
 		Metadata.bDirty = Package->IsDirty();
 	}
 	return Metadata;
+}
+
+bool PersistenceTestCustomVersionsEqual(
+	const FCustomVersionContainer& Actual,
+	const FCustomVersionContainer& Expected)
+{
+	const FCustomVersionArray& ActualVersions = Actual.GetAllVersions();
+	const FCustomVersionArray& ExpectedVersions = Expected.GetAllVersions();
+	if (ActualVersions.Num() != ExpectedVersions.Num())
+	{
+		return false;
+	}
+	for (const FCustomVersion& ActualVersion : ActualVersions)
+	{
+		const FCustomVersion* ExpectedVersion = Expected.GetVersion(ActualVersion.Key);
+		if (!ExpectedVersion || ExpectedVersion->Version != ActualVersion.Version)
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 void PersistenceTestMetadataEqual(
@@ -283,8 +316,24 @@ void PersistenceTestMetadataEqual(
 {
 	Test.TestEqual(FString::Printf(TEXT("%s loaded filename"), Prefix), Actual.LoadedFilename, Expected.LoadedFilename);
 	Test.TestEqual(FString::Printf(TEXT("%s package flags"), Prefix), Actual.PackageFlags, Expected.PackageFlags);
+	Test.TestTrue(FString::Printf(TEXT("%s chunk ids"), Prefix), Actual.ChunkIDs == Expected.ChunkIDs);
 	Test.TestTrue(FString::Printf(TEXT("%s saved hash"), Prefix), Actual.SavedHash == Expected.SavedHash);
+	Test.TestTrue(FString::Printf(TEXT("%s persistent guid"), Prefix), Actual.PersistentGuid == Expected.PersistentGuid);
 	Test.TestEqual(FString::Printf(TEXT("%s file size"), Prefix), Actual.FileSize, Expected.FileSize);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s linker package version"), Prefix),
+		Actual.LinkerPackageVersion == Expected.LinkerPackageVersion);
+	Test.TestEqual(
+		FString::Printf(TEXT("%s linker licensee version"), Prefix),
+		Actual.LinkerLicenseeVersion,
+		Expected.LinkerLicenseeVersion);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s linker custom versions"), Prefix),
+		PersistenceTestCustomVersionsEqual(Actual.LinkerCustomVersions, Expected.LinkerCustomVersions));
+	Test.TestEqual(
+		FString::Printf(TEXT("%s cooked-for-editor state"), Prefix),
+		Actual.bIsCookedForEditor,
+		Expected.bIsCookedForEditor);
 	Test.TestEqual(FString::Printf(TEXT("%s dirty state"), Prefix), Actual.bDirty, Expected.bDirty);
 }
 
@@ -806,6 +855,7 @@ bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&
 	UPackage* Package = Blackboard ? Blackboard->GetOutermost() : nullptr;
 	const FPersistenceTestPackageMetadata Metadata = PersistenceTestCapturePackageMetadata(Package);
 	FString ExpectedCanonicalFilename = CanonicalFilename;
+	ExpectedCanonicalFilename = FPaths::ConvertRelativePathToFull(ExpectedCanonicalFilename);
 	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
 	TestTrue(TEXT("Observes the installed live package before metadata refresh"), bObservedPackageBeforeMetadataRefresh);
 	TestTrue(TEXT("New live package is initially PKG_InMemoryOnly"), bWasInMemoryOnlyBeforeMetadataRefresh);
@@ -846,6 +896,95 @@ bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&
 	TestTrue(TEXT("Canonical metadata refresh preserves key-type identity"), PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
 	const TSet<UObject*> OwnedAfter = PersistenceTestCollectOwned(BlackboardAfter);
 	TestTrue(TEXT("Canonical metadata refresh preserves owned UObject identities"), OwnedAfter.Includes(OwnedBefore) && OwnedBefore.Includes(OwnedAfter));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceMetadataPreCommitRollbackTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.MetadataPreCommitFailureRestoresExactState",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_MetadataPreCommitRollback"));
+	PersistenceTestCleanup(Target);
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target);
+	};
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Document = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Create"),
+		7);
+	if (!PersistenceTestRequireApplySuccess(
+			*this,
+			TEXT("Creates metadata pre-commit rollback baseline"),
+			Service,
+			Document))
+	{
+		return false;
+	}
+
+	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(
+		nullptr,
+		*PersistenceTestToObjectPath(Target));
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
+	TestNotNull(TEXT("Finds metadata pre-commit Blackboard baseline"), BlackboardBefore);
+	TestNotNull(TEXT("Finds metadata pre-commit key-type baseline"), KeyTypeBefore);
+	if (!BlackboardBefore || !KeyTypeBefore)
+	{
+		return false;
+	}
+
+	UPackage* PackageBefore = BlackboardBefore->GetOutermost();
+	const FPersistenceTestPackageMetadata MetadataBefore = PersistenceTestCapturePackageMetadata(PackageBefore);
+	TArray64<uint8> PackageBytesBefore;
+	TestTrue(
+		TEXT("Reads metadata pre-commit baseline package bytes"),
+		PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBytesBefore));
+
+	Document->SetStringField(TEXT("Action"), TEXT("Update"));
+	Document->GetObjectField(TEXT("Body"))
+		->GetArrayField(TEXT("Keys"))[0]
+		->AsObject()
+		->GetObjectField(TEXT("KeyTypeProperties"))
+		->SetNumberField(TEXT("DefaultValue"), 29);
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		PersistenceTestMakeFailure(
+			TEXT("ForcedMetadataBindFailure"),
+			TEXT("forced failure after canonical metadata bind before commit")));
+	const FAssetDocumentResult Failure = PersistenceTestApply(Service, Document);
+	TestFalse(TEXT("Metadata pre-commit failure rejects update"), Failure.IsSuccess());
+
+	TArray64<uint8> PackageBytesAfter;
+	TestTrue(
+		TEXT("Reads package after metadata pre-commit rollback"),
+		PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBytesAfter));
+	TestTrue(
+		TEXT("Metadata pre-commit failure restores exact package bytes"),
+		PackageBytesAfter == PackageBytesBefore);
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(
+		nullptr,
+		*PersistenceTestToObjectPath(Target));
+	TestTrue(TEXT("Metadata pre-commit failure preserves asset identity"), BlackboardAfter == BlackboardBefore);
+	TestTrue(
+		TEXT("Metadata pre-commit failure preserves key-type identity"),
+		PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	TestTrue(
+		TEXT("Metadata pre-commit failure preserves package identity"),
+		BlackboardAfter && BlackboardAfter->GetOutermost() == PackageBefore);
+	PersistenceTestMetadataEqual(
+		*this,
+		PersistenceTestCapturePackageMetadata(BlackboardAfter ? BlackboardAfter->GetOutermost() : nullptr),
+		MetadataBefore,
+		TEXT("Metadata pre-commit failure restores package metadata"));
 	return true;
 }
 
