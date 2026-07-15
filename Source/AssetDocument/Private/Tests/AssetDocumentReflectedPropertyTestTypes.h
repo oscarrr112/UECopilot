@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/BehaviorTreeTypes.h"
+#include "GameFramework/Actor.h"
 #include "StructUtils/InstancedStruct.h"
 
 #include "AssetDocumentReflectedPropertyTestTypes.generated.h"
@@ -12,6 +14,15 @@ USTRUCT()
 struct FAssetDocumentReflectedPropertyNestedTestValue
 {
 	GENERATED_BODY()
+
+	FAssetDocumentReflectedPropertyNestedTestValue()
+	{
+		Selector.AddObjectFilter(
+			nullptr,
+			GET_MEMBER_NAME_CHECKED(FAssetDocumentReflectedPropertyNestedTestValue, Selector),
+			AActor::StaticClass());
+		Selector.AllowNoneAsValue(true);
+	}
 
 	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
 	FName Identity = NAME_None;
@@ -79,4 +90,91 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
 	TSet<FName> PlainNameSetValues;
+};
+
+/**
+ * Concrete Task 6 fixture whose constructor-owned selector filters must survive
+ * transient graph materialization. It intentionally covers direct, nested,
+ * container, and FInstancedStruct selector locations on one UBTNode instance.
+ */
+UCLASS(Blueprintable)
+class UAssetDocumentSelectorTaskTestNode : public UBTTaskNode
+{
+	GENERATED_BODY()
+
+public:
+	UAssetDocumentSelectorTaskTestNode(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get())
+		: Super(ObjectInitializer)
+	{
+		DirectSelector.AddObjectFilter(
+			this,
+			GET_MEMBER_NAME_CHECKED(UAssetDocumentSelectorTaskTestNode, DirectSelector),
+			AActor::StaticClass());
+		OptionalSelector.AddBoolFilter(
+			this,
+			GET_MEMBER_NAME_CHECKED(UAssetDocumentSelectorTaskTestNode, OptionalSelector));
+		OptionalSelector.AllowNoneAsValue(true);
+		DynamicValue.InitializeAs<FAssetDocumentReflectedPropertyNestedTestValue>();
+	}
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	FBlackboardKeySelector DirectSelector;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	FBlackboardKeySelector OptionalSelector;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	FAssetDocumentReflectedPropertyNestedTestValue NestedValue;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TArray<FAssetDocumentReflectedPropertyNestedTestValue> ArrayValues;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TMap<FName, FAssetDocumentReflectedPropertyNestedTestValue> MapValues;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TSet<FAssetDocumentReflectedPropertyNestedTestValue> SetValues;
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	FInstancedStruct DynamicValue;
+};
+
+/**
+ * Safe regression fixture for sparse Blackboard-only updates. When armed, its
+ * lifecycle moves the old array allocation into retained storage before
+ * replacing the live topology, so stale interior pointers remain valid while
+ * the test proves that arbitrary project lifecycle code was invoked.
+ */
+UCLASS()
+class UAssetDocumentSelectorLifecycleMutationTaskTestNode : public UBTTaskNode
+{
+	GENERATED_BODY()
+
+public:
+	virtual void InitializeFromAsset(UBehaviorTree& Asset) override
+	{
+		Super::InitializeFromAsset(Asset);
+		++InitializeFromAssetCallCountForTest;
+		++GlobalInitializeFromAssetCallCountForTest();
+		if (bMutateContainersOnInitializeForTest)
+		{
+			RetiredArrayValues = MoveTemp(ArrayValues);
+			FAssetDocumentReflectedPropertyNestedTestValue Replacement;
+			Replacement.Identity = TEXT("LifecycleReplacement");
+			ArrayValues = {MoveTemp(Replacement)};
+		}
+	}
+
+	static int32& GlobalInitializeFromAssetCallCountForTest()
+	{
+		static int32 CallCount = 0;
+		return CallCount;
+	}
+
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TArray<FAssetDocumentReflectedPropertyNestedTestValue> ArrayValues;
+
+	bool bMutateContainersOnInitializeForTest = false;
+	int32 InitializeFromAssetCallCountForTest = 0;
+	TArray<FAssetDocumentReflectedPropertyNestedTestValue> RetiredArrayValues;
 };

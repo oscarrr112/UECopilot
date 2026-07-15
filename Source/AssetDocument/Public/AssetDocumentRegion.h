@@ -15,6 +15,8 @@ struct ASSETDOCUMENT_API FAssetDocumentRegionContext
 	FString TargetAssetPath;
 	FString SourceDocumentPath;
 	const TSharedPtr<FJsonObject>* Definitions = nullptr;
+	/** Whole desired Body for operations whose region semantics depend on sibling regions. */
+	TSharedPtr<FJsonObject> DesiredBody;
 	FAssetDocumentResult* Result = nullptr;
 	bool bIsDryRun = false;
 

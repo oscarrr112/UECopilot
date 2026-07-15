@@ -46,6 +46,9 @@ public:
 		bool bForceRebuild,
 		bool& bOutChanged);
 
+	/** Rebuild transient Blackboard selector caches from the authored key names without dirtying the asset. */
+	static FAssetDocumentCapabilityResult RefreshDerivedSelectorCaches(class UBehaviorTree& BehaviorTree);
+
 	static FAssetDocumentCapabilityResult CollectEditorGraphNodes(
 		const FAssetDocumentRegionContext& Context,
 		class UEdGraph*& OutGraph,

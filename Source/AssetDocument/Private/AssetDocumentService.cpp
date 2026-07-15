@@ -164,6 +164,14 @@ FAssetDocumentResult ResolveClassOrAssetTarget(const FString& ClassOrAsset, cons
 	}
 
 	OutTarget.Target = ClassOrAsset;
+	if (ClassOrAsset.StartsWith(TEXT("/Game/")) && ClassOrAsset.EndsWith(TEXT("_C")))
+	{
+		FString ClassError;
+		if (FAssetDocumentClassResolver::ResolveClass(ClassOrAsset, OutTarget.Class, ClassError))
+		{
+			return FAssetDocumentResult::Success(TEXT("Resolved generated class target"));
+		}
+	}
 
 	if (ClassOrAsset.StartsWith(TEXT("/Game/")))
 	{

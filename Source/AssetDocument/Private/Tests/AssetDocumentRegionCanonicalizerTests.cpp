@@ -181,6 +181,126 @@ FString HashAnimSequencePostApplyRegion(
 	return FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, Value);
 }
 
+FAssetDocumentRegionPolicy MakeBehaviorTreePostApplyPolicy()
+{
+	FAssetDocumentRegionPolicy Policy;
+	Policy.RegionId = TEXT("Body.Tree");
+	Policy.BodyPath = TEXT("Body.Tree");
+	Policy.CanonicalizerHookName = TEXT("BehaviorTreePostApply");
+	return Policy;
+}
+
+FString HashBehaviorTreePostApplyRegion(
+	const TSharedPtr<FJsonValue>& Value,
+	EAssetDocumentRegionCanonicalizeSource Source = EAssetDocumentRegionCanonicalizeSource::AssetEvidence)
+{
+	const FAssetDocumentRegionPolicy Policy = MakeBehaviorTreePostApplyPolicy();
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = Source;
+	return FAssetDocumentRegionCanonicalizer::HashRegionValue(Context, Value);
+}
+
+TSharedPtr<FJsonObject> MakeBehaviorTreeComment(
+	const TCHAR* Id,
+	bool bExplicitExtractDefaults,
+	bool bExtractedColorPrecision,
+	double AuthoredColorR,
+	int32 FontSize = 18)
+{
+	TSharedPtr<FJsonObject> Comment = MakeShared<FJsonObject>();
+	Comment->SetStringField(TEXT("Id"), Id);
+	if (bExplicitExtractDefaults)
+	{
+		Comment->SetStringField(TEXT("Text"), TEXT(""));
+		Comment->SetObjectField(TEXT("Position"), MakeGraphPosition(0.0, 0.0));
+		TSharedPtr<FJsonObject> Size = MakeShared<FJsonObject>();
+		Size->SetNumberField(TEXT("Width"), 400);
+		Size->SetNumberField(TEXT("Height"), 100);
+		Comment->SetObjectField(TEXT("Size"), Size);
+		Comment->SetNumberField(TEXT("CommentDepth"), -1);
+		Comment->SetStringField(TEXT("MoveMode"), TEXT("GroupMovement"));
+		Comment->SetStringField(TEXT("NodeDetails"), TEXT(""));
+		Comment->SetBoolField(TEXT("bCommentBubblePinned"), true);
+		Comment->SetBoolField(TEXT("bCommentBubbleVisible"), true);
+		Comment->SetBoolField(TEXT("bCommentBubbleVisible_InDetailsPanel"), true);
+		Comment->SetBoolField(TEXT("bColorCommentBubble"), false);
+	}
+	if (bExplicitExtractDefaults || FontSize != 18)
+	{
+		Comment->SetNumberField(TEXT("FontSize"), FontSize);
+	}
+	if (bExplicitExtractDefaults || AuthoredColorR != 1.0)
+	{
+		TSharedPtr<FJsonObject> Color = MakeShared<FJsonObject>();
+		const auto AtStoragePrecision = [bExtractedColorPrecision](double Value)
+		{
+			return bExtractedColorPrecision ? static_cast<double>(static_cast<float>(Value)) : Value;
+		};
+		Color->SetNumberField(TEXT("R"), AtStoragePrecision(AuthoredColorR));
+		if (bExplicitExtractDefaults)
+		{
+			Color->SetNumberField(TEXT("G"), AtStoragePrecision(1.0));
+			Color->SetNumberField(TEXT("B"), AtStoragePrecision(1.0));
+			Color->SetNumberField(TEXT("A"), AtStoragePrecision(1.0));
+		}
+		Comment->SetObjectField(TEXT("Color"), Color);
+	}
+	return Comment;
+}
+
+TSharedPtr<FJsonValue> MakeBehaviorTreePostApplyRegionValue(
+	bool bExplicitExtractDefaults,
+	bool bExtractedColorPrecision,
+	const TCHAR* NodeComment = TEXT(""),
+	int32 CommentFontSize = 18,
+	double AuthoredColorR = 0.1)
+{
+	TSharedPtr<FJsonObject> Editor = MakeShared<FJsonObject>();
+	Editor->SetObjectField(TEXT("Position"), MakeGraphPosition(0.0, 0.0));
+	if (bExplicitExtractDefaults)
+	{
+		Editor->SetStringField(TEXT("NodeComment"), TEXT(""));
+		Editor->SetBoolField(TEXT("bCommentBubblePinned"), false);
+		Editor->SetBoolField(TEXT("bCommentBubbleVisible"), false);
+	}
+	if (FCString::Strlen(NodeComment) > 0)
+	{
+		Editor->SetStringField(TEXT("NodeComment"), NodeComment);
+	}
+
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("Id"), TEXT("11111111111111111111111111111111"));
+	Root->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTComposite_Selector"));
+	Root->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+	Root->SetObjectField(TEXT("Editor"), Editor);
+	if (bExplicitExtractDefaults)
+	{
+		Root->SetArrayField(TEXT("Decorators"), {});
+		Root->SetArrayField(TEXT("Services"), {});
+		Root->SetArrayField(TEXT("Children"), {});
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Comments;
+	Comments.Add(RegionCanonicalizerTestMakeObjectValue(MakeBehaviorTreeComment(
+		TEXT("22222222222222222222222222222222"),
+		bExplicitExtractDefaults,
+		bExtractedColorPrecision,
+		1.0).ToSharedRef()));
+	Comments.Add(RegionCanonicalizerTestMakeObjectValue(MakeBehaviorTreeComment(
+		TEXT("33333333333333333333333333333333"),
+		bExplicitExtractDefaults,
+		bExtractedColorPrecision,
+		AuthoredColorR,
+		CommentFontSize).ToSharedRef()));
+
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetStringField(TEXT("GraphGuid"), TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+	Tree->SetObjectField(TEXT("Root"), Root);
+	Tree->SetArrayField(TEXT("Comments"), MoveTemp(Comments));
+	return RegionCanonicalizerTestMakeObjectValue(Tree.ToSharedRef());
+}
+
 TSharedRef<FJsonObject> MakeAssetRefObject(const UObject* Object)
 {
 	TSharedRef<FJsonObject> AssetRef = MakeShared<FJsonObject>();
@@ -270,6 +390,98 @@ bool FAssetDocumentRegionCanonicalizerWritebackKeepsAuthoredShapeTest::RunTest(c
 		TestTrue(TEXT("Writeback preserves authored _meta"), Writeback->AsObject()->HasField(TEXT("_meta")));
 		TestEqual(TEXT("Writeback preserves authored _meta value"), Writeback->AsObject()->GetStringField(TEXT("_meta")), FString(TEXT("diagnostic")));
 		TestTrue(TEXT("Writeback preserves authored _Skipped"), Writeback->AsObject()->HasTypedField<EJson::Object>(TEXT("_Skipped")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesExtractDefaultsTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.NormalizesExtractDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesExtractDefaultsTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonValue> SparseAuthored = MakeBehaviorTreePostApplyRegionValue(false, false);
+	const TSharedPtr<FJsonValue> ExplicitEvidence = MakeBehaviorTreePostApplyRegionValue(true, true);
+	TestEqual(
+		TEXT("omitted BehaviorTree editor/comment defaults and FLinearColor storage precision hash equally"),
+		HashBehaviorTreePostApplyRegion(SparseAuthored, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(ExplicitEvidence, EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredSemanticsTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.KeepsAuthoredSemantics",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredSemanticsTest::RunTest(const FString& Parameters)
+{
+	const FString BaselineHash = HashBehaviorTreePostApplyRegion(MakeBehaviorTreePostApplyRegionValue(false, false));
+	TestNotEqual(
+		TEXT("non-default NodeComment remains hash-significant"),
+		BaselineHash,
+		HashBehaviorTreePostApplyRegion(MakeBehaviorTreePostApplyRegionValue(false, false, TEXT("authored note"))));
+	TestNotEqual(
+		TEXT("non-default comment FontSize remains hash-significant"),
+		BaselineHash,
+		HashBehaviorTreePostApplyRegion(MakeBehaviorTreePostApplyRegionValue(false, false, TEXT(""), 24)));
+	TestNotEqual(
+		TEXT("non-default comment Color remains hash-significant"),
+		BaselineHash,
+		HashBehaviorTreePostApplyRegion(MakeBehaviorTreePostApplyRegionValue(false, false, TEXT(""), 18, 0.25)));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredEmptyArraysTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.KeepsAuthoredEmptyArrays",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredEmptyArraysTest::RunTest(const FString& Parameters)
+{
+	const TSharedPtr<FJsonValue> MissingAuthoredArrays = MakeBehaviorTreePostApplyRegionValue(false, false);
+	const TSharedPtr<FJsonValue> WithAuthoredArrays = MakeBehaviorTreePostApplyRegionValue(false, false);
+	const TSharedPtr<FJsonObject> AuthoredProperties = WithAuthoredArrays->AsObject()
+		->GetObjectField(TEXT("Root"))
+		->GetObjectField(TEXT("Properties"));
+	const TArray<FString> AuthoredArrayNames = {
+		TEXT("Services"),
+		TEXT("Children"),
+		TEXT("Decorators"),
+		TEXT("DecoratorLogic"),
+		TEXT("RootDecorators"),
+		TEXT("RootDecoratorLogic"),
+	};
+	for (const FString& FieldName : AuthoredArrayNames)
+	{
+		AuthoredProperties->SetArrayField(FieldName, {});
+	}
+
+	TestNotEqual(
+		TEXT("authored empty arrays under Properties remain hash-significant"),
+		HashBehaviorTreePostApplyRegion(MissingAuthoredArrays, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(WithAuthoredArrays, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored));
+
+	const FAssetDocumentRegionPolicy Policy = MakeBehaviorTreePostApplyPolicy();
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = EAssetDocumentRegionCanonicalizeSource::SidecarAuthored;
+	const TSharedPtr<FJsonValue> Writeback = FAssetDocumentRegionCanonicalizer::CanonicalizeForSidecarWriteback(
+		Context,
+		WithAuthoredArrays);
+	const TSharedPtr<FJsonObject> WritebackProperties = Writeback->AsObject()
+		->GetObjectField(TEXT("Root"))
+		->GetObjectField(TEXT("Properties"));
+	for (const FString& FieldName : AuthoredArrayNames)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* EmptyArray = nullptr;
+		TestTrue(
+			*FString::Printf(TEXT("writeback preserves authored empty %s array"), *FieldName),
+			WritebackProperties->TryGetArrayField(FieldName, EmptyArray)
+				&& EmptyArray
+				&& EmptyArray->Num() == 0);
 	}
 
 	return true;

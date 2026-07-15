@@ -4,8 +4,14 @@
 
 #include "Utils/PropertySetterUtils.h"
 
+#include "BehaviorTree/BehaviorTreeTypes.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Class.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Object.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "StructUtils/InstancedStruct.h"
+#include "UObject/FieldIterator.h"
+#include "UObject/StructOnScope.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 
@@ -21,6 +27,193 @@ bool IsTypeName(const FString& TypeName, std::initializer_list<const TCHAR*> Acc
 		}
 	}
 	return false;
+}
+
+FString JoinSelectorPolicyPath(const FString& Base, const FString& Segment)
+{
+	return Base.IsEmpty() ? Segment : FString::Printf(TEXT("%s/%s"), *Base, *Segment);
+}
+
+void CollectSelectorPoliciesFromValue(
+	FProperty* Property,
+	const void* ValuePtr,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutPolicies);
+
+void CollectSelectorPoliciesFromDefaultValue(
+	FProperty* Property,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutPolicies)
+{
+	const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+	if (!StructProperty || !StructProperty->Struct)
+	{
+		return;
+	}
+	FStructOnScope DefaultValue(StructProperty->Struct);
+	CollectSelectorPoliciesFromValue(Property, DefaultValue.GetStructMemory(), Path, OutPolicies);
+}
+
+void AddSelectorPolicy(
+	const FBlackboardKeySelector& Selector,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutPolicies)
+{
+	TSharedRef<FJsonObject> Policy = MakeShared<FJsonObject>();
+	Policy->SetStringField(TEXT("path"), Path);
+	Policy->SetStringField(TEXT("authored_field"), TEXT("Key"));
+	Policy->SetBoolField(TEXT("read_only"), true);
+	const FBoolProperty* NoneAllowedProperty = FindFProperty<FBoolProperty>(
+		FBlackboardKeySelector::StaticStruct(),
+		TEXT("bNoneIsAllowedValue"));
+	Policy->SetBoolField(
+		TEXT("none_allowed"),
+		NoneAllowedProperty && NoneAllowedProperty->GetPropertyValue_InContainer(&Selector));
+
+	TArray<TSharedPtr<FJsonValue>> AllowedTypes;
+	for (const UBlackboardKeyType* Filter : Selector.AllowedTypes)
+	{
+		if (!Filter)
+		{
+			continue;
+		}
+		TSharedRef<FJsonObject> FilterPolicy = MakeShared<FJsonObject>();
+		FilterPolicy->SetStringField(TEXT("filter_type"), Filter->GetClass()->GetPathName());
+		if (const UBlackboardKeyType_Object* ObjectFilter = Cast<UBlackboardKeyType_Object>(Filter))
+		{
+			FilterPolicy->SetStringField(
+				TEXT("base_class"),
+				ObjectFilter->BaseClass ? ObjectFilter->BaseClass->GetPathName() : FString());
+		}
+		else if (const UBlackboardKeyType_Class* ClassFilter = Cast<UBlackboardKeyType_Class>(Filter))
+		{
+			FilterPolicy->SetStringField(
+				TEXT("base_class"),
+				ClassFilter->BaseClass ? ClassFilter->BaseClass->GetPathName() : FString());
+		}
+		AllowedTypes.Add(MakeShared<FJsonValueObject>(FilterPolicy));
+	}
+	Policy->SetArrayField(TEXT("allowed_types"), AllowedTypes);
+	OutPolicies.Add(MakeShared<FJsonValueObject>(Policy));
+}
+
+void CollectSelectorPoliciesFromStruct(
+	UScriptStruct* Struct,
+	const void* StructValue,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutPolicies)
+{
+	if (!Struct || !StructValue)
+	{
+		return;
+	}
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Property = *It;
+		CollectSelectorPoliciesFromValue(
+			Property,
+			Property->ContainerPtrToValuePtr<void>(StructValue),
+			JoinSelectorPolicyPath(Path, Property->GetName()),
+			OutPolicies);
+	}
+}
+
+void CollectSelectorPoliciesFromValue(
+	FProperty* Property,
+	const void* ValuePtr,
+	const FString& Path,
+	TArray<TSharedPtr<FJsonValue>>& OutPolicies)
+{
+	if (!Property || !ValuePtr)
+	{
+		return;
+	}
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (StructProperty->Struct == FBlackboardKeySelector::StaticStruct())
+		{
+			AddSelectorPolicy(*static_cast<const FBlackboardKeySelector*>(ValuePtr), Path, OutPolicies);
+			return;
+		}
+		if (StructProperty->Struct == FInstancedStruct::StaticStruct())
+		{
+			const FInstancedStruct* Instanced = static_cast<const FInstancedStruct*>(ValuePtr);
+			if (Instanced->IsValid())
+			{
+				CollectSelectorPoliciesFromStruct(
+					const_cast<UScriptStruct*>(Instanced->GetScriptStruct()),
+					Instanced->GetMemory(),
+					JoinSelectorPolicyPath(Path, TEXT("Properties")),
+					OutPolicies);
+			}
+			return;
+		}
+		CollectSelectorPoliciesFromStruct(StructProperty->Struct, ValuePtr, Path, OutPolicies);
+		return;
+	}
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper Helper(ArrayProperty, ValuePtr);
+		const FString ElementPath = JoinSelectorPolicyPath(Path, TEXT("*"));
+		if (Helper.Num() > 0)
+		{
+			CollectSelectorPoliciesFromValue(
+				ArrayProperty->Inner,
+				Helper.GetRawPtr(0),
+				ElementPath,
+				OutPolicies);
+		}
+		else
+		{
+			CollectSelectorPoliciesFromDefaultValue(ArrayProperty->Inner, ElementPath, OutPolicies);
+		}
+	}
+	else if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		FScriptMapHelper Helper(MapProperty, ValuePtr);
+		const FString ValuePath = JoinSelectorPolicyPath(Path, TEXT("*"));
+		bool bCollectedRepresentative = false;
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (Helper.IsValidIndex(Index))
+			{
+				CollectSelectorPoliciesFromValue(
+					MapProperty->ValueProp,
+					Helper.GetValuePtr(Index),
+					ValuePath,
+					OutPolicies);
+				bCollectedRepresentative = true;
+				break;
+			}
+		}
+		if (!bCollectedRepresentative)
+		{
+			CollectSelectorPoliciesFromDefaultValue(MapProperty->ValueProp, ValuePath, OutPolicies);
+		}
+	}
+	else if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		FScriptSetHelper Helper(SetProperty, ValuePtr);
+		const FString ElementPath = JoinSelectorPolicyPath(Path, TEXT("*"));
+		bool bCollectedRepresentative = false;
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (Helper.IsValidIndex(Index))
+			{
+				CollectSelectorPoliciesFromValue(
+					SetProperty->ElementProp,
+					Helper.GetElementPtr(Index),
+					ElementPath,
+					OutPolicies);
+				bCollectedRepresentative = true;
+				break;
+			}
+		}
+		if (!bCollectedRepresentative)
+		{
+			CollectSelectorPoliciesFromDefaultValue(SetProperty->ElementProp, ElementPath, OutPolicies);
+		}
+	}
 }
 }
 
@@ -261,6 +454,17 @@ TSharedPtr<FJsonObject> FAssetDocumentPropertyAdapter::InspectProperties(
 
 	Payload->SetArrayField(TEXT("properties"), PropertyRows);
 	Payload->SetArrayField(TEXT("skipped"), SkippedRows);
+	TArray<TSharedPtr<FJsonValue>> SelectorPolicies;
+	for (TFieldIterator<FProperty> PropertyIt(Class); PropertyIt; ++PropertyIt)
+	{
+		FProperty* Property = *PropertyIt;
+		CollectSelectorPoliciesFromValue(
+			Property,
+			Property->ContainerPtrToValuePtr<void>(ValueObject),
+			Property->GetName(),
+			SelectorPolicies);
+	}
+	Payload->SetArrayField(TEXT("selector_policies"), SelectorPolicies);
 	return Payload;
 }
 

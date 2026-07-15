@@ -9,12 +9,12 @@
 
 namespace
 {
-TArray<TSharedPtr<FJsonValue>> MakeEmptyArray()
+TArray<TSharedPtr<FJsonValue>> WidgetBlueprintProfileMakeEmptyArray()
 {
 	return TArray<TSharedPtr<FJsonValue>>();
 }
 
-bool MakeRegionPolicy(
+bool WidgetBlueprintProfileMakeRegionPolicy(
 	FName PresetName,
 	FName RegionId,
 	EAssetDocumentRegionKind RegionKind,
@@ -43,7 +43,7 @@ bool MakeRegionPolicy(
 	return FAssetDocumentPolicyRegistry::ExpandPreset(Preset, Override, OutPolicy);
 }
 
-void MarkDeferredRegionPolicy(FAssetDocumentRegionPolicy& Policy)
+void WidgetBlueprintProfileMarkDeferredRegionPolicy(FAssetDocumentRegionPolicy& Policy)
 {
 	Policy.ExplicitDeleteValues.Add(FAssetDocumentExplicitDeleteValues::Null());
 }
@@ -75,15 +75,15 @@ TSharedRef<FJsonObject> FWidgetBlueprintAssetDocumentProfile::CreateTemplate(con
 
 	TSharedRef<FJsonObject> Body = MakeShared<FJsonObject>();
 	Body->SetObjectField(TEXT("ParentClass"), ParentClass);
-	Body->SetArrayField(TEXT("ImplementedInterfaces"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("Variables"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("ImplementedInterfaces"), WidgetBlueprintProfileMakeEmptyArray());
+	Body->SetArrayField(TEXT("Variables"), WidgetBlueprintProfileMakeEmptyArray());
 	Body->SetObjectField(TEXT("ClassDefaults"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("WidgetTree"), WidgetTree);
-	Body->SetArrayField(TEXT("Bindings"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("Animations"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("UbergraphPages"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("FunctionGraphs"), MakeEmptyArray());
-	Body->SetArrayField(TEXT("MacroGraphs"), MakeEmptyArray());
+	Body->SetArrayField(TEXT("Bindings"), WidgetBlueprintProfileMakeEmptyArray());
+	Body->SetArrayField(TEXT("Animations"), WidgetBlueprintProfileMakeEmptyArray());
+	Body->SetArrayField(TEXT("UbergraphPages"), WidgetBlueprintProfileMakeEmptyArray());
+	Body->SetArrayField(TEXT("FunctionGraphs"), WidgetBlueprintProfileMakeEmptyArray());
+	Body->SetArrayField(TEXT("MacroGraphs"), WidgetBlueprintProfileMakeEmptyArray());
 	Body->SetObjectField(TEXT("Palette"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("EditorOptions"), MakeShared<FJsonObject>());
 	Body->SetObjectField(TEXT("WidgetVariableGuids"), MakeShared<FJsonObject>());
@@ -128,57 +128,57 @@ TArray<FAssetDocumentRegionPolicy> FWidgetBlueprintAssetDocumentProfile::GetRegi
 	Policies.Reserve(13);
 
 	FAssetDocumentRegionPolicy Policy;
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ParentClass"), EAssetDocumentRegionKind::Object, {TEXT("ParentClass")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ParentClass"), EAssetDocumentRegionKind::Object, {TEXT("ParentClass")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ImplementedInterfaces"), EAssetDocumentRegionKind::Array, {TEXT("ImplementedInterfaces")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.ImplementedInterfaces"), EAssetDocumentRegionKind::Array, {TEXT("ImplementedInterfaces")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Variables"), EAssetDocumentRegionKind::Array, {TEXT("NewVariables")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Variables"), EAssetDocumentRegionKind::Array, {TEXT("NewVariables")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ClassDefaults"), EAssetDocumentRegionKind::Object, {}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.ClassDefaults"), EAssetDocumentRegionKind::Object, {}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetTree"), EAssetDocumentRegionKind::Object, {TEXT("WidgetTree.RootWidget"), TEXT("WidgetTree.NamedSlotBindings")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetTree"), EAssetDocumentRegionKind::Object, {TEXT("WidgetTree.RootWidget"), TEXT("WidgetTree.NamedSlotBindings")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Bindings"), EAssetDocumentRegionKind::Array, {TEXT("Bindings")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Bindings"), EAssetDocumentRegionKind::Array, {TEXT("Bindings")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Animations"), EAssetDocumentRegionKind::Timeline, {TEXT("Animations")}, Policy, TEXT("WidgetBlueprintAnimations")))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.Animations"), EAssetDocumentRegionKind::Timeline, {TEXT("Animations")}, Policy, TEXT("WidgetBlueprintAnimations")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.UbergraphPages"), EAssetDocumentRegionKind::Graph, {TEXT("UbergraphPages")}, Policy, TEXT("UBlueprintGraph")))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.UbergraphPages"), EAssetDocumentRegionKind::Graph, {TEXT("UbergraphPages")}, Policy, TEXT("UBlueprintGraph")))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy, TEXT("UBlueprintGraph")))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.FunctionGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("FunctionGraphs")}, Policy, TEXT("UBlueprintGraph")))
 	{
-		MarkDeferredRegionPolicy(Policy);
+		WidgetBlueprintProfileMarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy, TEXT("UBlueprintGraph")))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.MacroGraphs"), EAssetDocumentRegionKind::Graph, {TEXT("MacroGraphs")}, Policy, TEXT("UBlueprintGraph")))
 	{
-		MarkDeferredRegionPolicy(Policy);
+		WidgetBlueprintProfileMarkDeferredRegionPolicy(Policy);
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Palette"), EAssetDocumentRegionKind::Object, {TEXT("PaletteCategory")}, Policy))
-	{
-		Policies.Add(Policy);
-	}
-	if (MakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.EditorOptions"), EAssetDocumentRegionKind::Object, {TEXT("bCanCallInitializedWithoutPlayerContext")}, Policy))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.Palette"), EAssetDocumentRegionKind::Object, {TEXT("PaletteCategory")}, Policy))
 	{
 		Policies.Add(Policy);
 	}
-	if (MakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetVariableGuids"), EAssetDocumentRegionKind::Object, {TEXT("WidgetVariableNameToGuidMap")}, Policy, TEXT("WidgetBlueprintWidgetVariableGuids")))
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("DefaultDiff"), TEXT("Body.EditorOptions"), EAssetDocumentRegionKind::Object, {TEXT("bCanCallInitializedWithoutPlayerContext")}, Policy))
+	{
+		Policies.Add(Policy);
+	}
+	if (WidgetBlueprintProfileMakeRegionPolicy(TEXT("ManagedRegion"), TEXT("Body.WidgetVariableGuids"), EAssetDocumentRegionKind::Object, {TEXT("WidgetVariableNameToGuidMap")}, Policy, TEXT("WidgetBlueprintWidgetVariableGuids")))
 	{
 		Policies.Add(Policy);
 	}

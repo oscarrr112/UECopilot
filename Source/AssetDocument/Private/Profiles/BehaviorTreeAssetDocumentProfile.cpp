@@ -656,6 +656,24 @@ FAssetDocumentCapabilityResult ValidateBehaviorTreeContext(const FAssetDocumentC
 	return FAssetDocumentCapabilityResult::Success(TEXT("Validated BehaviorTree context"));
 }
 
+FAssetDocumentCapabilityResult RepairBehaviorTreeAfterApply(
+	FAssetDocumentCapabilityContext& Context,
+	const TSet<FName>& AppliedRegions)
+{
+	if (!AppliedRegions.Contains(TEXT("Body.BlackboardAsset"))
+		|| AppliedRegions.Contains(TEXT("Body.Tree")))
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("BehaviorTree selector cache repair was not required"));
+	}
+	UBehaviorTree* BehaviorTree = Cast<UBehaviorTree>(Context.Asset);
+	return BehaviorTree
+		? FBehaviorTreeAssetDocumentMaterializer::RefreshDerivedSelectorCaches(*BehaviorTree)
+		: FAssetDocumentJsonRegionUtils::Failure(
+			TEXT("/Body"),
+			TEXT("UnsupportedAsset"),
+			TEXT("BehaviorTree selector cache repair requires UBehaviorTree"));
+}
+
 FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 	TFunctionRef<FAssetDocumentCapabilityResult(const FAssetDocumentBodyRegionDispatcher&)> Dispatch)
 {
@@ -668,6 +686,7 @@ FAssetDocumentCapabilityResult DispatchBehaviorTreeBody(
 
 	FAssetDocumentBodyRegionDispatcherHooks Hooks;
 	Hooks.ValidateCrossRegion = &FBehaviorTreeAssetDocumentMaterializer::ValidateBodyCrossRegion;
+	Hooks.PostApplyRepair = &RepairBehaviorTreeAfterApply;
 
 	const FBehaviorTreeAssetDocumentProfile Profile;
 	const FAssetDocumentBodyRegionDispatcher Dispatcher(
@@ -900,7 +919,7 @@ TArray<FAssetDocumentRegionPolicy> FBehaviorTreeAssetDocumentProfile::GetRegionP
 		TEXT("ManagedRegion"),
 		TEXT("Body.Tree"),
 		EAssetDocumentRegionKind::Object,
-		{TEXT("BTGraph")},
+		{TEXT("BTGraph"), TEXT("RootNode"), TEXT("RootDecorators"), TEXT("RootDecoratorOps")},
 		TEXT("BehaviorTreePostApply"),
 		Policy))
 	{

@@ -8,12 +8,20 @@
 #include "Regions/AssetDocumentReflectedPropertyUtils.h"
 
 #include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BehaviorTreeTypes.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Enum.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_NativeEnum.h"
 #include "BehaviorTree/BTCompositeNode.h"
 #include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BTTaskNode.h"
 #include "BehaviorTree/Composites/BTComposite_SimpleParallel.h"
+#include "BehaviorTree/Decorators/BTDecorator_Blackboard.h"
 #include "BehaviorTree/Tasks/BTTask_RunBehavior.h"
+#include "BehaviorTree/Tasks/BTTask_RunBehaviorDynamic.h"
+#include "BehaviorTree/ValueOrBBKey.h"
 #include "BehaviorTreeGraph.h"
 #include "BehaviorTreeGraphNode.h"
 #include "BehaviorTreeGraphNode_Composite.h"
@@ -35,7 +43,12 @@
 #include "EdGraphNode_Comment.h"
 #include "EdGraphSchema_BehaviorTree.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Misc/PackageName.h"
+#include "StructUtils/InstancedStruct.h"
+#include "UObject/FieldIterator.h"
 #include "UObject/Package.h"
+#include "UObject/StructOnScope.h"
+#include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
 
 #include <initializer_list>
@@ -1321,10 +1334,715 @@ FAssetDocumentCapabilityResult ParseTreeSpec(
 	return ParseNode(Root.ToSharedRef(), JoinPath(Path, RootField), true, 0, State, *OutSpec.Root);
 }
 
-FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSpec& Spec, UObject* Outer)
+FAssetDocumentCapabilityResult ValidateSelector(
+	FBlackboardKeySelector& Selector,
+	UBlackboardData* Blackboard,
+	const FString& SelectorPath,
+	bool bTreatPropertiesAsAuthored)
+{
+	const FString KeyPath = JoinPath(SelectorPath, TEXT("Key"));
+	if (Selector.SelectedKeyName.IsNone())
+	{
+		Selector.InvalidateResolvedKey();
+		Selector.SelectedKeyType = nullptr;
+		return Selector.IsNone() || !bTreatPropertiesAsAuthored
+			? FAssetDocumentCapabilityResult::Success()
+			: Failure(KeyPath, TEXT("MissingBlackboardKey"), TEXT("Blackboard selector Key is required by this node policy"));
+	}
+	if (!Blackboard)
+	{
+		return Failure(TEXT("/Body/BlackboardAsset"), TEXT("MissingBehaviorTreeBlackboard"), TEXT("BehaviorTree selectors require an effective BlackboardAsset"));
+	}
+
+	const FBlackboard::FKey KeyId = Blackboard->GetKeyID(Selector.SelectedKeyName);
+	const FBlackboardEntry* Entry = Blackboard->GetKey(KeyId);
+	if (KeyId == FBlackboard::InvalidKey || !Entry || !Entry->KeyType)
+	{
+		Selector.InvalidateResolvedKey();
+		Selector.SelectedKeyType = nullptr;
+		return Failure(
+			KeyPath,
+			TEXT("UnknownBlackboardKey"),
+			FString::Printf(TEXT("Blackboard key '%s' does not exist in the effective BlackboardAsset"), *Selector.SelectedKeyName.ToString()));
+	}
+
+	bool bAllowed = Selector.AllowedTypes.IsEmpty();
+	for (UBlackboardKeyType* Filter : Selector.AllowedTypes)
+	{
+		if (Filter && Entry->KeyType->IsAllowedByFilter(Filter))
+		{
+			bAllowed = true;
+			break;
+		}
+	}
+	if (!bAllowed)
+	{
+		Selector.InvalidateResolvedKey();
+		Selector.SelectedKeyType = nullptr;
+		return Failure(
+			KeyPath,
+			TEXT("IncompatibleBlackboardKeyType"),
+			FString::Printf(TEXT("Blackboard key '%s' is incompatible with the selector filter policy"), *Selector.SelectedKeyName.ToString()));
+	}
+
+	Selector.ResolveSelectedKey(*Blackboard);
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FString ExportContainerKey(FProperty* Property, const void* ValuePtr)
+{
+	FString Value;
+	if (Property && ValuePtr)
+	{
+		Property->ExportTextItem_Direct(Value, ValuePtr, nullptr, nullptr, PPF_None);
+	}
+	return Value;
+}
+
+FAssetDocumentCapabilityResult ValidateSelectorsInValue(
+	FProperty* Property,
+	void* ValuePtr,
+	UBlackboardData* Blackboard,
+	const FString& Path,
+	bool bTreatPropertiesAsAuthored,
+	const TSharedPtr<FJsonValue>& AuthoredValue,
+	bool* bOutDerivedCacheChanged = nullptr);
+
+void ResetValueOrBlackboardKeyDerivedCache(UScriptStruct* Struct, void* StructValue)
+{
+	FStructOnScope AuthoredSnapshot(Struct);
+	void* SnapshotValue = AuthoredSnapshot.GetStructMemory();
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Property = *It;
+		Property->CopyCompleteValue(
+			Property->ContainerPtrToValuePtr<void>(SnapshotValue),
+			Property->ContainerPtrToValuePtr<void>(StructValue));
+	}
+
+	// KeyId is protected, mutable, and deliberately not a UPROPERTY. Rebuilding
+	// the live struct resets that cache while the reflected authored surface is
+	// restored exactly from the initialized snapshot above.
+	Struct->DestroyStruct(StructValue);
+	Struct->InitializeStruct(StructValue);
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Property = *It;
+		Property->CopyCompleteValue(
+			Property->ContainerPtrToValuePtr<void>(StructValue),
+			Property->ContainerPtrToValuePtr<void>(SnapshotValue));
+	}
+}
+
+FAssetDocumentCapabilityResult ValidateSelectorsInStruct(
+	UScriptStruct* Struct,
+	void* StructValue,
+	UBlackboardData* Blackboard,
+	const FString& Path,
+	bool bTreatPropertiesAsAuthored,
+	const TSharedPtr<FJsonObject>& AuthoredObject,
+	bool* bOutDerivedCacheChanged = nullptr)
+{
+	if (!Struct || !StructValue)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	for (TFieldIterator<FProperty> It(Struct); It; ++It)
+	{
+		FProperty* Property = *It;
+		const TSharedPtr<FJsonValue> FieldValue = AuthoredObject.IsValid()
+			? AuthoredObject->TryGetField(Property->GetName())
+			: nullptr;
+		bool bPropertyCacheChanged = false;
+		FAssetDocumentCapabilityResult Result = ValidateSelectorsInValue(
+			Property,
+			Property->ContainerPtrToValuePtr<void>(StructValue),
+			Blackboard,
+			JoinPath(Path, Property->GetName()),
+			bTreatPropertiesAsAuthored,
+			FieldValue,
+			&bPropertyCacheChanged);
+		if (bPropertyCacheChanged && bOutDerivedCacheChanged)
+		{
+			*bOutDerivedCacheChanged = true;
+		}
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateSelectorsInValue(
+	FProperty* Property,
+	void* ValuePtr,
+	UBlackboardData* Blackboard,
+	const FString& Path,
+	bool bTreatPropertiesAsAuthored,
+	const TSharedPtr<FJsonValue>& AuthoredValue,
+	bool* bOutDerivedCacheChanged)
+{
+	if (!Property || !ValuePtr)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
+	{
+		if (StructProperty->Struct == FBlackboardKeySelector::StaticStruct())
+		{
+			if (bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			return ValidateSelector(
+				*static_cast<FBlackboardKeySelector*>(ValuePtr),
+				Blackboard,
+				Path,
+				bTreatPropertiesAsAuthored);
+		}
+		if (StructProperty->Struct->IsChildOf(FValueOrBlackboardKeyBase::StaticStruct()))
+		{
+			ResetValueOrBlackboardKeyDerivedCache(StructProperty->Struct, ValuePtr);
+			if (bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			FValueOrBlackboardKeyBase* ValueOrBlackboardKey =
+				static_cast<FValueOrBlackboardKeyBase*>(ValuePtr);
+			const FName KeyName = ValueOrBlackboardKey->GetKey();
+			if (!KeyName.IsNone())
+			{
+				if (!Blackboard)
+				{
+					return Failure(
+						TEXT("/Body/BlackboardAsset"),
+						TEXT("MissingBehaviorTreeBlackboard"),
+						TEXT("A bound ValueOrBlackboardKey requires an effective BlackboardAsset"));
+				}
+				const FBlackboard::FKey KeyId = Blackboard->GetKeyID(KeyName);
+				const FBlackboardEntry* Entry = Blackboard->GetKey(KeyId);
+				if (!Entry || !Entry->KeyType)
+				{
+					return Failure(
+						JoinPath(Path, TEXT("Key")),
+						TEXT("UnknownValueOrBlackboardKey"),
+						FString::Printf(TEXT("ValueOrBlackboardKey '%s' does not exist in the effective BlackboardAsset"), *KeyName.ToString()));
+				}
+#if WITH_EDITOR
+				if (!ValueOrBlackboardKey->IsCompatibleType(Entry->KeyType))
+				{
+					return Failure(
+						JoinPath(Path, TEXT("Key")),
+						TEXT("IncompatibleValueOrBlackboardKeyType"),
+						FString::Printf(TEXT("Blackboard key '%s' is incompatible with this ValueOrBlackboardKey type"), *KeyName.ToString()));
+				}
+#endif
+			}
+			return ValidateSelectorsInStruct(
+				StructProperty->Struct,
+				ValuePtr,
+				Blackboard,
+				Path,
+				bTreatPropertiesAsAuthored,
+				AuthoredValue.IsValid() ? AuthoredValue->AsObject() : nullptr);
+		}
+		if (StructProperty->Struct == FInstancedStruct::StaticStruct())
+		{
+			FInstancedStruct* Instanced = static_cast<FInstancedStruct*>(ValuePtr);
+			const TSharedPtr<FJsonObject> InstancedObject = AuthoredValue.IsValid() ? AuthoredValue->AsObject() : nullptr;
+			const TSharedPtr<FJsonObject>* AuthoredProperties = nullptr;
+			if (InstancedObject.IsValid())
+			{
+				InstancedObject->TryGetObjectField(TEXT("Properties"), AuthoredProperties);
+			}
+			bool bInstancedCacheChanged = false;
+			FAssetDocumentCapabilityResult Result = Instanced->IsValid()
+				? ValidateSelectorsInStruct(
+					const_cast<UScriptStruct*>(Instanced->GetScriptStruct()),
+					Instanced->GetMutableMemory(),
+					Blackboard,
+					JoinPath(Path, TEXT("Properties")),
+					bTreatPropertiesAsAuthored,
+					AuthoredProperties ? *AuthoredProperties : nullptr,
+					&bInstancedCacheChanged)
+				: FAssetDocumentCapabilityResult::Success();
+			if (bInstancedCacheChanged && bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			return Result;
+		}
+		return ValidateSelectorsInStruct(
+			StructProperty->Struct,
+			ValuePtr,
+			Blackboard,
+			Path,
+			bTreatPropertiesAsAuthored,
+			AuthoredValue.IsValid() ? AuthoredValue->AsObject() : nullptr,
+			bOutDerivedCacheChanged);
+	}
+	if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+	{
+		FScriptArrayHelper Helper(ArrayProperty, ValuePtr);
+		const TArray<TSharedPtr<FJsonValue>>* AuthoredArray = nullptr;
+		if (AuthoredValue.IsValid())
+		{
+			AuthoredValue->TryGetArray(AuthoredArray);
+		}
+		for (int32 Index = 0; Index < Helper.Num(); ++Index)
+		{
+			bool bElementCacheChanged = false;
+			FAssetDocumentCapabilityResult Result = ValidateSelectorsInValue(
+				ArrayProperty->Inner,
+				Helper.GetRawPtr(Index),
+				Blackboard,
+				JoinPath(Path, Index),
+				bTreatPropertiesAsAuthored,
+				AuthoredArray && AuthoredArray->IsValidIndex(Index) ? (*AuthoredArray)[Index] : nullptr,
+				&bElementCacheChanged);
+			if (bElementCacheChanged && bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+		}
+	}
+	else if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+	{
+		FScriptMapHelper Helper(MapProperty, ValuePtr);
+		const TSharedPtr<FJsonObject> AuthoredMap = AuthoredValue.IsValid() ? AuthoredValue->AsObject() : nullptr;
+		bool bMapKeyCacheChanged = false;
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (!Helper.IsValidIndex(Index))
+			{
+				continue;
+			}
+			const FString Key = ExportContainerKey(MapProperty->KeyProp, Helper.GetKeyPtr(Index));
+			bool bKeyCacheChanged = false;
+			FAssetDocumentCapabilityResult Result = ValidateSelectorsInValue(
+				MapProperty->KeyProp,
+				Helper.GetKeyPtr(Index),
+				Blackboard,
+				JoinPath(JoinPath(Path, Key), TEXT("Key")),
+				false,
+				nullptr,
+				&bKeyCacheChanged);
+			bMapKeyCacheChanged |= bKeyCacheChanged;
+			if (!Result.bSuccess)
+			{
+				if (bMapKeyCacheChanged)
+				{
+					Helper.Rehash();
+				}
+				return Result;
+			}
+			bool bValueCacheChanged = false;
+			Result = ValidateSelectorsInValue(
+				MapProperty->ValueProp,
+				Helper.GetValuePtr(Index),
+				Blackboard,
+				JoinPath(Path, Key),
+				bTreatPropertiesAsAuthored,
+				AuthoredMap.IsValid() ? AuthoredMap->TryGetField(Key) : nullptr,
+				&bValueCacheChanged);
+			if ((bKeyCacheChanged || bValueCacheChanged) && bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			if (!Result.bSuccess)
+			{
+				if (bMapKeyCacheChanged)
+				{
+					Helper.Rehash();
+				}
+				return Result;
+			}
+		}
+		if (bMapKeyCacheChanged)
+		{
+			Helper.Rehash();
+		}
+	}
+	else if (FSetProperty* SetProperty = CastField<FSetProperty>(Property))
+	{
+		FScriptSetHelper Helper(SetProperty, ValuePtr);
+		const TArray<TSharedPtr<FJsonValue>>* AuthoredSet = nullptr;
+		if (AuthoredValue.IsValid())
+		{
+			AuthoredValue->TryGetArray(AuthoredSet);
+		}
+		int32 LogicalIndex = 0;
+		bool bSetElementCacheChanged = false;
+		for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+		{
+			if (!Helper.IsValidIndex(Index))
+			{
+				continue;
+			}
+			bool bElementCacheChanged = false;
+			FAssetDocumentCapabilityResult Result = ValidateSelectorsInValue(
+				SetProperty->ElementProp,
+				Helper.GetElementPtr(Index),
+				Blackboard,
+				JoinPath(Path, LogicalIndex),
+				bTreatPropertiesAsAuthored,
+				AuthoredSet && AuthoredSet->IsValidIndex(LogicalIndex) ? (*AuthoredSet)[LogicalIndex] : nullptr,
+				&bElementCacheChanged);
+			bSetElementCacheChanged |= bElementCacheChanged;
+			if (bElementCacheChanged && bOutDerivedCacheChanged)
+			{
+				*bOutDerivedCacheChanged = true;
+			}
+			++LogicalIndex;
+			if (!Result.bSuccess)
+			{
+				if (bSetElementCacheChanged)
+				{
+					Helper.Rehash();
+				}
+				return Result;
+			}
+		}
+		if (bSetElementCacheChanged)
+		{
+			Helper.Rehash();
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateSubtreeReference(
+	UObject* Instance,
+	UBlackboardData* Blackboard,
+	const FString& PropertiesPath)
+{
+	UBehaviorTree* Subtree = nullptr;
+	FString PropertyName;
+	bool bDynamic = false;
+	if (const UBTTask_RunBehavior* StaticTask = Cast<UBTTask_RunBehavior>(Instance))
+	{
+		Subtree = StaticTask->GetSubtreeAsset();
+		PropertyName = TEXT("BehaviorAsset");
+	}
+	else if (const UBTTask_RunBehaviorDynamic* DynamicTask = Cast<UBTTask_RunBehaviorDynamic>(Instance))
+	{
+		Subtree = DynamicTask->GetDefaultBehaviorAsset();
+		PropertyName = TEXT("DefaultBehaviorAsset");
+		bDynamic = true;
+	}
+	else
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const FString Path = JoinPath(PropertiesPath, PropertyName);
+	if (!Subtree)
+	{
+		return bDynamic
+			? FAssetDocumentCapabilityResult::Success()
+			: Failure(Path, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("Static subtree tasks require a BehaviorAsset with a BlackboardAsset"));
+	}
+	if (!Blackboard)
+	{
+		return Failure(TEXT("/Body/BlackboardAsset"), TEXT("MissingBehaviorTreeBlackboard"), TEXT("BehaviorTree subtree references require an effective BlackboardAsset"));
+	}
+	if (!Subtree->BlackboardAsset
+		|| (Blackboard != Subtree->BlackboardAsset && !Blackboard->IsChildOf(*Subtree->BlackboardAsset)))
+	{
+		return Failure(
+			Path,
+			TEXT("IncompatibleBehaviorTreeBlackboard"),
+			TEXT("The effective BlackboardAsset must equal or derive from the referenced subtree BlackboardAsset"));
+	}
+	if (bDynamic && Subtree->RootDecorators.Num() > 0)
+	{
+		return Failure(
+			Path,
+			TEXT("DynamicSubtreeRootDecoratorsUnsupported"),
+			TEXT("Dynamic subtree defaults cannot reference a tree with root decorators"));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+FAssetDocumentCapabilityResult ValidateBlackboardDecoratorEnumValue(
+	UObject* Instance,
+	UBlackboardData* Blackboard,
+	const FString& PropertiesPath)
+{
+	UBTDecorator_Blackboard* Decorator = Cast<UBTDecorator_Blackboard>(Instance);
+	if (!Decorator || !Blackboard)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FStructProperty* SelectorProperty = FindFProperty<FStructProperty>(
+		Decorator->GetClass(),
+		TEXT("BlackboardKey"));
+	FBlackboardKeySelector* Selector = SelectorProperty
+		&& SelectorProperty->Struct == FBlackboardKeySelector::StaticStruct()
+		? SelectorProperty->ContainerPtrToValuePtr<FBlackboardKeySelector>(Decorator)
+		: nullptr;
+	const FBlackboardEntry* Entry = Selector && !Selector->SelectedKeyName.IsNone()
+		? Blackboard->GetKey(Blackboard->GetKeyID(Selector->SelectedKeyName))
+		: nullptr;
+	if (!Entry || !Entry->KeyType)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const UEnum* Enum = nullptr;
+	if (const UBlackboardKeyType_Enum* EnumKey = Cast<UBlackboardKeyType_Enum>(Entry->KeyType))
+	{
+		Enum = EnumKey->EnumType;
+	}
+	else if (const UBlackboardKeyType_NativeEnum* NativeEnumKey = Cast<UBlackboardKeyType_NativeEnum>(Entry->KeyType))
+	{
+		Enum = NativeEnumKey->EnumType;
+	}
+	if (!Enum)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FStrProperty* StringValueProperty = FindFProperty<FStrProperty>(Decorator->GetClass(), TEXT("StringValue"));
+	FIntProperty* IntValueProperty = FindFProperty<FIntProperty>(Decorator->GetClass(), TEXT("IntValue"));
+	if (!StringValueProperty || !IntValueProperty)
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	const FString StringValue = StringValueProperty->GetPropertyValue_InContainer(Decorator);
+	if (StringValue.IsEmpty())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	const int64 MappedValue = Enum->GetValueByName(FName(*StringValue));
+	if (MappedValue == INDEX_NONE)
+	{
+		return Failure(
+			JoinPath(PropertiesPath, TEXT("StringValue")),
+			TEXT("UnknownBehaviorTreeEnumDecoratorValue"),
+			FString::Printf(
+				TEXT("Enum decorator StringValue '%s' does not exist in the effective Blackboard enum; author Body.Tree together with this Blackboard change"),
+				*StringValue));
+	}
+	const int32 IntValue = IntValueProperty->GetPropertyValue_InContainer(Decorator);
+	if (MappedValue != IntValue)
+	{
+		return Failure(
+			JoinPath(PropertiesPath, TEXT("IntValue")),
+			TEXT("BehaviorTreeEnumDecoratorValueOutOfSync"),
+			FString::Printf(
+				TEXT("Enum decorator StringValue '%s' maps to %lld in the effective Blackboard enum, but authored IntValue is %d; author Body.Tree together with this Blackboard change"),
+				*StringValue,
+				static_cast<long long>(MappedValue),
+				IntValue));
+	}
+	return FAssetDocumentCapabilityResult::Success();
+}
+
+void RefreshBlackboardDecoratorDerivedOperation(
+	UObject* Instance,
+	UBlackboardData* Blackboard)
+{
+#if WITH_EDITORONLY_DATA
+	UBTDecorator_Blackboard* Decorator = Cast<UBTDecorator_Blackboard>(Instance);
+	if (!Decorator)
+	{
+		return;
+	}
+
+	FStructProperty* SelectorProperty = FindFProperty<FStructProperty>(
+		Decorator->GetClass(),
+		TEXT("BlackboardKey"));
+	FBlackboardKeySelector* Selector = SelectorProperty
+		&& SelectorProperty->Struct == FBlackboardKeySelector::StaticStruct()
+		? SelectorProperty->ContainerPtrToValuePtr<FBlackboardKeySelector>(Decorator)
+		: nullptr;
+	const FBlackboardEntry* Entry = Blackboard && Selector && !Selector->SelectedKeyName.IsNone()
+		? Blackboard->GetKey(Blackboard->GetKeyID(Selector->SelectedKeyName))
+		: nullptr;
+
+	FByteProperty* OperationTypeProperty = FindFProperty<FByteProperty>(
+		Decorator->GetClass(),
+		TEXT("OperationType"));
+	FStrProperty* CachedDescriptionProperty = FindFProperty<FStrProperty>(
+		Decorator->GetClass(),
+		TEXT("CachedDescription"));
+	if (!OperationTypeProperty || !CachedDescriptionProperty)
+	{
+		return;
+	}
+	if (!Entry || !Entry->KeyType || Entry->KeyType->GetClass() != Selector->SelectedKeyType)
+	{
+		CachedDescriptionProperty->SetPropertyValue_InContainer(Decorator, TEXT("invalid"));
+		return;
+	}
+
+	const EBlackboardKeyOperation::Type Operation = Entry->KeyType->GetTestOperation();
+	const TCHAR* AuthoredOperationPropertyName = nullptr;
+	switch (Operation)
+	{
+	case EBlackboardKeyOperation::Basic:
+		AuthoredOperationPropertyName = TEXT("BasicOperation");
+		break;
+	case EBlackboardKeyOperation::Arithmetic:
+		AuthoredOperationPropertyName = TEXT("ArithmeticOperation");
+		break;
+	case EBlackboardKeyOperation::Text:
+		AuthoredOperationPropertyName = TEXT("TextOperation");
+		break;
+	default:
+		CachedDescriptionProperty->SetPropertyValue_InContainer(Decorator, TEXT("invalid"));
+		return;
+	}
+	FByteProperty* AuthoredOperationProperty = FindFProperty<FByteProperty>(
+		Decorator->GetClass(),
+		AuthoredOperationPropertyName);
+	if (!AuthoredOperationProperty)
+	{
+		return;
+	}
+	const uint8 OperationType = AuthoredOperationProperty->GetPropertyValue_InContainer(Decorator);
+	OperationTypeProperty->SetPropertyValue_InContainer(Decorator, OperationType);
+
+	FString Description = TEXT("invalid");
+	const FString KeyName = Entry->EntryName.ToString();
+	if (Operation == EBlackboardKeyOperation::Basic)
+	{
+		const UEnum* OperationEnum = StaticEnum<EBasicKeyOperation::Type>();
+		if (OperationEnum)
+		{
+			Description = FString::Printf(
+				TEXT("%s is %s"),
+				*KeyName,
+				*OperationEnum->GetDisplayNameTextByValue(OperationType).ToString());
+		}
+	}
+	else if (Operation == EBlackboardKeyOperation::Arithmetic)
+	{
+		const UEnum* OperationEnum = StaticEnum<EArithmeticKeyOperation::Type>();
+		FIntProperty* IntValueProperty = FindFProperty<FIntProperty>(Decorator->GetClass(), TEXT("IntValue"));
+		FFloatProperty* FloatValueProperty = FindFProperty<FFloatProperty>(Decorator->GetClass(), TEXT("FloatValue"));
+		if (OperationEnum && IntValueProperty && FloatValueProperty)
+		{
+			Description = FString::Printf(
+				TEXT("%s %s %s"),
+				*KeyName,
+				*OperationEnum->GetDisplayNameTextByValue(OperationType).ToString(),
+				*Entry->KeyType->DescribeArithmeticParam(
+					IntValueProperty->GetPropertyValue_InContainer(Decorator),
+					FloatValueProperty->GetPropertyValue_InContainer(Decorator)));
+		}
+	}
+	else
+	{
+		const UEnum* OperationEnum = StaticEnum<ETextKeyOperation::Type>();
+		FStrProperty* StringValueProperty = FindFProperty<FStrProperty>(Decorator->GetClass(), TEXT("StringValue"));
+		if (OperationEnum && StringValueProperty)
+		{
+			Description = FString::Printf(
+				TEXT("%s %s [%s]"),
+				*KeyName,
+				*OperationEnum->GetDisplayNameTextByValue(OperationType).ToString(),
+				*StringValueProperty->GetPropertyValue_InContainer(Decorator));
+		}
+	}
+	CachedDescriptionProperty->SetPropertyValue_InContainer(Decorator, Description);
+#endif
+}
+
+FAssetDocumentCapabilityResult ValidateInstanceSemantics(
+	UObject* Instance,
+	UBlackboardData* Blackboard,
+	const FString& PropertiesPath,
+	bool bTreatPropertiesAsAuthored,
+	const TSharedPtr<FJsonObject>& AuthoredProperties)
+{
+	for (TFieldIterator<FProperty> It(Instance ? Instance->GetClass() : nullptr); It; ++It)
+	{
+		FProperty* Property = *It;
+		const TSharedPtr<FJsonValue> AuthoredValue = AuthoredProperties.IsValid()
+			? AuthoredProperties->TryGetField(Property->GetName())
+			: nullptr;
+		FAssetDocumentCapabilityResult Result = ValidateSelectorsInValue(
+			Property,
+			Property->ContainerPtrToValuePtr<void>(Instance),
+			Blackboard,
+			JoinPath(PropertiesPath, Property->GetName()),
+			bTreatPropertiesAsAuthored,
+			AuthoredValue);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	FAssetDocumentCapabilityResult Result = ValidateBlackboardDecoratorEnumValue(
+		Instance,
+		Blackboard,
+		PropertiesPath);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	RefreshBlackboardDecoratorDerivedOperation(Instance, Blackboard);
+	return ValidateSubtreeReference(Instance, Blackboard, PropertiesPath);
+}
+
+FAssetDocumentCapabilityResult ResolveEffectiveBlackboard(
+	const UObject* Asset,
+	const TSharedRef<FJsonObject>& Body,
+	UBlackboardData*& OutBlackboard)
+{
+	OutBlackboard = Cast<UBehaviorTree>(Asset)
+		? Cast<UBehaviorTree>(Asset)->BlackboardAsset
+		: nullptr;
+	const TSharedPtr<FJsonValue> Desired = Body->TryGetField(TEXT("BlackboardAsset"));
+	if (!Desired.IsValid())
+	{
+		return FAssetDocumentCapabilityResult::Success();
+	}
+	if (Desired->Type == EJson::Null)
+	{
+		OutBlackboard = nullptr;
+		return FAssetDocumentCapabilityResult::Success();
+	}
+
+	FString ObjectPath;
+	if (!Desired->TryGetString(ObjectPath))
+	{
+		const TSharedPtr<FJsonObject> Ref = Desired->AsObject();
+		if (!Ref.IsValid() || !Ref->TryGetStringField(TEXT("Path"), ObjectPath))
+		{
+			return Failure(TEXT("/Body/BlackboardAsset"), TEXT("InvalidBehaviorTreeBlackboardRef"), TEXT("BlackboardAsset must be null, an object path, or AssetRef"));
+		}
+	}
+	ObjectPath.TrimStartAndEndInline();
+	if (ObjectPath.StartsWith(TEXT("/")) && !ObjectPath.Contains(TEXT(".")))
+	{
+		const FString AssetName = FPackageName::GetLongPackageAssetName(ObjectPath);
+		ObjectPath = FString::Printf(TEXT("%s.%s"), *ObjectPath, *AssetName);
+	}
+	OutBlackboard = LoadObject<UBlackboardData>(nullptr, *ObjectPath);
+	return OutBlackboard
+		? FAssetDocumentCapabilityResult::Success()
+		: Failure(TEXT("/Body/BlackboardAsset"), TEXT("UnresolvedBehaviorTreeBlackboard"), TEXT("BlackboardAsset did not resolve to UBlackboardData"));
+}
+
+FAssetDocumentCapabilityResult ValidateSpecProperties(
+	const FBehaviorTreeGraphSpec& Spec,
+	UObject* Outer,
+	UBlackboardData* Blackboard,
+	bool bValidateSemantics,
+	bool bTreatPropertiesAsAuthored = true)
 {
 	TFunction<FAssetDocumentCapabilityResult(const FBehaviorTreeNodeSpec&)> ValidateNode;
-	ValidateNode = [&ValidateNode, Outer](const FBehaviorTreeNodeSpec& Node) -> FAssetDocumentCapabilityResult
+	ValidateNode = [&ValidateNode, Outer, Blackboard, bValidateSemantics, bTreatPropertiesAsAuthored](const FBehaviorTreeNodeSpec& Node) -> FAssetDocumentCapabilityResult
 	{
 		UBTNode* Preview = NewObject<UBTNode>(Outer, Node.NodeClass, NAME_None, RF_Transient);
 		if (!Preview)
@@ -1338,6 +2056,27 @@ FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSp
 		if (!Result.bSuccess)
 		{
 			return Result;
+		}
+		Result = FAssetDocumentReflectedPropertyUtils::ApplyProperties(
+			Preview,
+			Node.Properties.ToSharedRef(),
+			JoinPath(Node.JsonPath, PropertiesField));
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+		if (bValidateSemantics)
+		{
+			Result = ValidateInstanceSemantics(
+				Preview,
+				Blackboard,
+				JoinPath(Node.JsonPath, PropertiesField),
+				bTreatPropertiesAsAuthored,
+				bTreatPropertiesAsAuthored ? Node.Properties : nullptr);
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
 		}
 		for (const FBehaviorTreeDecoratorSpec& Decorator : Node.Decorators)
 		{
@@ -1355,6 +2094,27 @@ FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSp
 				if (!Result.bSuccess)
 				{
 					return Result;
+				}
+				Result = FAssetDocumentReflectedPropertyUtils::ApplyProperties(
+					PreviewDecorator,
+					Decorator.Properties.ToSharedRef(),
+					JoinPath(Decorator.JsonPath, PropertiesField));
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
+				if (bValidateSemantics)
+				{
+					Result = ValidateInstanceSemantics(
+						PreviewDecorator,
+						Blackboard,
+						JoinPath(Decorator.JsonPath, PropertiesField),
+						bTreatPropertiesAsAuthored,
+						bTreatPropertiesAsAuthored ? Decorator.Properties : nullptr);
+					if (!Result.bSuccess)
+					{
+						return Result;
+					}
 				}
 			}
 			else
@@ -1378,6 +2138,27 @@ FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSp
 					{
 						return Result;
 					}
+					Result = FAssetDocumentReflectedPropertyUtils::ApplyProperties(
+						PreviewDecorator,
+						BoundNode.Properties.ToSharedRef(),
+						JoinPath(BoundNode.JsonPath, PropertiesField));
+					if (!Result.bSuccess)
+					{
+						return Result;
+					}
+					if (bValidateSemantics)
+					{
+						Result = ValidateInstanceSemantics(
+							PreviewDecorator,
+							Blackboard,
+							JoinPath(BoundNode.JsonPath, PropertiesField),
+							bTreatPropertiesAsAuthored,
+							bTreatPropertiesAsAuthored ? BoundNode.Properties : nullptr);
+						if (!Result.bSuccess)
+						{
+							return Result;
+						}
+					}
 				}
 			}
 		}
@@ -1395,6 +2176,27 @@ FAssetDocumentCapabilityResult ValidateSpecProperties(const FBehaviorTreeGraphSp
 			if (!Result.bSuccess)
 			{
 				return Result;
+			}
+			Result = FAssetDocumentReflectedPropertyUtils::ApplyProperties(
+				PreviewService,
+				Service.Properties.ToSharedRef(),
+				JoinPath(Service.JsonPath, PropertiesField));
+			if (!Result.bSuccess)
+			{
+				return Result;
+			}
+			if (bValidateSemantics)
+			{
+				Result = ValidateInstanceSemantics(
+					PreviewService,
+					Blackboard,
+					JoinPath(Service.JsonPath, PropertiesField),
+					bTreatPropertiesAsAuthored,
+					bTreatPropertiesAsAuthored ? Service.Properties : nullptr);
+				if (!Result.bSuccess)
+				{
+					return Result;
+				}
 			}
 		}
 		for (const TSharedPtr<FBehaviorTreeNodeSpec>& Child : Node.Children)
@@ -1956,14 +2758,22 @@ void BuildComments(UBehaviorTreeGraph* Graph, const FBehaviorTreeGraphSpec& Spec
 	}
 }
 
+void CollectGraphRuntimeNodeInstances(const UBehaviorTreeGraph* Graph, TArray<UObject*>& OutInstances);
+
 FAssetDocumentCapabilityResult BuildGraph(
 	UBehaviorTree* BehaviorTree,
 	const FBehaviorTreeGraphSpec& Spec,
 	const FString& Path,
-	UBehaviorTreeGraph*& OutGraph)
+	UBehaviorTreeGraph*& OutGraph,
+	bool bValidateSemantics)
 {
 	OutGraph = nullptr;
 #if WITH_EDITOR
+	// CreateDefaultNodesForGraph calls the synthetic root's PostPlacedNewNode,
+	// which guesses the first loaded Blackboard and writes it back to the tree.
+	// Preserve the document's effective cross-region value across that editor UI
+	// convenience path; staging must never depend on global load order.
+	UBlackboardData* EffectiveBlackboard = BehaviorTree ? BehaviorTree->BlackboardAsset : nullptr;
 	const FName GraphName = MakeUniqueObjectName(BehaviorTree, UBehaviorTreeGraph::StaticClass(), TEXT("Behavior Tree Staging"));
 	OutGraph = Cast<UBehaviorTreeGraph>(FBlueprintEditorUtils::CreateNewGraph(
 		BehaviorTree,
@@ -1990,6 +2800,8 @@ FAssetDocumentCapabilityResult BuildGraph(
 		OutGraph->UnlockUpdates();
 		return Failure(Path, TEXT("MissingBehaviorTreeSyntheticRoot"), TEXT("BehaviorTree schema did not create its synthetic root wrapper"));
 	}
+	SyntheticRoot->BlackboardAsset = EffectiveBlackboard;
+	BehaviorTree->BlackboardAsset = EffectiveBlackboard;
 
 	if (Spec.Root.IsValid())
 	{
@@ -2011,14 +2823,42 @@ FAssetDocumentCapabilityResult BuildGraph(
 	BuildComments(OutGraph, Spec);
 	OutGraph->UnlockUpdates();
 	OutGraph->UpdateClassData();
-	OutGraph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
-	FAssetDocumentCapabilityResult MirrorResult = AssertRuntimeMirror(BehaviorTree, OutGraph, Path);
-	if (!MirrorResult.bSuccess)
+	if (bValidateSemantics)
 	{
-		return MirrorResult;
+		// Selector semantics have already been checked against the effective
+		// Blackboard above. Only semantic materialization may enter UE's runtime
+		// compilation lifecycle, because UpdateAsset calls InitializeFromAsset and
+		// would otherwise emit warnings for a document that cross-region preflight
+		// is about to reject.
+		OutGraph->UpdateAsset(UBehaviorTreeGraph::ClearDebuggerFlags | UBehaviorTreeGraph::KeepRebuildCounter);
+		TArray<UObject*> RuntimeInstances;
+		CollectGraphRuntimeNodeInstances(OutGraph, RuntimeInstances);
+		for (UObject* Instance : RuntimeInstances)
+		{
+			FAssetDocumentCapabilityResult SemanticResult = ValidateInstanceSemantics(
+				Instance,
+				BehaviorTree->BlackboardAsset,
+				Path,
+				false,
+				nullptr);
+			if (!SemanticResult.bSuccess)
+			{
+				return SemanticResult;
+			}
+		}
+		FAssetDocumentCapabilityResult MirrorResult = AssertRuntimeMirror(BehaviorTree, OutGraph, Path);
+		if (!MirrorResult.bSuccess)
+		{
+			return MirrorResult;
+		}
 	}
-	OutGraph->NotifyGraphChanged();
-	return FAssetDocumentCapabilityResult::Success(TEXT("Built BehaviorTree graph source and runtime mirror"));
+	if (bValidateSemantics)
+	{
+		OutGraph->NotifyGraphChanged();
+	}
+	return FAssetDocumentCapabilityResult::Success(bValidateSemantics
+		? TEXT("Built BehaviorTree graph source and runtime mirror")
+		: TEXT("Built BehaviorTree graph source"));
 #else
 	return Failure(Path, TEXT("EditorOnlyRegionUnavailable"), TEXT("BehaviorTree graph source requires WITH_EDITOR"));
 #endif
@@ -3115,14 +3955,18 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateT
 		return Result;
 	}
 	UBehaviorTree* Preview = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
-	Preview->BlackboardAsset = Cast<UBehaviorTree>(Context.Asset) ? Cast<UBehaviorTree>(Context.Asset)->BlackboardAsset : nullptr;
-	Result = ValidateSpecProperties(Spec, Preview);
+	// Region-local validation is structural. Selector semantics are checked by
+	// ValidateBodyCrossRegion against the desired effective BlackboardAsset.
+	// Leaving the structural preview unbound also prevents editor graph wrappers
+	// from resolving an invalid authored selector (and logging) before that
+	// explicit cross-region validator can return its deterministic diagnostic.
+	Result = ValidateSpecProperties(Spec, GetTransientPackage(), nullptr, false);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 	UBehaviorTreeGraph* StagingGraph = nullptr;
-	return BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph);
+	return BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph, false);
 }
 
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateBodyCrossRegion(
@@ -3130,13 +3974,29 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateB
 	const TSharedRef<FJsonObject>& Body)
 {
 	const TSharedPtr<FJsonValue> TreeValue = Body->TryGetField(TEXT("Tree"));
-	if (!TreeValue.IsValid())
+	TSharedPtr<FJsonObject> EffectiveTree;
+	if (TreeValue.IsValid())
 	{
-		return FAssetDocumentCapabilityResult::Success();
+		if (TreeValue->Type != EJson::Object || !TreeValue->AsObject().IsValid())
+		{
+			return Failure(TEXT("/Body/Tree"), TEXT("InvalidBodySectionType"), TEXT("Body.Tree must be an object"));
+		}
+		EffectiveTree = TreeValue->AsObject();
 	}
-	if (TreeValue->Type != EJson::Object || !TreeValue->AsObject().IsValid())
+	else
 	{
-		return Failure(TEXT("/Body/Tree"), TEXT("InvalidBodySectionType"), TEXT("Body.Tree must be an object"));
+		const UBehaviorTree* Existing = Cast<UBehaviorTree>(Context.Asset);
+		if (!Existing || !Existing->BTGraph)
+		{
+			return FAssetDocumentCapabilityResult::Success(TEXT("No retained BehaviorTree graph requires cross-region validation"));
+		}
+		TSharedRef<FJsonObject> ExtractedTree = MakeShared<FJsonObject>();
+		FAssetDocumentCapabilityResult ExtractResult = ExtractGraphTree(Existing, TEXT("/Body/Tree"), ExtractedTree);
+		if (!ExtractResult.bSuccess)
+		{
+			return ExtractResult;
+		}
+		EffectiveTree = ExtractedTree;
 	}
 	FAssetDocumentRegionContext TreeContext;
 	TreeContext.Asset = Context.Asset;
@@ -3148,7 +4008,37 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ValidateB
 	TreeContext.bIsDryRun = Context.bIsDryRun;
 	TreeContext.BodyPath = TEXT("Body.Tree");
 	TreeContext.JsonPointer = TEXT("/Body/Tree");
-	return ValidateTree(TreeContext, TreeValue->AsObject().ToSharedRef());
+	UBlackboardData* EffectiveBlackboard = nullptr;
+	FAssetDocumentCapabilityResult Result = ResolveEffectiveBlackboard(Context.Asset, Body, EffectiveBlackboard);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	FBehaviorTreeGraphSpec Spec;
+	Result = ParseTreeSpec(TreeContext, EffectiveTree.ToSharedRef(), Spec);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	UBehaviorTree* Preview = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
+	Preview->BlackboardAsset = EffectiveBlackboard;
+	Result = ValidateSpecProperties(Spec, Preview, EffectiveBlackboard, true, TreeValue.IsValid());
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	if (!TreeValue.IsValid())
+	{
+		// ValidateSpecProperties has already reconstructed every retained node,
+		// decorator, service, selector, ValueOrBlackboardKey, enum contract, and
+		// subtree reference against the desired Blackboard. Building a second
+		// graph here would enter UpdateAsset/InitializeFromAsset on arbitrary
+		// project node classes during Validate, Diff, and Apply preflight.
+		return FAssetDocumentCapabilityResult::Success(
+			TEXT("Validated retained BehaviorTree semantics against the desired BlackboardAsset"));
+	}
+	UBehaviorTreeGraph* StagingGraph = nullptr;
+	return BuildGraph(Preview, Spec, RegionPath(TreeContext), StagingGraph, true);
 }
 
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree(
@@ -3171,13 +4061,13 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	}
 	UBehaviorTree* Preview = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
 	Preview->BlackboardAsset = BehaviorTree->BlackboardAsset;
-	Result = ValidateSpecProperties(Spec, Preview);
+	Result = ValidateSpecProperties(Spec, Preview, Preview->BlackboardAsset, true);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 	UBehaviorTreeGraph* StagingGraph = nullptr;
-	Result = BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph);
+	Result = BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph, true);
 	if (!Result.bSuccess)
 	{
 		return Result;
@@ -3209,7 +4099,7 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	const bool bWasPackageDirty = Package && Package->IsDirty();
 	UBehaviorTreeGraph* NewGraph = nullptr;
 	BehaviorTree->Modify();
-	Result = BuildGraph(BehaviorTree, Spec, RegionPath(Context), NewGraph);
+	Result = BuildGraph(BehaviorTree, Spec, RegionPath(Context), NewGraph, true);
 	if (!Result.bSuccess)
 	{
 		bOutChanged = false;
@@ -3408,6 +4298,37 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ExtractTr
 	return ExtractGraphTree(Cast<UBehaviorTree>(Context.Asset), RegionPath(Context), OutTree);
 }
 
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::RefreshDerivedSelectorCaches(
+	UBehaviorTree& BehaviorTree)
+{
+#if WITH_EDITOR
+	UBehaviorTreeGraph* Graph = Cast<UBehaviorTreeGraph>(BehaviorTree.BTGraph);
+	if (!Graph)
+	{
+		return FAssetDocumentCapabilityResult::Success(TEXT("No BehaviorTree editor graph requires selector cache refresh"));
+	}
+
+	TArray<UObject*> Instances;
+	CollectGraphRuntimeNodeInstances(Graph, Instances);
+	for (UObject* Instance : Instances)
+	{
+		FAssetDocumentCapabilityResult Result = ValidateInstanceSemantics(
+			Instance,
+			BehaviorTree.BlackboardAsset,
+			TEXT("/Body/Tree/DerivedSelectorCaches"),
+			false,
+			nullptr);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
+	}
+	return FAssetDocumentCapabilityResult::Success(TEXT("Refreshed derived BehaviorTree selector and ValueOrBlackboardKey caches"));
+#else
+	return Failure(TEXT("/Body/Tree"), TEXT("EditorOnlyRegionUnavailable"), TEXT("BehaviorTree selector cache refresh requires WITH_EDITOR"));
+#endif
+}
+
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::DiffTree(
 	const FAssetDocumentRegionContext& Context,
 	const TSharedRef<FJsonObject>& DesiredTree,
@@ -3420,17 +4341,27 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::DiffTree(
 		return Result;
 	}
 	UBehaviorTree* Preview = NewObject<UBehaviorTree>(GetTransientPackage(), NAME_None, RF_Transient);
-	if (const UBehaviorTree* Existing = Cast<UBehaviorTree>(Context.Asset))
+	UBlackboardData* EffectiveBlackboard = nullptr;
+	if (Context.DesiredBody.IsValid())
 	{
-		Preview->BlackboardAsset = Existing->BlackboardAsset;
+		Result = ResolveEffectiveBlackboard(Context.Asset, Context.DesiredBody.ToSharedRef(), EffectiveBlackboard);
+		if (!Result.bSuccess)
+		{
+			return Result;
+		}
 	}
-	Result = ValidateSpecProperties(Spec, Preview);
+	else if (const UBehaviorTree* Existing = Cast<UBehaviorTree>(Context.Asset))
+	{
+		EffectiveBlackboard = Existing->BlackboardAsset;
+	}
+	Preview->BlackboardAsset = EffectiveBlackboard;
+	Result = ValidateSpecProperties(Spec, Preview, EffectiveBlackboard, true);
 	if (!Result.bSuccess)
 	{
 		return Result;
 	}
 	UBehaviorTreeGraph* StagingGraph = nullptr;
-	Result = BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph);
+	Result = BuildGraph(Preview, Spec, RegionPath(Context), StagingGraph, true);
 	if (!Result.bSuccess)
 	{
 		return Result;

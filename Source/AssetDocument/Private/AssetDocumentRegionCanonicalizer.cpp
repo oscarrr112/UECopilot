@@ -291,7 +291,134 @@ bool IsBehaviorTreeGeneratedEmptyArrayField(const FString& FieldName, const TSha
 	return false;
 }
 
-void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
+void RemoveBehaviorTreeDefaultStringField(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const TCHAR* DefaultValue)
+{
+	FString Value;
+	if (Object.IsValid()
+		&& Object->TryGetStringField(FieldName, Value)
+		&& Value == DefaultValue)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+void RemoveBehaviorTreeDefaultBoolField(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	bool bDefaultValue)
+{
+	bool bValue = false;
+	if (Object.IsValid()
+		&& Object->TryGetBoolField(FieldName, bValue)
+		&& bValue == bDefaultValue)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+void RemoveBehaviorTreeDefaultNumberField(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	double DefaultValue)
+{
+	double Value = 0.0;
+	if (Object.IsValid()
+		&& Object->TryGetNumberField(FieldName, Value)
+		&& Value == DefaultValue)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+void NormalizeBehaviorTreeDefaultVector(
+	const TSharedPtr<FJsonObject>& Object,
+	const TCHAR* FieldName,
+	const TCHAR* FirstFieldName,
+	double FirstDefault,
+	const TCHAR* SecondFieldName,
+	double SecondDefault)
+{
+	const TSharedPtr<FJsonObject>* Vector = nullptr;
+	if (!Object.IsValid()
+		|| !Object->TryGetObjectField(FieldName, Vector)
+		|| !Vector
+		|| !Vector->IsValid())
+	{
+		return;
+	}
+
+	RemoveBehaviorTreeDefaultNumberField(*Vector, FirstFieldName, FirstDefault);
+	RemoveBehaviorTreeDefaultNumberField(*Vector, SecondFieldName, SecondDefault);
+	if ((*Vector)->Values.Num() == 0)
+	{
+		Object->RemoveField(FieldName);
+	}
+}
+
+void NormalizeBehaviorTreeEditorDefaults(const TSharedPtr<FJsonObject>& Editor)
+{
+	RemoveBehaviorTreeDefaultStringField(Editor, TEXT("NodeComment"), TEXT(""));
+	RemoveBehaviorTreeDefaultBoolField(Editor, TEXT("bCommentBubblePinned"), false);
+	RemoveBehaviorTreeDefaultBoolField(Editor, TEXT("bCommentBubbleVisible"), false);
+}
+
+void NormalizeBehaviorTreeCommentColor(const TSharedPtr<FJsonObject>& Comment)
+{
+	const TSharedPtr<FJsonObject>* Color = nullptr;
+	if (!Comment.IsValid()
+		|| !Comment->TryGetObjectField(TEXT("Color"), Color)
+		|| !Color
+		|| !Color->IsValid())
+	{
+		return;
+	}
+
+	for (const TCHAR* Channel : {TEXT("R"), TEXT("G"), TEXT("B"), TEXT("A")})
+	{
+		double AuthoredValue = 0.0;
+		if (!(*Color)->TryGetNumberField(Channel, AuthoredValue))
+		{
+			continue;
+		}
+
+		const float StoredValue = static_cast<float>(AuthoredValue);
+		if (StoredValue == 1.0f)
+		{
+			(*Color)->RemoveField(Channel);
+		}
+		else
+		{
+			(*Color)->SetNumberField(Channel, StoredValue);
+		}
+	}
+	if ((*Color)->Values.Num() == 0)
+	{
+		Comment->RemoveField(TEXT("Color"));
+	}
+}
+
+void NormalizeBehaviorTreeCommentDefaults(const TSharedPtr<FJsonObject>& Comment)
+{
+	RemoveBehaviorTreeDefaultStringField(Comment, TEXT("Text"), TEXT(""));
+	NormalizeBehaviorTreeDefaultVector(Comment, TEXT("Position"), TEXT("X"), 0.0, TEXT("Y"), 0.0);
+	NormalizeBehaviorTreeDefaultVector(Comment, TEXT("Size"), TEXT("Width"), 400.0, TEXT("Height"), 100.0);
+	NormalizeBehaviorTreeCommentColor(Comment);
+	RemoveBehaviorTreeDefaultNumberField(Comment, TEXT("CommentDepth"), -1.0);
+	RemoveBehaviorTreeDefaultNumberField(Comment, TEXT("FontSize"), 18.0);
+	RemoveBehaviorTreeDefaultStringField(Comment, TEXT("MoveMode"), TEXT("GroupMovement"));
+	RemoveBehaviorTreeDefaultStringField(Comment, TEXT("NodeDetails"), TEXT(""));
+	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bCommentBubblePinned"), true);
+	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bCommentBubbleVisible"), true);
+	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bCommentBubbleVisible_InDetailsPanel"), true);
+	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bColorCommentBubble"), false);
+}
+
+void NormalizeBehaviorTreePostApplyValue(
+	const TSharedPtr<FJsonValue>& Value,
+	bool bInsideAuthoredProperties = false)
 {
 	if (!Value.IsValid())
 	{
@@ -302,7 +429,7 @@ void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
 	{
 		for (const TSharedPtr<FJsonValue>& Entry : Value->AsArray())
 		{
-			NormalizeBehaviorTreePostApplyValue(Entry);
+			NormalizeBehaviorTreePostApplyValue(Entry, bInsideAuthoredProperties);
 		}
 		return;
 	}
@@ -330,8 +457,30 @@ void NormalizeBehaviorTreePostApplyValue(const TSharedPtr<FJsonValue>& Value)
 			continue;
 		}
 
-		NormalizeBehaviorTreePostApplyValue(*FieldValue);
-		if (IsBehaviorTreeGeneratedEmptyArrayField(FieldName, *FieldValue))
+		if (!bInsideAuthoredProperties
+			&& FieldName == TEXT("Editor")
+			&& (*FieldValue)->Type == EJson::Object)
+		{
+			NormalizeBehaviorTreeEditorDefaults((*FieldValue)->AsObject());
+		}
+		else if (!bInsideAuthoredProperties
+			&& FieldName == TEXT("Comments")
+			&& (*FieldValue)->Type == EJson::Array)
+		{
+			for (const TSharedPtr<FJsonValue>& CommentValue : (*FieldValue)->AsArray())
+			{
+				if (CommentValue.IsValid() && CommentValue->Type == EJson::Object)
+				{
+					NormalizeBehaviorTreeCommentDefaults(CommentValue->AsObject());
+				}
+			}
+		}
+
+		NormalizeBehaviorTreePostApplyValue(
+			*FieldValue,
+			bInsideAuthoredProperties || IsAuthoredPropertiesSubtree(FieldName));
+		if (!bInsideAuthoredProperties
+			&& IsBehaviorTreeGeneratedEmptyArrayField(FieldName, *FieldValue))
 		{
 			FieldsToRemove.Add(FieldName);
 		}

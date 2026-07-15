@@ -333,7 +333,8 @@ FAssetDocumentCapabilityResult ValidatePresentRegions(
 				MakeRegionJsonPointer(ResolveExactBodyKey(Binding, BodyKeysByRegionId)));
 		}
 
-		const FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		RegionContext.DesiredBody = BodyObject;
 		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
 		TSharedPtr<FJsonValue> BodyValue;
 		TryFindExactBodyValue(BodyObject, ExactBodyKey, BodyValue);
@@ -455,6 +456,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::PreflightBody
 		}
 
 		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		RegionContext.DesiredBody = BodyObject;
 		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
 		TSharedPtr<FJsonValue> BodyValue;
 		TryFindExactBodyValue(BodyObject.ToSharedRef(), ExactBodyKey, BodyValue);
@@ -511,6 +513,7 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::ApplyBody(
 		}
 
 		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		RegionContext.DesiredBody = BodyObject;
 		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
 		TSharedPtr<FJsonValue> BodyValue;
 		TryFindExactBodyValue(BodyObject.ToSharedRef(), ExactBodyKey, BodyValue);
@@ -621,7 +624,8 @@ FAssetDocumentCapabilityResult FAssetDocumentBodyRegionDispatcher::DiffBody(
 				FString::Printf(TEXT("Missing runtime configuration for Body region %s"), *Binding.BodyKey.ToString()));
 		}
 
-		const FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		FAssetDocumentRegionContext RegionContext = MakeRegionContext(Context, Binding, *Policy);
+		RegionContext.DesiredBody = DesiredBodyObject;
 		const FString ExactBodyKey = ResolveExactBodyKey(Binding, BodyKeysByRegionId);
 		TSharedPtr<FJsonValue> DesiredValue;
 		TryFindExactBodyValue(DesiredBodyObject.ToSharedRef(), ExactBodyKey, DesiredValue);

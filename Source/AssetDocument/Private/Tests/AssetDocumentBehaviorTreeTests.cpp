@@ -52,7 +52,9 @@
 #include "TestActorBase.h"
 #include "TestDataAsset.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/Crc.h"
 #include "Misc/PackageName.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectIterator.h"
 
@@ -283,33 +285,6 @@ bool BTTestDiffPayloadHasChangedPathPrefix(const TSharedPtr<FJsonObject>& Payloa
 		|| BTTestDiffPayloadBucketHasPathPrefix(Payload, TEXT("removed"), ExpectedPrefix);
 }
 
-void BTTestAddDiffPathsWithPrefix(FAutomationTestBase& Test, const TSharedPtr<FJsonObject>& Payload, const FString& ExpectedPrefix)
-{
-	if (!Payload.IsValid())
-	{
-		return;
-	}
-
-	for (const FString& BucketName : {FString(TEXT("changed")), FString(TEXT("added")), FString(TEXT("removed"))})
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
-		if (!Payload->TryGetArrayField(BucketName, Entries) || !Entries)
-		{
-			continue;
-		}
-		for (const TSharedPtr<FJsonValue>& EntryValue : *Entries)
-		{
-			const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
-			FString Path;
-			if (Entry.IsValid() && Entry->TryGetStringField(TEXT("path"), Path) && Path.StartsWith(ExpectedPrefix))
-			{
-				Test.AddError(FString::Printf(TEXT("Unexpected %s diff at %s"), *BucketName, *Path));
-			}
-		}
-	}
-}
-
-
 void BTTestSwapArrayEntries(TSharedPtr<FJsonObject> Object, const FString& FieldName, int32 FirstIndex, int32 SecondIndex)
 {
 	const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
@@ -323,6 +298,264 @@ void BTTestSwapArrayEntries(TSharedPtr<FJsonObject> Object, const FString& Field
 	Object->SetArrayField(FieldName, Swapped);
 }
 
+TSharedPtr<FJsonObject> BTTestGetObjectField(const TSharedPtr<FJsonObject>& Object, const FString& FieldName);
+TSharedPtr<FJsonObject> BTTestGetObjectFromValue(const TSharedPtr<FJsonValue>& Value);
+
+FString BTTestCanonicalGuid(const FString& StableName)
+{
+	const FGuid Guid(
+		FCrc::StrCrc32(*(TEXT("A:") + StableName)),
+		FCrc::StrCrc32(*(TEXT("B:") + StableName)),
+		FCrc::StrCrc32(*(TEXT("C:") + StableName)),
+		FCrc::StrCrc32(*(TEXT("D:") + StableName)));
+	return Guid.ToString(EGuidFormats::Digits);
+}
+
+TSharedPtr<FJsonObject> BTTestMakeCanonicalEditor(
+	const FString& LegacyId,
+	const TMap<FString, TSharedPtr<FJsonObject>>& PositionsById,
+	int32& NextGeneratedOrdinal,
+	int32 Depth)
+{
+	TSharedPtr<FJsonObject> Position = MakeShared<FJsonObject>();
+	if (const TSharedPtr<FJsonObject>* AuthoredPosition = PositionsById.Find(LegacyId))
+	{
+		Position->SetNumberField(TEXT("X"), (*AuthoredPosition)->GetNumberField(TEXT("X")));
+		Position->SetNumberField(TEXT("Y"), (*AuthoredPosition)->GetNumberField(TEXT("Y")));
+	}
+	else
+	{
+		Position->SetNumberField(TEXT("X"), NextGeneratedOrdinal++ * 300);
+		Position->SetNumberField(TEXT("Y"), Depth * 300);
+	}
+
+	TSharedPtr<FJsonObject> Editor = MakeShared<FJsonObject>();
+	Editor->SetObjectField(TEXT("Position"), Position);
+	return Editor;
+}
+
+TSharedPtr<FJsonObject> BTTestCanonicalizeLegacyAttachment(
+	const TSharedPtr<FJsonObject>& LegacyAttachment,
+	const TMap<FString, TSharedPtr<FJsonObject>>& PositionsById,
+	int32& NextGeneratedOrdinal,
+	int32 Depth)
+{
+	if (!LegacyAttachment.IsValid())
+	{
+		return nullptr;
+	}
+
+	const FString LegacyId = LegacyAttachment->GetStringField(TEXT("Id"));
+	TSharedPtr<FJsonObject> Attachment = MakeShared<FJsonObject>();
+	Attachment->SetStringField(TEXT("Id"), BTTestCanonicalGuid(TEXT("Node:") + LegacyId));
+	Attachment->SetStringField(TEXT("Class"), LegacyAttachment->GetStringField(TEXT("Class")));
+	TSharedPtr<FJsonObject> Properties = BTTestGetObjectField(LegacyAttachment, TEXT("Properties"));
+	if (!Properties.IsValid())
+	{
+		Properties = MakeShared<FJsonObject>();
+	}
+	if (!Properties->HasField(TEXT("NodeName")))
+	{
+		Properties->SetStringField(TEXT("NodeName"), LegacyId);
+	}
+	Attachment->SetObjectField(TEXT("Properties"), Properties);
+	Attachment->SetObjectField(TEXT("Editor"), BTTestMakeCanonicalEditor(LegacyId, PositionsById, NextGeneratedOrdinal, Depth));
+	return Attachment;
+}
+
+TSharedPtr<FJsonObject> BTTestCanonicalizeLegacyNode(
+	const TSharedPtr<FJsonObject>& LegacyNode,
+	const TMap<FString, TSharedPtr<FJsonObject>>& PositionsById,
+	int32& NextGeneratedOrdinal,
+	int32 Depth)
+{
+	if (!LegacyNode.IsValid() || LegacyNode->Values.Num() == 0)
+	{
+		return MakeShared<FJsonObject>();
+	}
+
+	TSharedPtr<FJsonObject> Node = BTTestCanonicalizeLegacyAttachment(
+		LegacyNode,
+		PositionsById,
+		NextGeneratedOrdinal,
+		Depth);
+	Node->SetArrayField(TEXT("Decorators"), {});
+	Node->SetArrayField(TEXT("Services"), {});
+	Node->SetArrayField(TEXT("Children"), {});
+
+	const TArray<TSharedPtr<FJsonValue>>* LegacyDecorators = nullptr;
+	if (LegacyNode->TryGetArrayField(TEXT("Decorators"), LegacyDecorators) && LegacyDecorators)
+	{
+		TArray<TSharedPtr<FJsonValue>> Decorators;
+		for (const TSharedPtr<FJsonValue>& Value : *LegacyDecorators)
+		{
+			Decorators.Add(BTTestMakeObjectValue(BTTestCanonicalizeLegacyAttachment(
+				BTTestGetObjectFromValue(Value),
+				PositionsById,
+				NextGeneratedOrdinal,
+				Depth)));
+		}
+		Node->SetArrayField(TEXT("Decorators"), MoveTemp(Decorators));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* LegacyServices = nullptr;
+	if (LegacyNode->TryGetArrayField(TEXT("Services"), LegacyServices) && LegacyServices)
+	{
+		TArray<TSharedPtr<FJsonValue>> Services;
+		for (const TSharedPtr<FJsonValue>& Value : *LegacyServices)
+		{
+			Services.Add(BTTestMakeObjectValue(BTTestCanonicalizeLegacyAttachment(
+				BTTestGetObjectFromValue(Value),
+				PositionsById,
+				NextGeneratedOrdinal,
+				Depth)));
+		}
+		Node->SetArrayField(TEXT("Services"), MoveTemp(Services));
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* LegacyChildren = nullptr;
+	if (LegacyNode->TryGetArrayField(TEXT("Children"), LegacyChildren) && LegacyChildren)
+	{
+		TArray<TSharedPtr<FJsonValue>> Children;
+		for (const TSharedPtr<FJsonValue>& Value : *LegacyChildren)
+		{
+			TSharedPtr<FJsonObject> LegacyEntry = BTTestGetObjectFromValue(Value);
+			TSharedPtr<FJsonObject> LegacyChild = BTTestGetObjectField(LegacyEntry, TEXT("Child"));
+			if (!LegacyChild.IsValid())
+			{
+				LegacyChild = LegacyEntry;
+			}
+			TSharedPtr<FJsonObject> Child = BTTestCanonicalizeLegacyNode(
+				LegacyChild,
+				PositionsById,
+				NextGeneratedOrdinal,
+				Depth + 1);
+
+			const TArray<TSharedPtr<FJsonValue>>* EdgeDecorators = nullptr;
+			if (LegacyEntry.IsValid()
+				&& LegacyEntry != LegacyChild
+				&& LegacyEntry->TryGetArrayField(TEXT("Decorators"), EdgeDecorators)
+				&& EdgeDecorators)
+			{
+				TArray<TSharedPtr<FJsonValue>> Decorators;
+				for (const TSharedPtr<FJsonValue>& DecoratorValue : *EdgeDecorators)
+				{
+					Decorators.Add(BTTestMakeObjectValue(BTTestCanonicalizeLegacyAttachment(
+						BTTestGetObjectFromValue(DecoratorValue),
+						PositionsById,
+						NextGeneratedOrdinal,
+						Depth + 1)));
+				}
+				Child->SetArrayField(TEXT("Decorators"), MoveTemp(Decorators));
+			}
+			Children.Add(BTTestMakeObjectValue(Child));
+		}
+		Node->SetArrayField(TEXT("Children"), MoveTemp(Children));
+	}
+	return Node;
+}
+
+TSharedPtr<FJsonObject> BTTestCanonicalizeLegacyTree(
+	const TSharedPtr<FJsonObject>& LegacyTree,
+	const TSharedPtr<FJsonObject>& LegacyEditorLayout)
+{
+	if (!LegacyTree.IsValid() || LegacyTree->HasField(TEXT("GraphGuid")))
+	{
+		return LegacyTree;
+	}
+
+	TMap<FString, TSharedPtr<FJsonObject>> PositionsById;
+	const TArray<TSharedPtr<FJsonValue>>* LayoutNodes = nullptr;
+	if (LegacyEditorLayout.IsValid()
+		&& LegacyEditorLayout->TryGetArrayField(TEXT("Nodes"), LayoutNodes)
+		&& LayoutNodes)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *LayoutNodes)
+		{
+			TSharedPtr<FJsonObject> LayoutNode = BTTestGetObjectFromValue(Value);
+			const TSharedPtr<FJsonObject>* Position = nullptr;
+			FString NodeId;
+			if (LayoutNode.IsValid()
+				&& LayoutNode->TryGetStringField(TEXT("NodeId"), NodeId)
+				&& LayoutNode->TryGetObjectField(TEXT("Position"), Position)
+				&& Position
+				&& Position->IsValid())
+			{
+				PositionsById.Add(NodeId, *Position);
+			}
+		}
+	}
+
+	int32 NextGeneratedOrdinal = 1;
+	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
+	Tree->SetStringField(TEXT("GraphGuid"), BTTestCanonicalGuid(TEXT("LegacyBehaviorTreeGraph")));
+	TSharedPtr<FJsonObject> Root = BTTestCanonicalizeLegacyNode(
+		BTTestGetObjectField(LegacyTree, TEXT("Root")),
+		PositionsById,
+		NextGeneratedOrdinal,
+		0);
+
+	const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
+	if (Root->Values.Num() > 0
+		&& LegacyTree->TryGetArrayField(TEXT("RootDecorators"), RootDecorators)
+		&& RootDecorators)
+	{
+		TArray<TSharedPtr<FJsonValue>> Decorators;
+		for (const TSharedPtr<FJsonValue>& Value : *RootDecorators)
+		{
+			Decorators.Add(BTTestMakeObjectValue(BTTestCanonicalizeLegacyAttachment(
+				BTTestGetObjectFromValue(Value),
+				PositionsById,
+				NextGeneratedOrdinal,
+				0)));
+		}
+		Root->SetArrayField(TEXT("Decorators"), MoveTemp(Decorators));
+	}
+	Tree->SetObjectField(TEXT("Root"), Root);
+
+	TArray<TSharedPtr<FJsonValue>> Comments;
+	const TArray<TSharedPtr<FJsonValue>>* LegacyComments = nullptr;
+	if (LegacyEditorLayout.IsValid()
+		&& LegacyEditorLayout->TryGetArrayField(TEXT("Comments"), LegacyComments)
+		&& LegacyComments)
+	{
+		for (const TSharedPtr<FJsonValue>& Value : *LegacyComments)
+		{
+			TSharedPtr<FJsonObject> LegacyComment = BTTestGetObjectFromValue(Value);
+			if (!LegacyComment.IsValid())
+			{
+				continue;
+			}
+			const FString LegacyId = LegacyComment->GetStringField(TEXT("Id"));
+			FGuid ParsedGuid;
+			const FString CommentId = FGuid::Parse(LegacyId, ParsedGuid)
+				? ParsedGuid.ToString(EGuidFormats::Digits)
+				: BTTestCanonicalGuid(TEXT("Comment:") + LegacyId);
+			TSharedPtr<FJsonObject> Comment = MakeShared<FJsonObject>();
+			Comment->SetStringField(TEXT("Id"), CommentId);
+			Comment->SetStringField(TEXT("Text"), LegacyComment->GetStringField(TEXT("Text")));
+			if (TSharedPtr<FJsonObject> Position = BTTestGetObjectField(LegacyComment, TEXT("Position")))
+			{
+				Comment->SetObjectField(TEXT("Position"), Position);
+			}
+			if (TSharedPtr<FJsonObject> LegacySize = BTTestGetObjectField(LegacyComment, TEXT("Size")))
+			{
+				TSharedPtr<FJsonObject> Size = MakeShared<FJsonObject>();
+				Size->SetNumberField(TEXT("Width"), LegacySize->GetNumberField(TEXT("X")));
+				Size->SetNumberField(TEXT("Height"), LegacySize->GetNumberField(TEXT("Y")));
+				Comment->SetObjectField(TEXT("Size"), Size);
+			}
+			if (TSharedPtr<FJsonObject> Color = BTTestGetObjectField(LegacyComment, TEXT("Color")))
+			{
+				Comment->SetObjectField(TEXT("Color"), Color);
+			}
+			Comments.Add(BTTestMakeObjectValue(Comment));
+		}
+	}
+	Tree->SetArrayField(TEXT("Comments"), MoveTemp(Comments));
+	return Tree;
+}
+
 TSharedPtr<FJsonObject> BTTestMakeBehaviorTreeBody(
 	TSharedPtr<FJsonObject> Blackboard,
 	TSharedPtr<FJsonObject> Tree = nullptr,
@@ -331,20 +564,16 @@ TSharedPtr<FJsonObject> BTTestMakeBehaviorTreeBody(
 	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
 	if (Blackboard.IsValid())
 	{
-		Body->SetObjectField(TEXT("Blackboard"), Blackboard);
+		Body->SetObjectField(TEXT("BlackboardAsset"), Blackboard);
 	}
 	else
 	{
-		Body->SetField(TEXT("Blackboard"), MakeShared<FJsonValueNull>());
+		Body->SetField(TEXT("BlackboardAsset"), MakeShared<FJsonValueNull>());
 	}
 
 	if (Tree.IsValid())
 	{
-		Body->SetObjectField(TEXT("Tree"), Tree);
-	}
-	if (EditorLayout.IsValid())
-	{
-		Body->SetObjectField(TEXT("EditorLayout"), EditorLayout);
+		Body->SetObjectField(TEXT("Tree"), BTTestCanonicalizeLegacyTree(Tree, EditorLayout));
 	}
 	return Body;
 }
@@ -352,8 +581,8 @@ TSharedPtr<FJsonObject> BTTestMakeBehaviorTreeBody(
 TSharedPtr<FJsonObject> BTTestMakeEmptyBehaviorTree()
 {
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
+	Tree->SetStringField(TEXT("GraphGuid"), BTTestCanonicalGuid(TEXT("LegacyBehaviorTreeGraph")));
+	Tree->SetArrayField(TEXT("Comments"), TArray<TSharedPtr<FJsonValue>>());
 	Tree->SetObjectField(TEXT("Root"), MakeShared<FJsonObject>());
 	return Tree;
 }
@@ -361,8 +590,6 @@ TSharedPtr<FJsonObject> BTTestMakeEmptyBehaviorTree()
 TSharedPtr<FJsonObject> BTTestMakeMinimalSelectorBehaviorTree()
 {
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
 	Root->SetStringField(TEXT("Id"), TEXT("Root"));
 	Root->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTComposite_Selector"));
@@ -397,14 +624,6 @@ TSharedPtr<FJsonObject> BTTestMakeTreeWithKeySelectorLikeProperty()
 	return Tree;
 }
 
-TSharedPtr<FJsonObject> BTTestMakeDecoratorLogicOp(const FString& Operation, int32 Number)
-{
-	TSharedPtr<FJsonObject> Logic = MakeShared<FJsonObject>();
-	Logic->SetStringField(TEXT("Operation"), Operation);
-	Logic->SetNumberField(TEXT("Number"), Number);
-	return Logic;
-}
-
 TSharedPtr<FJsonObject> BTTestMakeSelectorProperty(const FString& KeyName)
 {
 	TSharedPtr<FJsonObject> Selector = MakeShared<FJsonObject>();
@@ -425,14 +644,6 @@ TSharedPtr<FJsonObject> BTTestMakeBtNode(
 		Node->SetObjectField(TEXT("Properties"), Properties);
 	}
 	return Node;
-}
-
-TSharedPtr<FJsonObject> BTTestMakeDecoratorLogicTest(int32 Number = 0)
-{
-	TSharedPtr<FJsonObject> Logic = MakeShared<FJsonObject>();
-	Logic->SetStringField(TEXT("Operation"), TEXT("Test"));
-	Logic->SetNumberField(TEXT("Number"), Number);
-	return Logic;
 }
 
 TSharedPtr<FJsonObject> BTTestMakeMoveToTreeWithKeys(const TArray<FString>& KeyNames)
@@ -457,8 +668,6 @@ TSharedPtr<FJsonObject> BTTestMakeMoveToTreeWithKeys(const TArray<FString>& KeyN
 
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 	return Tree;
 }
 
@@ -553,8 +762,6 @@ TSharedPtr<FJsonObject> BTTestMakeRunBehaviorTree(const FString& SubtreeTarget)
 
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 	return Tree;
 }
 
@@ -574,24 +781,22 @@ TSharedPtr<FJsonObject> BTTestMakeTreeWithSelectorTask(
 
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 	return Tree;
 }
 
 TSharedPtr<FJsonObject> BTTestMakeTask7BehaviorTree(
 	const FString& SubtreeTarget,
-	bool bIncludeRootDecorator,
-	bool bUseShortClassNames)
+	bool bIncludeRootDecorator)
 {
-	const FString SelectorClass = bUseShortClassNames ? TEXT("BTComposite_Selector") : TEXT("/Script/AIModule.BTComposite_Selector");
-	const FString ServiceClass = bUseShortClassNames ? TEXT("BTService_DefaultFocus") : TEXT("/Script/AIModule.BTService_DefaultFocus");
-	const FString DecoratorClass = bUseShortClassNames ? TEXT("BTDecorator_Blackboard") : TEXT("/Script/AIModule.BTDecorator_Blackboard");
-	const FString MoveToClass = bUseShortClassNames ? TEXT("BTTask_MoveTo") : TEXT("/Script/AIModule.BTTask_MoveTo");
-	const FString RunBehaviorClass = bUseShortClassNames ? TEXT("BTTask_RunBehavior") : TEXT("/Script/AIModule.BTTask_RunBehavior");
+	const FString SelectorClass = TEXT("/Script/AIModule.BTComposite_Selector");
+	const FString ServiceClass = TEXT("/Script/AIModule.BTService_DefaultFocus");
+	const FString DecoratorClass = TEXT("/Script/AIModule.BTDecorator_Blackboard");
+	const FString MoveToClass = TEXT("/Script/AIModule.BTTask_MoveTo");
+	const FString RunBehaviorClass = TEXT("/Script/AIModule.BTTask_RunBehavior");
 
 	TSharedPtr<FJsonObject> ServiceProperties = MakeShared<FJsonObject>();
 	ServiceProperties->SetNumberField(TEXT("Interval"), 1.25);
+	ServiceProperties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("TargetActor")));
 	TArray<TSharedPtr<FJsonValue>> Services;
 	Services.Add(BTTestMakeObjectValue(BTTestMakeBtNode(TEXT("FocusService"), ServiceClass, ServiceProperties)));
 
@@ -600,9 +805,6 @@ TSharedPtr<FJsonObject> BTTestMakeTask7BehaviorTree(
 	TArray<TSharedPtr<FJsonValue>> EdgeDecorators;
 	EdgeDecorators.Add(BTTestMakeObjectValue(BTTestMakeBtNode(TEXT("HasTarget"), DecoratorClass, DecoratorProperties)));
 
-	TArray<TSharedPtr<FJsonValue>> EdgeLogic;
-	EdgeLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicTest()));
-
 	TSharedPtr<FJsonObject> MoveToProperties = MakeShared<FJsonObject>();
 	MoveToProperties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("TargetActor")));
 	TSharedPtr<FJsonObject> MoveToNode = BTTestMakeBtNode(TEXT("MoveToTarget"), MoveToClass, MoveToProperties);
@@ -610,7 +812,6 @@ TSharedPtr<FJsonObject> BTTestMakeTask7BehaviorTree(
 	TSharedPtr<FJsonObject> MoveEdge = MakeShared<FJsonObject>();
 	MoveEdge->SetObjectField(TEXT("Child"), MoveToNode);
 	MoveEdge->SetArrayField(TEXT("Decorators"), EdgeDecorators);
-	MoveEdge->SetArrayField(TEXT("DecoratorLogic"), EdgeLogic);
 
 	TSharedPtr<FJsonObject> RunSubtreeProperties = MakeShared<FJsonObject>();
 	RunSubtreeProperties->SetObjectField(TEXT("BehaviorAsset"), BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(SubtreeTarget)));
@@ -639,12 +840,6 @@ TSharedPtr<FJsonObject> BTTestMakeTask7BehaviorTree(
 	}
 	Tree->SetArrayField(TEXT("RootDecorators"), RootDecorators);
 
-	TArray<TSharedPtr<FJsonValue>> RootLogic;
-	if (bIncludeRootDecorator)
-	{
-		RootLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicTest()));
-	}
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), RootLogic);
 	return Tree;
 }
 
@@ -795,8 +990,7 @@ bool BTTestApplyTask7TreeFixture(
 	FAutomationTestBase& Test,
 	FAssetDocumentService& Service,
 	const FString& Target,
-	bool bIncludeRootDecorator = true,
-	bool bUseShortClassNames = false)
+	bool bIncludeRootDecorator = true)
 {
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
@@ -813,10 +1007,11 @@ bool BTTestApplyTask7TreeFixture(
 	{
 		return false;
 	}
+	Subtree->BlackboardAsset = Blackboard;
 
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, bIncludeRootDecorator, bUseShortClassNames),
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, bIncludeRootDecorator),
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult ApplyResult = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, Body)));
 	Test.TestTrue(TEXT("Task7 fixture apply succeeds"), ApplyResult.IsSuccess());
@@ -855,6 +1050,17 @@ bool BTTestCollectIdsFromTreeNode(const TSharedPtr<FJsonObject>& Node, TSet<FStr
 	{
 		return false;
 	}
+	const TArray<TSharedPtr<FJsonValue>>* Decorators = nullptr;
+	if (Node.IsValid() && Node->TryGetArrayField(TEXT("Decorators"), Decorators) && Decorators)
+	{
+		for (const TSharedPtr<FJsonValue>& DecoratorValue : *Decorators)
+		{
+			if (!BTTestCollectIdsFromAttachmentObject(BTTestGetObjectFromValue(DecoratorValue), SeenIds, OutIds))
+			{
+				return false;
+			}
+		}
+	}
 
 	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
 	if (Node.IsValid() && Node->TryGetArrayField(TEXT("Services"), Services) && Services)
@@ -873,20 +1079,7 @@ bool BTTestCollectIdsFromTreeNode(const TSharedPtr<FJsonObject>& Node, TSet<FStr
 	{
 		for (const TSharedPtr<FJsonValue>& ChildValue : *Children)
 		{
-			TSharedPtr<FJsonObject> Edge = BTTestGetObjectFromValue(ChildValue);
-			const TArray<TSharedPtr<FJsonValue>>* Decorators = nullptr;
-			if (Edge.IsValid() && Edge->TryGetArrayField(TEXT("Decorators"), Decorators) && Decorators)
-			{
-				for (const TSharedPtr<FJsonValue>& DecoratorValue : *Decorators)
-				{
-					if (!BTTestCollectIdsFromAttachmentObject(BTTestGetObjectFromValue(DecoratorValue), SeenIds, OutIds))
-					{
-						return false;
-					}
-				}
-			}
-
-			if (!BTTestCollectIdsFromTreeNode(BTTestGetObjectField(Edge, TEXT("Child")), SeenIds, OutIds))
+			if (!BTTestCollectIdsFromTreeNode(BTTestGetObjectFromValue(ChildValue), SeenIds, OutIds))
 			{
 				return false;
 			}
@@ -900,24 +1093,7 @@ bool BTTestCollectAllTreeIds(const TSharedPtr<FJsonObject>& Tree, TArray<FString
 {
 	OutIds.Reset();
 	TSet<FString> SeenIds;
-	if (!BTTestCollectIdsFromTreeNode(BTTestGetObjectField(Tree, TEXT("Root")), SeenIds, OutIds))
-	{
-		return false;
-	}
-
-	const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
-	if (Tree.IsValid() && Tree->TryGetArrayField(TEXT("RootDecorators"), RootDecorators) && RootDecorators)
-	{
-		for (const TSharedPtr<FJsonValue>& DecoratorValue : *RootDecorators)
-		{
-			if (!BTTestCollectIdsFromAttachmentObject(BTTestGetObjectFromValue(DecoratorValue), SeenIds, OutIds))
-			{
-				return false;
-			}
-		}
-	}
-
-	return true;
+	return BTTestCollectIdsFromTreeNode(BTTestGetObjectField(Tree, TEXT("Root")), SeenIds, OutIds);
 }
 
 bool BTTestJsonArrayContainsString(const TArray<TSharedPtr<FJsonValue>>* Values, const FString& Expected)
@@ -1152,16 +1328,12 @@ TSharedPtr<FJsonObject> BTTestMakeTask10BehaviorTree(const FString& SubtreeTarge
 		TEXT("/Script/AIModule.BTDecorator_Blackboard"),
 		BTTestMakeTask10BlackboardDecoratorProperties(TEXT("HasTarget")))));
 
-	TArray<TSharedPtr<FJsonValue>> EdgeLogic;
-	EdgeLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicTest()));
-
 	TSharedPtr<FJsonObject> MoveEdge = MakeShared<FJsonObject>();
 	MoveEdge->SetObjectField(TEXT("Child"), BTTestMakeBtNode(
 		TEXT("MoveToTarget"),
 		TEXT("/Script/AIModule.BTTask_MoveTo"),
 		BTTestMakeTask10MoveToProperties(TEXT("MoveToTarget"))));
 	MoveEdge->SetArrayField(TEXT("Decorators"), EdgeDecorators);
-	MoveEdge->SetArrayField(TEXT("DecoratorLogic"), EdgeLogic);
 
 	TSharedPtr<FJsonObject> RunSubtreeEdge = MakeShared<FJsonObject>();
 	RunSubtreeEdge->SetObjectField(TEXT("Child"), BTTestMakeBtNode(
@@ -1186,13 +1358,9 @@ TSharedPtr<FJsonObject> BTTestMakeTask10BehaviorTree(const FString& SubtreeTarge
 		TEXT("/Script/AIModule.BTDecorator_Blackboard"),
 		BTTestMakeTask10BlackboardDecoratorProperties(TEXT("RootHasTarget")))));
 
-	TArray<TSharedPtr<FJsonValue>> RootLogic;
-	RootLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicTest()));
-
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
 	Tree->SetArrayField(TEXT("RootDecorators"), RootDecorators);
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), RootLogic);
 	return Tree;
 }
 
@@ -1261,36 +1429,38 @@ bool FAssetDocumentBehaviorTreeProfileShapeTest::RunTest(const FString&)
 	TestTrue(TEXT("Template contains Body"), Template->TryGetObjectField(TEXT("Body"), Body) && Body && Body->IsValid());
 	if (Body && Body->IsValid())
 	{
-		TestTrue(TEXT("Body contains Blackboard"), (*Body)->HasField(TEXT("Blackboard")));
+		TestTrue(TEXT("Body contains BlackboardAsset"), (*Body)->HasField(TEXT("BlackboardAsset")));
 		TestTrue(TEXT("Body contains Tree"), (*Body)->HasField(TEXT("Tree")));
-		TestTrue(TEXT("Body contains EditorLayout"), (*Body)->HasField(TEXT("EditorLayout")));
+		TestFalse(TEXT("Body does not split editor state from Tree"), (*Body)->HasField(TEXT("EditorLayout")));
 		TestFalse(TEXT("Body does not contain BlackboardInline"), (*Body)->HasField(TEXT("BlackboardInline")));
 
 		const TSharedPtr<FJsonObject>* Tree = nullptr;
 		TestTrue(TEXT("Tree is an object"), (*Body)->TryGetObjectField(TEXT("Tree"), Tree) && Tree && Tree->IsValid());
 		if (Tree && Tree->IsValid())
 		{
-			TestTrue(TEXT("Tree contains RootDecorators"), (*Tree)->HasField(TEXT("RootDecorators")));
-			TestTrue(TEXT("Tree contains RootDecoratorLogic"), (*Tree)->HasField(TEXT("RootDecoratorLogic")));
+			TestTrue(TEXT("Tree contains GraphGuid"), (*Tree)->HasField(TEXT("GraphGuid")));
 			TestTrue(TEXT("Tree contains Root"), (*Tree)->HasField(TEXT("Root")));
+			TestTrue(TEXT("Tree contains Comments"), (*Tree)->HasField(TEXT("Comments")));
+			TestFalse(TEXT("Tree does not expose runtime RootDecorators"), (*Tree)->HasField(TEXT("RootDecorators")));
+			TestFalse(TEXT("Tree does not expose runtime RootDecoratorLogic"), (*Tree)->HasField(TEXT("RootDecoratorLogic")));
 		}
 	}
 
 	const TArray<FName> BodyKeys = RegisteredProfile->GetBodyKeys();
-	TestTrue(TEXT("Blackboard body key is registered"), BodyKeys.Contains(TEXT("Blackboard")));
+	TestTrue(TEXT("BlackboardAsset body key is registered"), BodyKeys.Contains(TEXT("BlackboardAsset")));
 	TestTrue(TEXT("Tree body key is registered"), BodyKeys.Contains(TEXT("Tree")));
-	TestTrue(TEXT("EditorLayout body key is registered"), BodyKeys.Contains(TEXT("EditorLayout")));
+	TestFalse(TEXT("EditorLayout body key is not registered"), BodyKeys.Contains(TEXT("EditorLayout")));
 	TestFalse(TEXT("BlackboardInline body key is not registered"), BodyKeys.Contains(TEXT("BlackboardInline")));
 	TestNotNull(TEXT("Body root resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("Body")));
-	TestNotNull(TEXT("Blackboard resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("Blackboard")));
+	TestNotNull(TEXT("BlackboardAsset resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("BlackboardAsset")));
 	TestNotNull(TEXT("Tree resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("Tree")));
-	TestNotNull(TEXT("EditorLayout resolves adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("EditorLayout")));
+	TestNull(TEXT("EditorLayout does not resolve adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("EditorLayout")));
 	TestNull(TEXT("BlackboardInline does not resolve adapter"), RegisteredProfile->ResolveBodyAdapter(TEXT("BlackboardInline")));
 
 	const TArray<FAssetDocumentRegionPolicy> Policies = RegisteredProfile->GetRegionPolicies();
-	TestNotNull(TEXT("Policy includes Body.Blackboard"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.Blackboard")));
+	TestNotNull(TEXT("Policy includes Body.BlackboardAsset"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.BlackboardAsset")));
 	TestNotNull(TEXT("Policy includes Body.Tree"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.Tree")));
-	TestNotNull(TEXT("Policy includes Body.EditorLayout"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
+	TestNull(TEXT("Policy omits Body.EditorLayout"), BTTestFindPolicyByRegionId(Policies, TEXT("Body.EditorLayout")));
 	return true;
 }
 
@@ -1337,7 +1507,7 @@ bool FAssetDocumentBehaviorTreeBlackboardReferenceTest::RunTest(const FString&)
 	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
 	const TSharedPtr<FJsonObject>* ExtractedBlackboard = nullptr;
 	TestTrue(TEXT("Extracted payload contains Body"), ExtractResult.Payload.IsValid() && ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody) && ExtractedBody && ExtractedBody->IsValid());
-	TestTrue(TEXT("Extracted Body contains Blackboard AssetRef"), ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("Blackboard"), ExtractedBlackboard) && ExtractedBlackboard && ExtractedBlackboard->IsValid());
+	TestTrue(TEXT("Extracted Body contains BlackboardAsset AssetRef"), ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("BlackboardAsset"), ExtractedBlackboard) && ExtractedBlackboard && ExtractedBlackboard->IsValid());
 	if (ExtractedBlackboard && ExtractedBlackboard->IsValid())
 	{
 		TestEqual(TEXT("Extracted Blackboard Kind"), (*ExtractedBlackboard)->GetStringField(TEXT("Kind")), FString(TEXT("AssetRef")));
@@ -1346,7 +1516,7 @@ bool FAssetDocumentBehaviorTreeBlackboardReferenceTest::RunTest(const FString&)
 
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(BehaviorTreeTarget, Body)));
 	TestTrue(TEXT("BehaviorTree diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("Blackboard diff path is stable"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("unchanged"), TEXT("/Body/Blackboard")));
+	TestTrue(TEXT("BlackboardAsset diff path is stable"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("unchanged"), TEXT("/Body/BlackboardAsset")));
 	return true;
 }
 
@@ -1381,7 +1551,7 @@ bool FAssetDocumentBehaviorTreeRejectsMissingBlackboardForKeySelectorsTest::RunT
 	Request.Document = BTTestMakeBehaviorTreeDocument(TEXT("/Game/AssetDocumentTests/BT_AD_RejectsMissingBlackboardForKeySelectors"), Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("BehaviorTree rejects key selectors without Blackboard"), Result.IsSuccess());
-	TestTrue(TEXT("Missing blackboard diagnostic is stable"), BTTestResultHasDiagnostic(Result, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/Blackboard")));
+	TestTrue(TEXT("Missing blackboard diagnostic is stable"), BTTestResultHasDiagnostic(Result, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/BlackboardAsset")));
 	return true;
 }
 
@@ -1734,8 +1904,9 @@ bool FAssetDocumentBehaviorTreeTreeTest::RunTest(const FString&)
 		&& Tree && (*Tree)->TryGetObjectField(TEXT("Root"), ExtractedRoot));
 	if (ExtractedRoot && ExtractedRoot->IsValid())
 	{
-		TestEqual(TEXT("root id extracted"), (*ExtractedRoot)->GetStringField(TEXT("Id")), FString(TEXT("RootSelector")));
+		TestEqual(TEXT("root NodeGuid extracted"), (*ExtractedRoot)->GetStringField(TEXT("Id")), BTTestCanonicalGuid(TEXT("Node:RootSelector")));
 		TestEqual(TEXT("root class extracted as full path"), (*ExtractedRoot)->GetStringField(TEXT("Class")), FString(TEXT("/Script/AIModule.BTComposite_Selector")));
+		TestEqual(TEXT("visible root label is an authored property"), BTTestGetObjectField(*ExtractedRoot, TEXT("Properties"))->GetStringField(TEXT("NodeName")), FString(TEXT("RootSelector")));
 		const TArray<TSharedPtr<FJsonValue>>* ExtractedChildren = nullptr;
 		TestTrue(TEXT("children extracted"), (*ExtractedRoot)->TryGetArrayField(TEXT("Children"), ExtractedChildren) && ExtractedChildren && ExtractedChildren->Num() == 2);
 	}
@@ -1779,7 +1950,7 @@ bool FAssetDocumentBehaviorTreeEmptyTreeExtractTest::RunTest(const FString&)
 	TSharedPtr<FJsonObject> BodyDocument = BTTestMakeBehaviorTreeBody(nullptr, BTTestMakeEmptyBehaviorTree(), MakeShared<FJsonObject>());
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, BodyDocument)));
 	TestTrue(TEXT("empty BehaviorTree diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("empty tree diff path is stable"), BTTestDiffPayloadHasAnyEntry(DiffResult.Payload, TEXT("/Body/Tree")));
+	TestTrue(TEXT("empty tree graph identity diff path is stable"), BTTestDiffPayloadHasAnyEntry(DiffResult.Payload, TEXT("/Body/Tree/GraphGuid")));
 	return true;
 }
 
@@ -1800,15 +1971,29 @@ bool FAssetDocumentBehaviorTreeRootDecoratorsTest::RunTest(const FString&)
 	UBehaviorTree* BehaviorTree = BTTestLoadBehaviorTreeForTarget(Target);
 	TestNotNull(TEXT("BehaviorTree exists"), BehaviorTree);
 	TestEqual(TEXT("root decorators materialized"), BehaviorTree ? BehaviorTree->RootDecorators.Num() : 0, 1);
-	TestEqual(TEXT("root decorator logic materialized"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : 0, 1);
+	TestEqual(TEXT("ordinary root decorators do not author runtime logic"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1, 0);
 
 	TSharedPtr<FJsonObject> DesiredBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
-		BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true, false),
+		BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true),
 		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> DesiredRoot = BTTestGetObjectField(BTTestGetObjectField(DesiredBody, TEXT("Tree")), TEXT("Root"));
+	const TArray<TSharedPtr<FJsonValue>>* DesiredDecorators = nullptr;
+	if (DesiredRoot.IsValid()
+		&& DesiredRoot->TryGetArrayField(TEXT("Decorators"), DesiredDecorators)
+		&& DesiredDecorators
+		&& DesiredDecorators->Num() == 1)
+	{
+		BTTestGetObjectField(
+			BTTestGetObjectField(BTTestGetObjectFromValue((*DesiredDecorators)[0]), TEXT("Properties")),
+			TEXT("BlackboardKey"))->SetStringField(TEXT("Key"), TEXT("OtherTargetActor"));
+	}
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
 	TestTrue(TEXT("root decorator diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("root decorator semantic path is emitted"), BTTestDiffPayloadHasAnyEntry(DiffResult.Payload, TEXT("/Body/Tree/RootDecorators/RootHasTarget")));
+	const FString RootDecoratorPath = FString::Printf(
+		TEXT("/Body/Tree/Decorators/%s/Properties/BlackboardKey/Key"),
+		*BTTestCanonicalGuid(TEXT("Node:RootHasTarget")));
+	TestTrue(TEXT("root decorator canonical identity path is emitted"), BTTestDiffPayloadHasAnyEntry(DiffResult.Payload, RootDecoratorPath));
 	return true;
 }
 
@@ -1828,25 +2013,19 @@ bool FAssetDocumentBehaviorTreeDecoratorLogicTest::RunTest(const FString&)
 
 	UBehaviorTree* BehaviorTree = BTTestLoadBehaviorTreeForTarget(Target);
 	UBTCompositeNode* Root = BehaviorTree ? BehaviorTree->RootNode : nullptr;
-	TestTrue(TEXT("edge decorator logic has Test op"), Root && Root->Children.Num() > 0 && Root->Children[0].DecoratorOps.Num() == 1 && Root->Children[0].DecoratorOps[0].Operation == EBTDecoratorLogic::Test);
-	TestTrue(TEXT("root decorator logic has Test op"), BehaviorTree && BehaviorTree->RootDecoratorOps.Num() == 1 && BehaviorTree->RootDecoratorOps[0].Operation == EBTDecoratorLogic::Test);
+	TestTrue(TEXT("ordinary edge decorators derive no authored logic program"), Root && Root->Children.Num() > 0 && Root->Children[0].DecoratorOps.Num() == 0);
+	TestTrue(TEXT("ordinary root decorators derive no authored logic program"), BehaviorTree && BehaviorTree->RootDecoratorOps.Num() == 0);
 
-	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true, false);
-	TSharedPtr<FJsonObject> RootObject = BTTestGetObjectField(DesiredTree, TEXT("Root"));
-	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
-	if (RootObject.IsValid() && RootObject->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 0)
-	{
-		TSharedPtr<FJsonObject> FirstEdge = BTTestGetObjectFromValue((*Children)[0]);
-		FirstEdge->SetArrayField(TEXT("DecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
-	}
-
-	TSharedPtr<FJsonObject> DesiredBody = BTTestMakeBehaviorTreeBody(
+	TSharedPtr<FJsonObject> LegacyLogicBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
-		DesiredTree,
+		BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true),
 		MakeShared<FJsonObject>());
-	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
-	TestTrue(TEXT("decorator logic diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("edge decorator logic path uses semantic node ids and index"), BTTestDiffPayloadHasAnyEntry(DiffResult.Payload, TEXT("/Body/Tree/RootSelector/Children/MoveToTarget/DecoratorLogic/0")));
+	BTTestGetObjectField(BTTestGetObjectField(LegacyLogicBody, TEXT("Tree")), TEXT("Root"))->SetArrayField(TEXT("DecoratorLogic"), {});
+	FAssetDocumentValidateRequest Request;
+	Request.Document = BTTestMakeBehaviorTreeDocument(Target, LegacyLogicBody);
+	const FAssetDocumentResult Result = Service.Validate(Request);
+	TestFalse(TEXT("runtime DecoratorLogic is not an authored graph-source field"), Result.IsSuccess());
+	TestTrue(TEXT("legacy runtime logic field diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("UnknownField"), TEXT("/Body/Tree/Root/DecoratorLogic")));
 	return true;
 }
 
@@ -1860,49 +2039,95 @@ bool FAssetDocumentBehaviorTreeDecoratorLogicRejectsInvalidShapeTest::RunTest(co
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_InvalidDecoratorLogic");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
-	TSharedPtr<FJsonObject> InvalidTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
-	TSharedPtr<FJsonObject> RootObject = BTTestGetObjectField(InvalidTree, TEXT("Root"));
-	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
-	if (RootObject.IsValid() && RootObject->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 0)
+	const auto MakeBoundNode = [](const FString& Id, const FString& Kind)
 	{
-		TSharedPtr<FJsonObject> FirstEdge = BTTestGetObjectFromValue((*Children)[0]);
-		TArray<TSharedPtr<FJsonValue>> InvalidLogic;
-		InvalidLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicOp(TEXT("And"), 2)));
-		FirstEdge->SetArrayField(TEXT("DecoratorLogic"), InvalidLogic);
-	}
+		TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+		Node->SetStringField(TEXT("Id"), BTTestCanonicalGuid(TEXT("Bound:") + Id));
+		Node->SetStringField(TEXT("Kind"), Kind);
+		if (Kind == TEXT("Test"))
+		{
+			Node->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTDecorator_Blackboard"));
+			TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+			Properties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("TargetActor")));
+			Node->SetObjectField(TEXT("Properties"), Properties);
+		}
+		return Node;
+	};
+	const auto MakeLink = [](const FString& From, const FString& To, int32 ToInput)
+	{
+		TSharedPtr<FJsonObject> Link = MakeShared<FJsonObject>();
+		Link->SetStringField(TEXT("From"), BTTestCanonicalGuid(TEXT("Bound:") + From));
+		Link->SetStringField(TEXT("To"), BTTestCanonicalGuid(TEXT("Bound:") + To));
+		Link->SetNumberField(TEXT("ToInput"), ToInput);
+		return BTTestMakeObjectValue(Link);
+	};
+	const auto MakeComposite = [](
+		const TArray<TSharedPtr<FJsonValue>>& Nodes,
+		const TArray<TSharedPtr<FJsonValue>>& Links)
+	{
+		TSharedPtr<FJsonObject> Composite = MakeShared<FJsonObject>();
+		Composite->SetStringField(TEXT("Id"), BTTestCanonicalGuid(TEXT("Node:InvalidComposite")));
+		Composite->SetStringField(TEXT("Kind"), TEXT("Composite"));
+		TSharedPtr<FJsonObject> Properties = MakeShared<FJsonObject>();
+		Properties->SetStringField(TEXT("CompositeName"), TEXT("Invalid canonical expression"));
+		Properties->SetBoolField(TEXT("bShowOperations"), true);
+		Composite->SetObjectField(TEXT("Properties"), Properties);
+		TSharedPtr<FJsonObject> BoundGraph = MakeShared<FJsonObject>();
+		BoundGraph->SetStringField(TEXT("GraphGuid"), BTTestCanonicalGuid(TEXT("InvalidCompositeGraph")));
+		BoundGraph->SetArrayField(TEXT("Nodes"), Nodes);
+		BoundGraph->SetArrayField(TEXT("Links"), Links);
+		Composite->SetObjectField(TEXT("BoundGraph"), BoundGraph);
+		return Composite;
+	};
+	const auto SetFirstChildComposite = [](const TSharedPtr<FJsonObject>& Body, const TSharedPtr<FJsonObject>& Composite)
+	{
+		TSharedPtr<FJsonObject> Root = BTTestGetObjectField(BTTestGetObjectField(Body, TEXT("Tree")), TEXT("Root"));
+		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+		if (Root.IsValid() && Root->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 0)
+		{
+			BTTestGetObjectFromValue((*Children)[0])->SetArrayField(TEXT("Decorators"), {BTTestMakeObjectValue(Composite)});
+		}
+	};
 
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		InvalidTree,
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		MakeShared<FJsonObject>());
+	SetFirstChildComposite(Body, MakeComposite(
+		{
+			BTTestMakeObjectValue(MakeBoundNode(TEXT("Sink"), TEXT("Sink"))),
+			BTTestMakeObjectValue(MakeBoundNode(TEXT("And"), TEXT("And"))),
+			BTTestMakeObjectValue(MakeBoundNode(TEXT("Test"), TEXT("Test"))),
+		},
+		{
+			MakeLink(TEXT("Test"), TEXT("And"), 0),
+			MakeLink(TEXT("And"), TEXT("Sink"), 0),
+		}));
 	FAssetDocumentValidateRequest AndRequest;
 	AndRequest.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult AndResult = FAssetDocumentService().Validate(AndRequest);
-	TestFalse(TEXT("And without two child expressions is rejected"), AndResult.IsSuccess());
-	TestTrue(TEXT("invalid And logic reports exact edge path"), BTTestResultHasDiagnostic(AndResult, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("/Body/Tree/Root/Children/0/DecoratorLogic")));
-
-	TSharedPtr<FJsonObject> OutOfBoundsTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
-	TSharedPtr<FJsonObject> OutOfBoundsRoot = BTTestGetObjectField(OutOfBoundsTree, TEXT("Root"));
-	if (OutOfBoundsRoot.IsValid() && OutOfBoundsRoot->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 0)
-	{
-		TSharedPtr<FJsonObject> FirstEdge = BTTestGetObjectFromValue((*Children)[0]);
-		TArray<TSharedPtr<FJsonValue>> InvalidLogic;
-		InvalidLogic.Add(BTTestMakeObjectValue(BTTestMakeDecoratorLogicTest(1)));
-		FirstEdge->SetArrayField(TEXT("DecoratorLogic"), InvalidLogic);
-	}
+	TestFalse(TEXT("canonical And with only one input is rejected"), AndResult.IsSuccess());
+	TestTrue(TEXT("invalid And arity reports exact BoundGraph node path"), BTTestResultHasDiagnostic(AndResult, TEXT("InvalidBehaviorTreeDecoratorArity"), TEXT("/Body/Tree/Root/Children/0/Decorators/0/BoundGraph/Nodes/1")));
 
 	Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		OutOfBoundsTree,
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonValue> DanglingLink = MakeLink(TEXT("Test"), TEXT("Missing"), 0);
+	SetFirstChildComposite(Body, MakeComposite(
+		{
+			BTTestMakeObjectValue(MakeBoundNode(TEXT("Sink"), TEXT("Sink"))),
+			BTTestMakeObjectValue(MakeBoundNode(TEXT("Test"), TEXT("Test"))),
+		},
+		{DanglingLink}));
 	FAssetDocumentValidateRequest TestRequest;
 	TestRequest.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult TestResult = FAssetDocumentService().Validate(TestRequest);
-	TestFalse(TEXT("Test out of decorator bounds is rejected"), TestResult.IsSuccess());
-	TestTrue(TEXT("invalid Test logic reports exact entry path"), BTTestResultHasDiagnostic(TestResult, TEXT("InvalidBehaviorTreeDecoratorLogicShape"), TEXT("/Body/Tree/Root/Children/0/DecoratorLogic/0")));
+	TestFalse(TEXT("canonical dangling BoundGraph link is rejected"), TestResult.IsSuccess());
+	TestTrue(TEXT("dangling BoundGraph link reports exact target path"), BTTestResultHasDiagnostic(TestResult, TEXT("DanglingBehaviorTreeDecoratorLink"), TEXT("/Body/Tree/Root/Children/0/Decorators/0/BoundGraph/Links/0/To")));
 	return true;
 }
 
@@ -1916,40 +2141,25 @@ bool FAssetDocumentBehaviorTreeRejectsNodeLevelDecoratorsTest::RunTest(const FSt
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_NodeLevelDecorators");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
-	TSharedPtr<FJsonObject> Tree = BTTestMakeTask7BehaviorTree(SubtreeTarget, false, false);
-	TSharedPtr<FJsonObject> Root = BTTestGetObjectField(Tree, TEXT("Root"));
-	if (Root.IsValid())
-	{
-		Root->SetArrayField(TEXT("Decorators"), TArray<TSharedPtr<FJsonValue>>());
-	}
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		Tree,
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		MakeShared<FJsonObject>());
 	FAssetDocumentValidateRequest DecoratorsRequest;
 	DecoratorsRequest.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult DecoratorsResult = FAssetDocumentService().Validate(DecoratorsRequest);
-	TestFalse(TEXT("node-level Decorators are rejected instead of ignored"), DecoratorsResult.IsSuccess());
-	TestTrue(TEXT("node-level Decorators diagnostic is exact"), BTTestResultHasDiagnostic(DecoratorsResult, TEXT("UnsupportedBehaviorTreeNodeDecorators"), TEXT("/Body/Tree/Root/Decorators")));
+	TestTrue(TEXT("canonical node-level Decorators are accepted"), DecoratorsResult.IsSuccess());
 
-	Tree = BTTestMakeTask7BehaviorTree(SubtreeTarget, false, false);
-	Root = BTTestGetObjectField(Tree, TEXT("Root"));
-	if (Root.IsValid())
-	{
-		Root->SetArrayField(TEXT("DecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
-	}
-	Body = BTTestMakeBehaviorTreeBody(
-		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		Tree,
-		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> Root = BTTestGetObjectField(BTTestGetObjectField(Body, TEXT("Tree")), TEXT("Root"));
+	Root->SetArrayField(TEXT("DecoratorLogic"), {});
 	FAssetDocumentValidateRequest LogicRequest;
 	LogicRequest.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult LogicResult = FAssetDocumentService().Validate(LogicRequest);
-	TestFalse(TEXT("node-level DecoratorLogic is rejected instead of ignored"), LogicResult.IsSuccess());
-	TestTrue(TEXT("node-level DecoratorLogic diagnostic is exact"), BTTestResultHasDiagnostic(LogicResult, TEXT("UnsupportedBehaviorTreeNodeDecorators"), TEXT("/Body/Tree/Root/DecoratorLogic")));
+	TestFalse(TEXT("legacy node-level DecoratorLogic is rejected instead of ignored"), LogicResult.IsSuccess());
+	TestTrue(TEXT("legacy DecoratorLogic diagnostic is exact"), BTTestResultHasDiagnostic(LogicResult, TEXT("UnknownField"), TEXT("/Body/Tree/Root/DecoratorLogic")));
 	return true;
 }
 
@@ -1974,7 +2184,7 @@ bool FAssetDocumentBehaviorTreeSemanticDiffPathsTest::RunTest(const FString&)
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true, false);
+	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), true);
 	TSharedPtr<FJsonObject> Root = BTTestGetObjectField(DesiredTree, TEXT("Root"));
 	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
 	if (Root.IsValid() && Root->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 0)
@@ -1999,9 +2209,14 @@ bool FAssetDocumentBehaviorTreeSemanticDiffPathsTest::RunTest(const FString&)
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
 	TestTrue(TEXT("semantic diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("edge decorator change path is precise"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootSelector/Children/MoveToTarget/Decorators/HasTarget")));
-	TestFalse(TEXT("edge decorator change does not dirty parent node path"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootSelector")));
-	TestFalse(TEXT("edge decorator change does not dirty edge path"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootSelector/Children/MoveToTarget")));
+	const FString DecoratorPropertyPath = FString::Printf(
+		TEXT("/Body/Tree/Decorators/%s/Properties/BlackboardKey/Key"),
+		*BTTestCanonicalGuid(TEXT("Node:HasTarget")));
+	const FString RootNodePath = FString::Printf(TEXT("/Body/Tree/Nodes/%s"), *BTTestCanonicalGuid(TEXT("Node:RootSelector")));
+	const FString MoveNodePath = FString::Printf(TEXT("/Body/Tree/Nodes/%s"), *BTTestCanonicalGuid(TEXT("Node:MoveToTarget")));
+	TestTrue(TEXT("edge decorator change path is identity-addressed and precise"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), DecoratorPropertyPath));
+	TestFalse(TEXT("edge decorator property change does not dirty parent node path"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), RootNodePath));
+	TestFalse(TEXT("edge decorator property change does not dirty child node path"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), MoveNodePath));
 	return true;
 }
 
@@ -2015,11 +2230,11 @@ bool FAssetDocumentBehaviorTreeOrderDiffPathsTest::RunTest(const FString&)
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_OrderDiffPaths");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	FAssetDocumentService Service;
-	TSharedPtr<FJsonObject> AppliedTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> AppliedTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
 	BTTestAddSecondDecoratorSet(AppliedTree);
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
@@ -2033,7 +2248,7 @@ bool FAssetDocumentBehaviorTreeOrderDiffPathsTest::RunTest(const FString&)
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
 	BTTestAddSecondDecoratorSet(DesiredTree);
 	TSharedPtr<FJsonObject> Root = BTTestGetObjectField(DesiredTree, TEXT("Root"));
 	BTTestSwapArrayEntries(Root, TEXT("Children"), 0, 1);
@@ -2054,9 +2269,11 @@ bool FAssetDocumentBehaviorTreeOrderDiffPathsTest::RunTest(const FString&)
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
 	TestTrue(TEXT("order diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("child order change is reported"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootSelector/Children")));
-	TestTrue(TEXT("edge decorator order change is reported"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootSelector/Children/MoveToTarget/Decorators")));
-	TestTrue(TEXT("root decorator order change is reported"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/Tree/RootDecorators")));
+	const FString RootNodePath = FString::Printf(TEXT("/Body/Tree/Nodes/%s"), *BTTestCanonicalGuid(TEXT("Node:RootSelector")));
+	const FString MoveNodePath = FString::Printf(TEXT("/Body/Tree/Nodes/%s"), *BTTestCanonicalGuid(TEXT("Node:MoveToTarget")));
+	TestTrue(TEXT("child order change is reported by parent NodeGuid"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), RootNodePath + TEXT("/Children")));
+	TestTrue(TEXT("edge decorator order change is reported by child NodeGuid"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), MoveNodePath + TEXT("/Decorators")));
+	TestTrue(TEXT("root decorator order change is reported on the root node"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), RootNodePath + TEXT("/Decorators")));
 	return true;
 }
 
@@ -2068,54 +2285,73 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FAssetDocumentBehaviorTreeExtractsUniqueIdsForDuplicateDisplayNamesTest::RunTest(const FString&)
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_DuplicateDisplayNames");
-	UBehaviorTree* BehaviorTree = BTTestMakeExistingBehaviorTreeAsset(Target);
-	BehaviorTree->BlackboardAsset = BTTestMakeExistingBlackboardAsset(Target + TEXT("_BB"));
-	TestNotNull(TEXT("manual BehaviorTree exists"), BehaviorTree);
-	if (!BehaviorTree)
-	{
-		return false;
-	}
-
-	UClass* SelectorClass = LoadClass<UBTCompositeNode>(nullptr, TEXT("/Script/AIModule.BTComposite_Selector"));
-	TestNotNull(TEXT("selector class exists"), SelectorClass);
-	if (!SelectorClass)
-	{
-		return false;
-	}
-
-	UBTCompositeNode* Root = NewObject<UBTCompositeNode>(BehaviorTree, SelectorClass, NAME_None, RF_Transactional);
-	Root->NodeName = TEXT("Duplicate");
-	UBTService* FirstService = NewObject<UBTService>(BehaviorTree, UBTService_DefaultFocus::StaticClass(), NAME_None, RF_Transactional);
-	UBTService* SecondService = NewObject<UBTService>(BehaviorTree, UBTService_DefaultFocus::StaticClass(), NAME_None, RF_Transactional);
-	FirstService->NodeName = TEXT("Duplicate");
-	SecondService->NodeName = TEXT("Duplicate");
-	Root->Services = { FirstService, SecondService };
-
-	UBTTaskNode* FirstTask = NewObject<UBTTaskNode>(BehaviorTree, UBTTask_MoveTo::StaticClass(), NAME_None, RF_Transactional);
-	UBTTaskNode* SecondTask = NewObject<UBTTaskNode>(BehaviorTree, UBTTask_MoveTo::StaticClass(), NAME_None, RF_Transactional);
-	FirstTask->NodeName = TEXT("Duplicate");
-	SecondTask->NodeName = TEXT("Duplicate");
-
-	FBTCompositeChild FirstChild;
-	FirstChild.ChildTask = FirstTask;
-	UBTDecorator* FirstDecorator = NewObject<UBTDecorator>(BehaviorTree, UBTDecorator_Blackboard::StaticClass(), NAME_None, RF_Transactional);
-	UBTDecorator* SecondDecorator = NewObject<UBTDecorator>(BehaviorTree, UBTDecorator_Blackboard::StaticClass(), NAME_None, RF_Transactional);
-	FirstDecorator->NodeName = TEXT("Duplicate");
-	SecondDecorator->NodeName = TEXT("Duplicate");
-	FirstChild.Decorators = { FirstDecorator, SecondDecorator };
-
-	FBTCompositeChild SecondChild;
-	SecondChild.ChildTask = SecondTask;
-	Root->Children = { FirstChild, SecondChild };
-
-	UBTDecorator* FirstRootDecorator = NewObject<UBTDecorator>(BehaviorTree, UBTDecorator_Blackboard::StaticClass(), NAME_None, RF_Transactional);
-	UBTDecorator* SecondRootDecorator = NewObject<UBTDecorator>(BehaviorTree, UBTDecorator_Blackboard::StaticClass(), NAME_None, RF_Transactional);
-	FirstRootDecorator->NodeName = TEXT("Duplicate");
-	SecondRootDecorator->NodeName = TEXT("Duplicate");
-	BehaviorTree->RootDecorators = { FirstRootDecorator, SecondRootDecorator };
-	BehaviorTree->RootNode = Root;
-
 	FAssetDocumentService Service;
+	const FString BlackboardTarget = Target + TEXT("_BB");
+	const FString SubtreeTarget = Target + TEXT("_Subtree");
+	UBlackboardData* Blackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	UBehaviorTree* Subtree = BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	Subtree->BlackboardAsset = Blackboard;
+	TSharedPtr<FJsonObject> LegacyTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
+	BTTestAddSecondDecoratorSet(LegacyTree);
+	TSharedPtr<FJsonObject> LegacyRoot = BTTestGetObjectField(LegacyTree, TEXT("Root"));
+	const TArray<TSharedPtr<FJsonValue>>* Services = nullptr;
+	TArray<TSharedPtr<FJsonValue>> ExpandedServices;
+	if (LegacyRoot.IsValid() && LegacyRoot->TryGetArrayField(TEXT("Services"), Services) && Services)
+	{
+		ExpandedServices = *Services;
+	}
+	TSharedPtr<FJsonObject> SecondServiceProperties = MakeShared<FJsonObject>();
+	SecondServiceProperties->SetStringField(TEXT("NodeName"), TEXT("Duplicate"));
+	SecondServiceProperties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("OtherTargetActor")));
+	ExpandedServices.Add(BTTestMakeObjectValue(BTTestMakeBtNode(
+		TEXT("SecondFocusService"),
+		TEXT("/Script/AIModule.BTService_DefaultFocus"),
+		SecondServiceProperties)));
+	LegacyRoot->SetArrayField(TEXT("Services"), MoveTemp(ExpandedServices));
+
+	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
+		BTTestMakeAssetRef(Blackboard->GetPathName()),
+		LegacyTree,
+		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> CanonicalRoot = BTTestGetObjectField(BTTestGetObjectField(Body, TEXT("Tree")), TEXT("Root"));
+	TFunction<void(const TSharedPtr<FJsonObject>&)> SetDuplicateLabels;
+	SetDuplicateLabels = [&SetDuplicateLabels](const TSharedPtr<FJsonObject>& Node)
+	{
+		if (!Node.IsValid())
+		{
+			return;
+		}
+		BTTestGetObjectField(Node, TEXT("Properties"))->SetStringField(TEXT("NodeName"), TEXT("Duplicate"));
+		for (const FString& AttachmentField : {FString(TEXT("Decorators")), FString(TEXT("Services"))})
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Attachments = nullptr;
+			if (Node->TryGetArrayField(AttachmentField, Attachments) && Attachments)
+			{
+				for (const TSharedPtr<FJsonValue>& Attachment : *Attachments)
+				{
+					BTTestGetObjectField(BTTestGetObjectFromValue(Attachment), TEXT("Properties"))->SetStringField(TEXT("NodeName"), TEXT("Duplicate"));
+				}
+			}
+		}
+		const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
+		if (Node->TryGetArrayField(TEXT("Children"), Children) && Children)
+		{
+			for (const TSharedPtr<FJsonValue>& Child : *Children)
+			{
+				SetDuplicateLabels(BTTestGetObjectFromValue(Child));
+			}
+		}
+	};
+	SetDuplicateLabels(CanonicalRoot);
+	const FAssetDocumentResult ApplyResult = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, Body)));
+	TestTrue(TEXT("duplicate display-name canonical graph applies"), ApplyResult.IsSuccess());
+	if (!ApplyResult.IsSuccess())
+	{
+		AddError(ApplyResult.Message);
+		return false;
+	}
+	UBehaviorTree* BehaviorTree = BTTestLoadBehaviorTreeForTarget(Target);
+
 	FAssetDocumentExtractRequest ExtractRequest;
 	ExtractRequest.AssetPath = Target;
 	ExtractRequest.bDiffOnly = true;
@@ -2161,8 +2397,8 @@ bool FAssetDocumentBehaviorTreeEditorLayoutTest::RunTest(const FString&)
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_EditorLayout");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	const FString CommentId = TEXT("11111111-2222-3333-4444-555555555555");
 	TSharedPtr<FJsonObject> Layout = BTTestMakeEditorLayout(
@@ -2177,7 +2413,7 @@ bool FAssetDocumentBehaviorTreeEditorLayoutTest::RunTest(const FString&)
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false),
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		Layout);
 	const FAssetDocumentResult ApplyResult = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, Body)));
 	TestTrue(TEXT("semantic tree and editor layout apply succeeds"), ApplyResult.IsSuccess());
@@ -2240,16 +2476,17 @@ bool FAssetDocumentBehaviorTreeEditorLayoutTest::RunTest(const FString&)
 	TestTrue(TEXT("editor layout extract succeeds"), ExtractResult.IsSuccess());
 
 	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
-	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
-	TestTrue(TEXT("extract payload contains Body.EditorLayout"), ExtractResult.Payload.IsValid()
+	const TSharedPtr<FJsonObject>* ExtractedTree = nullptr;
+	TestTrue(TEXT("extract payload contains graph-source Body.Tree"), ExtractResult.Payload.IsValid()
 		&& ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody)
-		&& ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout));
-	if (ExtractedLayout && ExtractedLayout->IsValid())
+		&& ExtractedBody && (*ExtractedBody)->TryGetObjectField(TEXT("Tree"), ExtractedTree));
+	if (ExtractedTree && ExtractedTree->IsValid())
 	{
-		const TArray<TSharedPtr<FJsonValue>>* ExtractedNodes = nullptr;
+		TSharedPtr<FJsonObject> ExtractedRoot = BTTestGetObjectField(*ExtractedTree, TEXT("Root"));
 		const TArray<TSharedPtr<FJsonValue>>* ExtractedComments = nullptr;
-		TestTrue(TEXT("layout nodes extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Nodes"), ExtractedNodes) && ExtractedNodes && ExtractedNodes->Num() >= 2);
-		TestTrue(TEXT("layout comments extracted"), (*ExtractedLayout)->TryGetArrayField(TEXT("Comments"), ExtractedComments) && ExtractedComments && ExtractedComments->Num() == 1);
+		TestEqual(TEXT("root editor X extracts inline"), BTTestGetObjectField(BTTestGetObjectField(ExtractedRoot, TEXT("Editor")), TEXT("Position"))->GetNumberField(TEXT("X")), 100.0);
+		TestEqual(TEXT("root editor Y extracts inline"), BTTestGetObjectField(BTTestGetObjectField(ExtractedRoot, TEXT("Editor")), TEXT("Position"))->GetNumberField(TEXT("Y")), 200.0);
+		TestTrue(TEXT("tree comments extract with graph source"), (*ExtractedTree)->TryGetArrayField(TEXT("Comments"), ExtractedComments) && ExtractedComments && ExtractedComments->Num() == 1);
 	}
 	return true;
 }
@@ -2264,14 +2501,14 @@ bool FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest::RunTest(
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_SparseLayoutComments");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	const FString CommentId = TEXT("22222222-3333-4444-5555-666666666666");
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> InitialBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false),
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		BTTestMakeEditorLayout(
 			{
 				BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
@@ -2289,9 +2526,8 @@ bool FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest::RunTest(
 	}
 
 	TSharedPtr<FJsonObject> SparseBody = MakeShared<FJsonObject>();
-	SparseBody->SetObjectField(TEXT("EditorLayout"), MakeShared<FJsonObject>());
 	const FAssetDocumentResult SparseApply = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, SparseBody)));
-	TestTrue(TEXT("sparse EditorLayout apply succeeds"), SparseApply.IsSuccess());
+	TestTrue(TEXT("omitted canonical Tree region apply succeeds"), SparseApply.IsSuccess());
 	if (!SparseApply.IsSuccess())
 	{
 		AddError(SparseApply.Message);
@@ -2301,7 +2537,7 @@ bool FAssetDocumentBehaviorTreeEditorLayoutSparsePreservesCommentsTest::RunTest(
 	UBehaviorTree* BehaviorTree = BTTestLoadBehaviorTreeForTarget(Target);
 	UBehaviorTreeGraph* Graph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : nullptr;
 	UEdGraphNode_Comment* Comment = BTTestFindEditorLayoutComment(Graph, CommentId);
-	TestNotNull(TEXT("sparse EditorLayout preserves existing comments"), Comment);
+	TestNotNull(TEXT("omitted Tree preserves existing graph comments"), Comment);
 	if (Comment)
 	{
 		TestEqual(TEXT("preserved comment text"), Comment->NodeComment, FString(TEXT("Persist me")));
@@ -2319,14 +2555,14 @@ bool FAssetDocumentBehaviorTreeEditorLayoutExplicitEmptyCommentsDeletesTest::Run
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_DeleteLayoutComments");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	const FString CommentId = TEXT("44444444-5555-6666-7777-888888888888");
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> InitialBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false),
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		BTTestMakeEditorLayout(
 			{
 				BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
@@ -2343,10 +2579,10 @@ bool FAssetDocumentBehaviorTreeEditorLayoutExplicitEmptyCommentsDeletesTest::Run
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> DeleteLayout = MakeShared<FJsonObject>();
-	DeleteLayout->SetArrayField(TEXT("Comments"), TArray<TSharedPtr<FJsonValue>>());
+	TSharedPtr<FJsonObject> DeleteTree = BTTestGetObjectField(InitialBody, TEXT("Tree"));
+	DeleteTree->SetArrayField(TEXT("Comments"), TArray<TSharedPtr<FJsonValue>>());
 	TSharedPtr<FJsonObject> DeleteBody = MakeShared<FJsonObject>();
-	DeleteBody->SetObjectField(TEXT("EditorLayout"), DeleteLayout);
+	DeleteBody->SetObjectField(TEXT("Tree"), DeleteTree);
 	const FAssetDocumentResult DeleteApply = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, DeleteBody)));
 	TestTrue(TEXT("explicit empty Comments apply succeeds"), DeleteApply.IsSuccess());
 	if (!DeleteApply.IsSuccess())
@@ -2362,14 +2598,14 @@ bool FAssetDocumentBehaviorTreeEditorLayoutExplicitEmptyCommentsDeletesTest::Run
 	TestTrue(TEXT("extract after explicit comment delete succeeds"), ExtractResult.IsSuccess());
 
 	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
-	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
+	const TSharedPtr<FJsonObject>* ExtractedTree = nullptr;
 	const TArray<TSharedPtr<FJsonValue>>* ExtractedComments = nullptr;
-	TestTrue(TEXT("extract contains empty Body.EditorLayout.Comments"), ExtractResult.Payload.IsValid()
+	TestTrue(TEXT("extract contains empty Body.Tree.Comments"), ExtractResult.Payload.IsValid()
 		&& ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody)
 		&& ExtractedBody
-		&& (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout)
-		&& ExtractedLayout
-		&& (*ExtractedLayout)->TryGetArrayField(TEXT("Comments"), ExtractedComments)
+		&& (*ExtractedBody)->TryGetObjectField(TEXT("Tree"), ExtractedTree)
+		&& ExtractedTree
+		&& (*ExtractedTree)->TryGetArrayField(TEXT("Comments"), ExtractedComments)
 		&& ExtractedComments
 		&& ExtractedComments->Num() == 0);
 
@@ -2398,12 +2634,12 @@ bool FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest::RunTest
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_OptionalCommentColor");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	const FString CommentId = TEXT("33333333-4444-5555-6666-777777777777");
 	FAssetDocumentService Service;
-	TSharedPtr<FJsonObject> Tree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> Tree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
 	TSharedPtr<FJsonObject> LayoutWithoutColor = BTTestMakeEditorLayout(
 		{
 			BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
@@ -2426,7 +2662,7 @@ bool FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest::RunTest
 
 	TSharedPtr<FJsonObject> DesiredBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false),
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
 		LayoutWithoutColor);
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
 	TestTrue(TEXT("diff for comment without Color succeeds"), DiffResult.IsSuccess());
@@ -2436,9 +2672,11 @@ bool FAssetDocumentBehaviorTreeEditorLayoutCommentColorOptionalDiffTest::RunTest
 		return false;
 	}
 
-	const FString CommentPath = FString::Printf(TEXT("/Body/EditorLayout/Comments/%s"), *CommentId);
+	FGuid ParsedCommentGuid;
+	FGuid::Parse(CommentId, ParsedCommentGuid);
+	const FString CommentPath = FString::Printf(TEXT("/Body/Tree/Comments/%s"), *ParsedCommentGuid.ToString(EGuidFormats::Digits));
 	TestFalse(TEXT("omitted Color does not keep comment changed"), BTTestDiffPayloadHasChangedPathPrefix(DiffResult.Payload, CommentPath));
-	TestFalse(TEXT("optional comment Color diff does not emit changed semantic tree entries"), BTTestDiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
+	TestFalse(TEXT("optional comment Color produces a canonical no-op Tree diff"), BTTestDiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
 	return true;
 }
 
@@ -2452,18 +2690,22 @@ bool FAssetDocumentBehaviorTreeEditorLayoutRejectsDanglingNodeTest::RunTest(cons
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_DanglingLayout");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> Body = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
-		BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false),
-		BTTestMakeEditorLayout({BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("MissingNode"), 10, 20))}));
+		BTTestMakeTask7BehaviorTree(SubtreeTarget, true),
+		MakeShared<FJsonObject>());
+	TSharedPtr<FJsonObject> Root = BTTestGetObjectField(BTTestGetObjectField(Body, TEXT("Tree")), TEXT("Root"));
+	BTTestGetObjectField(BTTestGetObjectField(Root, TEXT("Editor")), TEXT("Position"))->SetNumberField(TEXT("X"), 10.5);
 	const FAssetDocumentResult ApplyResult = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, Body)));
-	TestFalse(TEXT("dangling layout node apply is rejected"), ApplyResult.IsSuccess());
-	TestTrue(TEXT("dangling layout diagnostic is exact"), BTTestResultHasDiagnostic(ApplyResult, TEXT("UnknownEditorLayoutNode"), TEXT("/Body/EditorLayout/Nodes/MissingNode")));
-	TestNull(TEXT("failed layout preflight does not create target BehaviorTree"), BTTestLoadBehaviorTreeForTarget(Target));
+	TestFalse(TEXT("non-integral inline editor coordinate is rejected"), ApplyResult.IsSuccess());
+	TestTrue(TEXT("inline editor coordinate diagnostic is exact"), BTTestResultHasDiagnostic(ApplyResult, TEXT("InvalidBehaviorTreeCoordinate"), TEXT("/Body/Tree/Root/Editor/Position/X")));
+	TestNull(
+		TEXT("failed graph-source editor preflight does not create target BehaviorTree"),
+		FindObject<UBehaviorTree>(nullptr, *BTTestMakeObjectPathFromTarget(Target)));
 	return true;
 }
 
@@ -2477,11 +2719,11 @@ bool FAssetDocumentBehaviorTreeEditorLayoutOnlyDiffTest::RunTest(const FString&)
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task9_LayoutOnlyDiff");
 	const FString BlackboardTarget = Target + TEXT("_BB");
 	const FString SubtreeTarget = Target + TEXT("_Subtree");
-	BTTestMakeTask7BlackboardAsset(BlackboardTarget);
-	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget);
+	UBlackboardData* FixtureBlackboard = BTTestMakeTask7BlackboardAsset(BlackboardTarget);
+	BTTestMakeExistingBehaviorTreeAsset(SubtreeTarget)->BlackboardAsset = FixtureBlackboard;
 
 	FAssetDocumentService Service;
-	TSharedPtr<FJsonObject> AppliedTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> AppliedTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
 	TSharedPtr<FJsonObject> AppliedLayout = BTTestMakeEditorLayout(
 		{
 			BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("RootSelector"), 100, 200)),
@@ -2499,7 +2741,7 @@ bool FAssetDocumentBehaviorTreeEditorLayoutOnlyDiffTest::RunTest(const FString&)
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true, false);
+	TSharedPtr<FJsonObject> DesiredTree = BTTestMakeTask7BehaviorTree(SubtreeTarget, true);
 	TSharedPtr<FJsonObject> DesiredLayout = BTTestMakeEditorLayout(
 		{
 			BTTestMakeObjectValue(BTTestMakeEditorLayoutNode(TEXT("RootSelector"), 180, 260)),
@@ -2511,12 +2753,16 @@ bool FAssetDocumentBehaviorTreeEditorLayoutOnlyDiffTest::RunTest(const FString&)
 		DesiredLayout);
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(BTTestMakeBehaviorTreeDocument(Target, DesiredBody)));
 	TestTrue(TEXT("layout-only diff succeeds"), DiffResult.IsSuccess());
-	TestTrue(TEXT("layout node path changed"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), TEXT("/Body/EditorLayout/Nodes/RootSelector")));
-	if (BTTestDiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")))
-	{
-		BTTestAddDiffPathsWithPrefix(*this, DiffResult.Payload, TEXT("/Body/Tree"));
-	}
-	TestFalse(TEXT("layout-only diff does not emit changed semantic tree entries"), BTTestDiffPayloadHasChangedPathPrefix(DiffResult.Payload, TEXT("/Body/Tree")));
+	const FString RootEditorPath = FString::Printf(
+		TEXT("/Body/Tree/Nodes/%s/Editor/Position"),
+		*BTTestCanonicalGuid(TEXT("Node:RootSelector")));
+	TestTrue(TEXT("inline root editor X path changed"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), RootEditorPath + TEXT("/X")));
+	TestTrue(TEXT("inline root editor Y path changed"), BTTestDiffPayloadHasEntry(DiffResult.Payload, TEXT("changed"), RootEditorPath + TEXT("/Y")));
+	const TArray<TSharedPtr<FJsonValue>>* ChangedEntries = nullptr;
+	TestTrue(TEXT("layout-only diff contains exactly the two authored coordinate changes"), DiffResult.Payload.IsValid()
+		&& DiffResult.Payload->TryGetArrayField(TEXT("changed"), ChangedEntries)
+		&& ChangedEntries
+		&& ChangedEntries->Num() == 2);
 	return true;
 }
 
@@ -2529,16 +2775,16 @@ bool FAssetDocumentBehaviorTreeDynamicNodeClassesTest::RunTest(const FString&)
 {
 	const FString Target = TEXT("/Game/AssetDocumentTests/BT_AD_Task7_DynamicClasses");
 	FAssetDocumentService Service;
-	if (!BTTestApplyTask7TreeFixture(*this, Service, Target, true, true))
+	if (!BTTestApplyTask7TreeFixture(*this, Service, Target, true))
 	{
 		return false;
 	}
 
 	UBehaviorTree* BehaviorTree = BTTestLoadBehaviorTreeForTarget(Target);
 	UBTCompositeNode* Root = BehaviorTree ? BehaviorTree->RootNode : nullptr;
-	TestTrue(TEXT("short selector class resolved dynamically"), Root && Root->GetClass()->GetPathName() == TEXT("/Script/AIModule.BTComposite_Selector"));
-	TestTrue(TEXT("short service class resolved dynamically"), Root && Root->Services.Num() == 1 && Root->Services[0]->GetClass()->IsChildOf(UBTService_DefaultFocus::StaticClass()));
-	TestTrue(TEXT("short edge decorator class resolved dynamically"), Root && Root->Children.Num() > 0 && Root->Children[0].Decorators.Num() == 1 && Root->Children[0].Decorators[0]->GetClass()->IsChildOf(UBTDecorator_Blackboard::StaticClass()));
+	TestTrue(TEXT("canonical selector class path resolves dynamically"), Root && Root->GetClass()->GetPathName() == TEXT("/Script/AIModule.BTComposite_Selector"));
+	TestTrue(TEXT("canonical service class path resolves dynamically"), Root && Root->Services.Num() == 1 && Root->Services[0]->GetClass() == UBTService_DefaultFocus::StaticClass());
+	TestTrue(TEXT("canonical decorator class path resolves dynamically"), Root && Root->Children.Num() > 0 && Root->Children[0].Decorators.Num() == 1 && Root->Children[0].Decorators[0]->GetClass() == UBTDecorator_Blackboard::StaticClass());
 	return true;
 }
 
@@ -2564,7 +2810,7 @@ bool FAssetDocumentBehaviorTreeApplyFailureDoesNotMutateExistingTest::RunTest(co
 	UBlackboardData* OriginalBlackboard = BehaviorTree ? BehaviorTree->BlackboardAsset : nullptr;
 	TestNotNull(TEXT("original root exists"), OriginalRoot);
 
-	TSharedPtr<FJsonObject> InvalidTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), false, false);
+	TSharedPtr<FJsonObject> InvalidTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), false);
 	TSharedPtr<FJsonObject> InvalidRoot = BTTestGetObjectField(InvalidTree, TEXT("Root"));
 	if (InvalidRoot.IsValid())
 	{
@@ -2581,7 +2827,7 @@ bool FAssetDocumentBehaviorTreeApplyFailureDoesNotMutateExistingTest::RunTest(co
 	TestTrue(TEXT("RootNode pointer survives failed apply"), BehaviorTree->RootNode == OriginalRoot);
 	TestEqual(TEXT("existing children survive failed apply"), OriginalRoot ? OriginalRoot->Children.Num() : -1, OriginalChildren);
 
-	TSharedPtr<FJsonObject> LateInvalidTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), false, false);
+	TSharedPtr<FJsonObject> LateInvalidTree = BTTestMakeTask7BehaviorTree(Target + TEXT("_Subtree"), false);
 	TSharedPtr<FJsonObject> LateInvalidRoot = BTTestGetObjectField(LateInvalidTree, TEXT("Root"));
 	const TArray<TSharedPtr<FJsonValue>>* Children = nullptr;
 	if (LateInvalidRoot.IsValid() && LateInvalidRoot->TryGetArrayField(TEXT("Children"), Children) && Children && Children->Num() > 1)
@@ -2601,6 +2847,7 @@ bool FAssetDocumentBehaviorTreeApplyFailureDoesNotMutateExistingTest::RunTest(co
 		nullptr,
 		LateInvalidTree,
 		MakeShared<FJsonObject>());
+	LateInvalidBody->RemoveField(TEXT("BlackboardAsset"));
 	const FAssetDocumentResult LateFailedApply = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, LateInvalidBody)));
 	TestFalse(TEXT("late reflected property apply fails"), LateFailedApply.IsSuccess());
 	TestTrue(TEXT("RootNode pointer survives late failed apply"), BehaviorTree->RootNode == OriginalRoot);
@@ -2684,10 +2931,10 @@ bool FAssetDocumentBehaviorTreeGraphFailureRollsBackSemanticTreeTest::RunTest(co
 		BTTestMakeAssetRef(BehaviorTree->BlackboardAsset->GetPathName()),
 		BTTestMakeMoveToTreeWithKeys({TEXT("TargetActor")}),
 		MakeShared<FJsonObject>());
-	FBehaviorTreeAssetDocumentMaterializer::FailNextEditorGraphRebuildForTest();
+	FBehaviorTreeAssetDocumentMaterializer::FailNextTreeGraphSwapForTest();
 	const FAssetDocumentResult FailedApply = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, ChangedBody)));
-	TestFalse(TEXT("forced graph rebuild apply fails"), FailedApply.IsSuccess());
-	TestTrue(TEXT("forced graph rebuild diagnostic is exact"), BTTestResultHasDiagnostic(FailedApply, TEXT("ForcedBehaviorTreeEditorGraphRebuildFailure"), TEXT("/Body/EditorLayout")));
+	TestFalse(TEXT("forced graph swap apply fails"), FailedApply.IsSuccess());
+	TestTrue(TEXT("forced graph swap diagnostic is exact"), BTTestResultHasDiagnostic(FailedApply, TEXT("ForcedBehaviorTreeGraphSwapFailure"), TEXT("/Body/Tree")));
 	TestTrue(TEXT("graph failure preserves root pointer"), BehaviorTree && BehaviorTree->RootNode == OriginalRoot);
 	TestTrue(TEXT("graph failure preserves editor graph pointer"), BehaviorTree && Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) == OriginalGraph);
 	TestEqual(TEXT("graph failure preserves child count"), OriginalRoot ? OriginalRoot->Children.Num() : -1, OriginalChildren);
@@ -2831,7 +3078,7 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 	ParentUsesChildSubtreeRequest.Document = BTTestMakeBehaviorTreeDocument(Target, ParentUsesChildSubtreeBody);
 	const FAssetDocumentResult ParentUsesChildSubtreeResult = Service.Validate(ParentUsesChildSubtreeRequest);
 	TestFalse(TEXT("parent blackboard cannot run child-blackboard subtree"), ParentUsesChildSubtreeResult.IsSuccess());
-	TestTrue(TEXT("child subtree mismatch diagnostic is exact"), BTTestResultHasDiagnostic(ParentUsesChildSubtreeResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/RunSubtree/Properties/BehaviorAsset")));
+	TestTrue(TEXT("child subtree mismatch diagnostic is exact"), BTTestResultHasDiagnostic(ParentUsesChildSubtreeResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/Root/Children/0/Properties/BehaviorAsset")));
 
 	TSharedPtr<FJsonObject> IncompatibleBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(ParentBlackboardTarget)),
@@ -2841,7 +3088,7 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 	IncompatibleRequest.Document = BTTestMakeBehaviorTreeDocument(Target, IncompatibleBody);
 	const FAssetDocumentResult IncompatibleResult = Service.Validate(IncompatibleRequest);
 	TestFalse(TEXT("subtree with unrelated blackboard is rejected"), IncompatibleResult.IsSuccess());
-	TestTrue(TEXT("subtree mismatch diagnostic is exact"), BTTestResultHasDiagnostic(IncompatibleResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/RunSubtree/Properties/BehaviorAsset")));
+	TestTrue(TEXT("subtree mismatch diagnostic is exact"), BTTestResultHasDiagnostic(IncompatibleResult, TEXT("IncompatibleBehaviorTreeBlackboard"), TEXT("/Body/Tree/Root/Children/0/Properties/BehaviorAsset")));
 
 	const FAssetDocumentResult ApplyCompatible = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, ParentUsesSameSubtreeBody)));
 	TestTrue(TEXT("compatible subtree fixture apply succeeds"), ApplyCompatible.IsSuccess());
@@ -2855,8 +3102,8 @@ bool FAssetDocumentBehaviorTreeSubtreeBlackboardCompatibilityTest::RunTest(const
 		BTTestMakeRunBehaviorTree(SameSubtreeTarget),
 		MakeShared<FJsonObject>());
 	const FAssetDocumentResult MissingBlackboardApply = Service.Apply(BTTestMakeApplyRequest(BTTestMakeBehaviorTreeDocument(Target, MissingBlackboardBody)));
-	TestFalse(TEXT("missing Body.Blackboard for subtree validation is rejected"), MissingBlackboardApply.IsSuccess());
-	TestTrue(TEXT("missing blackboard diagnostic is exact"), BTTestResultHasDiagnostic(MissingBlackboardApply, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/Blackboard")));
+	TestFalse(TEXT("explicit null Body.BlackboardAsset for subtree validation is rejected"), MissingBlackboardApply.IsSuccess());
+	TestTrue(TEXT("missing blackboard diagnostic is exact"), BTTestResultHasDiagnostic(MissingBlackboardApply, TEXT("MissingBehaviorTreeBlackboard"), TEXT("/Body/BlackboardAsset")));
 	TestTrue(TEXT("failed missing-blackboard apply does not replace root"), BehaviorTree && BehaviorTree->RootNode == OriginalRoot);
 	TestTrue(TEXT("failed missing-blackboard apply does not replace blackboard"), BehaviorTree && BehaviorTree->BlackboardAsset == OriginalBlackboard);
 	return true;
@@ -2887,7 +3134,7 @@ bool FAssetDocumentBehaviorTreeUnknownBlackboardKeyRejectsTest::RunTest(const FS
 	Request.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("unknown blackboard selector key is rejected"), Result.IsSuccess());
-	TestTrue(TEXT("unknown key diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("UnknownBlackboardKey"), TEXT("/Body/Tree/MoveTo_MissingTarget/Properties/BlackboardKey/Key")));
+	TestTrue(TEXT("unknown key diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("UnknownBlackboardKey"), TEXT("/Body/Tree/Root/Children/0/Properties/BlackboardKey/Key")));
 	return true;
 }
 
@@ -2911,8 +3158,6 @@ bool FAssetDocumentBehaviorTreeDuplicateNodeIdDiagnosticTest::RunTest(const FStr
 
 	TSharedPtr<FJsonObject> Tree = MakeShared<FJsonObject>();
 	Tree->SetObjectField(TEXT("Root"), Root);
-	Tree->SetArrayField(TEXT("RootDecorators"), TArray<TSharedPtr<FJsonValue>>());
-	Tree->SetArrayField(TEXT("RootDecoratorLogic"), TArray<TSharedPtr<FJsonValue>>());
 
 	FAssetDocumentValidateRequest Request;
 	Request.Document = BTTestMakeBehaviorTreeDocument(
@@ -2920,7 +3165,7 @@ bool FAssetDocumentBehaviorTreeDuplicateNodeIdDiagnosticTest::RunTest(const FStr
 		BTTestMakeBehaviorTreeBody(nullptr, Tree, MakeShared<FJsonObject>()));
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("duplicate behavior tree node id is rejected"), Result.IsSuccess());
-	TestTrue(TEXT("duplicate behavior tree node id diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("DuplicateBehaviorTreeNodeId"), TEXT("/Body/Tree/Root")));
+	TestTrue(TEXT("duplicate behavior tree NodeGuid diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("DuplicateBehaviorTreeNodeGuid"), TEXT("/Body/Tree/Root/Children/0/Id")));
 	return true;
 }
 
@@ -2951,7 +3196,7 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	Request.Document = BTTestMakeBehaviorTreeDocument(Target, Body);
 	const FAssetDocumentResult Result = FAssetDocumentService().Validate(Request);
 	TestFalse(TEXT("selector key type mismatch is rejected"), Result.IsSuccess());
-	TestTrue(TEXT("key type mismatch diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/SelectorTask/Properties/BlackboardKey/Key")));
+	TestTrue(TEXT("key type mismatch diagnostic is exact"), BTTestResultHasDiagnostic(Result, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/Root/Children/0/Properties/BlackboardKey/Key")));
 
 	TSharedPtr<FJsonObject> CompatibleMoveToBody = BTTestMakeBehaviorTreeBody(
 		BTTestMakeAssetRef(BTTestMakeObjectPathFromTarget(BlackboardTarget)),
@@ -2991,7 +3236,7 @@ bool FAssetDocumentBehaviorTreeIncompatibleBlackboardKeyTypeRejectsTest::RunTest
 	IncompatibleBoolRequest.Document = BTTestMakeBehaviorTreeDocument(Target, IncompatibleBoolBody);
 	const FAssetDocumentResult IncompatibleBoolResult = FAssetDocumentService().Validate(IncompatibleBoolRequest);
 	TestFalse(TEXT("SetKeyValueBool class policy rejects a vector key"), IncompatibleBoolResult.IsSuccess());
-	TestTrue(TEXT("bool policy mismatch diagnostic is exact"), BTTestResultHasDiagnostic(IncompatibleBoolResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/SelectorTask/Properties/BlackboardKey/Key")));
+	TestTrue(TEXT("bool policy mismatch diagnostic is exact"), BTTestResultHasDiagnostic(IncompatibleBoolResult, TEXT("IncompatibleBlackboardKeyType"), TEXT("/Body/Tree/Root/Children/0/Properties/BlackboardKey/Key")));
 	return true;
 }
 
@@ -3031,13 +3276,13 @@ bool FAssetDocumentBehaviorTreeFullApplyExtractDiffTest::RunTest(const FString&)
 	TestTrue(TEXT("BehaviorTree references authored blackboard"), BehaviorTree && BehaviorTree->BlackboardAsset == Blackboard);
 	TestNotNull(TEXT("root composite exists"), Root);
 	TestEqual(TEXT("root decorator count"), BehaviorTree ? BehaviorTree->RootDecorators.Num() : -1, 1);
-	TestEqual(TEXT("root decorator logic count"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1, 1);
+	TestEqual(TEXT("ordinary root decorators have no runtime logic program"), BehaviorTree ? BehaviorTree->RootDecoratorOps.Num() : -1, 0);
 	TestEqual(TEXT("root service count"), Root ? Root->Services.Num() : -1, 1);
 	TestEqual(TEXT("root child count"), Root ? Root->Children.Num() : -1, 2);
 	if (Root && Root->Children.Num() >= 2)
 	{
 		TestEqual(TEXT("first edge decorator count"), Root->Children[0].Decorators.Num(), 1);
-		TestEqual(TEXT("first edge decorator logic count"), Root->Children[0].DecoratorOps.Num(), 1);
+		TestEqual(TEXT("ordinary edge decorators have no runtime logic program"), Root->Children[0].DecoratorOps.Num(), 0);
 		TestNotNull(TEXT("first child task exists"), Root->Children[0].ChildTask.Get());
 		UBTTask_RunBehavior* RunSubtreeTask = Cast<UBTTask_RunBehavior>(Root->Children[1].ChildTask);
 		TestNotNull(TEXT("subtree task exists"), RunSubtreeTask);
@@ -3058,21 +3303,17 @@ bool FAssetDocumentBehaviorTreeFullApplyExtractDiffTest::RunTest(const FString&)
 
 	const TSharedPtr<FJsonObject>* ExtractedBody = nullptr;
 	const TSharedPtr<FJsonObject>* ExtractedTree = nullptr;
-	const TSharedPtr<FJsonObject>* ExtractedLayout = nullptr;
 	TestTrue(TEXT("extract contains Body"), ExtractResult.Payload->TryGetObjectField(TEXT("Body"), ExtractedBody));
 	TestTrue(TEXT("extract contains Body.Tree"), ExtractedBody && ExtractedBody->IsValid() && (*ExtractedBody)->TryGetObjectField(TEXT("Tree"), ExtractedTree));
-	TestTrue(TEXT("extract contains Body.EditorLayout"), ExtractedBody && ExtractedBody->IsValid() && (*ExtractedBody)->TryGetObjectField(TEXT("EditorLayout"), ExtractedLayout));
+	TestFalse(TEXT("extract does not split Body.EditorLayout"), ExtractedBody && ExtractedBody->IsValid() && (*ExtractedBody)->HasField(TEXT("EditorLayout")));
 	if (ExtractedTree && ExtractedTree->IsValid())
 	{
+		TSharedPtr<FJsonObject> ExtractedRoot = BTTestGetObjectField(*ExtractedTree, TEXT("Root"));
 		const TArray<TSharedPtr<FJsonValue>>* RootDecorators = nullptr;
-		const TArray<TSharedPtr<FJsonValue>>* RootLogic = nullptr;
-		TestTrue(TEXT("extract includes root decorators"), (*ExtractedTree)->TryGetArrayField(TEXT("RootDecorators"), RootDecorators) && RootDecorators && RootDecorators->Num() == 1);
-		TestTrue(TEXT("extract includes root decorator logic"), (*ExtractedTree)->TryGetArrayField(TEXT("RootDecoratorLogic"), RootLogic) && RootLogic && RootLogic->Num() == 1);
-	}
-	if (ExtractedLayout && ExtractedLayout->IsValid())
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Nodes = nullptr;
-		TestTrue(TEXT("extract includes editor layout nodes"), (*ExtractedLayout)->TryGetArrayField(TEXT("Nodes"), Nodes) && Nodes && Nodes->Num() >= 2);
+		const TArray<TSharedPtr<FJsonValue>>* Comments = nullptr;
+		TestTrue(TEXT("extract includes root node decorators"), ExtractedRoot.IsValid() && ExtractedRoot->TryGetArrayField(TEXT("Decorators"), RootDecorators) && RootDecorators && RootDecorators->Num() == 1);
+		TestTrue(TEXT("extract includes graph comments"), (*ExtractedTree)->TryGetArrayField(TEXT("Comments"), Comments) && Comments && Comments->Num() == 1);
+		TestNotNull(TEXT("extract includes inline root editor state"), BTTestGetObjectField(ExtractedRoot, TEXT("Editor")).Get());
 	}
 
 	const FAssetDocumentResult DiffResult = Service.Diff(BTTestMakeDiffRequest(Document));
@@ -3142,9 +3383,8 @@ bool FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest::RunTest(const FS
 		return false;
 	}
 	BTTestExpectSyncRegions(this, ReloadedSidecar, {
-		TEXT("Body.Blackboard"),
+		TEXT("Body.BlackboardAsset"),
 		TEXT("Body.Tree"),
-		TEXT("Body.EditorLayout"),
 	});
 
 	FAssetDocumentDiffRequest DiffRequest;
@@ -3160,8 +3400,7 @@ bool FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest::RunTest(const FS
 	const TArray<TSharedPtr<FJsonValue>>* DerivedAllowedTypesChildren = nullptr;
 	if (DerivedAllowedTypesRoot.IsValid() && DerivedAllowedTypesRoot->TryGetArrayField(TEXT("Children"), DerivedAllowedTypesChildren) && DerivedAllowedTypesChildren && DerivedAllowedTypesChildren->Num() > 0)
 	{
-		TSharedPtr<FJsonObject> MoveEdge = BTTestGetObjectFromValue((*DerivedAllowedTypesChildren)[0]);
-		TSharedPtr<FJsonObject> MoveToNode = BTTestGetObjectField(MoveEdge, TEXT("Child"));
+		TSharedPtr<FJsonObject> MoveToNode = BTTestGetObjectFromValue((*DerivedAllowedTypesChildren)[0]);
 		TSharedPtr<FJsonObject> MoveToProperties = BTTestGetObjectField(MoveToNode, TEXT("Properties"));
 		TSharedPtr<FJsonObject> MoveToBlackboardKey = BTTestGetObjectField(MoveToProperties, TEXT("BlackboardKey"));
 		if (MoveToBlackboardKey.IsValid())
@@ -3171,7 +3410,7 @@ bool FAssetDocumentBehaviorTreeApplyFileCanonicalWritebackTest::RunTest(const FS
 	}
 	const FAssetDocumentResult AllowedTypesDiffResult = Service.Diff(BTTestMakeDiffRequest(DerivedAllowedTypesDocument));
 	TestFalse(TEXT("BehaviorTree rejects authored selector AllowedTypes"), AllowedTypesDiffResult.IsSuccess());
-	TestTrue(TEXT("BehaviorTree selector AllowedTypes diagnostic is exact"), BTTestResultHasDiagnostic(AllowedTypesDiffResult, TEXT("NonAuthoredProperty"), TEXT("/Body/Tree/Root/Children/0/Child/Properties/BlackboardKey/AllowedTypes")));
+	TestTrue(TEXT("BehaviorTree selector AllowedTypes diagnostic is exact"), BTTestResultHasDiagnostic(AllowedTypesDiffResult, TEXT("NonAuthoredProperty"), TEXT("/Body/Tree/Root/Children/0/Properties/BlackboardKey/AllowedTypes")));
 
 	TSharedPtr<FJsonObject> ChangedServiceSelectorDocument = BTTestMakeBehaviorTreeDocument(Target, BTTestMakeTask10BehaviorTreeBody(BlackboardTarget, SubtreeTarget));
 	TSharedPtr<FJsonObject> ChangedBody = BTTestGetObjectField(ChangedServiceSelectorDocument, TEXT("Body"));
@@ -3289,19 +3528,19 @@ bool FAssetDocumentBehaviorTreeProfileInspectionListsAllRegionsTest::RunTest(con
 	const TArray<TSharedPtr<FJsonValue>>* RegionPolicies = nullptr;
 	TestTrue(TEXT("BehaviorTree profile exposes RegionPolicies"), Result.Payload->TryGetArrayField(TEXT("RegionPolicies"), RegionPolicies));
 	for (const FString& RegionId : {
-		TEXT("Body.Blackboard"),
+		TEXT("Body.BlackboardAsset"),
 		TEXT("Body.Tree"),
-		TEXT("Body.EditorLayout"),
 	})
 	{
 		TestTrue(FString::Printf(TEXT("BehaviorTree RegionPolicies contains %s"), *RegionId), BTTestRegionPoliciesContain(RegionPolicies, RegionId));
 	}
+	TestFalse(TEXT("BehaviorTree RegionPolicies omit split EditorLayout"), BTTestRegionPoliciesContain(RegionPolicies, TEXT("Body.EditorLayout")));
 
 	const TArray<TSharedPtr<FJsonValue>>* InternalAdapters = nullptr;
 	TestTrue(TEXT("BehaviorTree profile exposes InternalAdapters"), Result.Payload->TryGetArrayField(TEXT("InternalAdapters"), InternalAdapters));
 	TestTrue(TEXT("BehaviorTree profile lists blackboard adapter"), BTTestJsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::BlackboardRegionAdapterName().ToString()));
 	TestTrue(TEXT("BehaviorTree profile lists tree adapter"), BTTestJsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::TreeRegionAdapterName().ToString()));
-	TestTrue(TEXT("BehaviorTree profile lists editor layout adapter"), BTTestJsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName().ToString()));
+	TestFalse(TEXT("BehaviorTree profile does not list split editor layout adapter"), BTTestJsonArrayContainsString(InternalAdapters, FBehaviorTreeAssetDocumentProfile::EditorLayoutRegionAdapterName().ToString()));
 	return true;
 }
 
@@ -3368,12 +3607,44 @@ TSharedPtr<FJsonObject> MakeGraphService()
 	Properties->SetNumberField(TEXT("RandomDeviation"), 0.125);
 	Properties->SetBoolField(TEXT("bCallTickOnSearchStart"), true);
 	Properties->SetBoolField(TEXT("bRestartTimerOnEachActivation"), false);
+	Properties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("TargetActor")));
 
 	TSharedPtr<FJsonObject> Service = MakeShared<FJsonObject>();
 	Service->SetStringField(TEXT("Id"), RootServiceGuid);
 	Service->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTService_DefaultFocus"));
 	Service->SetObjectField(TEXT("Properties"), Properties);
 	return Service;
+}
+
+UBlackboardData* GetGraphSourceBlackboard()
+{
+	const FString Target = TEXT("/Game/AssetDocumentTests/BB_Task4_GraphSource");
+	const FString ObjectPath = BTTestMakeObjectPathFromTarget(Target);
+	UBlackboardData* Blackboard = FindObject<UBlackboardData>(nullptr, *ObjectPath);
+	bool bNeedsSave = false;
+	if (!Blackboard)
+	{
+		Blackboard = BTTestMakeExistingBlackboardAsset(Target);
+		bNeedsSave = true;
+	}
+	if (Blackboard && Blackboard->GetKeyID(TEXT("TargetActor")) == FBlackboard::InvalidKey)
+	{
+		BTTestAddObjectBlackboardKey(Blackboard, TEXT("TargetActor"));
+		bNeedsSave = true;
+	}
+	if (Blackboard && bNeedsSave)
+	{
+		UPackage* Package = Blackboard->GetOutermost();
+		Package->MarkPackageDirty();
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		SaveArgs.SaveFlags = SAVE_NoError;
+		const FString Filename = FPackageName::LongPackageNameToFilename(
+			Target,
+			FPackageName::GetAssetPackageExtension());
+		UPackage::SavePackage(Package, Blackboard, *Filename, SaveArgs);
+	}
+	return Blackboard;
 }
 
 TSharedPtr<FJsonObject> MakeGraphSourceTree(
@@ -3423,6 +3694,10 @@ FAssetDocumentRegionContext MakeTreeContext(UBehaviorTree* BehaviorTree)
 
 FAssetDocumentCapabilityResult ApplyTree(UBehaviorTree* BehaviorTree, const TSharedPtr<FJsonObject>& Tree, bool& bOutChanged)
 {
+	if (BehaviorTree && !BehaviorTree->BlackboardAsset)
+	{
+		BehaviorTree->BlackboardAsset = GetGraphSourceBlackboard();
+	}
 	FAssetDocumentRegionContext Context = MakeTreeContext(BehaviorTree);
 	return FBehaviorTreeAssetDocumentMaterializer::ApplyTree(Context, Tree.ToSharedRef(), bOutChanged);
 }
@@ -3514,7 +3789,7 @@ TSharedPtr<FJsonObject> ExtractTree(FAutomationTestBase& Test, UBehaviorTree* Be
 TSharedPtr<FJsonObject> MakeGraphSourceBody(const TSharedPtr<FJsonObject>& Tree)
 {
 	TSharedPtr<FJsonObject> Body = MakeShared<FJsonObject>();
-	Body->SetField(TEXT("BlackboardAsset"), MakeShared<FJsonValueNull>());
+	Body->SetObjectField(TEXT("BlackboardAsset"), BTTestMakeAssetRef(GetGraphSourceBlackboard()->GetPathName()));
 	Body->SetObjectField(TEXT("Tree"), Tree);
 	return Body;
 }
@@ -3837,6 +4112,7 @@ bool FAssetDocumentBehaviorTreeGraphSourceDynamicBlueprintClassTest::RunTest(con
 		UClass* Candidate = *It;
 		if (Candidate
 			&& Candidate->bIsScriptClass
+			&& Candidate->GetName() == TEXT("BTTask_AssetDocumentTask4AS")
 			&& Candidate->IsChildOf(UBTTaskNode::StaticClass())
 			&& !Candidate->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
 		{
@@ -3996,6 +4272,7 @@ TSharedPtr<FJsonObject> MakeService(
 	Properties->SetStringField(TEXT("NodeName"), NodeName);
 	Properties->SetNumberField(TEXT("Interval"), Interval);
 	Properties->SetNumberField(TEXT("RandomDeviation"), 0.0);
+	Properties->SetObjectField(TEXT("BlackboardKey"), BTTestMakeSelectorProperty(TEXT("TargetActor")));
 	TSharedPtr<FJsonObject> Service = MakeShared<FJsonObject>();
 	Service->SetStringField(TEXT("Id"), Id);
 	Service->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTService_DefaultFocus"));

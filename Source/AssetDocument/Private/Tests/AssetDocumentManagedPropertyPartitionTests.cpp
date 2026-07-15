@@ -125,6 +125,9 @@ bool FAssetDocumentManagedPropertiesRejectBodyOwnedPropertiesTest::RunTest(const
 		{TEXT("/Script/AIModule.BlackboardData"), TEXT("Keys"), MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>())},
 		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("BlackboardAsset"), MakeShared<FJsonValueNull>()},
 		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("BTGraph"), MakeShared<FJsonValueNull>()},
+		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("RootNode"), MakeShared<FJsonValueNull>()},
+		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("RootDecorators"), MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>())},
+		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("RootDecoratorOps"), MakeShared<FJsonValueArray>(TArray<TSharedPtr<FJsonValue>>())},
 		{TEXT("/Script/AIModule.BlackboardData"), TEXT("parent"), MakeShared<FJsonValueNull>()},
 	};
 
@@ -194,7 +197,13 @@ bool FAssetDocumentManagedPropertiesPartitionReadSurfacesTest::RunTest(const FSt
 	};
 	const TArray<FProfileCase> Cases = {
 		{TEXT("/Script/AIModule.BlackboardData"), TEXT("BB_ReadPartition"), UBlackboardData::StaticClass(), {TEXT("Parent"), TEXT("Keys")}},
-		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("BT_ReadPartition"), UBehaviorTree::StaticClass(), {TEXT("BlackboardAsset"), TEXT("BTGraph")}},
+		{TEXT("/Script/AIModule.BehaviorTree"), TEXT("BT_ReadPartition"), UBehaviorTree::StaticClass(), {
+			TEXT("BlackboardAsset"),
+			TEXT("BTGraph"),
+			TEXT("RootNode"),
+			TEXT("RootDecorators"),
+			TEXT("RootDecoratorOps"),
+		}},
 	};
 
 	FAssetDocumentService Service;
