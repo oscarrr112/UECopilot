@@ -1,5 +1,7 @@
 # BehaviorTree + BlackboardData AssetDocument Implementation Plan
 
+> **已由生产计划取代。** 当前执行与验收清单是 `docs/superpowers/plans/2026-07-15-behaviortree-blackboard-production-implementation.md`；本文中的旧分支、形状、数量和未完成 checkbox 仅作历史记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement full-surface AssetDocument support for `/Script/AIModule.BlackboardData` and `/Script/AIModule.BehaviorTree`, including Blackboard keys, BT semantic tree, dynamic task/composite/decorator/service materialization, editor layout, extract/diff, validation, and verification.

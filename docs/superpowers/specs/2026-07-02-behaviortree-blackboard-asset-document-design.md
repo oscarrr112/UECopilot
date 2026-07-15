@@ -1,5 +1,7 @@
 # BehaviorTree + BlackboardData AssetDocument Design
 
+> **已由生产 spec 取代。** 当前权威合同是 `docs/superpowers/specs/2026-07-15-behaviortree-blackboard-asset-document-production-design.md`；本文只保留早期设计历史，不得作为实现或验收依据。
+
 日期：2026-07-02
 
 状态：待审核（正式 spec）

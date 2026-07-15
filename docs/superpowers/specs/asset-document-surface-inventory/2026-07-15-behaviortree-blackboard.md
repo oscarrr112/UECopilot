@@ -37,6 +37,7 @@
 | `RootDecorators`、`RootDecoratorOps`、child `DecoratorOps` | derived compiled mirror | 从主图和 decorator graph 编译；输入出现即拒绝 |
 | `ExecutionIndex`、`MemoryOffset`、`TreeDepth`、`ParentNode` | derived runtime | 不提取、不写入；输入出现即拒绝 |
 | injected decorator preview、subtree version/path | derived editor/runtime cache | 不接受为本地 authored 输入 |
+| `FValueOrBlackboardKey_*` hidden cached Key ID | derived runtime cache | canonical 只管理公开 key name 与 literal/default；Blackboard 或 key order 变化后按 name 失效重解 |
 | debugger、breakpoint、运行计数、error state | debug/session | 排除 |
 | `LastEditedDocuments`、视口状态 | session/per-user | 排除 |
 
@@ -54,6 +55,12 @@ AssetDocument 管理 decorator 的 authored expression graph，而不是 `FBTDec
 - `UBTTask_RunBehaviorDynamic::InjectionTag` 与 `DefaultBehaviorAsset`：managed authored/reference。
 - runtime `BehaviorAsset`：derived instance state。
 - 静态子树需要通过 Blackboard compatibility 预检；动态子树引用含 root decorator 的树时拒绝，因为引擎不会注入这些 decorator。
+
+### 2.4 Sparse Blackboard overlay
+
+仅含 `Body.BlackboardAsset` 的 `Update` 保留现有 authored Tree，但不是“只改一个引用就跳过树验证”。Validate、Diff、Apply 都必须把 retained tree 投影到目标 Blackboard，重新验证并刷新 selector、`FValueOrBlackboardKey_*` 和 decorator operation/cache。该 sparse 形态只适用于已存在 BT；`Create` 或不存在目标仍要求完整有效语义。
+
+若 retained `UBTDecorator_Blackboard` 指向 enum key，而新 Blackboard 的同名 key 更换了 `UEnum` 或 value mapping，旧 `StringValue`/`IntValue` 不得被猜测或静默沿用。请求必须同时显式提供 Tree property 更新，否则在 retained property 的精确路径拒绝。
 
 ## 3. BlackboardData 表面
 
@@ -95,6 +102,8 @@ AssetDocument 管理 decorator 的 authored expression graph，而不是 `FBTDec
 | `AllowedTypes` | derived class policy | 节点构造函数建立；只在 schema/inspect 中作为只读 filter metadata 暴露 |
 | `bNoneIsAllowedValue` | derived class policy | 不允许外部覆盖；按 concrete node 默认策略验证 |
 | `SelectedKeyType`、`SelectedKeyID` | derived cache | 保存/初始化时重算 |
+
+同类的 `FValueOrBlackboardKey_*` 结构只公开 key name 与 literal/default authored 值；其 hidden Key ID 同样是 derived cache，不进入 schema、extract 或 diff。
 
 不得把 filter metadata 做成可写 authored 字段。外部提供 `AllowedTypes`、`SelectedKeyID`、`SelectedKeyType` 或 `bNoneIsAllowedValue` 时返回精确 JSON Pointer diagnostic。
 
