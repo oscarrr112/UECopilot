@@ -2316,28 +2316,12 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Validate(con
 		return MontageBodyFailure(TEXT("AnimMontage body validation requires UAnimMontage class"), TEXT("/Class"), TEXT("UnsupportedClass"));
 	}
 
-	if (BodyJson->Type != EJson::Object)
-	{
-		return MontageBodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	const TSharedPtr<FJsonObject> BodyObject = BodyJson->AsObject();
-	if (!BodyObject.IsValid())
-	{
-		return MontageBodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
-	}
-
-	return ValidateBodyObject(Context, BodyObject.ToSharedRef());
+	FAssetDocumentCapabilityContext PreflightContext = Context;
+	return Preflight(PreflightContext, BodyJson);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
 {
-	UAnimMontage* Montage = Cast<UAnimMontage>(Context.Asset);
-	if (!Montage)
-	{
-		return MontageBodyFailure(TEXT("AnimMontage body preflight requires UAnimMontage asset"), TEXT("/Body"), TEXT("UnsupportedAsset"));
-	}
-
 	if (BodyJson->Type != EJson::Object)
 	{
 		return MontageBodyFailure(TEXT("Body must be a JSON object"), TEXT("/Body"), TEXT("InvalidBodyType"));
@@ -2352,14 +2336,33 @@ FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Preflight(FA
 	FAssetDocumentFragmentCompiler Compiler;
 	Compiler.RegisterBuiltInAdapters();
 
+	UAnimMontage* Montage = Cast<UAnimMontage>(Context.Asset);
 	UAnimMontage* PreflightMontage = NewObject<UAnimMontage>(GetTransientPackage(), UAnimMontage::StaticClass(), NAME_None, RF_Transient);
-	PreflightMontage->CompositeSections = Montage->CompositeSections;
+	if (Montage)
+	{
+		PreflightMontage->CompositeSections = Montage->CompositeSections;
+	}
 	FAssetDocumentCapabilityContext PreflightContext = Context;
 	PreflightContext.Asset = PreflightMontage;
 	PreflightContext.AssetClass = UAnimMontage::StaticClass();
 
 	FParsedAnimMontageBody ParsedBody;
-	return ParseAnimMontageBody(&Compiler, PreflightContext, PreflightMontage, BodyObject.ToSharedRef(), true, Montage->SlotAnimTracks.Num(), ParsedBody);
+	const FAssetDocumentCapabilityResult ParseResult = ParseAnimMontageBody(
+		&Compiler,
+		PreflightContext,
+		PreflightMontage,
+		BodyObject.ToSharedRef(),
+		true,
+		Montage ? Montage->SlotAnimTracks.Num() : 0,
+		ParsedBody);
+	if (!ParseResult.bSuccess)
+	{
+		return ParseResult;
+	}
+
+	return ValidateTimeStretchCurveReferenceBeforeMutation(
+		Montage ? *Montage : *PreflightMontage,
+		ParsedBody);
 }
 
 FAssetDocumentCapabilityResult FAnimMontageAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)

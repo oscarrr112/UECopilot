@@ -742,6 +742,20 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Validate(co
 		}));
 }
 
+FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
+{
+	FAssetDocumentCapabilityResult Result = ValidateBehaviorTreeContext(Context);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	return RemapDispatcherCompatibilityCodes(DispatchBehaviorTreeBody(
+		[&Context, &BodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
+		{
+			return Dispatcher.PreflightBody(Context, BodyJson);
+		}));
+}
+
 FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
 {
 	FAssetDocumentCapabilityResult Result = ValidateBehaviorTreeContext(Context);

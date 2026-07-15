@@ -25,6 +25,8 @@ class FAssetDocumentLifecycle
 {
 public:
 	static bool TryParseAction(const FString& ActionName, EAssetDocumentLifecycleAction& OutAction, FString& OutError);
+	static FAssetDocumentLifecycleResult Resolve(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action);
+	static bool ValidateCreateDocument(UClass* Class, const TSharedPtr<FJsonObject>& Document, FString& OutError);
 	static FAssetDocumentLifecycleResult CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action, TSharedPtr<FJsonObject> Document = nullptr);
 	static void CleanupCreatedAsset(const FAssetDocumentLifecycleResult& LifecycleResult);
 

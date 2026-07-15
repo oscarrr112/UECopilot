@@ -47,15 +47,30 @@ bool FAssetDocumentLifecycle::TryParseAction(const FString& ActionName, EAssetDo
 	return false;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action, TSharedPtr<FJsonObject> Document)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::Resolve(
+	const FString& Target,
+	UClass* Class,
+	EAssetDocumentLifecycleAction Action)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
 
 	UObject* ExistingAsset = FindObject<UObject>(nullptr, *Result.ObjectPath);
 	const FString PackageFileName = FPackageName::LongPackageNameToFilename(Target, FPackageName::GetAssetPackageExtension());
-	if (!ExistingAsset && IFileManager::Get().FileExists(*PackageFileName))
+	const bool bPackageFileExists = IFileManager::Get().FileExists(*PackageFileName);
+	if (Action == EAssetDocumentLifecycleAction::Create && (ExistingAsset || bPackageFileExists))
 	{
+		// Create only needs an existence answer. Do not load an on-disk target merely to
+		// reject it; this keeps lifecycle preflight free of package/owned-object mutation.
+		Result.Error = FString::Printf(TEXT("Create failed because target '%s' already exists"), *Target);
+		return Result;
+	}
+
+	if (!ExistingAsset && bPackageFileExists)
+	{
+		// Update/CreateOrUpdate deliberately load existing state so downstream read-only
+		// validation/preflight can inspect the real asset. The lookup itself must not dirty
+		// the package, announce assets, or create owned objects.
 		ExistingAsset = LoadObject<UObject>(nullptr, *Result.ObjectPath);
 	}
 
@@ -95,12 +110,6 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		return Result;
 	}
 
-	if (Action == EAssetDocumentLifecycleAction::Create && ExistingAsset)
-	{
-		Result.Error = FString::Printf(TEXT("Create failed because target '%s' already exists"), *Target);
-		return Result;
-	}
-
 	if (Action == EAssetDocumentLifecycleAction::Update && !ExistingAsset)
 	{
 		Result.Error = FString::Printf(TEXT("Update failed because target '%s' does not exist"), *Target);
@@ -110,6 +119,15 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (ExistingAsset)
 	{
 		Result.Asset = ExistingAsset;
+	}
+	return Result;
+}
+
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FString& Target, UClass* Class, EAssetDocumentLifecycleAction Action, TSharedPtr<FJsonObject> Document)
+{
+	FAssetDocumentLifecycleResult Result = Resolve(Target, Class, Action);
+	if (!Result.Error.IsEmpty() || Result.Asset)
+	{
 		return Result;
 	}
 
@@ -117,6 +135,10 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 	if (AssetName.IsEmpty())
 	{
 		Result.Error = FString::Printf(TEXT("Invalid target '%s'"), *Target);
+		return Result;
+	}
+	if (!ValidateCreateDocument(Class, Document, Result.Error))
+	{
 		return Result;
 	}
 
@@ -495,6 +517,71 @@ bool FAssetDocumentLifecycle::TryResolveAnimBlueprintParentClass(const TSharedPt
 	}
 
 	return true;
+}
+
+bool FAssetDocumentLifecycle::ValidateCreateDocument(
+	UClass* Class,
+	const TSharedPtr<FJsonObject>& Document,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!Class)
+	{
+		OutError = TEXT("Asset class is required for creation");
+		return false;
+	}
+
+	UClass* ParentClass = nullptr;
+	if (Class == UBlueprint::StaticClass())
+	{
+		return TryResolveBlueprintParentClass(Document, ParentClass, OutError);
+	}
+	if (Class == UWidgetBlueprint::StaticClass())
+	{
+		return TryResolveWidgetBlueprintParentClass(Document, ParentClass, OutError);
+	}
+	if (Class != UAnimBlueprint::StaticClass())
+	{
+		return true;
+	}
+
+	TSharedPtr<FJsonObject> Body;
+	if (!TryReadLifecycleBody(Document, Body, OutError, TEXT("AnimBlueprint"))
+		|| !TryResolveAnimBlueprintParentClass(Document, ParentClass, OutError))
+	{
+		return false;
+	}
+
+	bool bIsTemplate = false;
+	if (!TryReadLifecycleBoolField(Body, TEXT("Template"), TEXT("bIsTemplate"), false, bIsTemplate, OutError))
+	{
+		return false;
+	}
+
+	UObject* ResolvedSkeletonObject = nullptr;
+	if (!TryResolveLifecycleBodyAssetRef(Body, TEXT("TargetSkeleton"), USkeleton::StaticClass(), ResolvedSkeletonObject, OutError))
+	{
+		return false;
+	}
+	if (bIsTemplate && ResolvedSkeletonObject)
+	{
+		OutError = TEXT("Template AnimationBlueprints cannot author TargetSkeleton");
+		return false;
+	}
+	if (!bIsTemplate && !ResolvedSkeletonObject)
+	{
+		OutError = TEXT("MissingTargetSkeleton: non-template AnimBlueprint creation requires TargetSkeleton");
+		return false;
+	}
+
+	UObject* ResolvedPreviewMeshObject = nullptr;
+	return TryResolveLifecycleNestedAssetRef(
+		Body,
+		TEXT("Preview"),
+		TEXT("PreviewSkeletalMesh"),
+		USkeletalMesh::StaticClass(),
+		ResolvedPreviewMeshObject,
+		OutError);
 }
 
 FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)

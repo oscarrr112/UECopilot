@@ -552,6 +552,25 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Validate(
 	return ValidateBlackboardDesiredInheritance(Context, BodyJson);
 }
 
+FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Preflight(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson) const
+{
+	FAssetDocumentCapabilityResult Result = ValidateBlackboardDataContext(Context);
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	Result = BlackboardRemapDispatcherCompatibilityCodes(DispatchBlackboardDataBody(
+		[&Context, &BodyJson](const FAssetDocumentBodyRegionDispatcher& Dispatcher)
+		{
+			return Dispatcher.PreflightBody(Context, BodyJson);
+		}));
+	if (!Result.bSuccess)
+	{
+		return Result;
+	}
+	return ValidateBlackboardDesiredInheritance(Context, BodyJson);
+}
+
 FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAssetDocumentCapabilityContext& Context, const TSharedRef<FJsonValue>& BodyJson)
 {
 	FAssetDocumentCapabilityResult Result = ValidateBlackboardDataContext(Context);
