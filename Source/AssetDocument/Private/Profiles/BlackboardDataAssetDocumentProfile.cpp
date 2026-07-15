@@ -634,7 +634,11 @@ FAssetDocumentCapabilityResult FBlackboardDataAssetDocumentCapability::Apply(FAs
 			return Dispatcher.ApplyBody(Context, BodyJson, AppliedRegions);
 		}));
 #if WITH_DEV_AUTOMATION_TESTS
-	if (Result.bSuccess && Blackboard && bBlackboardFailNextLiveApplyAfterMutationForTest)
+	if (Result.bSuccess
+		&& Blackboard
+		&& Blackboard->GetOutermost() != GetTransientPackage()
+		&& !Blackboard->HasAnyFlags(RF_Transient)
+		&& bBlackboardFailNextLiveApplyAfterMutationForTest)
 	{
 		bBlackboardFailNextLiveApplyAfterMutationForTest = false;
 		TFunction<void(UBlackboardData*)> BeforeFailure = MoveTemp(BlackboardBeforeForcedLiveApplyFailureForTest);

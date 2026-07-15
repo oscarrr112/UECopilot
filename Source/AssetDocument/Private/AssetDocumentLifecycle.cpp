@@ -1,6 +1,8 @@
 // Copyright ProjectRPG. All Rights Reserved.
 
 #include "AssetDocumentLifecycle.h"
+#include "AssetDocumentModule.h"
+#include "AssetDocumentServiceTestHooks.h"
 
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
@@ -10,6 +12,7 @@
 #include "BehaviorTree/BehaviorTree.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Blueprint/WidgetTree.h"
 #include "Dom/JsonObject.h"
 #include "Engine/Blueprint.h"
@@ -19,9 +22,184 @@
 #include "HAL/FileManager.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/PackageName.h"
+#include "Misc/Guid.h"
 #include "UObject/GarbageCollection.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectHash.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
+
+namespace
+{
+TSet<UObject*> CollectAssetDocumentPackageObjects(UPackage* Package)
+{
+	TArray<UObject*> Objects;
+	if (Package)
+	{
+		GetObjectsWithOuter(Package, Objects, true);
+	}
+
+	TSet<UObject*> Result;
+	for (UObject* Object : Objects)
+	{
+		if (Object)
+		{
+			Result.Add(Object);
+		}
+	}
+	return Result;
+}
+
+void RemoveAssetDocumentOwnedObjectRoot(UObject* Object, const TCHAR* Context)
+{
+	if (!Object || !Object->IsRooted())
+	{
+		return;
+	}
+
+	UE_LOG(
+		LogAssetDocument,
+		Log,
+		TEXT("Removing root from owned %s object before discard: Path=%s Class=%s Outer=%s Flags=0x%08x InternalFlags=0x%08x"),
+		Context,
+		*Object->GetPathName(),
+		*GetNameSafe(Object->GetClass()),
+		*GetPathNameSafe(Object->GetOuter()),
+		static_cast<uint32>(Object->GetFlags()),
+		static_cast<uint32>(Object->GetInternalFlags()));
+	Object->RemoveFromRoot();
+}
+
+void DiscardAssetDocumentOwnedObject(UObject* Object, const TCHAR* Context)
+{
+	if (!Object)
+	{
+		return;
+	}
+
+	RemoveAssetDocumentOwnedObjectRoot(Object, Context);
+
+	Object->ClearFlags(RF_Public | RF_Standalone);
+	Object->SetFlags(RF_Transient);
+	Object->MarkAsGarbage();
+}
+
+void DetachAssetDocumentOwnedRoots(
+	const TSet<UObject*>& ObjectsToDiscard,
+	UPackage* Package,
+	const TCHAR* Context,
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
+{
+	// Package is deliberately not part of ObjectsToDiscard. Direct package children
+	// are therefore owned roots, while descendants whose Outer is also in the set
+	// move with their root. For pre-existing packages the set itself remains the
+	// ownership boundary, so unrelated package objects can never be detached here.
+	for (UObject* Object : ObjectsToDiscard)
+	{
+		if (!Object || Object == Package || ObjectsToDiscard.Contains(Object->GetOuter()))
+		{
+			continue;
+		}
+
+		const FString OriginalPath = Object->GetPathName();
+		RemoveAssetDocumentOwnedObjectRoot(Object, Context);
+		const FName DetachedName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			Object->GetClass(),
+			FName(*FString::Printf(TEXT("AssetDocumentDiscard_%s"), *Object->GetName())));
+		if (!Object->Rename(
+			*DetachedName.ToString(),
+			GetTransientPackage(),
+			REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty))
+		{
+			FAssetDocumentDiagnostic Diagnostic;
+			Diagnostic.Path = TEXT("/Apply/Rollback");
+			Diagnostic.Code = TEXT("AssetDocumentCleanupDetachFailed");
+			Diagnostic.Message = FString::Printf(
+				TEXT("Failed to detach lifecycle-owned object '%s' during %s cleanup"),
+				*OriginalPath,
+				Context);
+			OutDiagnostics.Add(Diagnostic);
+			UE_LOG(LogAssetDocument, Warning, TEXT("%s"), *Diagnostic.Message);
+		}
+	}
+}
+
+void CaptureAssetDocumentCreatedObjects(
+	const TSet<UObject*>& Before,
+	UPackage* Package,
+	FAssetDocumentLifecycleResult& Result)
+{
+	for (UObject* Object : CollectAssetDocumentPackageObjects(Package))
+	{
+		if (!Before.Contains(Object))
+		{
+			Result.CreatedObjects.Add(TWeakObjectPtr<UObject>(Object));
+		}
+	}
+}
+
+void CaptureAssetDocumentPackageObjectBaseline(
+	const TSet<UObject*>& PackageObjects,
+	FAssetDocumentLifecycleResult& Result)
+{
+	Result.bPackageObjectBaselineCaptured = true;
+	Result.PackageObjectsBeforeCreation.Reset(PackageObjects.Num());
+	Result.PackageObjectBaselineGuards.Reset(PackageObjects.Num());
+	for (UObject* Object : PackageObjects)
+	{
+		Result.PackageObjectsBeforeCreation.Add(TWeakObjectPtr<UObject>(Object));
+		Result.PackageObjectBaselineGuards.Emplace(Object);
+	}
+}
+
+TSet<UObject*> ResolveAssetDocumentPackageObjectBaseline(
+	const FAssetDocumentLifecycleResult& Result,
+	TArray<TStrongObjectPtr<UObject>>* OutBaselineGuards = nullptr)
+{
+	TSet<UObject*> BaselineObjects;
+	if (OutBaselineGuards)
+	{
+		OutBaselineGuards->Reset(Result.PackageObjectsBeforeCreation.Num());
+	}
+	for (const TWeakObjectPtr<UObject>& BaselineObjectHandle : Result.PackageObjectsBeforeCreation)
+	{
+		if (UObject* BaselineObject = BaselineObjectHandle.GetEvenIfUnreachable())
+		{
+			BaselineObjects.Add(BaselineObject);
+			if (OutBaselineGuards)
+			{
+				OutBaselineGuards->Emplace(BaselineObject);
+			}
+		}
+	}
+	return BaselineObjects;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool ConsumeAssetDocumentLifecycleFailure(
+	EAssetDocumentLifecycleCreatePhase Phase,
+	FAssetDocumentLifecycleResult& Result)
+{
+	FAssetDocumentDiagnostic Diagnostic;
+	bool bEmitDiagnostic = true;
+	if (!FAssetDocumentServiceTestHooks::ConsumeLifecycleCreateFailure(
+		Phase,
+		Diagnostic,
+		&bEmitDiagnostic))
+	{
+		return false;
+	}
+
+	Result.Error = Diagnostic.Message;
+	if (bEmitDiagnostic)
+	{
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	}
+	return true;
+}
+#endif
+}
 
 bool FAssetDocumentLifecycle::TryParseAction(const FString& ActionName, EAssetDocumentLifecycleAction& OutAction, FString& OutError)
 {
@@ -72,6 +250,18 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::Resolve(
 		// validation/preflight can inspect the real asset. The lookup itself must not dirty
 		// the package, announce assets, or create owned objects.
 		ExistingAsset = LoadObject<UObject>(nullptr, *Result.ObjectPath);
+	}
+
+	UPackage* TargetPackage = ExistingAsset
+		? ExistingAsset->GetOutermost()
+		: FindPackage(nullptr, *Target);
+	if (TargetPackage)
+	{
+		Result.Package = TargetPackage;
+		Result.bPackageWasDirty = TargetPackage->IsDirty();
+		CaptureAssetDocumentPackageObjectBaseline(
+			CollectAssetDocumentPackageObjects(TargetPackage),
+			Result);
 	}
 
 	if (ExistingAsset && Class == UBlueprint::StaticClass() && ExistingAsset->GetClass() != UBlueprint::StaticClass())
@@ -142,74 +332,405 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateOrLoad(const FStrin
 		return Result;
 	}
 
+	UPackage* PreExistingPackage = Result.Package
+		? Result.Package
+		: FindPackage(nullptr, *Target);
+	const bool bPackageWasDirty = Result.bPackageObjectBaselineCaptured
+		? Result.bPackageWasDirty
+		: (PreExistingPackage && PreExistingPackage->IsDirty());
 	UPackage* Package = CreatePackage(*Target);
 	if (!Package)
 	{
 		Result.Error = FString::Printf(TEXT("Failed to create package '%s'"), *Target);
 		return Result;
 	}
+	Result.Package = Package;
+	Result.bOwnsPackage = PreExistingPackage == nullptr;
+	Result.bPackageWasDirty = bPackageWasDirty;
+	if (!Result.bPackageObjectBaselineCaptured)
+	{
+		CaptureAssetDocumentPackageObjectBaseline(
+			CollectAssetDocumentPackageObjects(Package),
+			Result);
+	}
+	const TSet<UObject*> ObjectsBeforeCreation =
+		ResolveAssetDocumentPackageObjectBaseline(Result);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (ConsumeAssetDocumentLifecycleFailure(
+		EAssetDocumentLifecycleCreatePhase::AfterPackageCreate,
+		Result))
+	{
+		return Result;
+	}
+#endif
+
+	FAssetDocumentLifecycleResult CreatedResult;
 
 	if (Class == UBlueprint::StaticClass())
 	{
-		return CreateBlueprintAsset(Target, Package, AssetName, Document);
+		CreatedResult = CreateBlueprintAsset(Target, Package, AssetName, Document, false);
+	}
+	else if (Class == UAnimBlueprint::StaticClass())
+	{
+		CreatedResult = CreateAnimBlueprintAsset(Target, Package, AssetName, Document, false, false);
+	}
+	else if (Class == UWidgetBlueprint::StaticClass())
+	{
+		CreatedResult = CreateWidgetBlueprintAsset(Target, Package, AssetName, Document, false, false);
+	}
+	else if (Class == UBlackboardData::StaticClass())
+	{
+		CreatedResult = CreateBlackboardDataAsset(Target, Package, AssetName, Document, false);
+	}
+	else if (Class == UBehaviorTree::StaticClass())
+	{
+		CreatedResult = CreateBehaviorTreeAsset(Target, Package, AssetName, Document, false);
+	}
+	else
+	{
+		CreatedResult.ObjectPath = Result.ObjectPath;
+		CreatedResult.Asset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
+		CreatedResult.bCreated = CreatedResult.Asset != nullptr;
+		if (!CreatedResult.Asset)
+		{
+			CreatedResult.Error = FString::Printf(TEXT("Failed to create asset '%s'"), *Result.ObjectPath);
+		}
 	}
 
-	if (Class == UAnimBlueprint::StaticClass())
+	CreatedResult.Package = Package;
+	CreatedResult.bOwnsPackage = Result.bOwnsPackage;
+	CreatedResult.bPackageWasDirty = Result.bPackageWasDirty;
+	CreatedResult.bPackageObjectBaselineCaptured = Result.bPackageObjectBaselineCaptured;
+	CreatedResult.PackageObjectsBeforeCreation = Result.PackageObjectsBeforeCreation;
+	CreatedResult.PackageObjectBaselineGuards = Result.PackageObjectBaselineGuards;
+	CaptureAssetDocumentCreatedObjects(ObjectsBeforeCreation, Package, CreatedResult);
+	if (!CreatedResult.Error.IsEmpty() || !CreatedResult.Asset)
 	{
-		return CreateAnimBlueprintAsset(Target, Package, AssetName, Document);
+		return CreatedResult;
 	}
 
-	if (Class == UWidgetBlueprint::StaticClass())
+#if WITH_DEV_AUTOMATION_TESTS
+	if (ConsumeAssetDocumentLifecycleFailure(
+		EAssetDocumentLifecycleCreatePhase::AfterAssetCreateBeforeRegistry,
+		CreatedResult))
 	{
-		return CreateWidgetBlueprintAsset(Target, Package, AssetName, Document);
+		return CreatedResult;
 	}
+#endif
 
-	if (Class == UBlackboardData::StaticClass())
+	FAssetRegistryModule::AssetCreated(CreatedResult.Asset);
+	CreatedResult.bRegistryAnnounced = true;
+	if (Class == UBlackboardData::StaticClass() || Class == UBehaviorTree::StaticClass())
 	{
-		return CreateBlackboardDataAsset(Target, Package, AssetName, Document);
+		Package->MarkPackageDirty();
 	}
+	return CreatedResult;
+}
 
-	if (Class == UBehaviorTree::StaticClass())
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateTransientPreview(
+	const FString& Target,
+	UClass* Class,
+	const TSharedPtr<FJsonObject>& Document)
+{
+	FAssetDocumentLifecycleResult Result;
+	Result.ObjectPath = MakeObjectPath(Target);
+	if (!Class)
 	{
-		return CreateBehaviorTreeAsset(Target, Package, AssetName, Document);
+		Result.Error = TEXT("Asset class is required for transient preview creation");
+		return Result;
 	}
-
-	UObject* NewAsset = NewObject<UObject>(Package, Class, *AssetName, RF_Public | RF_Standalone);
-	if (!NewAsset)
+	if (!ValidateCreateDocument(Class, Document, Result.Error))
 	{
-		Result.Error = FString::Printf(TEXT("Failed to create asset '%s'"), *Result.ObjectPath);
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(NewAsset);
+	const FString RequestedAssetName = FPackageName::GetLongPackageAssetName(Target);
+	if (RequestedAssetName.IsEmpty())
+	{
+		Result.Error = FString::Printf(TEXT("Invalid target '%s'"), *Target);
+		return Result;
+	}
 
-	Result.Asset = NewAsset;
-	Result.bCreated = true;
-	return Result;
+	const FString PreviewPackageName = FString::Printf(
+		TEXT("/Temp/AssetDocumentPreview_%s_%s"),
+		*RequestedAssetName,
+		*FGuid::NewGuid().ToString(EGuidFormats::Digits));
+	UPackage* TransientPackage = CreatePackage(*PreviewPackageName);
+	if (!TransientPackage)
+	{
+		Result.Error = FString::Printf(TEXT("Failed to create transient preview package for '%s'"), *Result.ObjectPath);
+		return Result;
+	}
+	TransientPackage->SetFlags(RF_Transient);
+	Result.Package = TransientPackage;
+	Result.bOwnsPackage = true;
+	const TSet<UObject*> ObjectsBeforeCreation = CollectAssetDocumentPackageObjects(TransientPackage);
+	CaptureAssetDocumentPackageObjectBaseline(ObjectsBeforeCreation, Result);
+	const FName PreviewName(*RequestedAssetName);
+	const FString AssetName = PreviewName.ToString();
+	FAssetDocumentLifecycleResult CreatedResult;
+	if (Class == UBlueprint::StaticClass())
+	{
+		CreatedResult = CreateBlueprintAsset(Target, TransientPackage, AssetName, Document, false);
+	}
+	else if (Class == UAnimBlueprint::StaticClass())
+	{
+		CreatedResult = CreateAnimBlueprintAsset(Target, TransientPackage, AssetName, Document, false, true);
+	}
+	else if (Class == UWidgetBlueprint::StaticClass())
+	{
+		CreatedResult = CreateWidgetBlueprintAsset(Target, TransientPackage, AssetName, Document, false, true);
+	}
+	else if (Class == UBlackboardData::StaticClass())
+	{
+		CreatedResult = CreateBlackboardDataAsset(Target, TransientPackage, AssetName, Document, false);
+	}
+	else if (Class == UBehaviorTree::StaticClass())
+	{
+		CreatedResult = CreateBehaviorTreeAsset(Target, TransientPackage, AssetName, Document, false);
+	}
+	else
+	{
+		CreatedResult.ObjectPath = Result.ObjectPath;
+		CreatedResult.Asset = NewObject<UObject>(TransientPackage, Class, PreviewName, RF_Transient);
+		CreatedResult.bCreated = CreatedResult.Asset != nullptr;
+		if (!CreatedResult.Asset)
+		{
+			CreatedResult.Error = FString::Printf(TEXT("Failed to create transient preview for '%s'"), *Result.ObjectPath);
+		}
+	}
+
+	CreatedResult.Package = TransientPackage;
+	CreatedResult.bOwnsPackage = true;
+	CreatedResult.bPackageObjectBaselineCaptured = Result.bPackageObjectBaselineCaptured;
+	CreatedResult.PackageObjectsBeforeCreation = Result.PackageObjectsBeforeCreation;
+	CreatedResult.PackageObjectBaselineGuards = Result.PackageObjectBaselineGuards;
+	CaptureAssetDocumentCreatedObjects(ObjectsBeforeCreation, TransientPackage, CreatedResult);
+	for (const TWeakObjectPtr<UObject>& CreatedObjectHandle : CreatedResult.CreatedObjects)
+	{
+		if (UObject* CreatedObject = CreatedObjectHandle.Get())
+		{
+			CreatedObject->ClearFlags(RF_Public | RF_Standalone);
+			CreatedObject->SetFlags(RF_Transient);
+		}
+	}
+	TransientPackage->SetDirtyFlag(false);
+	return CreatedResult;
 }
 
-void FAssetDocumentLifecycle::CleanupCreatedAsset(const FAssetDocumentLifecycleResult& LifecycleResult)
+bool FAssetDocumentLifecycle::HasCleanupWork(
+	const FAssetDocumentLifecycleResult& LifecycleResult)
 {
-	if (!LifecycleResult.bCreated || !LifecycleResult.Asset)
+	if (LifecycleResult.bCreated
+		|| LifecycleResult.bOwnsPackage
+		|| LifecycleResult.bRegistryAnnounced
+		|| !LifecycleResult.CreatedObjects.IsEmpty())
+	{
+		return true;
+	}
+
+	if (!LifecycleResult.bPackageObjectBaselineCaptured)
+	{
+		return false;
+	}
+
+	UPackage* Package = LifecycleResult.Package
+		? LifecycleResult.Package
+		: (LifecycleResult.Asset ? LifecycleResult.Asset->GetOutermost() : nullptr);
+	if (!Package)
+	{
+		return false;
+	}
+
+	const TSet<UObject*> BaselineObjects = ResolveAssetDocumentPackageObjectBaseline(LifecycleResult);
+	for (UObject* PackageObject : CollectAssetDocumentPackageObjects(Package))
+	{
+		if (!BaselineObjects.Contains(PackageObject))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void FAssetDocumentLifecycle::CleanupCreatedAsset(
+	const FAssetDocumentLifecycleResult& LifecycleResult,
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
+{
+	if (!HasCleanupWork(LifecycleResult))
 	{
 		return;
 	}
 
 	UObject* Asset = LifecycleResult.Asset;
-	UPackage* Package = Asset->GetOutermost();
+	UPackage* Package = LifecycleResult.Package
+		? LifecycleResult.Package
+		: (Asset ? Asset->GetOutermost() : nullptr);
 
-	FAssetRegistryModule::AssetDeleted(Asset);
-	Asset->ClearFlags(RF_Public | RF_Standalone);
-	Asset->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
-	Asset->MarkAsGarbage();
+	if (LifecycleResult.bRegistryAnnounced && Asset)
+	{
+		FAssetRegistryModule::AssetDeleted(Asset);
+	}
+
+	TArray<TStrongObjectPtr<UObject>> BaselineObjectGuards;
+	const TSet<UObject*> BaselineObjects = LifecycleResult.bOwnsPackage
+		? TSet<UObject*>()
+		: ResolveAssetDocumentPackageObjectBaseline(LifecycleResult, &BaselineObjectGuards);
+	TSet<UObject*> ObjectsToDiscard;
+	if (Asset && (LifecycleResult.bOwnsPackage || !BaselineObjects.Contains(Asset)))
+	{
+		ObjectsToDiscard.Add(Asset);
+		TArray<UObject*> OwnedObjects;
+		GetObjectsWithOuter(Asset, OwnedObjects, true);
+		for (UObject* OwnedObject : OwnedObjects)
+		{
+			if (LifecycleResult.bOwnsPackage || !BaselineObjects.Contains(OwnedObject))
+			{
+				ObjectsToDiscard.Add(OwnedObject);
+			}
+		}
+	}
+	if (LifecycleResult.bOwnsPackage)
+	{
+		for (UObject* PackageObject : CollectAssetDocumentPackageObjects(Package))
+		{
+			ObjectsToDiscard.Add(PackageObject);
+		}
+	}
+	else
+	{
+		if (LifecycleResult.bPackageObjectBaselineCaptured)
+		{
+			for (UObject* PackageObject : CollectAssetDocumentPackageObjects(Package))
+			{
+				if (!BaselineObjects.Contains(PackageObject))
+				{
+					ObjectsToDiscard.Add(PackageObject);
+				}
+			}
+		}
+		for (const TWeakObjectPtr<UObject>& CreatedObjectHandle : LifecycleResult.CreatedObjects)
+		{
+			if (UObject* CreatedObject = CreatedObjectHandle.GetEvenIfUnreachable();
+				CreatedObject && !BaselineObjects.Contains(CreatedObject))
+			{
+				ObjectsToDiscard.Add(CreatedObject);
+			}
+		}
+	}
+	DetachAssetDocumentOwnedRoots(
+		ObjectsToDiscard,
+		Package,
+		TEXT("lifecycle-created"),
+		OutDiagnostics);
+
+	for (UObject* Object : ObjectsToDiscard)
+	{
+		if (Object && Object != Package)
+		{
+			DiscardAssetDocumentOwnedObject(Object, TEXT("lifecycle-created"));
+		}
+	}
 
 	if (Package)
 	{
-		Package->ClearDirtyFlag();
-		Package->MarkAsGarbage();
+		if (LifecycleResult.bOwnsPackage)
+		{
+			Package->ClearDirtyFlag();
+			DiscardAssetDocumentOwnedObject(Package, TEXT("lifecycle-package"));
+		}
+		else
+		{
+			Package->SetDirtyFlag(LifecycleResult.bPackageWasDirty);
+		}
 	}
 
+#if WITH_DEV_AUTOMATION_TESTS
+	FAssetDocumentDiagnostic ForcedDiagnostic;
+	if (FAssetDocumentServiceTestHooks::ConsumeLifecycleCleanupVerificationFailure(ForcedDiagnostic))
+	{
+		OutDiagnostics.Add(MoveTemp(ForcedDiagnostic));
+	}
+#endif
+
 	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+	if (Package && !LifecycleResult.bOwnsPackage)
+	{
+		Package->SetDirtyFlag(LifecycleResult.bPackageWasDirty);
+	}
+}
+
+void FAssetDocumentLifecycle::CleanupCreatedAsset(
+	const FAssetDocumentLifecycleResult& LifecycleResult)
+{
+	TArray<FAssetDocumentDiagnostic> IgnoredDiagnostics;
+	CleanupCreatedAsset(LifecycleResult, IgnoredDiagnostics);
+}
+
+void FAssetDocumentLifecycle::DiscardTransientPreview(
+	const FAssetDocumentLifecycleResult& PreviewResult,
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
+{
+	if (!PreviewResult.Asset && !PreviewResult.bOwnsPackage)
+	{
+		return;
+	}
+
+	TSet<UObject*> ObjectsToDiscard;
+	if (PreviewResult.Asset)
+	{
+		ObjectsToDiscard.Add(PreviewResult.Asset);
+		TArray<UObject*> OwnedObjects;
+		GetObjectsWithOuter(PreviewResult.Asset, OwnedObjects, true);
+		for (UObject* OwnedObject : OwnedObjects)
+		{
+			ObjectsToDiscard.Add(OwnedObject);
+		}
+	}
+	if (PreviewResult.bOwnsPackage)
+	{
+		for (UObject* PackageObject : CollectAssetDocumentPackageObjects(PreviewResult.Package))
+		{
+			ObjectsToDiscard.Add(PackageObject);
+		}
+	}
+	else
+	{
+		for (const TWeakObjectPtr<UObject>& CreatedObjectHandle : PreviewResult.CreatedObjects)
+		{
+			if (UObject* CreatedObject = CreatedObjectHandle.Get())
+			{
+				ObjectsToDiscard.Add(CreatedObject);
+			}
+		}
+	}
+	DetachAssetDocumentOwnedRoots(
+		ObjectsToDiscard,
+		PreviewResult.Package,
+		TEXT("preview"),
+		OutDiagnostics);
+
+	for (UObject* Object : ObjectsToDiscard)
+	{
+		if (Object && Object != PreviewResult.Package)
+		{
+			DiscardAssetDocumentOwnedObject(Object, TEXT("preview"));
+		}
+	}
+	if (PreviewResult.bOwnsPackage && PreviewResult.Package)
+	{
+		PreviewResult.Package->ClearDirtyFlag();
+		DiscardAssetDocumentOwnedObject(PreviewResult.Package, TEXT("preview-package"));
+	}
+	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+}
+
+void FAssetDocumentLifecycle::DiscardTransientPreview(
+	const FAssetDocumentLifecycleResult& PreviewResult)
+{
+	TArray<FAssetDocumentDiagnostic> IgnoredDiagnostics;
+	DiscardTransientPreview(PreviewResult, IgnoredDiagnostics);
 }
 
 FString FAssetDocumentLifecycle::MakeObjectPath(const FString& Target)
@@ -584,7 +1105,7 @@ bool FAssetDocumentLifecycle::ValidateCreateDocument(
 		OutError);
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document, bool bAnnounceToRegistry, bool bIsTransientPreview)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -635,20 +1156,51 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(
 		return Result;
 	}
 
-	UAnimBlueprintFactory* Factory = NewObject<UAnimBlueprintFactory>();
-	Factory->BlueprintType = BPTYPE_Normal;
-	Factory->ParentClass = ParentClass;
-	Factory->TargetSkeleton = bIsTemplate ? nullptr : Cast<USkeleton>(ResolvedSkeletonObject);
-	Factory->PreviewSkeletalMesh = Cast<USkeletalMesh>(ResolvedPreviewMeshObject);
-	Factory->bTemplate = bIsTemplate;
-
-	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Factory->FactoryCreateNew(
-		UAnimBlueprint::StaticClass(),
-		Package,
-		*AssetName,
-		RF_Public | RF_Standalone,
-		nullptr,
-		GWarn));
+	UAnimBlueprint* AnimBlueprint = nullptr;
+	if (bIsTransientPreview)
+	{
+		AnimBlueprint = Cast<UAnimBlueprint>(FKismetEditorUtilities::CreateBlueprint(
+			ParentClass,
+			Package,
+			*AssetName,
+			BPTYPE_Normal,
+			UAnimBlueprint::StaticClass(),
+			UAnimBlueprintGeneratedClass::StaticClass()));
+		if (AnimBlueprint)
+		{
+			USkeleton* TargetSkeleton = bIsTemplate ? nullptr : Cast<USkeleton>(ResolvedSkeletonObject);
+			AnimBlueprint->bIsTemplate = bIsTemplate;
+			AnimBlueprint->TargetSkeleton = TargetSkeleton;
+			if (UAnimBlueprintGeneratedClass* GeneratedClass = Cast<UAnimBlueprintGeneratedClass>(AnimBlueprint->GeneratedClass))
+			{
+				GeneratedClass->TargetSkeleton = TargetSkeleton;
+			}
+			if (UAnimBlueprintGeneratedClass* SkeletonClass = Cast<UAnimBlueprintGeneratedClass>(AnimBlueprint->SkeletonGeneratedClass))
+			{
+				SkeletonClass->TargetSkeleton = TargetSkeleton;
+			}
+			if (TargetSkeleton && ResolvedPreviewMeshObject)
+			{
+				AnimBlueprint->SetPreviewMesh(Cast<USkeletalMesh>(ResolvedPreviewMeshObject));
+			}
+		}
+	}
+	else
+	{
+		UAnimBlueprintFactory* Factory = NewObject<UAnimBlueprintFactory>();
+		Factory->BlueprintType = BPTYPE_Normal;
+		Factory->ParentClass = ParentClass;
+		Factory->TargetSkeleton = bIsTemplate ? nullptr : Cast<USkeleton>(ResolvedSkeletonObject);
+		Factory->PreviewSkeletalMesh = Cast<USkeletalMesh>(ResolvedPreviewMeshObject);
+		Factory->bTemplate = bIsTemplate;
+		AnimBlueprint = Cast<UAnimBlueprint>(Factory->FactoryCreateNew(
+			UAnimBlueprint::StaticClass(),
+			Package,
+			*AssetName,
+			RF_Public | RF_Standalone,
+			nullptr,
+			GWarn));
+	}
 	if (!AnimBlueprint)
 	{
 		Result.Error = FString::Printf(TEXT("Failed to create AnimBlueprint asset '%s'"), *Result.ObjectPath);
@@ -664,14 +1216,17 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateAnimBlueprintAsset(
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(AnimBlueprint);
+	if (bAnnounceToRegistry)
+	{
+		FAssetRegistryModule::AssetCreated(AnimBlueprint);
+	}
 
 	Result.Asset = AnimBlueprint;
 	Result.bCreated = true;
 	return Result;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document, bool bAnnounceToRegistry)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -704,14 +1259,17 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlueprintAsset(cons
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(Blueprint);
+	if (bAnnounceToRegistry)
+	{
+		FAssetRegistryModule::AssetCreated(Blueprint);
+	}
 
 	Result.Asset = Blueprint;
 	Result.bCreated = true;
 	return Result;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlackboardDataAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlackboardDataAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&, bool bAnnounceToRegistry)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -726,15 +1284,18 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBlackboardDataAsset
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(BlackboardData);
-	Package->MarkPackageDirty();
+	if (bAnnounceToRegistry)
+	{
+		FAssetRegistryModule::AssetCreated(BlackboardData);
+		Package->MarkPackageDirty();
+	}
 
 	Result.Asset = BlackboardData;
 	Result.bCreated = true;
 	return Result;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBehaviorTreeAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBehaviorTreeAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>&, bool bAnnounceToRegistry)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -749,15 +1310,18 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateBehaviorTreeAsset(c
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(BehaviorTree);
-	Package->MarkPackageDirty();
+	if (bAnnounceToRegistry)
+	{
+		FAssetRegistryModule::AssetCreated(BehaviorTree);
+		Package->MarkPackageDirty();
+	}
 
 	Result.Asset = BehaviorTree;
 	Result.bCreated = true;
 	return Result;
 }
 
-FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateWidgetBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document)
+FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateWidgetBlueprintAsset(const FString& Target, UPackage* Package, const FString& AssetName, const TSharedPtr<FJsonObject>& Document, bool bAnnounceToRegistry, bool bIsTransientPreview)
 {
 	FAssetDocumentLifecycleResult Result;
 	Result.ObjectPath = MakeObjectPath(Target);
@@ -768,17 +1332,30 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateWidgetBlueprintAsse
 		return Result;
 	}
 
-	UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
-	Factory->BlueprintType = BPTYPE_Normal;
-	Factory->ParentClass = ParentClass;
-
-	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Factory->FactoryCreateNew(
-		UWidgetBlueprint::StaticClass(),
-		Package,
-		*AssetName,
-		RF_Public | RF_Standalone,
-		nullptr,
-		GWarn));
+	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	if (bIsTransientPreview)
+	{
+		WidgetBlueprint = Cast<UWidgetBlueprint>(FKismetEditorUtilities::CreateBlueprint(
+			ParentClass,
+			Package,
+			*AssetName,
+			BPTYPE_Normal,
+			UWidgetBlueprint::StaticClass(),
+			UWidgetBlueprintGeneratedClass::StaticClass()));
+	}
+	else
+	{
+		UWidgetBlueprintFactory* Factory = NewObject<UWidgetBlueprintFactory>();
+		Factory->BlueprintType = BPTYPE_Normal;
+		Factory->ParentClass = ParentClass;
+		WidgetBlueprint = Cast<UWidgetBlueprint>(Factory->FactoryCreateNew(
+			UWidgetBlueprint::StaticClass(),
+			Package,
+			*AssetName,
+			RF_Public | RF_Standalone,
+			nullptr,
+			GWarn));
+	}
 	if (!WidgetBlueprint)
 	{
 		Result.Error = FString::Printf(TEXT("Failed to create WidgetBlueprint asset '%s'"), *Result.ObjectPath);
@@ -804,7 +1381,10 @@ FAssetDocumentLifecycleResult FAssetDocumentLifecycle::CreateWidgetBlueprintAsse
 		return Result;
 	}
 
-	FAssetRegistryModule::AssetCreated(WidgetBlueprint);
+	if (bAnnounceToRegistry)
+	{
+		FAssetRegistryModule::AssetCreated(WidgetBlueprint);
+	}
 
 	Result.Asset = WidgetBlueprint;
 	Result.bCreated = true;

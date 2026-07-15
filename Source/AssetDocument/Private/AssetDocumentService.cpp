@@ -3,6 +3,7 @@
 #include "AssetDocumentService.h"
 
 #include "AssetDocumentClassResolver.h"
+#include "AssetDocumentApplyTransaction.h"
 #include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
@@ -12,6 +13,7 @@
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentSidecar.h"
 #include "AssetDocumentSidecarDelta.h"
+#include "AssetDocumentServiceTestHooks.h"
 #include "AssetDocumentSyncStateStore.h"
 
 #include "Dom/JsonValue.h"
@@ -20,6 +22,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 #include <initializer_list>
 
@@ -836,6 +840,157 @@ FAssetDocumentResult CheckBodyAdapters(
 		: TEXT("AssetDocument Body validation succeeded"));
 }
 
+class FScopedAssetDocumentStagedObject
+{
+public:
+	~FScopedAssetDocumentStagedObject()
+	{
+		Asset.Reset();
+		FAssetDocumentLifecycle::DiscardTransientPreview(LifecycleResult);
+	}
+
+	UObject* Get() const
+	{
+		return Asset.Get();
+	}
+
+	void Reset(UObject* InAsset)
+	{
+		LifecycleResult = {};
+		LifecycleResult.Asset = InAsset;
+		Asset.Reset(InAsset);
+	}
+
+	void Reset(const FAssetDocumentLifecycleResult& InLifecycleResult)
+	{
+		LifecycleResult = InLifecycleResult;
+		Asset.Reset(InLifecycleResult.Asset);
+	}
+
+private:
+	TStrongObjectPtr<UObject> Asset;
+	FAssetDocumentLifecycleResult LifecycleResult;
+};
+
+FAssetDocumentResult StageCompleteApplyDocument(
+	const TSharedPtr<FJsonObject>& Document,
+	UObject* ExistingAsset,
+	UClass* ResolvedClass,
+	const FString& Target,
+	const FString& NormalizedFilePath,
+	const TSharedPtr<FJsonObject>* DefinitionsPtr,
+	const TSharedPtr<FJsonObject>& Properties,
+	const TSharedPtr<FJsonValue>& BodyValue,
+	const TArray<const IAssetDocumentCapability*>& BodyAdapters)
+{
+	FScopedAssetDocumentStagedObject Staged;
+	if (ExistingAsset)
+	{
+		const FName PreviewName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			ExistingAsset->GetClass(),
+			ExistingAsset->GetFName());
+		Staged.Reset(DuplicateObject<UObject>(
+			ExistingAsset,
+			GetTransientPackage(),
+			PreviewName));
+		if (Staged.Get())
+		{
+			Staged.Get()->ClearFlags(RF_Public | RF_Standalone);
+			Staged.Get()->SetFlags(RF_Transient);
+		}
+	}
+	else
+	{
+		FAssetDocumentLifecycleResult PreviewResult =
+			FAssetDocumentLifecycle::CreateTransientPreview(Target, ResolvedClass, Document);
+		Staged.Reset(PreviewResult);
+		if (!PreviewResult.Error.IsEmpty())
+		{
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(PreviewResult.Error);
+			Result.Target = Target;
+			Result.AssetPath = PreviewResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedFilePath;
+			return Result;
+		}
+	}
+
+	if (!Staged.Get())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+			TEXT("Failed to create complete-document transient staging asset"));
+		Result.Target = Target;
+		Result.SidecarFilePath = NormalizedFilePath;
+		return Result;
+	}
+
+	const FAssetDocumentPropertyApplyResult PropertyResult =
+		FAssetDocumentPropertyAdapter::ApplyProperties(Staged.Get(), Properties);
+	if (!PropertyResult.bSuccess)
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
+		Result.Target = Target;
+		Result.SidecarFilePath = NormalizedFilePath;
+		Result.Diagnostics = PropertyResult.Diagnostics;
+		return Result;
+	}
+
+	if (Document->HasField(TEXT("Body")))
+	{
+		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
+		{
+			FAssetDocumentCapabilityContext CapabilityContext;
+			CapabilityContext.Asset = Staged.Get();
+			CapabilityContext.AssetClass = ResolvedClass;
+			CapabilityContext.TargetAssetPath = Target;
+			CapabilityContext.SourceDocumentPath = NormalizedFilePath;
+			CapabilityContext.Definitions = DefinitionsPtr;
+			CapabilityContext.bIsDryRun = false;
+
+			FAssetDocumentCapabilityResult CapabilityResult =
+				const_cast<IAssetDocumentCapability*>(BodyAdapter)->Apply(
+					CapabilityContext,
+					BodyValue.ToSharedRef());
+			if (!CapabilityResult.bSuccess)
+			{
+				return MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedFilePath);
+			}
+
+			TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+			CapabilityResult = BodyAdapter->Extract(CapabilityContext, ExtractedBody);
+			if (!CapabilityResult.bSuccess)
+			{
+				return MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedFilePath);
+			}
+		}
+	}
+
+	return FAssetDocumentResult::Success(TEXT("Complete AssetDocument staged and verified"));
+}
+
+void RollbackAssetDocumentApply(
+	FAssetDocumentApplyTransaction& Transaction,
+	FAssetDocumentResult& Result)
+{
+	TArray<FAssetDocumentDiagnostic> RollbackDiagnostics;
+	Transaction.Rollback(RollbackDiagnostics);
+	Result.Diagnostics.Append(RollbackDiagnostics);
+}
+
+void EnsureAssetDocumentLifecyclePrimaryDiagnostic(FAssetDocumentResult& Result)
+{
+	if (Result.Diagnostics.Num() > 0)
+	{
+		return;
+	}
+
+	FAssetDocumentDiagnostic Diagnostic;
+	Diagnostic.Path = TEXT("/Target");
+	Diagnostic.Code = TEXT("AssetDocumentLifecycleFailed");
+	Diagnostic.Message = Result.Message;
+	Result.Diagnostics.Add(MoveTemp(Diagnostic));
+}
+
 FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Document, const FString& NormalizedFilePath, bool bPreflightProperties)
 {
 	if (!Document.IsValid())
@@ -1295,7 +1450,6 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		return Result;
 	}
-
 	const FAssetDocumentProfileResolution ProfileResolution =
 		ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), ResolvedClass);
 	const FAssetDocumentCapabilityResult ManagedPropertyResult =
@@ -1334,14 +1488,77 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		return BodyPreflightResult;
 	}
 
+	FAssetDocumentResult StagingResult = StageCompleteApplyDocument(
+		Request.Document,
+		LifecyclePreflight.Asset,
+		ResolvedClass,
+		Target,
+		NormalizedSourceDocumentPath,
+		DefinitionsPtr,
+		Properties,
+		BodyValue,
+		BodyAdapters);
+	if (!StagingResult.IsSuccess())
+	{
+		if (StagingResult.AssetPath.IsEmpty())
+		{
+			StagingResult.AssetPath = LifecyclePreflight.ObjectPath;
+		}
+		return StagingResult;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FAssetDocumentDiagnostic ForcedPhaseDiagnostic;
+	uint64 ForcedFailureGeneration = 0;
+	if (FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
+		EAssetDocumentServiceApplyPhase::AfterStagedDocument,
+		ForcedPhaseDiagnostic,
+		&ForcedFailureGeneration))
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(ForcedPhaseDiagnostic.Message);
+		Result.Target = Target;
+		Result.AssetPath = LifecyclePreflight.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics.Add(MoveTemp(ForcedPhaseDiagnostic));
+		return Result;
+	}
+#endif
+
+	if (Request.bSaveAsset
+		&& LifecyclePreflight.Asset
+		&& LifecyclePreflight.Asset->GetOutermost()
+		&& LifecyclePreflight.Asset->GetOutermost()->IsDirty())
+	{
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(
+			FString::Printf(
+				TEXT("Existing asset '%s' has unsaved package changes; transactional Apply fails closed"),
+				*LifecyclePreflight.ObjectPath));
+		Result.Target = Target;
+		Result.AssetPath = LifecyclePreflight.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		FAssetDocumentDiagnostic Diagnostic;
+		Diagnostic.Path = TEXT("/Target");
+		Diagnostic.Code = TEXT("DirtyExistingAssetTransactionUnsupported");
+		Diagnostic.Message = Result.Message;
+		Result.Diagnostics.Add(MoveTemp(Diagnostic));
+		return Result;
+	}
+
+	const TSet<FName> ManagedPropertyNames =
+		FAssetDocumentManagedPropertyPartition::CollectTopLevelPropertyNames(ProfileResolution.ExactProfile.Get());
+	FAssetDocumentApplyTransaction Transaction(LifecyclePreflight.Asset, ManagedPropertyNames);
+
 	FAssetDocumentLifecycleResult LifecycleResult = FAssetDocumentLifecycle::CreateOrLoad(Target, ResolvedClass, Action, Request.Document);
+	Transaction.AttachLifecycleResult(LifecycleResult);
 	if (!LifecycleResult.Error.IsEmpty())
 	{
-		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(LifecycleResult.Error);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
 		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics = LifecycleResult.Diagnostics;
+		EnsureAssetDocumentLifecyclePrimaryDiagnostic(Result);
+		RollbackAssetDocumentApply(Transaction, Result);
 		return Result;
 	}
 
@@ -1352,22 +1569,60 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
 		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics = LifecycleResult.Diagnostics;
+		EnsureAssetDocumentLifecyclePrimaryDiagnostic(Result);
+		RollbackAssetDocumentApply(Transaction, Result);
 		return Result;
 	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (LifecycleResult.bCreated
+		&& FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
+			EAssetDocumentServiceApplyPhase::AfterNewLiveMaterialize,
+			ForcedPhaseDiagnostic,
+			&ForcedFailureGeneration))
+	{
+		Transaction.BindForcedFailureGeneration(ForcedFailureGeneration);
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(ForcedPhaseDiagnostic.Message);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics.Add(MoveTemp(ForcedPhaseDiagnostic));
+		RollbackAssetDocumentApply(Transaction, Result);
+		return Result;
+	}
+#endif
 
 	FAssetDocumentPropertyApplyResult PropertyResult = FAssetDocumentPropertyAdapter::ApplyProperties(LifecycleResult.Asset, Properties);
 	if (!PropertyResult.bSuccess)
 	{
-		FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(PropertyResult.Message);
 		Result.Target = Target;
 		Result.AssetPath = LifecycleResult.ObjectPath;
 		Result.SidecarFilePath = NormalizedSourceDocumentPath;
 		Result.Diagnostics = PropertyResult.Diagnostics;
+		RollbackAssetDocumentApply(Transaction, Result);
 		return Result;
 	}
 
 	TArray<FAssetDocumentDiagnostic> Diagnostics = PropertyResult.Diagnostics;
+#if WITH_DEV_AUTOMATION_TESTS
+	if (FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
+		EAssetDocumentServiceApplyPhase::AfterLiveProperties,
+		ForcedPhaseDiagnostic,
+		&ForcedFailureGeneration))
+	{
+		Transaction.BindForcedFailureGeneration(ForcedFailureGeneration);
+		FAssetDocumentResult Result = FAssetDocumentResult::Failure(ForcedPhaseDiagnostic.Message);
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.Diagnostics = Diagnostics;
+		Result.Diagnostics.Add(MoveTemp(ForcedPhaseDiagnostic));
+		RollbackAssetDocumentApply(Transaction, Result);
+		return Result;
+	}
+#endif
 	if (Request.Document->HasField(TEXT("Body")))
 	{
 		for (const IAssetDocumentCapability* BodyAdapter : BodyAdapters)
@@ -1383,16 +1638,36 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			FAssetDocumentCapabilityResult CapabilityResult = const_cast<IAssetDocumentCapability*>(BodyAdapter)->Apply(CapabilityContext, BodyValue.ToSharedRef());
 			if (!CapabilityResult.bSuccess)
 			{
-				FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
 				FAssetDocumentResult Result = MakeCapabilityValidationFailure(CapabilityResult, Target, NormalizedSourceDocumentPath);
 				Result.AssetPath = LifecycleResult.ObjectPath;
 				Result.Diagnostics.Insert(Diagnostics, 0);
+				RollbackAssetDocumentApply(Transaction, Result);
 				return Result;
 			}
 
 			Diagnostics.Append(CapabilityResult.Diagnostics);
 		}
+
+#if WITH_DEV_AUTOMATION_TESTS
+		if (LifecycleResult.bCreated
+			&& FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
+				EAssetDocumentServiceApplyPhase::AfterNewLiveBody,
+				ForcedPhaseDiagnostic,
+				&ForcedFailureGeneration))
+		{
+			Transaction.BindForcedFailureGeneration(ForcedFailureGeneration);
+			FAssetDocumentResult Result = FAssetDocumentResult::Failure(ForcedPhaseDiagnostic.Message);
+			Result.Target = Target;
+			Result.AssetPath = LifecycleResult.ObjectPath;
+			Result.SidecarFilePath = NormalizedSourceDocumentPath;
+			Result.Diagnostics = Diagnostics;
+			Result.Diagnostics.Add(MoveTemp(ForcedPhaseDiagnostic));
+			RollbackAssetDocumentApply(Transaction, Result);
+			return Result;
+		}
+#endif
 	}
+	Transaction.Commit();
 
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
 	Result.Target = Target;
@@ -1411,12 +1686,14 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		const bool bSaved = UPackage::SavePackage(Package, LifecycleResult.Asset, *PackageFileName, SaveArgs);
 		if (!bSaved)
 		{
-			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult);
+			TArray<FAssetDocumentDiagnostic> CleanupDiagnostics;
+			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult, CleanupDiagnostics);
 			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
 			Result.Target = Target;
 			Result.AssetPath = LifecycleResult.ObjectPath;
 			Result.SidecarFilePath = NormalizedSourceDocumentPath;
 			Result.Diagnostics = Diagnostics;
+			Result.Diagnostics.Append(CleanupDiagnostics);
 			Result.bSavedAsset = false;
 			Result.bWroteSidecar = false;
 			return Result;

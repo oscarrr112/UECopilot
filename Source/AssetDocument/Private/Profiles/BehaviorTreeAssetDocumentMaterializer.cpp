@@ -3239,7 +3239,9 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 		return Result;
 	}
 #if WITH_DEV_AUTOMATION_TESTS
-	if (bFailNextTreeGraphSwapForTest)
+	if (BehaviorTree->GetOutermost() != GetTransientPackage()
+		&& !BehaviorTree->HasAnyFlags(RF_Transient)
+		&& bFailNextTreeGraphSwapForTest)
 	{
 		bFailNextTreeGraphSwapForTest = false;
 		bOutChanged = false;
@@ -3332,7 +3334,10 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::ApplyTree
 	BehaviorTree->BTGraph = NewGraph;
 	bool bPreviousCleanupSucceeded = true;
 #if WITH_DEV_AUTOMATION_TESTS
-	if (bFailNextPreviousTreeGraphCleanupForTest && PreviousGraph)
+	if (BehaviorTree->GetOutermost() != GetTransientPackage()
+		&& !BehaviorTree->HasAnyFlags(RF_Transient)
+		&& bFailNextPreviousTreeGraphCleanupForTest
+		&& PreviousGraph)
 	{
 		bFailNextPreviousTreeGraphCleanupForTest = false;
 		// Exercise a real partial cleanup: old runtime instances move first, then
@@ -3496,7 +3501,10 @@ FAssetDocumentCapabilityResult FBehaviorTreeAssetDocumentMaterializer::RebuildEd
 {
 	bOutChanged = false;
 #if WITH_DEV_AUTOMATION_TESTS
-	if (bFailNextEditorGraphRebuildForTest)
+	if (Context.Asset
+		&& Context.Asset->GetOutermost() != GetTransientPackage()
+		&& !Context.Asset->HasAnyFlags(RF_Transient)
+		&& bFailNextEditorGraphRebuildForTest)
 	{
 		bFailNextEditorGraphRebuildForTest = false;
 		return Failure(RegionPath(Context), TEXT("ForcedBehaviorTreeEditorGraphRebuildFailure"), TEXT("Forced BehaviorTree graph rebuild failure for automation coverage"));

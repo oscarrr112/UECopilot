@@ -400,7 +400,14 @@ FAssetDocumentNamedArrayRegionAdapterHooks MakeBlackboardKeyHooks()
 		}
 
 		TArray<FBlackboardEntry> NewEntries;
-		NewEntries.Reserve(ResolvedSpecs.Num());
+		NewEntries.Reserve(ResolvedSpecs.Num() + 1);
+		if (const FBlackboardEntry* SelfEntry = Blackboard->Keys.FindByPredicate([](const FBlackboardEntry& Entry)
+		{
+			return IsEngineDerivedSelfKey(Entry);
+		}))
+		{
+			NewEntries.Add(*SelfEntry);
+		}
 		for (const FResolvedBlackboardKeySpec& ResolvedSpec : ResolvedSpecs)
 		{
 			FBlackboardEntry Entry;
