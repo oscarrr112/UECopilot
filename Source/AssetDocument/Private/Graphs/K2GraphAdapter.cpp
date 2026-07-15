@@ -135,26 +135,26 @@ FAssetDocumentCapabilityResult GraphFailure(const FString& Message, const FStrin
 	return FAssetDocumentCapabilityResult::Failure(Message, Path, Code);
 }
 
-FString JoinPath(const FString& Left, const FString& Right)
+FString K2GraphJoinPath(const FString& Left, const FString& Right)
 {
 	return Left.IsEmpty() ? Right : Left / Right;
 }
 
-FString GraphPath(const FAssetDocumentGraphSpec& Graph)
+FString K2GraphPath(const FAssetDocumentGraphSpec& Graph)
 {
-	return JoinPath(ActiveGraphRegionPath(), Graph.Name);
+	return K2GraphJoinPath(ActiveGraphRegionPath(), Graph.Name);
 }
 
-FString NodePath(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentNodeSpec& Node)
+FString K2GraphNodePath(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentNodeSpec& Node)
 {
-	return JoinPath(JoinPath(GraphPath(Graph), TEXT("Nodes")), Node.Id);
+	return K2GraphJoinPath(K2GraphJoinPath(K2GraphPath(Graph), TEXT("Nodes")), Node.Id);
 }
 
-FString LinkPath(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentLinkSpec& Link)
+FString K2GraphLinkPath(const FAssetDocumentGraphSpec& Graph, const FAssetDocumentLinkSpec& Link)
 {
 	return FString::Printf(
 		TEXT("%s/Links/%s:%s->%s:%s"),
-		*GraphPath(Graph),
+		*K2GraphPath(Graph),
 		*Link.From.Node,
 		*Link.From.Pin,
 		*Link.To.Node,
@@ -178,7 +178,7 @@ FAssetDocumentCapabilityResult ConfigureNodeWithAdapter(
 	{
 		return GraphFailure(
 			FString::Printf(TEXT("Graph node '%s' could not be created"), *NodeSpec.Id),
-			NodePath(GraphSpec, NodeSpec),
+			K2GraphNodePath(GraphSpec, NodeSpec),
 			TEXT("UnresolvedGraphNodeClass"));
 	}
 
@@ -198,8 +198,8 @@ FAssetDocumentCapabilityResult ConfigureNodeWithAdapter(
 
 	FAssetDocumentNodeApplyContext Context;
 	Context.Blueprint = Blueprint;
-	Context.GraphPath = GraphPath(GraphSpec);
-	Context.NodePath = NodePath(GraphSpec, NodeSpec);
+	Context.GraphPath = K2GraphPath(GraphSpec);
+	Context.NodePath = K2GraphNodePath(GraphSpec, NodeSpec);
 	const FAssetDocumentCapabilityResult AdapterResult = Adapter.ConfigureNodeForApply(Context, Node, NodeSpec);
 	if (!AdapterResult.bSuccess)
 	{
@@ -326,14 +326,14 @@ FAssetDocumentCapabilityResult ApplyPinDefaults(const FAssetDocumentGraphSpec& G
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph pin '%s' does not exist on node '%s' after reconstruction"), *PinOverride.Pin, *NodeSpec.Id),
-				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
+				K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
 				TEXT("InvalidGraphPin"));
 		}
 		if (Pin->Direction != EGPD_Input)
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph pin '%s' is not an input pin"), *PinOverride.Pin),
-				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
+				K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
 				TEXT("InvalidGraphPin"));
 		}
 
@@ -342,7 +342,7 @@ FAssetDocumentCapabilityResult ApplyPinDefaults(const FAssetDocumentGraphSpec& G
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph pin '%s' default is not supported: %s"), *PinOverride.Pin, *UnsupportedReason),
-				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
+				K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin),
 				TEXT("UnsupportedGraphPinDefault"));
 		}
 
@@ -359,7 +359,7 @@ FAssetDocumentCapabilityResult ApplyPinDefaults(const FAssetDocumentGraphSpec& G
 			{
 				return GraphFailure(
 					FString::Printf(TEXT("Graph pin '%s' DefaultObject '%s' could not be loaded"), *PinOverride.Pin, *ObjectPath),
-					JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin / TEXT("DefaultObject")),
+					K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("PinOverrides") / PinOverride.Pin / TEXT("DefaultObject")),
 					TEXT("InvalidGraphPinDefault"));
 			}
 		}
@@ -388,14 +388,14 @@ FAssetDocumentCapabilityResult ValidateLinks(const FAssetDocumentGraphSpec& Grap
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph link endpoint '%s' could not be resolved after node reconstruction"), *Link.ToKey()),
-				LinkPath(GraphSpec, Link),
+				K2GraphLinkPath(GraphSpec, Link),
 				TEXT("UnresolvedGraphLinkEndpoint"));
 		}
 		if (FromPin->Direction != EGPD_Output || ToPin->Direction != EGPD_Input)
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph link '%s' must connect output to input"), *Link.ToKey()),
-				LinkPath(GraphSpec, Link),
+				K2GraphLinkPath(GraphSpec, Link),
 				TEXT("InvalidGraphLinkType"));
 		}
 		const FPinConnectionResponse Response = Schema->CanCreateConnection(FromPin, ToPin);
@@ -403,7 +403,7 @@ FAssetDocumentCapabilityResult ValidateLinks(const FAssetDocumentGraphSpec& Grap
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph schema rejected link '%s': %s"), *Link.ToKey(), *Response.Message.ToString()),
-				LinkPath(GraphSpec, Link),
+				K2GraphLinkPath(GraphSpec, Link),
 				TEXT("InvalidGraphLinkType"));
 		}
 	}
@@ -417,7 +417,7 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 	{
 		return GraphFailure(
 			FString::Printf(TEXT("Graph schema '%s' could not be resolved as EdGraphSchema_K2"), *GraphSpec.Schema),
-			JoinPath(GraphPath(GraphSpec), TEXT("Schema")),
+			K2GraphJoinPath(K2GraphPath(GraphSpec), TEXT("Schema")),
 			TEXT("InvalidGraphSchema"));
 	}
 
@@ -430,7 +430,7 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 	const UEdGraphSchema_K2* Schema = Cast<UEdGraphSchema_K2>(TempGraph->GetSchema());
 	if (!Schema)
 	{
-		return GraphFailure(TEXT("K2 graph schema could not be initialized"), GraphPath(GraphSpec), TEXT("InvalidGraphSchema"));
+		return GraphFailure(TEXT("K2 graph schema could not be initialized"), K2GraphPath(GraphSpec), TEXT("InvalidGraphSchema"));
 	}
 
 	TMap<FString, UEdGraphNode*> TempNodesById;
@@ -441,7 +441,7 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph node class '%s' could not be loaded"), *NodeSpec.Class),
-				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("Class")),
+				K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("Class")),
 				TEXT("UnresolvedGraphNodeClass"));
 		}
 		const TSharedPtr<IAssetDocumentNodeAdapter> Adapter = Registry.FindAdapter(NodeClass);
@@ -449,7 +449,7 @@ FAssetDocumentCapabilityResult PreflightGraphSpec(UBlueprint* Blueprint, const F
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph node class '%s' has no Tier 1 adapter"), *NodeSpec.Class),
-				JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("Class")),
+				K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("Class")),
 				TEXT("UnsupportedGraphNodeClass"));
 		}
 
@@ -576,7 +576,7 @@ UEdGraphNode* FindReusableNode(
 
 FString ExistingGraphPath(const UEdGraph* Graph)
 {
-	return JoinPath(ActiveGraphRegionPath(), Graph ? Graph->GetName() : FString(TEXT("UnknownGraph")));
+	return K2GraphJoinPath(ActiveGraphRegionPath(), Graph ? Graph->GetName() : FString(TEXT("UnknownGraph")));
 }
 
 FString ExistingNodePath(const UEdGraph* Graph, const UEdGraphNode* Node)
@@ -584,7 +584,7 @@ FString ExistingNodePath(const UEdGraph* Graph, const UEdGraphNode* Node)
 	const FString NodeIdentity = Node && Node->NodeGuid.IsValid()
 		? Node->NodeGuid.ToString(EGuidFormats::Digits)
 		: Node ? Node->GetName() : FString(TEXT("UnknownNode"));
-	return JoinPath(JoinPath(ExistingGraphPath(Graph), TEXT("Nodes")), NodeIdentity);
+	return K2GraphJoinPath(K2GraphJoinPath(ExistingGraphPath(Graph), TEXT("Nodes")), NodeIdentity);
 }
 
 FAssetDocumentCapabilityResult PreflightDeleteExistingNode(
@@ -693,14 +693,14 @@ FAssetDocumentCapabilityResult CreateLinks(const FAssetDocumentGraphSpec& GraphS
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph link endpoint '%s' could not be resolved after node reconstruction"), *Link.ToKey()),
-				LinkPath(GraphSpec, Link),
+				K2GraphLinkPath(GraphSpec, Link),
 				TEXT("UnresolvedGraphLinkEndpoint"));
 		}
 		if (!Schema->TryCreateConnection(FromPin, ToPin))
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Graph schema rejected link '%s'"), *Link.ToKey()),
-				LinkPath(GraphSpec, Link),
+				K2GraphLinkPath(GraphSpec, Link),
 				TEXT("InvalidGraphLinkType"));
 		}
 	}
@@ -780,7 +780,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
 		{
 			return GraphFailure(
 				FString::Printf(TEXT("Failed to create graph '%s'"), *GraphSpec.Name),
-				GraphPath(GraphSpec),
+				K2GraphPath(GraphSpec),
 				TEXT("InvalidGraphRegion"));
 		}
 
@@ -795,7 +795,7 @@ FAssetDocumentCapabilityResult ApplyGraphsNoCompile(
 			{
 				return GraphFailure(
 					FString::Printf(TEXT("Graph node class '%s' has no Tier 1 adapter"), *NodeSpec.Class),
-					JoinPath(NodePath(GraphSpec, NodeSpec), TEXT("Class")),
+					K2GraphJoinPath(K2GraphNodePath(GraphSpec, NodeSpec), TEXT("Class")),
 					TEXT("UnsupportedGraphNodeClass"));
 			}
 
@@ -994,7 +994,7 @@ FString MakeNodeBaseId(const UEdGraphNode* Node)
 	return Node ? Node->GetName() : FString(TEXT("Node"));
 }
 
-TSharedRef<FJsonObject> MakePositionObject(const UEdGraphNode* Node)
+TSharedRef<FJsonObject> K2GraphMakePositionObject(const UEdGraphNode* Node)
 {
 	TSharedRef<FJsonObject> Position = MakeShared<FJsonObject>();
 	Position->SetNumberField(TEXT("X"), Node ? Node->NodePosX : 0);
@@ -1002,7 +1002,7 @@ TSharedRef<FJsonObject> MakePositionObject(const UEdGraphNode* Node)
 	return Position;
 }
 
-TSharedRef<FJsonObject> MakeSkippedNodeObject(const UEdGraph* Graph, const UEdGraphNode* Node)
+TSharedRef<FJsonObject> K2GraphMakeSkippedNodeObject(const UEdGraph* Graph, const UEdGraphNode* Node)
 {
 	TSharedRef<FJsonObject> Skipped = MakeShared<FJsonObject>();
 	Skipped->SetStringField(TEXT("Reason"), TEXT("UnsupportedGraphNodeClass"));
@@ -1220,14 +1220,14 @@ FAssetDocumentK2GraphExtractResult FAssetDocumentK2GraphAdapter::ExtractGraphReg
 				{
 					continue;
 				}
-				Result.SkippedNodes.Add(MakeShared<FJsonValueObject>(MakeSkippedNodeObject(Graph, Node)));
+				Result.SkippedNodes.Add(MakeShared<FJsonValueObject>(K2GraphMakeSkippedNodeObject(Graph, Node)));
 				continue;
 			}
 
 			NodeSpec.Id = MakeUniqueId(MakeNodeBaseId(Node), UsedIds);
 			NodeSpec.Class = GetClassPath(Node->GetClass());
 			NodeSpec.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
-			NodeSpec.Position = MakePositionObject(Node);
+			NodeSpec.Position = K2GraphMakePositionObject(Node);
 			NodeIds.Add(Node, NodeSpec.Id);
 			GraphSpec.Nodes.Add(MoveTemp(NodeSpec));
 		}
