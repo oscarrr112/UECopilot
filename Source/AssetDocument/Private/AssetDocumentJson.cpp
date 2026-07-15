@@ -2,6 +2,9 @@
 
 #include "AssetDocumentJson.h"
 
+#include "AssetDocumentAtomicFile.h"
+
+#include "Containers/StringConv.h"
 #include "Misc/FileHelper.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
@@ -44,9 +47,17 @@ bool FAssetDocumentJson::WriteJsonFile(const FString& FilePath, const TSharedPtr
 		return false;
 	}
 
-	if (!FFileHelper::SaveStringToFile(Contents, *FilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+	FTCHARToUTF8 Utf8Contents(*Contents);
+	const TArrayView64<const uint8> Bytes(
+		reinterpret_cast<const uint8*>(Utf8Contents.Get()),
+		Utf8Contents.Length());
+	FString AtomicError;
+	if (!FAssetDocumentAtomicFile::WriteBytesAtomically(FilePath, Bytes, AtomicError))
 	{
-		OutError = FString::Printf(TEXT("Failed to write JSON file '%s'"), *FilePath);
+		OutError = FString::Printf(
+			TEXT("Failed to atomically write JSON file '%s': %s"),
+			*FilePath,
+			*AtomicError);
 		return false;
 	}
 

@@ -5,6 +5,8 @@
 #include "AssetDocumentLifecycle.h"
 #include "AssetDocumentTypes.h"
 #include "CoreMinimal.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/StrongObjectPtr.h"
 
 class FJsonObject;
 
@@ -23,8 +25,21 @@ public:
 	void Rollback(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
 
 private:
+	struct FObjectSnapshot
+	{
+		TStrongObjectPtr<UObject> Object;
+		UObject* OriginalOuter = nullptr;
+		FName OriginalName;
+		EObjectFlags OriginalFlags = RF_NoFlags;
+		bool bWasRooted = false;
+		int32 OriginalDepth = 0;
+		TArray<uint8> SerializedBytes;
+	};
+
 	void RollbackExisting(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
 	void RemoveNewOwnedObjects(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
+	void RestoreOriginalObjectIdentities(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
+	void RestoreOriginalObjectBytes(TArray<FAssetDocumentDiagnostic>& OutDiagnostics);
 	void VerifyOwnedObjects(TArray<FAssetDocumentDiagnostic>& OutDiagnostics) const;
 
 	UObject* ExistingAsset = nullptr;
@@ -32,6 +47,10 @@ private:
 	bool bWasPackageDirty = false;
 	TSharedPtr<FJsonObject> ReflectedPropertySnapshot;
 	TSet<UObject*> OriginalOwnedObjects;
+	TArray<FObjectSnapshot> ObjectSnapshots;
+	bool bHasObjectSnapshots = false;
+	bool bObjectSnapshotsComplete = true;
+	bool bObjectSnapshotRestoreFailed = false;
 	FAssetDocumentLifecycleResult LifecycleResult;
 #if WITH_DEV_AUTOMATION_TESTS
 	TOptional<uint64> ForcedFailureGeneration;

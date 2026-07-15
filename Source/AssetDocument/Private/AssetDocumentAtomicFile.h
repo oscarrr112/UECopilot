@@ -13,6 +13,7 @@ enum class EAssetDocumentAtomicFileFailurePoint : uint8
 	PartialWrite,
 	Flush,
 	Rename,
+	DirectoryFlush,
 };
 #endif
 

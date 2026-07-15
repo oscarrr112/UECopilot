@@ -8,6 +8,7 @@
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
 #include "AssetDocumentManagedPropertyPartition.h"
+#include "AssetDocumentPersistenceTransaction.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "AssetDocumentProfileRegistry.h"
 #include "AssetDocumentPropertyAdapter.h"
@@ -16,9 +17,14 @@
 #include "AssetDocumentServiceTestHooks.h"
 #include "AssetDocumentSyncStateStore.h"
 
+#include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "DiffUtils.h"
 #include "Dom/JsonValue.h"
 #include "Misc/PackageName.h"
+#include "Misc/PackagePath.h"
 #include "Misc/Paths.h"
+#include "PackageTools.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
@@ -386,17 +392,25 @@ bool ExtractAssetBodyEvidenceDocument(
 	return true;
 }
 
-bool TryWriteApplyFileSyncState(
+enum class EAssetDocumentApplyFileSyncStateBuildResult : uint8
+{
+	Updated,
+	NotApplicable,
+};
+
+EAssetDocumentApplyFileSyncStateBuildResult AssetDocumentPersistenceBuildApplyFileSyncState(
 	const FString& SidecarFilePath,
 	UObject* AppliedAsset,
 	const FAssetDocumentResult& ApplyResult,
+	TSharedPtr<FJsonObject>& OutUpdatedDocument,
 	FString& OutSkipReason)
 {
+	OutUpdatedDocument.Reset();
 	OutSkipReason.Reset();
 	if (SidecarFilePath.IsEmpty() || !AppliedAsset)
 	{
 		OutSkipReason = TEXT("Missing sidecar path or applied asset");
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	TSharedPtr<FJsonObject> SourceDocument;
@@ -404,7 +418,7 @@ bool TryWriteApplyFileSyncState(
 	if (!FAssetDocumentSidecar::LoadJsonFile(SidecarFilePath, SourceDocument, Error) || !SourceDocument.IsValid())
 	{
 		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to reload source sidecar") : Error;
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	const FAssetDocumentProfileResolution ProfileResolution =
@@ -412,21 +426,21 @@ bool TryWriteApplyFileSyncState(
 	if (!ProfileResolution.ExactProfile.IsValid())
 	{
 		OutSkipReason = FString::Printf(TEXT("No exact AssetDocument profile for '%s'"), *AppliedAsset->GetClass()->GetPathName());
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	const TArray<FAssetDocumentRegionPolicy> RegionPolicies = ProfileResolution.ExactProfile->GetRegionPolicies();
 	if (RegionPolicies.Num() == 0)
 	{
 		OutSkipReason = TEXT("Exact AssetDocument profile has no region policies");
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"));
 	if (!BodyAdapter)
 	{
 		OutSkipReason = TEXT("Exact AssetDocument profile has no Body adapter");
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	FString Target;
@@ -449,7 +463,7 @@ bool TryWriteApplyFileSyncState(
 	if (!ExtractResult.bSuccess)
 	{
 		OutSkipReason = ExtractResult.Message.IsEmpty() ? TEXT("Failed to extract post-apply asset evidence") : ExtractResult.Message;
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 	EvidenceDocument->SetObjectField(TEXT("Body"), EvidenceBody);
 
@@ -458,7 +472,7 @@ bool TryWriteApplyFileSyncState(
 	if (!FAssetDocumentSyncStateStore::LoadFromDocumentJson(SourceDocument.ToSharedRef(), SyncState, SyncError))
 	{
 		OutSkipReason = SyncError.IsEmpty() ? TEXT("Malformed existing sync state") : SyncError;
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 	SyncState.AssetObjectPath = AppliedAsset->GetPathName();
 	SyncState.UpdatedAtUtc = FDateTime::UtcNow().ToIso8601();
@@ -484,12 +498,12 @@ bool TryWriteApplyFileSyncState(
 		if (AssetEvidenceHash.IsEmpty())
 		{
 			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash is empty for region '%s'"), *Policy.RegionId.ToString());
-			return false;
+			return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 		}
 		if (SidecarHash != AssetEvidenceHash)
 		{
 			OutSkipReason = FString::Printf(TEXT("Post-apply asset evidence hash differs for region '%s'"), *Policy.RegionId.ToString());
-			return false;
+			return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 		}
 
 		FAssetDocumentRegionSyncState RegionState;
@@ -503,17 +517,12 @@ bool TryWriteApplyFileSyncState(
 	if (!bUpdatedAnyRegion)
 	{
 		OutSkipReason = TEXT("No writable sync regions were found");
-		return false;
+		return EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
 	}
 
 	FAssetDocumentSyncStateStore::WriteToDocumentJson(SourceDocument.ToSharedRef(), SyncState);
-	FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarFilePath);
-	const bool bWrote = FAssetDocumentSidecar::WriteJsonFile(SidecarFilePath, SourceDocument, Error);
-	if (!bWrote)
-	{
-		OutSkipReason = Error.IsEmpty() ? TEXT("Failed to write sidecar sync state") : Error;
-	}
-	return bWrote;
+	OutUpdatedDocument = MoveTemp(SourceDocument);
+	return EAssetDocumentApplyFileSyncStateBuildResult::Updated;
 }
 
 TSharedRef<FJsonObject> MakeGenericProfilePayload(const FAssetDocumentProfileResolution& Resolution)
@@ -687,6 +696,286 @@ void RouteCapabilityDiffEntries(
 			Failed.Add(EntryValue);
 		}
 	}
+}
+
+void AssetDocumentPersistenceAddDiagnostic(
+	TArray<FAssetDocumentDiagnostic>& Diagnostics,
+	const FString& Code,
+	const FString& Message,
+	const FString& Path = TEXT("/Apply/Persistence"))
+{
+	FAssetDocumentDiagnostic Diagnostic;
+	Diagnostic.Path = Path;
+	Diagnostic.Code = Code;
+	Diagnostic.Message = Message;
+	Diagnostics.Add(MoveTemp(Diagnostic));
+}
+
+bool AssetDocumentPersistenceRequiresStrictFreshVerification(UClass* AssetClass)
+{
+	return AssetClass == UBehaviorTree::StaticClass()
+		|| AssetClass == UBlackboardData::StaticClass();
+}
+
+bool AssetDocumentPersistenceUnloadFreshPackage(UPackage* Package, FString& OutError)
+{
+	if (!Package)
+	{
+		return true;
+	}
+	TArray<UPackage*> Packages{Package};
+	UPackageTools::FUnloadPackageParams Params(Packages);
+	Params.bUnloadDirtyPackages = true;
+	Params.bResetTransBuffer = false;
+	if (!UPackageTools::UnloadPackages(Params))
+	{
+		OutError = Params.OutErrorMessage.IsEmpty()
+			? FString::Printf(TEXT("Failed to unload fresh verification package '%s'"), *Package->GetName())
+			: Params.OutErrorMessage.ToString();
+		return false;
+	}
+	return true;
+}
+
+bool AssetDocumentPersistenceVerifyFreshStagedDocument(
+	const FString& StagedHeaderFilename,
+	const FString& CanonicalHeaderFilename,
+	const FString& Target,
+	UClass* ExpectedClass,
+	const TSharedPtr<FJsonObject>& AuthoredDocument,
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics,
+	FString& OutError)
+{
+	OutError.Reset();
+	const FPackagePath StagedPackagePath = FPackagePath::FromLocalPath(StagedHeaderFilename);
+	const FPackagePath CanonicalPackagePath = FPackagePath::FromLocalPath(CanonicalHeaderFilename);
+	UPackage* FreshPackage = DiffUtils::LoadPackageForDiff(StagedPackagePath, CanonicalPackagePath);
+	if (!FreshPackage)
+	{
+		OutError = FString::Printf(
+			TEXT("Failed to fresh-load staged package '%s' for AssetDocument verification"),
+			*StagedHeaderFilename);
+		AssetDocumentPersistenceAddDiagnostic(
+			OutDiagnostics,
+			TEXT("AssetDocumentFreshReloadFailed"),
+			OutError);
+		return false;
+	}
+
+#if WITH_DEV_AUTOMATION_TESTS
+	FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+		EAssetDocumentServicePersistencePhase::AfterFreshReloadBeforeVerification);
+	FAssetDocumentDiagnostic ForcedFreshReloadFailure;
+	if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+		EAssetDocumentServicePersistencePhase::AfterFreshReloadBeforeVerification,
+		ForcedFreshReloadFailure))
+	{
+		OutDiagnostics.Add(ForcedFreshReloadFailure);
+		OutError = ForcedFreshReloadFailure.Message;
+		FString UnloadError;
+		AssetDocumentPersistenceUnloadFreshPackage(FreshPackage, UnloadError);
+		return false;
+	}
+#endif
+
+	bool bVerified = true;
+	auto FailVerification = [&OutDiagnostics, &OutError, &bVerified](
+		const FString& Code,
+		const FString& Message,
+		const FString& Path)
+	{
+		bVerified = false;
+		if (OutError.IsEmpty())
+		{
+			OutError = Message;
+		}
+		AssetDocumentPersistenceAddDiagnostic(OutDiagnostics, Code, Message, Path);
+	};
+
+	const FString AssetName = FPackageName::GetLongPackageAssetName(Target);
+	UObject* FreshAsset = FindObject<UObject>(FreshPackage, *AssetName);
+	if (!FreshAsset)
+	{
+		FreshAsset = FreshPackage->FindAssetInPackage();
+	}
+	if (!FreshAsset)
+	{
+		FailVerification(
+			TEXT("AssetDocumentFreshReloadMissingAsset"),
+			FString::Printf(TEXT("Fresh package '%s' does not contain asset '%s'"), *FreshPackage->GetName(), *AssetName),
+			TEXT("/Target"));
+	}
+	else if (FreshAsset->GetClass() != ExpectedClass)
+	{
+		FailVerification(
+			TEXT("AssetDocumentFreshReloadClassMismatch"),
+			FString::Printf(
+				TEXT("Fresh asset class '%s' does not exactly match expected class '%s'"),
+				*FreshAsset->GetClass()->GetPathName(),
+				*GetPathNameSafe(ExpectedClass)),
+			TEXT("/Class"));
+	}
+
+	if (FreshAsset && FreshAsset->GetClass() == ExpectedClass)
+	{
+		const FAssetDocumentProfileResolution ProfileResolution =
+			ResolveAssetDocumentProfile(FAssetDocumentService::GetProfileRegistry(), FreshAsset->GetClass());
+		const TSet<FName> ManagedPropertyNames =
+			FAssetDocumentManagedPropertyPartition::CollectTopLevelPropertyNames(ProfileResolution.ExactProfile.Get());
+		const TSharedPtr<FJsonObject> ExtractedProperties =
+			FAssetDocumentPropertyAdapter::ExtractWritablePropertiesToJson(
+				FreshAsset,
+				false,
+				&ManagedPropertyNames);
+		if (!ExtractedProperties.IsValid())
+		{
+			FailVerification(
+				TEXT("AssetDocumentFreshExtractFailed"),
+				TEXT("Fresh asset reflected Properties could not be canonically extracted"),
+				TEXT("/Properties"));
+		}
+
+		TSharedPtr<FJsonObject> DiffDocument = MakeDiffDocument(AuthoredDocument);
+		const TSharedPtr<FJsonObject>* AuthoredProperties = nullptr;
+		if (DiffDocument.IsValid()
+			&& DiffDocument->TryGetObjectField(TEXT("Properties"), AuthoredProperties)
+			&& AuthoredProperties
+			&& AuthoredProperties->IsValid())
+		{
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*AuthoredProperties)->Values)
+			{
+				FProperty* Property = FindFProperty<FProperty>(FreshAsset->GetClass(), *Pair.Key);
+				if (!Property)
+				{
+					FailVerification(
+						TEXT("AssetDocumentFreshDiffMissingProperty"),
+						FString::Printf(TEXT("Fresh asset is missing authored property '%s'"), *Pair.Key),
+						FString::Printf(TEXT("/Properties/%s"), *Pair.Key));
+					continue;
+				}
+
+				const void* BeforeValuePtr = Property->ContainerPtrToValuePtr<void>(FreshAsset);
+				const TSharedPtr<FJsonValue> BeforeValue =
+					FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, BeforeValuePtr);
+				UObject* PreviewAsset = DuplicateObject<UObject>(FreshAsset, GetTransientPackage());
+				TSharedPtr<FJsonObject> SingleProperty = MakeShared<FJsonObject>();
+				SingleProperty->SetField(Pair.Key, Pair.Value);
+				const FAssetDocumentPropertyApplyResult ApplyResult = PreviewAsset
+					? FAssetDocumentPropertyAdapter::ApplyProperties(PreviewAsset, SingleProperty)
+					: FAssetDocumentPropertyApplyResult();
+				const void* AfterValuePtr = PreviewAsset
+					? Property->ContainerPtrToValuePtr<void>(PreviewAsset)
+					: nullptr;
+				const TSharedPtr<FJsonValue> AfterValue = AfterValuePtr
+					? FAssetDocumentPropertyAdapter::ExtractPropertyValue(Property, AfterValuePtr)
+					: nullptr;
+				if (!BeforeValue.IsValid()
+					|| !PreviewAsset
+					|| !ApplyResult.bSuccess
+					|| !AfterValue.IsValid())
+				{
+					FailVerification(
+						TEXT("AssetDocumentFreshDiffPropertyFailed"),
+						ApplyResult.Message.IsEmpty()
+							? FString::Printf(TEXT("Fresh diff failed for authored property '%s'"), *Pair.Key)
+							: ApplyResult.Message,
+						FString::Printf(TEXT("/Properties/%s"), *Pair.Key));
+				}
+				else if (JsonValueToComparableString(BeforeValue) != JsonValueToComparableString(AfterValue))
+				{
+					FailVerification(
+						TEXT("AssetDocumentFreshDiffChanged"),
+						FString::Printf(TEXT("Fresh diff reports authored property '%s' as changed"), *Pair.Key),
+						FString::Printf(TEXT("/Properties/%s"), *Pair.Key));
+				}
+			}
+		}
+
+		const TSharedPtr<FJsonValue>* BodyValue = DiffDocument.IsValid()
+			? DiffDocument->Values.Find(TEXT("Body"))
+			: nullptr;
+		if (BodyValue && BodyValue->IsValid())
+		{
+			const IAssetDocumentCapability* BodyAdapter = ProfileResolution.ExactProfile.IsValid()
+				? ProfileResolution.ExactProfile->ResolveBodyAdapter(TEXT("Body"))
+				: nullptr;
+			if (!BodyAdapter)
+			{
+				FailVerification(
+					TEXT("AssetDocumentFreshExtractMissingBodyAdapter"),
+					TEXT("Fresh verification requires an exact Body adapter"),
+					TEXT("/Body"));
+			}
+			else
+			{
+				TSharedRef<FJsonObject> ExtractedBody = MakeShared<FJsonObject>();
+				FAssetDocumentCapabilityContext CapabilityContext;
+				CapabilityContext.Asset = FreshAsset;
+				CapabilityContext.AssetClass = FreshAsset->GetClass();
+				CapabilityContext.TargetAssetPath = Target;
+				const TSharedPtr<FJsonObject>* Definitions = nullptr;
+				DiffDocument->TryGetObjectField(TEXT("Definitions"), Definitions);
+				CapabilityContext.Definitions = Definitions;
+				const FAssetDocumentCapabilityResult ExtractResult = BodyAdapter->Extract(
+					CapabilityContext,
+					ExtractedBody);
+				if (!ExtractResult.bSuccess)
+				{
+					FailVerification(
+						TEXT("AssetDocumentFreshExtractFailed"),
+						ExtractResult.Message.IsEmpty()
+							? TEXT("Fresh Body canonical extraction failed")
+							: ExtractResult.Message,
+						TEXT("/Body"));
+				}
+
+				CapabilityContext.bIsDryRun = true;
+				TArray<TSharedPtr<FJsonValue>> BodyDiffEntries;
+				const FAssetDocumentCapabilityResult DiffResult = BodyAdapter->Diff(
+					CapabilityContext,
+					BodyValue->ToSharedRef(),
+					BodyDiffEntries);
+				if (!DiffResult.bSuccess)
+				{
+					FailVerification(
+						TEXT("AssetDocumentFreshDiffFailed"),
+						DiffResult.Message.IsEmpty() ? TEXT("Fresh Body diff failed") : DiffResult.Message,
+						TEXT("/Body"));
+				}
+				for (const TSharedPtr<FJsonValue>& EntryValue : BodyDiffEntries)
+				{
+					const TSharedPtr<FJsonObject> Entry = EntryValue.IsValid() ? EntryValue->AsObject() : nullptr;
+					FString Status;
+					FString Path = TEXT("/Body");
+					if (Entry.IsValid())
+					{
+						Entry->TryGetStringField(TEXT("status"), Status);
+						Entry->TryGetStringField(TEXT("path"), Path);
+					}
+					if (!Entry.IsValid() || Status != TEXT("unchanged"))
+					{
+						FailVerification(
+							TEXT("AssetDocumentFreshDiffNonEmpty"),
+							FString::Printf(
+								TEXT("Fresh Body diff contains non-empty status '%s' at '%s'"),
+								*Status,
+								*Path),
+							Path);
+					}
+				}
+			}
+		}
+	}
+
+	FString UnloadError;
+	if (!AssetDocumentPersistenceUnloadFreshPackage(FreshPackage, UnloadError))
+	{
+		FailVerification(
+			TEXT("AssetDocumentFreshReloadCleanupFailed"),
+			UnloadError,
+			TEXT("/Apply/Persistence"));
+	}
+	return bVerified;
 }
 
 FAssetDocumentResult MakeCapabilityValidationFailure(const FAssetDocumentCapabilityResult& CapabilityResult, const FString& Target, const FString& NormalizedFilePath)
@@ -1675,40 +1964,236 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		}
 #endif
 	}
-	Transaction.Commit();
-
 	FAssetDocumentResult Result = FAssetDocumentResult::Success(TEXT("AssetDocument applied"));
+	TStrongObjectPtr<UObject> LiveAssetGuard(LifecycleResult.Asset);
+	TStrongObjectPtr<UPackage> LivePackageGuard(LifecycleResult.Asset->GetOutermost());
 	Result.Target = Target;
 	Result.AssetPath = LifecycleResult.ObjectPath;
 	Result.SidecarFilePath = NormalizedSourceDocumentPath;
 	Result.Diagnostics = Diagnostics;
 	Result.bWroteSidecar = false;
+	Result.bSavedAsset = false;
+
+	TSharedPtr<FJsonObject> UpdatedSidecarDocument;
+	FString SidecarSyncUpdateSkipReason;
+	EAssetDocumentApplyFileSyncStateBuildResult SidecarBuildResult = EAssetDocumentApplyFileSyncStateBuildResult::NotApplicable;
+	if (Request.bWriteSidecar && Request.bSaveAsset)
+	{
+		SidecarBuildResult = AssetDocumentPersistenceBuildApplyFileSyncState(
+			NormalizedSourceDocumentPath,
+			LifecycleResult.Asset,
+			Result,
+			UpdatedSidecarDocument,
+			SidecarSyncUpdateSkipReason);
+	}
+	else if (Request.bWriteSidecar && !Request.bSaveAsset)
+	{
+		SidecarSyncUpdateSkipReason = TEXT("Sidecar sync rewrite requires a durable asset save");
+	}
+
+	TUniquePtr<FAssetDocumentPersistenceTransaction> PersistenceTransaction;
+	auto RollbackPersistence = [&Result, &PersistenceTransaction]()
+	{
+		if (!PersistenceTransaction || !PersistenceTransaction->HasInstalledFiles())
+		{
+			return;
+		}
+		TArray<FString> RollbackErrors;
+		PersistenceTransaction->RollbackInstalledPackage(RollbackErrors);
+		for (const FString& RollbackError : RollbackErrors)
+		{
+			AssetDocumentPersistenceAddDiagnostic(
+				Result.Diagnostics,
+				TEXT("AssetDocumentPersistenceRollbackFailed"),
+				RollbackError);
+		}
+	};
+	auto FailPersistence = [
+		&Result,
+		&Transaction,
+		&RollbackPersistence,
+		&Target,
+		&NormalizedSourceDocumentPath,
+		&LifecycleResult](
+		const FString& Message,
+		const FString& Code,
+		const TOptional<FAssetDocumentDiagnostic>& PrimaryDiagnostic = TOptional<FAssetDocumentDiagnostic>()) mutable
+	{
+		Result.Status = EAssetDocumentResultStatus::Failed;
+		Result.Message = Message;
+		Result.Target = Target;
+		Result.AssetPath = LifecycleResult.ObjectPath;
+		Result.SidecarFilePath = NormalizedSourceDocumentPath;
+		Result.bSavedAsset = false;
+		Result.bWroteSidecar = false;
+		if (PrimaryDiagnostic.IsSet())
+		{
+			Result.Diagnostics.Add(PrimaryDiagnostic.GetValue());
+		}
+		else
+		{
+			AssetDocumentPersistenceAddDiagnostic(Result.Diagnostics, Code, Message);
+		}
+		RollbackPersistence();
+		RollbackAssetDocumentApply(Transaction, Result);
+		return Result;
+	};
+
+	if (Request.bWriteSidecar
+		&& Request.bSaveAsset
+		&& AssetDocumentPersistenceRequiresStrictFreshVerification(ResolvedClass)
+		&& (SidecarBuildResult != EAssetDocumentApplyFileSyncStateBuildResult::Updated
+			|| !UpdatedSidecarDocument.IsValid()))
+	{
+		const FString SidecarPreparationError = SidecarSyncUpdateSkipReason.IsEmpty()
+			? TEXT("Strict AssetDocument sidecar sync state could not be prepared")
+			: SidecarSyncUpdateSkipReason;
+		return FailPersistence(
+			SidecarPreparationError,
+			TEXT("AssetDocumentStrictSidecarSyncPreparationFailed"));
+	}
 
 	if (Request.bSaveAsset)
 	{
 		LifecycleResult.Asset->MarkPackageDirty();
 		UPackage* Package = LifecycleResult.Asset->GetOutermost();
-		const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
-		FSavePackageArgs SaveArgs;
-		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		const bool bSaved = UPackage::SavePackage(Package, LifecycleResult.Asset, *PackageFileName, SaveArgs);
-		if (!bSaved)
+		if (!Package)
 		{
-			TArray<FAssetDocumentDiagnostic> CleanupDiagnostics;
-			FAssetDocumentLifecycle::CleanupCreatedAsset(LifecycleResult, CleanupDiagnostics);
-			Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to save asset package '%s'"), *Package->GetName()));
-			Result.Target = Target;
-			Result.AssetPath = LifecycleResult.ObjectPath;
-			Result.SidecarFilePath = NormalizedSourceDocumentPath;
-			Result.Diagnostics = Diagnostics;
-			Result.Diagnostics.Append(CleanupDiagnostics);
-			Result.bSavedAsset = false;
-			Result.bWroteSidecar = false;
-			return Result;
+			return FailPersistence(
+				TEXT("AssetDocument persistence could not resolve the asset package"),
+				TEXT("AssetDocumentPersistenceMissingPackage"));
 		}
+		const FString PackageName = Package->GetName();
+		const FString PackageFileName = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+#if WITH_DEV_AUTOMATION_TESTS
+		FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+			EAssetDocumentServicePersistencePhase::BeforePackageStageSave);
+		FAssetDocumentDiagnostic ForcedPersistenceFailure;
+		if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+			EAssetDocumentServicePersistencePhase::BeforePackageStageSave,
+			ForcedPersistenceFailure))
+		{
+			return FailPersistence(
+				ForcedPersistenceFailure.Message,
+				ForcedPersistenceFailure.Code,
+				ForcedPersistenceFailure);
+		}
+#endif
+
+		PersistenceTransaction = MakeUnique<FAssetDocumentPersistenceTransaction>(
+			PackageName,
+			PackageFileName);
+		FString PersistenceError;
+		if (!PersistenceTransaction->StagePackage(
+				Package,
+				LifecycleResult.Asset,
+				PersistenceError))
+		{
+			return FailPersistence(
+				PersistenceError,
+				TEXT("AssetDocumentPackageStageSaveFailed"));
+		}
+
+		if (AssetDocumentPersistenceRequiresStrictFreshVerification(ResolvedClass))
+		{
+			TArray<FAssetDocumentDiagnostic> VerificationDiagnostics;
+			if (!AssetDocumentPersistenceVerifyFreshStagedDocument(
+					PersistenceTransaction->GetStagedHeaderFilename(),
+					PersistenceTransaction->GetCanonicalHeaderFilename(),
+					Target,
+					ResolvedClass,
+					Request.Document,
+					VerificationDiagnostics,
+					PersistenceError))
+			{
+				Result.Diagnostics.Append(VerificationDiagnostics);
+				return FailPersistence(
+					PersistenceError.IsEmpty()
+						? TEXT("Fresh staged AssetDocument verification failed")
+						: PersistenceError,
+					TEXT("AssetDocumentFreshVerificationFailed"));
+			}
+		}
+
+		if (!PersistenceTransaction->InstallStagedPackage(PersistenceError))
+		{
+			return FailPersistence(
+				PersistenceError,
+				TEXT("AssetDocumentPackageInstallFailed"));
+		}
+
+#if WITH_DEV_AUTOMATION_TESTS
+		FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+			EAssetDocumentServicePersistencePhase::AfterPackageInstall);
+		if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+			EAssetDocumentServicePersistencePhase::AfterPackageInstall,
+			ForcedPersistenceFailure))
+		{
+			return FailPersistence(
+				ForcedPersistenceFailure.Message,
+				ForcedPersistenceFailure.Code,
+				ForcedPersistenceFailure);
+		}
+#endif
 		Result.bSavedAsset = true;
 	}
 
+	if (Request.bWriteSidecar
+		&& Request.bSaveAsset
+		&& SidecarBuildResult == EAssetDocumentApplyFileSyncStateBuildResult::Updated
+		&& UpdatedSidecarDocument.IsValid())
+	{
+#if WITH_DEV_AUTOMATION_TESTS
+		FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+			EAssetDocumentServicePersistencePhase::BeforeSidecarWrite);
+		FAssetDocumentDiagnostic ForcedSidecarFailure;
+		if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+			EAssetDocumentServicePersistencePhase::BeforeSidecarWrite,
+			ForcedSidecarFailure))
+		{
+			return FailPersistence(
+				ForcedSidecarFailure.Message,
+				ForcedSidecarFailure.Code,
+				ForcedSidecarFailure);
+		}
+#endif
+		FString SidecarWriteError;
+		FAssetDocumentEditorSync::FScopedSidecarWrite Guard(NormalizedSourceDocumentPath);
+		if (!FAssetDocumentSidecar::WriteJsonFile(
+				NormalizedSourceDocumentPath,
+				UpdatedSidecarDocument,
+				SidecarWriteError))
+		{
+			return FailPersistence(
+				SidecarWriteError.IsEmpty()
+					? TEXT("Failed to atomically write AssetDocument sidecar sync state")
+					: SidecarWriteError,
+				TEXT("AssetDocumentSidecarAtomicWriteFailed"));
+		}
+		Result.bWroteSidecar = true;
+	}
+
+	if (Result.bSavedAsset && LifecycleResult.Asset && LifecycleResult.Asset->GetOutermost())
+	{
+		LifecycleResult.Asset->GetOutermost()->SetDirtyFlag(false);
+	}
+	if (!SidecarSyncUpdateSkipReason.IsEmpty())
+	{
+		if (!Result.Payload.IsValid())
+		{
+			Result.Payload = MakeShared<FJsonObject>();
+		}
+		Result.Payload->SetBoolField(TEXT("sidecar_sync_update_skipped"), true);
+		Result.Payload->SetStringField(
+			TEXT("sidecar_sync_update_skip_reason"),
+			SidecarSyncUpdateSkipReason);
+	}
+	if (PersistenceTransaction)
+	{
+		PersistenceTransaction->Commit();
+	}
+	Transaction.Commit();
 	return Result;
 }
 
@@ -1746,24 +2231,10 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 	ApplyRequest.Document = Document;
 	ApplyRequest.SourceDocumentPath = NormalizedFilePath;
 	ApplyRequest.bSaveAsset = Request.bSaveAsset;
-	ApplyRequest.bWriteSidecar = false;
+	ApplyRequest.bWriteSidecar = Request.bAllowSidecarRewrite && Request.bSaveAsset;
 
 	FAssetDocumentResult Result = Apply(ApplyRequest);
 	Result.SidecarFilePath = NormalizedFilePath;
-	FString SidecarSyncUpdateSkipReason;
-	if (Result.IsSuccess() && Request.bAllowSidecarRewrite)
-	{
-		UObject* AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.AssetPath);
-		if (!AppliedAsset)
-		{
-			AppliedAsset = LoadAssetFromPackageOrObjectPath(Result.Target);
-		}
-		Result.bWroteSidecar = TryWriteApplyFileSyncState(NormalizedFilePath, AppliedAsset, Result, SidecarSyncUpdateSkipReason);
-	}
-	else
-	{
-		Result.bWroteSidecar = false;
-	}
 
 	if (!Result.Payload.IsValid())
 	{
@@ -1771,10 +2242,15 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 	}
 	Result.Payload->SetStringField(TEXT("sidecar_file_path"), NormalizedFilePath);
 	Result.Payload->SetBoolField(TEXT("triggered_by_watcher"), Request.bTriggeredByWatcher);
-	if (Result.IsSuccess() && Request.bAllowSidecarRewrite && !Result.bWroteSidecar && !SidecarSyncUpdateSkipReason.IsEmpty())
+	if (Result.IsSuccess()
+		&& Request.bAllowSidecarRewrite
+		&& !Request.bSaveAsset
+		&& !Result.bWroteSidecar)
 	{
 		Result.Payload->SetBoolField(TEXT("sidecar_sync_update_skipped"), true);
-		Result.Payload->SetStringField(TEXT("sidecar_sync_update_skip_reason"), SidecarSyncUpdateSkipReason);
+		Result.Payload->SetStringField(
+			TEXT("sidecar_sync_update_skip_reason"),
+			TEXT("Sidecar sync rewrite requires a durable asset save"));
 	}
 
 	return Result;

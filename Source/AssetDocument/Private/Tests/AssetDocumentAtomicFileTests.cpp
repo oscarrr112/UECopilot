@@ -33,7 +33,8 @@ bool HasAtomicTemporaryFile(const FString& Directory)
 			const FString CleanFilename = FPaths::GetCleanFilename(Path);
 			bFoundTemporaryFile = !bIsDirectory
 				&& CleanFilename.StartsWith(TEXT("."))
-				&& CleanFilename.EndsWith(TEXT(".tmp"));
+				&& (CleanFilename.EndsWith(TEXT(".tmp"))
+					|| CleanFilename.EndsWith(TEXT(".bak")));
 			return !bFoundTemporaryFile;
 		});
 	return bFoundTemporaryFile;
@@ -179,6 +180,7 @@ bool FAssetDocumentAtomicFileFailurePreservesExistingTest::RunTest(const FString
 		{EAssetDocumentAtomicFileFailurePoint::PartialWrite, TEXT("AtomicFile.Write")},
 		{EAssetDocumentAtomicFileFailurePoint::Flush, TEXT("AtomicFile.Flush")},
 		{EAssetDocumentAtomicFileFailurePoint::Rename, TEXT("AtomicFile.Rename")},
+		{EAssetDocumentAtomicFileFailurePoint::DirectoryFlush, TEXT("AtomicFile.DirectoryFlush")},
 	};
 
 	for (const FFailureCase& FailureCase : FailureCases)
@@ -290,6 +292,7 @@ bool FAssetDocumentAtomicFileFailureKeepsMissingDestinationAbsentTest::RunTest(c
 		{EAssetDocumentAtomicFileFailurePoint::PartialWrite, TEXT("AtomicFile.Write")},
 		{EAssetDocumentAtomicFileFailurePoint::Flush, TEXT("AtomicFile.Flush")},
 		{EAssetDocumentAtomicFileFailurePoint::Rename, TEXT("AtomicFile.Rename")},
+		{EAssetDocumentAtomicFileFailurePoint::DirectoryFlush, TEXT("AtomicFile.DirectoryFlush")},
 	};
 
 	for (const FFailureCase& FailureCase : FailureCases)

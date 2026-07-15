@@ -17,6 +17,10 @@ TOptional<EAssetDocumentLifecycleCreatePhase> PendingLifecycleCreateFailurePhase
 TOptional<FAssetDocumentDiagnostic> PendingLifecycleCreateFailureDiagnostic;
 bool bPendingLifecycleCreateFailureEmitsDiagnostic = true;
 TOptional<FAssetDocumentDiagnostic> PendingLifecycleCleanupVerificationDiagnostic;
+TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPendingPersistenceFailurePhase;
+TOptional<FAssetDocumentDiagnostic> AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic;
+TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase;
+TFunction<void()> AssetDocumentServiceTestHooksPendingPersistenceCallback;
 
 void CheckAssetDocumentTestHookThread()
 {
@@ -63,6 +67,24 @@ void FAssetDocumentServiceTestHooks::FailNextLifecycleCleanupVerification(
 {
 	CheckAssetDocumentTestHookThread();
 	PendingLifecycleCleanupVerificationDiagnostic = Diagnostic;
+}
+
+void FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+	EAssetDocumentServicePersistencePhase Phase,
+	const FAssetDocumentDiagnostic& Diagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	AssetDocumentServiceTestHooksPendingPersistenceFailurePhase = Phase;
+	AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic = Diagnostic;
+}
+
+void FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+	EAssetDocumentServicePersistencePhase Phase,
+	TFunction<void()> Callback)
+{
+	CheckAssetDocumentTestHookThread();
+	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase = Phase;
+	AssetDocumentServiceTestHooksPendingPersistenceCallback = MoveTemp(Callback);
 }
 
 bool FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
@@ -152,6 +174,43 @@ bool FAssetDocumentServiceTestHooks::ConsumeLifecycleCleanupVerificationFailure(
 	return true;
 }
 
+bool FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+	EAssetDocumentServicePersistencePhase Phase,
+	FAssetDocumentDiagnostic& OutDiagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	if (!AssetDocumentServiceTestHooksPendingPersistenceFailurePhase.IsSet()
+		|| AssetDocumentServiceTestHooksPendingPersistenceFailurePhase.GetValue() != Phase
+		|| !AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.IsSet())
+	{
+		return false;
+	}
+
+	OutDiagnostic = AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.GetValue();
+	AssetDocumentServiceTestHooksPendingPersistenceFailurePhase.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.Reset();
+	return true;
+}
+
+void FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+	EAssetDocumentServicePersistencePhase Phase)
+{
+	CheckAssetDocumentTestHookThread();
+	if (!AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.IsSet()
+		|| AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.GetValue() != Phase)
+	{
+		return;
+	}
+
+	TFunction<void()> Callback = MoveTemp(AssetDocumentServiceTestHooksPendingPersistenceCallback);
+	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceCallback = {};
+	if (Callback)
+	{
+		Callback();
+	}
+}
+
 void FAssetDocumentServiceTestHooks::Clear()
 {
 	CheckAssetDocumentTestHookThread();
@@ -165,6 +224,10 @@ void FAssetDocumentServiceTestHooks::Clear()
 	PendingLifecycleCreateFailureDiagnostic.Reset();
 	bPendingLifecycleCreateFailureEmitsDiagnostic = true;
 	PendingLifecycleCleanupVerificationDiagnostic.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceFailurePhase.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.Reset();
+	AssetDocumentServiceTestHooksPendingPersistenceCallback = {};
 }
 
 #endif

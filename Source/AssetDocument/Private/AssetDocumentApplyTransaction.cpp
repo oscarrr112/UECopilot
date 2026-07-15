@@ -5,6 +5,10 @@
 #include "AssetDocumentPropertyAdapter.h"
 #include "AssetDocumentServiceTestHooks.h"
 
+#include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "Serialization/ObjectReader.h"
+#include "Serialization/ObjectWriter.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectHash.h"
 
@@ -66,6 +70,46 @@ FAssetDocumentApplyTransaction::FAssetDocumentApplyTransaction(
 		false,
 		&ExcludedPropertyNames);
 	OriginalOwnedObjects = AssetDocumentCollectRecursiveOwned(ExistingAsset);
+	if (!ExistingAsset->IsA<UBehaviorTree>() && !ExistingAsset->IsA<UBlackboardData>())
+	{
+		return;
+	}
+	bHasObjectSnapshots = true;
+
+	TArray<UObject*> ObjectsToSnapshot;
+	if (ExistingPackage)
+	{
+		GetObjectsWithOuter(ExistingPackage, ObjectsToSnapshot, true);
+	}
+	if (!ObjectsToSnapshot.Contains(ExistingAsset))
+	{
+		ObjectsToSnapshot.Add(ExistingAsset);
+	}
+	ObjectSnapshots.Reserve(ObjectsToSnapshot.Num());
+	for (UObject* Object : ObjectsToSnapshot)
+	{
+		FObjectSnapshot& Snapshot = ObjectSnapshots.AddDefaulted_GetRef();
+		Snapshot.Object.Reset(Object);
+		Snapshot.OriginalOuter = Object->GetOuter();
+		Snapshot.OriginalName = Object->GetFName();
+		Snapshot.OriginalFlags = Object->GetFlags();
+		Snapshot.bWasRooted = Object->IsRooted();
+		Snapshot.OriginalDepth = AssetDocumentOwnedDepth(Object, ExistingPackage);
+		// Full serialization is intentional. Delta serialization would omit values
+		// equal to archetype defaults and could not restore an exact live snapshot.
+		FObjectWriter Writer(
+			Object,
+			Snapshot.SerializedBytes,
+			false,
+			false,
+			false,
+			PPF_DuplicateVerbatim);
+		bObjectSnapshotsComplete &= !Writer.IsError();
+	}
+	ObjectSnapshots.Sort([](const FObjectSnapshot& A, const FObjectSnapshot& B)
+	{
+		return A.OriginalDepth < B.OriginalDepth;
+	});
 }
 
 void FAssetDocumentApplyTransaction::AttachLifecycleResult(
@@ -118,7 +162,14 @@ void FAssetDocumentApplyTransaction::Rollback(TArray<FAssetDocumentDiagnostic>& 
 void FAssetDocumentApplyTransaction::RollbackExisting(
 	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
 {
-	if (ReflectedPropertySnapshot.IsValid())
+	RemoveNewOwnedObjects(OutDiagnostics);
+	if (bHasObjectSnapshots)
+	{
+		RestoreOriginalObjectIdentities(OutDiagnostics);
+		RestoreOriginalObjectBytes(OutDiagnostics);
+	}
+	if ((!bHasObjectSnapshots || !bObjectSnapshotsComplete || bObjectSnapshotRestoreFailed)
+		&& ReflectedPropertySnapshot.IsValid())
 	{
 		const FAssetDocumentPropertyApplyResult PropertyResult =
 			FAssetDocumentPropertyAdapter::ApplyProperties(ExistingAsset, ReflectedPropertySnapshot);
@@ -132,12 +183,103 @@ void FAssetDocumentApplyTransaction::RollbackExisting(
 					: PropertyResult.Message);
 		}
 	}
-
-	RemoveNewOwnedObjects(OutDiagnostics);
 	VerifyOwnedObjects(OutDiagnostics);
 	if (ExistingPackage)
 	{
 		ExistingPackage->SetDirtyFlag(bWasPackageDirty);
+	}
+}
+
+void FAssetDocumentApplyTransaction::RestoreOriginalObjectIdentities(
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
+{
+	bool bIdentityRestoreFailed = false;
+	for (FObjectSnapshot& Snapshot : ObjectSnapshots)
+	{
+		UObject* Object = Snapshot.Object.Get();
+		if (!Object)
+		{
+			bIdentityRestoreFailed = true;
+			continue;
+		}
+		if (Object->IsUnreachable() || Object->HasAnyInternalFlags(EInternalObjectFlags::Garbage))
+		{
+			Object->ClearGarbage();
+			Object->ClearInternalFlags(EInternalObjectFlags::Unreachable);
+		}
+
+		if (Object->GetOuter() != Snapshot.OriginalOuter
+			|| Object->GetFName() != Snapshot.OriginalName)
+		{
+			if (!Object->Rename(
+					*Snapshot.OriginalName.ToString(),
+					Snapshot.OriginalOuter,
+					REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty))
+			{
+				bIdentityRestoreFailed = true;
+			}
+		}
+
+		const EObjectFlags ImmutableFlags = RF_MarkAsNative | RF_MarkAsRootSet | RF_MirroredGarbage;
+		const EObjectFlags MutableMask = static_cast<EObjectFlags>(RF_AllFlags & ~ImmutableFlags);
+		const EObjectFlags CurrentMutableFlags = static_cast<EObjectFlags>(Object->GetFlags() & MutableMask);
+		const EObjectFlags OriginalMutableFlags = static_cast<EObjectFlags>(Snapshot.OriginalFlags & MutableMask);
+		Object->ClearFlags(static_cast<EObjectFlags>(CurrentMutableFlags & ~OriginalMutableFlags));
+		Object->SetFlags(static_cast<EObjectFlags>(OriginalMutableFlags & ~CurrentMutableFlags));
+		if (Snapshot.bWasRooted && !Object->IsRooted())
+		{
+			Object->AddToRoot();
+		}
+		else if (!Snapshot.bWasRooted && Object->IsRooted())
+		{
+			Object->RemoveFromRoot();
+		}
+	}
+
+	if (bIdentityRestoreFailed)
+	{
+		AssetDocumentAddRollbackDiagnostic(
+			OutDiagnostics,
+			TEXT("AssetDocumentObjectIdentityRollbackFailed"),
+			TEXT("Failed to restore every original UObject outer/name/flag identity during rollback"));
+	}
+}
+
+void FAssetDocumentApplyTransaction::RestoreOriginalObjectBytes(
+	TArray<FAssetDocumentDiagnostic>& OutDiagnostics)
+{
+	bool bRestoreFailed = !bObjectSnapshotsComplete;
+	for (FObjectSnapshot& Snapshot : ObjectSnapshots)
+	{
+		UObject* Object = Snapshot.Object.Get();
+		if (!Object)
+		{
+			bRestoreFailed = true;
+			continue;
+		}
+		FObjectReader Reader(Snapshot.SerializedBytes);
+		Reader.SetPortFlags(PPF_DuplicateVerbatim);
+		Object->Serialize(Reader);
+		bRestoreFailed |= Reader.IsError();
+	}
+	for (int32 SnapshotIndex = ObjectSnapshots.Num() - 1; SnapshotIndex >= 0; --SnapshotIndex)
+	{
+		if (UObject* Object = ObjectSnapshots[SnapshotIndex].Object.Get())
+		{
+			// Mirrors the repair notification used by UE's editor transaction path.
+			// BT graph pins and Blackboard derived caches are allowed to rebuild from
+			// the just-restored serialized authored state here.
+			Object->PostEditUndo();
+		}
+	}
+	bObjectSnapshotRestoreFailed = bRestoreFailed;
+
+	if (bRestoreFailed)
+	{
+		AssetDocumentAddRollbackDiagnostic(
+			OutDiagnostics,
+			TEXT("AssetDocumentObjectSnapshotRollbackFailed"),
+			TEXT("Failed to restore every original UObject serialized snapshot during rollback"));
 	}
 }
 

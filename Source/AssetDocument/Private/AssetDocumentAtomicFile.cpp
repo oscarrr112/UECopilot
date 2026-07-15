@@ -162,6 +162,42 @@ bool FullSync(int32 FileDescriptor, int32& OutSyncError)
 	OutSyncError = SyncResult == 0 ? 0 : errno;
 	return SyncResult == 0;
 }
+
+bool AssetDocumentAtomicFileSyncParentDirectory(const FString& Directory, int32& OutSyncError)
+{
+	FTCHARToUTF8 NativeDirectory(*Directory);
+	int32 DirectoryDescriptor = -1;
+	do
+	{
+		DirectoryDescriptor = ::open(NativeDirectory.Get(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	}
+	while (DirectoryDescriptor == -1 && errno == EINTR);
+	if (DirectoryDescriptor == -1)
+	{
+		OutSyncError = errno;
+		return false;
+	}
+
+	int32 SyncResult = 0;
+	do
+	{
+		SyncResult = ::fsync(DirectoryDescriptor);
+	}
+	while (SyncResult < 0 && errno == EINTR);
+	OutSyncError = SyncResult == 0 ? 0 : errno;
+	int32 CloseResult = 0;
+	do
+	{
+		CloseResult = ::close(DirectoryDescriptor);
+	}
+	while (CloseResult < 0 && errno == EINTR);
+	if (SyncResult == 0 && CloseResult != 0)
+	{
+		OutSyncError = errno;
+		return false;
+	}
+	return SyncResult == 0;
+}
 #endif
 }
 
@@ -343,6 +379,15 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 			*NormalizedDestinationPath));
 	}
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint::DirectoryFlush))
+	{
+		return FailWithCleanup(FString::Printf(
+			TEXT("AtomicFile.DirectoryFlush: injected directory-flush failure for '%s'"),
+			*NormalizedDestinationPath));
+	}
+#endif
 	if (::MoveFileExW(
 			*NativeTemporaryPath,
 			*NativeDestinationPath,
@@ -362,8 +407,16 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 #elif PLATFORM_MAC || PLATFORM_LINUX
 	FTCHARToUTF8 NativeDestinationPath(*NormalizedDestinationPath);
 	FTCHARToUTF8 NativeTemporaryPath(*TemporaryPath);
+	const FString BackupPath = FPaths::Combine(
+		DestinationDirectory,
+		FString::Printf(
+			TEXT(".%s.%s.bak"),
+			*DestinationFilename,
+			*FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	FTCHARToUTF8 NativeBackupPath(*BackupPath);
 	int32 TemporaryFileDescriptor = -1;
 	bool bOwnsTemporaryFile = false;
+	bool bOwnsBackupFile = false;
 	bool bCommitted = false;
 	auto CloseTemporaryFile = [&TemporaryFileDescriptor]()
 	{
@@ -379,7 +432,14 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 		}
 		return errno;
 	};
-	auto CleanupTemporaryFile = [&CloseTemporaryFile, &bOwnsTemporaryFile, &NativeTemporaryPath, &TemporaryPath](FString* Error)
+	auto CleanupTemporaryFile = [
+		&CloseTemporaryFile,
+		&bOwnsTemporaryFile,
+		&NativeTemporaryPath,
+		&TemporaryPath,
+		&bOwnsBackupFile,
+		&NativeBackupPath,
+		&BackupPath](FString* Error)
 	{
 		if (bOwnsTemporaryFile)
 		{
@@ -402,6 +462,17 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 			*Error += FString::Printf(
 				TEXT("; AtomicFile.Cleanup: POSIX close failed with errno=%d"),
 				CloseError);
+		}
+		if (bOwnsBackupFile)
+		{
+			if (::unlink(NativeBackupPath.Get()) != 0 && errno != ENOENT && Error != nullptr)
+			{
+				*Error += FString::Printf(
+					TEXT("; AtomicFile.Cleanup: POSIX unlink failed with errno=%d for backup file '%s'"),
+					errno,
+					*BackupPath);
+			}
+			bOwnsBackupFile = false;
 		}
 	};
 	ON_SCOPE_EXIT
@@ -512,6 +583,20 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 			*NormalizedDestinationPath));
 	}
 #endif
+
+	const bool bDestinationExisted = ::access(NativeDestinationPath.Get(), F_OK) == 0;
+	if (bDestinationExisted)
+	{
+		if (::link(NativeDestinationPath.Get(), NativeBackupPath.Get()) != 0)
+		{
+			const int32 LinkError = errno;
+			return FailWithCleanup(FString::Printf(
+				TEXT("AtomicFile.Backup: POSIX link failed with errno=%d for '%s'"),
+				LinkError,
+				*NormalizedDestinationPath));
+		}
+		bOwnsBackupFile = true;
+	}
 	if (::rename(NativeTemporaryPath.Get(), NativeDestinationPath.Get()) != 0)
 	{
 		const int32 RenameError = errno;
@@ -529,6 +614,64 @@ bool FAssetDocumentAtomicFile::WriteBytesAtomically(
 	}
 
 	bOwnsTemporaryFile = false;
+	auto RollbackCommittedRename = [&]()
+	{
+		bool bRestored = true;
+		if (bOwnsBackupFile)
+		{
+			bRestored = ::rename(NativeBackupPath.Get(), NativeDestinationPath.Get()) == 0;
+			if (bRestored)
+			{
+				bOwnsBackupFile = false;
+			}
+			else
+			{
+				// Preserve the hard-link backup for manual recovery. Cleanup must not
+				// delete the only known-good inode after a rollback failure.
+				bOwnsBackupFile = false;
+			}
+		}
+		else
+		{
+			bRestored = ::unlink(NativeDestinationPath.Get()) == 0 || errno == ENOENT;
+		}
+		int32 RollbackSyncError = 0;
+		return bRestored && AssetDocumentAtomicFileSyncParentDirectory(DestinationDirectory, RollbackSyncError);
+	};
+
+#if WITH_DEV_AUTOMATION_TESTS
+	if (ConsumeFailurePointForStage(EAssetDocumentAtomicFileFailurePoint::DirectoryFlush))
+	{
+		const bool bRestored = RollbackCommittedRename();
+		return FailWithCleanup(FString::Printf(
+			TEXT("AtomicFile.DirectoryFlush: injected directory-flush failure for '%s'%s"),
+			*NormalizedDestinationPath,
+			bRestored
+				? TEXT("")
+				: *FString::Printf(TEXT("; rollback failed; recovery backup may remain at '%s'"), *BackupPath)));
+	}
+#endif
+	int32 DirectorySyncError = 0;
+	if (!AssetDocumentAtomicFileSyncParentDirectory(DestinationDirectory, DirectorySyncError))
+	{
+		const bool bRestored = RollbackCommittedRename();
+		return FailWithCleanup(FString::Printf(
+			TEXT("AtomicFile.DirectoryFlush: parent directory sync failed with errno=%d for '%s'%s"),
+			DirectorySyncError,
+			*NormalizedDestinationPath,
+			bRestored
+				? TEXT("")
+				: *FString::Printf(TEXT("; rollback failed; recovery backup may remain at '%s'"), *BackupPath)));
+	}
+	if (bOwnsBackupFile)
+	{
+		if (::unlink(NativeBackupPath.Get()) == 0 || errno == ENOENT)
+		{
+			bOwnsBackupFile = false;
+			int32 CleanupSyncError = 0;
+			AssetDocumentAtomicFileSyncParentDirectory(DestinationDirectory, CleanupSyncError);
+		}
+	}
 	bCommitted = true;
 	return true;
 #else
