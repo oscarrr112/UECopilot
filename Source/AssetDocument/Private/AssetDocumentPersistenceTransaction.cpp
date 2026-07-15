@@ -40,6 +40,17 @@ TSet<UObject*> AssetDocumentPersistenceCollectPackageObjects(UPackage* Package)
 	}
 	return TSet<UObject*>(Objects);
 }
+
+FString AssetDocumentPersistenceDescribePackagePath(const FPackagePath& PackagePath)
+{
+	return FString::Printf(
+		TEXT("debug_name=\"%s\" package_name=\"%s\" local_path=\"%s\" mounted=%s header_extension=\"%s\""),
+		*PackagePath.GetDebugName(),
+		*PackagePath.GetPackageName(),
+		*PackagePath.GetLocalFullPath(),
+		PackagePath.IsMountedPath() ? TEXT("true") : TEXT("false"),
+		LexToString(PackagePath.GetHeaderExtension()));
+}
 }
 
 FAssetDocumentPersistenceTransaction::FAssetDocumentPersistenceTransaction(
@@ -343,20 +354,59 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 	}
 
 	const TSet<UObject*> ObjectsBefore = AssetDocumentPersistenceCollectPackageObjects(Package);
-	// The package name is the authoritative mounted identity. Reversing the just-
-	// installed absolute filename through FromLocalPath can leave a LocalOnly path
-	// that GetPackageLinker rejects when resolving an already-resident new package.
 	FPackagePath CanonicalPath = FPackagePath::FromPackageNameChecked(PackageName);
 	CanonicalPath.SetHeaderExtension(EPackageExtension::Asset);
-	ResetLoaders(Package);
-	if (!GetPackageLinker(Package, CanonicalPath, LOAD_NoWarn | LOAD_Quiet, nullptr))
+	FPackagePath ResolvedCanonicalPath;
+	const bool bCanonicalFileExists = IFileManager::Get().FileExists(*CanonicalPackageFilename);
+	const int64 CanonicalFileSize = IFileManager::Get().FileSize(*CanonicalPackageFilename);
+	const bool bDoesPackageExist = FPackageName::DoesPackageExist(
+		CanonicalPath,
+		false,
+		&ResolvedCanonicalPath);
+	const FString CanonicalPathDescription = AssetDocumentPersistenceDescribePackagePath(CanonicalPath);
+	const FString ResolvedPathDescription = bDoesPackageExist
+		? AssetDocumentPersistenceDescribePackagePath(ResolvedCanonicalPath)
+		: TEXT("unresolved");
+	const FString LoadedPathDescription = AssetDocumentPersistenceDescribePackagePath(Package->GetLoadedPath());
+	const uint32 PackageFlags = static_cast<uint32>(Package->GetPackageFlags());
+	const bool bInMemoryOnly = Package->HasAnyPackageFlags(PKG_InMemoryOnly);
+	const bool bHadLinkerBeforeReset = Package->GetLinker() != nullptr;
+	if (!bDoesPackageExist)
 	{
 		OutError = FString::Printf(
-			TEXT("Persistence.Metadata.Linker: failed to read canonical summary from '%s'"),
-			*CanonicalPackageFilename);
+			TEXT("Persistence.Metadata.Exists: mounted package lookup failed; canonical_filename=\"%s\" raw_exists=%s raw_size=%lld canonical_path={%s} package_flags=0x%08x in_memory_only=%s linker_before_reset=%s loaded_path={%s}"),
+			*CanonicalPackageFilename,
+			bCanonicalFileExists ? TEXT("true") : TEXT("false"),
+			static_cast<long long>(CanonicalFileSize),
+			*CanonicalPathDescription,
+			PackageFlags,
+			bInMemoryOnly ? TEXT("true") : TEXT("false"),
+			bHadLinkerBeforeReset ? TEXT("true") : TEXT("false"),
+			*LoadedPathDescription);
 		return false;
 	}
-	Package->SetLoadedPath(CanonicalPath);
+
+	ResetLoaders(Package);
+	const bool bHadLinkerAfterReset = Package->GetLinker() != nullptr;
+	FLinkerLoad* CanonicalLinker = GetPackageLinker(Package, ResolvedCanonicalPath, LOAD_None, nullptr);
+	if (!CanonicalLinker)
+	{
+		OutError = FString::Printf(
+			TEXT("Persistence.Metadata.Linker: failed to bind canonical package linker; canonical_filename=\"%s\" raw_exists=%s raw_size=%lld does_package_exist=true canonical_path={%s} resolved_path={%s} package_flags=0x%08x in_memory_only=%s linker_before_reset=%s linker_after_reset=%s linker_after_attempt=%s loaded_path={%s}"),
+			*CanonicalPackageFilename,
+			bCanonicalFileExists ? TEXT("true") : TEXT("false"),
+			static_cast<long long>(CanonicalFileSize),
+			*CanonicalPathDescription,
+			*ResolvedPathDescription,
+			PackageFlags,
+			bInMemoryOnly ? TEXT("true") : TEXT("false"),
+			bHadLinkerBeforeReset ? TEXT("true") : TEXT("false"),
+			bHadLinkerAfterReset ? TEXT("true") : TEXT("false"),
+			Package->GetLinker() ? TEXT("true") : TEXT("false"),
+			*LoadedPathDescription);
+		return false;
+	}
+	Package->SetLoadedPath(ResolvedCanonicalPath);
 	Package->ClearPackageFlags(PKG_NewlyCreated);
 
 	const TSet<UObject*> ObjectsAfter = AssetDocumentPersistenceCollectPackageObjects(Package);
