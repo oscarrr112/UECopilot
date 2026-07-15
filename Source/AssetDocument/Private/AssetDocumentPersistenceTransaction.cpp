@@ -19,13 +19,15 @@
 
 namespace
 {
-const TArray<FString>& AssetDocumentPersistencePackageExtensions()
+const TArray<EPackageExtension>& AssetDocumentPersistencePackageExtensions()
 {
-	static const TArray<FString> Extensions{
-		TEXT("uasset"),
-		TEXT("uexp"),
-		TEXT("ubulk"),
-		TEXT("uptnl")};
+	static const TArray<EPackageExtension> Extensions{
+		EPackageExtension::Asset,
+		EPackageExtension::Exports,
+		EPackageExtension::BulkDataDefault,
+		EPackageExtension::BulkDataOptional,
+		EPackageExtension::BulkDataMemoryMapped,
+		EPackageExtension::PayloadSidecar};
 	return Extensions;
 }
 
@@ -120,31 +122,43 @@ bool FAssetDocumentPersistenceTransaction::DiscoverStagedOutputs(FString& OutErr
 {
 	OutError.Reset();
 	Outputs.Reset();
-	const FString CanonicalDirectory = FPaths::GetPath(CanonicalPackageFilename);
-	const FString CanonicalBaseName = FPaths::GetBaseFilename(CanonicalPackageFilename);
-	TMap<FString, FString> StagedByExtension;
+	const FString AssetHeaderSuffix = LexToString(EPackageExtension::Asset);
+	if (!CanonicalPackageFilename.EndsWith(AssetHeaderSuffix))
+	{
+		OutError = FString::Printf(
+			TEXT("Persistence.Stage.Output: canonical BT/BB package '%s' is not an asset package"),
+			*CanonicalPackageFilename);
+		return false;
+	}
+	const FString CanonicalBasePath = CanonicalPackageFilename.LeftChop(AssetHeaderSuffix.Len());
+	const FString CanonicalBaseName = FPaths::GetCleanFilename(CanonicalBasePath);
+	TMap<EPackageExtension, FString> StagedByExtension;
 	IFileManager::Get().IterateDirectory(
 		*StagingDirectory,
 		[this, &CanonicalBaseName, &StagedByExtension](const TCHAR* Path, bool bIsDirectory)
 		{
+			if (bIsDirectory)
+			{
+				return true;
+			}
 			FString StagedFilename(Path);
 			FPaths::NormalizeFilename(StagedFilename);
-			const FString Extension = FPaths::GetExtension(StagedFilename, false).ToLower();
-			if (!bIsDirectory
-				&& FPaths::GetBaseFilename(StagedFilename) == CanonicalBaseName
-				&& AssetDocumentPersistencePackageExtensions().Contains(Extension))
+			const FString CleanStagedFilename = FPaths::GetCleanFilename(StagedFilename);
+			for (const EPackageExtension Extension : AssetDocumentPersistencePackageExtensions())
 			{
-				StagedByExtension.Add(Extension, MoveTemp(StagedFilename));
+				if (CleanStagedFilename == CanonicalBaseName + LexToString(Extension))
+				{
+					StagedByExtension.Add(Extension, MoveTemp(StagedFilename));
+					break;
+				}
 			}
 			return true;
 		});
 
-	for (const FString& Extension : AssetDocumentPersistencePackageExtensions())
+	for (const EPackageExtension Extension : AssetDocumentPersistencePackageExtensions())
 	{
 		FOutputFile& Output = Outputs.AddDefaulted_GetRef();
-		Output.CanonicalFilename = FPaths::Combine(
-			CanonicalDirectory,
-			FString::Printf(TEXT("%s.%s"), *CanonicalBaseName, *Extension));
+		Output.CanonicalFilename = CanonicalBasePath + LexToString(Extension);
 		FPaths::NormalizeFilename(Output.CanonicalFilename);
 		if (const FString* StagedFilename = StagedByExtension.Find(Extension))
 		{

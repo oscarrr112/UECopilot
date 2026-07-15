@@ -556,14 +556,39 @@ bool FAssetDocumentPersistenceStaleSiblingTest::RunTest(const FString&)
 {
 	using namespace AssetDocumentPersistenceTransactionTests;
 	const FString Target = PersistenceTestMakeTarget(TEXT("BB_StaleSibling"));
-	const FString StaleSiblingPath = FPaths::ChangeExtension(PersistenceTestToPackagePath(Target), TEXT("uexp"));
+	const FString CanonicalHeaderPath = PersistenceTestToPackagePath(Target);
+	const FString CanonicalBasePath = CanonicalHeaderPath.LeftChop(FCString::Strlen(TEXT(".uasset")));
+	struct FStaleSiblingFixture
+	{
+		FString Path;
+		TArray64<uint8> Bytes;
+	};
+	const TArray<FStaleSiblingFixture> StaleSiblings{
+		{CanonicalBasePath + TEXT(".uexp"), {0xe1, 0xe2, 0xe3}},
+		{CanonicalBasePath + TEXT(".m.ubulk"), {0xb1, 0xb2, 0xb3, 0xb4}},
+		{CanonicalBasePath + TEXT(".upayload"), {0xa1, 0xa2, 0xa3, 0xa4, 0xa5}}};
 	PersistenceTestCleanup(Target);
-	IFileManager::Get().Delete(*StaleSiblingPath, false, true);
+	for (const FStaleSiblingFixture& Sibling : StaleSiblings)
+	{
+		IFileManager::Get().Delete(*Sibling.Path, false, true);
+	}
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target);
+		for (const FStaleSiblingFixture& Sibling : StaleSiblings)
+		{
+			IFileManager::Get().Delete(*Sibling.Path, false, true);
+		}
+	};
 	FAssetDocumentService Service;
 	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Create"), 2);
 	TestTrue(TEXT("Creates the stale-sibling baseline"), Initial.IsValid() && PersistenceTestApply(Service, Initial).IsSuccess());
-	const TArray64<uint8> StaleBytes = {0xde, 0xad, 0xbe, 0xef};
-	TestTrue(TEXT("Writes a stale canonical package sibling"), FFileHelper::SaveArrayToFile(StaleBytes, *StaleSiblingPath));
+	for (const FStaleSiblingFixture& Sibling : StaleSiblings)
+	{
+		TestTrue(
+			FString::Printf(TEXT("Writes stale canonical package sibling '%s'"), *Sibling.Path),
+			FFileHelper::SaveArrayToFile(Sibling.Bytes, *Sibling.Path));
+	}
 
 	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 3);
 	FPersistenceTestScopedHookReset Hooks;
@@ -572,15 +597,25 @@ bool FAssetDocumentPersistenceStaleSiblingTest::RunTest(const FString&)
 		PersistenceTestMakeFailure(TEXT("ForcedStaleSiblingRollback"), TEXT("forced failure after stale sibling deletion")));
 	const FAssetDocumentResult Failure = PersistenceTestApply(Service, Update);
 	TestFalse(TEXT("Post-install failure rejects stale-sibling update"), Failure.IsSuccess());
-	TArray64<uint8> RestoredSiblingBytes;
-	TestTrue(TEXT("Rollback restores the stale sibling"), PersistenceTestLoadBytes(StaleSiblingPath, RestoredSiblingBytes));
-	TestTrue(TEXT("Rollback restores exact stale sibling bytes"), RestoredSiblingBytes == StaleBytes);
+	for (const FStaleSiblingFixture& Sibling : StaleSiblings)
+	{
+		TArray64<uint8> RestoredSiblingBytes;
+		TestTrue(
+			FString::Printf(TEXT("Rollback restores stale sibling '%s'"), *Sibling.Path),
+			PersistenceTestLoadBytes(Sibling.Path, RestoredSiblingBytes));
+		TestTrue(
+			FString::Printf(TEXT("Rollback restores exact stale sibling bytes '%s'"), *Sibling.Path),
+			RestoredSiblingBytes == Sibling.Bytes);
+	}
 
 	FAssetDocumentServiceTestHooks::Clear();
 	TestTrue(TEXT("Retry commits the strict package update"), PersistenceTestApply(Service, Update).IsSuccess());
-	TestFalse(TEXT("Successful strict package install deletes stale sibling"), IFileManager::Get().FileExists(*StaleSiblingPath));
-	PersistenceTestCleanup(Target);
-	IFileManager::Get().Delete(*StaleSiblingPath, false, true);
+	for (const FStaleSiblingFixture& Sibling : StaleSiblings)
+	{
+		TestFalse(
+			FString::Printf(TEXT("Successful strict package install deletes stale sibling '%s'"), *Sibling.Path),
+			IFileManager::Get().FileExists(*Sibling.Path));
+	}
 	return true;
 }
 
