@@ -908,10 +908,11 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 {
 	using namespace AssetDocumentPersistenceTransactionTests;
 	const FString Target = PersistenceTestMakeTarget(TEXT("BB_MetadataPreCommitRollback"));
-	PersistenceTestCleanup(Target);
+	const FString SidecarPath = FPackageName::LongPackageNameToFilename(Target, TEXT(".assetdoc.json"));
+	PersistenceTestCleanup(Target, SidecarPath);
 	ON_SCOPE_EXIT
 	{
-		PersistenceTestCleanup(Target);
+		PersistenceTestCleanup(Target, SidecarPath);
 	};
 
 	FAssetDocumentService Service;
@@ -949,27 +950,97 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 		PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBytesBefore));
 
 	Document->SetStringField(TEXT("Action"), TEXT("Update"));
-	Document->GetObjectField(TEXT("Body"))
-		->GetArrayField(TEXT("Keys"))[0]
-		->AsObject()
-		->GetObjectField(TEXT("KeyTypeProperties"))
-		->SetNumberField(TEXT("DefaultValue"), 29);
+	TArray<TSharedPtr<FJsonValue>> UpdatedKeys = Document->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Keys"));
+	TSharedPtr<FJsonObject> LongKeyProperties = MakeShared<FJsonObject>();
+	LongKeyProperties->SetNumberField(TEXT("DefaultValue"), 29);
+	TSharedPtr<FJsonObject> LongKeyClass = MakeShared<FJsonObject>();
+	LongKeyClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
+	LongKeyClass->SetStringField(TEXT("Path"), UBlackboardKeyType_Int::StaticClass()->GetPathName());
+	TSharedPtr<FJsonObject> LongKey = MakeShared<FJsonObject>();
+	LongKey->SetStringField(
+		TEXT("Name"),
+		TEXT("MetadataRollbackKey_With_A_Deliberately_Long_Name_That_Changes_The_Serialized_Package_Size"));
+	LongKey->SetObjectField(TEXT("KeyTypeClass"), LongKeyClass);
+	LongKey->SetObjectField(TEXT("KeyTypeProperties"), LongKeyProperties);
+	UpdatedKeys.Add(MakeShared<FJsonValueObject>(LongKey));
+	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Keys"), MoveTemp(UpdatedKeys));
+
+	FString SidecarContents;
+	TSharedRef<TJsonWriter<>> SidecarWriter = TJsonWriterFactory<>::Create(&SidecarContents);
+	TestTrue(TEXT("Serializes metadata pre-commit sidecar"), FJsonSerializer::Serialize(Document.ToSharedRef(), SidecarWriter));
+	TestTrue(TEXT("Writes metadata pre-commit sidecar"), FFileHelper::SaveStringToFile(SidecarContents, *SidecarPath));
+	TArray64<uint8> SidecarBytesBefore;
+	TestTrue(
+		TEXT("Reads metadata pre-commit sidecar bytes"),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesBefore));
+
+	int32 CanonicalEventCount = 0;
+	FString ExpectedCanonicalFilename = FPaths::ConvertRelativePathToFull(PersistenceTestToPackagePath(Target));
+	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
+	const FDelegateHandle SavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[&](const FString& Filename, UPackage* SavedPackage, FObjectPostSaveContext)
+		{
+			FString NormalizedFilename = FPaths::ConvertRelativePathToFull(Filename);
+			FPaths::NormalizeFilename(NormalizedFilename);
+			if (SavedPackage && SavedPackage->GetName() == Target && NormalizedFilename == ExpectedCanonicalFilename)
+			{
+				++CanonicalEventCount;
+			}
+		});
+	ON_SCOPE_EXIT
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(SavedHandle);
+	};
+
+	bool bObservedMetadataAfterNewBind = false;
+	FPersistenceTestPackageMetadata MetadataAfterNewBind;
 	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		[&]()
+		{
+			UBlackboardData* BoundBlackboard = FindObject<UBlackboardData>(
+				nullptr,
+				*PersistenceTestToObjectPath(Target));
+			bObservedMetadataAfterNewBind = BoundBlackboard != nullptr;
+			MetadataAfterNewBind = PersistenceTestCapturePackageMetadata(
+				BoundBlackboard ? BoundBlackboard->GetOutermost() : nullptr);
+		});
 	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
 		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
 		PersistenceTestMakeFailure(
 			TEXT("ForcedMetadataBindFailure"),
 			TEXT("forced failure after canonical metadata bind before commit")));
-	const FAssetDocumentResult Failure = PersistenceTestApply(Service, Document);
+	FAssetDocumentApplyRequest UpdateRequest;
+	UpdateRequest.Document = Document;
+	UpdateRequest.SourceDocumentPath = SidecarPath;
+	UpdateRequest.bWriteSidecar = true;
+	UpdateRequest.bSaveAsset = true;
+	const FAssetDocumentResult Failure = Service.Apply(UpdateRequest);
 	TestFalse(TEXT("Metadata pre-commit failure rejects update"), Failure.IsSuccess());
+	TestTrue(TEXT("Observes metadata after the new canonical bind"), bObservedMetadataAfterNewBind);
+	TestTrue(
+		TEXT("New canonical bind changes private package file size"),
+		MetadataAfterNewBind.FileSize != MetadataBefore.FileSize);
+	TestTrue(
+		TEXT("New canonical bind changes package saved hash"),
+		MetadataAfterNewBind.SavedHash != MetadataBefore.SavedHash);
+	TestEqual(TEXT("Failed metadata bind emits no canonical save event"), CanonicalEventCount, 0);
 
 	TArray64<uint8> PackageBytesAfter;
+	TArray64<uint8> SidecarBytesAfter;
 	TestTrue(
 		TEXT("Reads package after metadata pre-commit rollback"),
 		PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBytesAfter));
 	TestTrue(
+		TEXT("Reads sidecar after metadata pre-commit rollback"),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesAfter));
+	TestTrue(
 		TEXT("Metadata pre-commit failure restores exact package bytes"),
 		PackageBytesAfter == PackageBytesBefore);
+	TestTrue(
+		TEXT("Metadata pre-commit failure restores exact sidecar bytes"),
+		SidecarBytesAfter == SidecarBytesBefore);
 	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(
 		nullptr,
 		*PersistenceTestToObjectPath(Target));
