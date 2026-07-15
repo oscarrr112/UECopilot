@@ -343,7 +343,11 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 	}
 
 	const TSet<UObject*> ObjectsBefore = AssetDocumentPersistenceCollectPackageObjects(Package);
-	const FPackagePath CanonicalPath = FPackagePath::FromLocalPath(CanonicalPackageFilename);
+	// The package name is the authoritative mounted identity. Reversing the just-
+	// installed absolute filename through FromLocalPath can leave a LocalOnly path
+	// that GetPackageLinker rejects when resolving an already-resident new package.
+	FPackagePath CanonicalPath = FPackagePath::FromPackageNameChecked(PackageName);
+	CanonicalPath.SetHeaderExtension(EPackageExtension::Asset);
 	ResetLoaders(Package);
 	if (!GetPackageLinker(Package, CanonicalPath, LOAD_NoWarn | LOAD_Quiet, nullptr))
 	{
