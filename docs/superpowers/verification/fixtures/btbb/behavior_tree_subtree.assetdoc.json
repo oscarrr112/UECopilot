@@ -1,0 +1,43 @@
+{
+  "SchemaVersion": 1,
+  "Target": "__ASSET_ROOT__/BT_BTBB_Subtree",
+  "Class": "/Script/AIModule.BehaviorTree",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "BlackboardAsset": {
+      "Kind": "AssetRef",
+      "Path": "__ASSET_ROOT__/BB_BTBB_Main.BB_BTBB_Main"
+    },
+    "Tree": {
+      "GraphGuid": "A1000000A1000000A1000000A1000000",
+      "Root": {
+        "Id": "A1100000A1100000A1100000A1100000",
+        "Class": "/Script/AIModule.BTComposite_Selector",
+        "Properties": {
+          "bApplyDecoratorScope": true,
+          "NodeName": "Subtree selector"
+        },
+        "Editor": {"Position": {"X": 200, "Y": 0}},
+        "Decorators": [],
+        "Services": [],
+        "Children": [
+          {
+            "Id": "A1200000A1200000A1200000A1200000",
+            "Class": "/Script/AIModule.BTTask_Wait",
+            "Properties": {
+              "bIgnoreRestartSelf": true,
+              "NodeName": "Subtree wait"
+            },
+            "Editor": {"Position": {"X": 200, "Y": 300}},
+            "Decorators": [],
+            "Services": [],
+            "Children": []
+          }
+        ]
+      },
+      "Comments": []
+    }
+  }
+}

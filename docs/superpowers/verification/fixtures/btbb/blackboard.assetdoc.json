@@ -1,0 +1,90 @@
+{
+  "SchemaVersion": 1,
+  "Target": "__ASSET_ROOT__/BB_BTBB_Main",
+  "Class": "/Script/AIModule.BlackboardData",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "Parent": {
+      "Kind": "AssetRef",
+      "Path": "__ASSET_ROOT__/BB_BTBB_Parent.BB_BTBB_Parent"
+    },
+    "Keys": [
+      {
+        "Name": "MoveLocation",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Vector"
+        },
+        "KeyTypeProperties": {
+          "DefaultValue": {"X": 10.0, "Y": -20.0, "Z": 30.0},
+          "bUseDefaultValue": true
+        },
+        "bInstanceSynced": false,
+        "Description": "Local move destination",
+        "Category": "BTBBSmoke"
+      },
+      {
+        "Name": "AlertName",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Name"
+        },
+        "KeyTypeProperties": {"DefaultValue": "Alert"},
+        "bInstanceSynced": true,
+        "Description": "Local alert label",
+        "Category": "BTBBSmoke"
+      },
+      {
+        "Name": "Speed",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Float"
+        },
+        "KeyTypeProperties": {"DefaultValue": 3.5},
+        "bInstanceSynced": false,
+        "Description": "Local movement speed",
+        "Category": "BTBBSmoke"
+      },
+      {
+        "Name": "TargetClass",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Class"
+        },
+        "KeyTypeProperties": {
+          "BaseClass": {
+            "Kind": "ClassRef",
+            "Path": "/Script/Engine.Actor"
+          },
+          "DefaultValue": {
+            "Kind": "ClassRef",
+            "Path": "/Script/Engine.Actor"
+          }
+        },
+        "bInstanceSynced": false,
+        "Description": "Local actor class",
+        "Category": "BTBBSmoke"
+      },
+      {
+        "Name": "Mode",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Enum"
+        },
+        "KeyTypeProperties": {
+          "EnumType": {
+            "Kind": "AssetRef",
+            "Path": "/Script/AIModule.EBasicKeyOperation"
+          },
+          "EnumName": "/Script/AIModule.EBasicKeyOperation",
+          "DefaultValue": "Set"
+        },
+        "bInstanceSynced": false,
+        "Description": "Local native enum",
+        "Category": "BTBBSmoke"
+      }
+    ]
+  }
+}

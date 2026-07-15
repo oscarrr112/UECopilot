@@ -1,0 +1,225 @@
+{
+  "SchemaVersion": 1,
+  "Target": "__ASSET_ROOT__/BT_BTBB_Main",
+  "Class": "/Script/AIModule.BehaviorTree",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "BlackboardAsset": {
+      "Kind": "AssetRef",
+      "Path": "__ASSET_ROOT__/BB_BTBB_Main.BB_BTBB_Main"
+    },
+    "Tree": {
+      "GraphGuid": "B1000000B1000000B1000000B1000000",
+      "Root": {
+        "Id": "B1100000B1100000B1100000B1100000",
+        "Class": "/Script/AIModule.BTComposite_Selector",
+        "Properties": {
+          "bApplyDecoratorScope": true,
+          "NodeName": "Production selector"
+        },
+        "Editor": {
+          "Position": {"X": 300, "Y": 0},
+          "NodeComment": "Authored root selector",
+          "bCommentBubblePinned": true,
+          "bCommentBubbleVisible": true
+        },
+        "Decorators": [
+          {
+            "Id": "B1200000B1200000B1200000B1200000",
+            "Class": "/Script/AIModule.BTDecorator_Blackboard",
+            "Properties": {
+              "IntValue": 0,
+              "FloatValue": 0,
+              "StringValue": "",
+              "NotifyObserver": "ResultChange",
+              "BasicOperation": "Set",
+              "ArithmeticOperation": "Equal",
+              "TextOperation": "Equal",
+              "BlackboardKey": {"Key": "TargetActor"},
+              "bInverseCondition": false,
+              "FlowAbortMode": "None",
+              "NodeName": "Root has target"
+            },
+            "Editor": {"Position": {"X": 40, "Y": -160}}
+          }
+        ],
+        "Services": [
+          {
+            "Id": "B1300000B1300000B1300000B1300000",
+            "Class": "/Script/AIModule.BTService_DefaultFocus",
+            "Properties": {
+              "BlackboardKey": {"Key": "TargetActor"},
+              "Interval": 0.75,
+              "RandomDeviation": 0.125,
+              "bCallTickOnSearchStart": true,
+              "bRestartTimerOnEachActivation": false,
+              "NodeName": "Production focus service"
+            },
+            "Editor": {"Position": {"X": 80, "Y": 100}}
+          }
+        ],
+        "Children": [
+          {
+            "Id": "B1400000B1400000B1400000B1400000",
+            "Class": "/Script/AIModule.BTComposite_Sequence",
+            "Properties": {
+              "bApplyDecoratorScope": true,
+              "NodeName": "Nested sequence"
+            },
+            "Editor": {"Position": {"X": 100, "Y": 300}},
+            "Decorators": [],
+            "Services": [],
+            "Children": [
+              {
+                "Id": "B1500000B1500000B1500000B1500000",
+                "Class": "/Script/AIModule.BTTask_MoveTo",
+                "Properties": {
+                  "AcceptableRadius": {"DefaultValue": 5, "Key": "None"},
+                  "FilterClass": {
+                    "DefaultValue": null,
+                    "BaseClass": {"Kind": "ClassRef", "Path": "/Script/NavigationSystem.NavigationQueryFilter"},
+                    "Key": "None"
+                  },
+                  "ObservedBlackboardValueTolerance": {"DefaultValue": 4.75, "Key": "None"},
+                  "bAllowStrafe": {"DefaultValue": false, "Key": "None"},
+                  "bAllowPartialPath": {"DefaultValue": true, "Key": "None"},
+                  "bTrackMovingGoal": {"DefaultValue": true, "Key": "None"},
+                  "bRequireNavigableEndLocation": {"DefaultValue": true, "Key": "None"},
+                  "bProjectGoalLocation": {"DefaultValue": true, "Key": "None"},
+                  "bReachTestIncludesAgentRadius": {"DefaultValue": true, "Key": "None"},
+                  "bReachTestIncludesGoalRadius": {"DefaultValue": true, "Key": "None"},
+                  "bStartFromPreviousPath": {"DefaultValue": false, "Key": "None"},
+                  "BlackboardKey": {"Key": "TargetActor"},
+                  "bIgnoreRestartSelf": false,
+                  "NodeName": "Move to inherited target"
+                },
+                "Editor": {"Position": {"X": 40, "Y": 600}},
+                "Decorators": [
+                  {
+                    "Id": "B1600000B1600000B1600000B1600000",
+                    "Class": "/Script/AIModule.BTDecorator_Blackboard",
+                    "Properties": {
+                      "IntValue": 0,
+                      "FloatValue": 0,
+                      "StringValue": "",
+                      "NotifyObserver": "ResultChange",
+                      "BasicOperation": "Set",
+                      "ArithmeticOperation": "Equal",
+                      "TextOperation": "Equal",
+                      "BlackboardKey": {"Key": "HasTarget"},
+                      "bInverseCondition": false,
+                      "FlowAbortMode": "None",
+                      "NodeName": "Inherited gate"
+                    },
+                    "Editor": {"Position": {"X": -40, "Y": 470}}
+                  },
+                  {
+                    "Id": "B1700000B1700000B1700000B1700000",
+                    "Kind": "Composite",
+                    "Properties": {
+                      "CompositeName": "Nested authored decorator logic",
+                      "bShowOperations": true
+                    },
+                    "Editor": {
+                      "Position": {"X": 80, "Y": 470},
+                      "NodeComment": "Composite decorator wrapper",
+                      "bCommentBubblePinned": true,
+                      "bCommentBubbleVisible": true
+                    },
+                    "BoundGraph": {
+                      "GraphGuid": "B1800000B1800000B1800000B1800000",
+                      "Nodes": [
+                        {
+                          "Id": "B1810000B1810000B1810000B1810000",
+                          "Kind": "Sink",
+                          "Editor": {"Position": {"X": 500, "Y": 0}}
+                        },
+                        {
+                          "Id": "B1820000B1820000B1820000B1820000",
+                          "Kind": "Not",
+                          "Editor": {"Position": {"X": 350, "Y": 0}}
+                        },
+                        {
+                          "Id": "B1830000B1830000B1830000B1830000",
+                          "Kind": "Or",
+                          "Editor": {"Position": {"X": 200, "Y": 0}}
+                        },
+                        {
+                          "Id": "B1840000B1840000B1840000B1840000",
+                          "Kind": "Test",
+                          "Class": "/Script/AIModule.BTDecorator_ForceSuccess",
+                          "Properties": {"NodeName": "Logic test A"},
+                          "Editor": {"Position": {"X": 0, "Y": -100}}
+                        },
+                        {
+                          "Id": "B1850000B1850000B1850000B1850000",
+                          "Kind": "Test",
+                          "Class": "/Script/AIModule.BTDecorator_ForceSuccess",
+                          "Properties": {"NodeName": "Logic test B"},
+                          "Editor": {"Position": {"X": 0, "Y": 100}}
+                        }
+                      ],
+                      "Links": [
+                        {"From": "B1840000B1840000B1840000B1840000", "To": "B1830000B1830000B1830000B1830000", "ToInput": 0},
+                        {"From": "B1850000B1850000B1850000B1850000", "To": "B1830000B1830000B1830000B1830000", "ToInput": 1},
+                        {"From": "B1830000B1830000B1830000B1830000", "To": "B1820000B1820000B1820000B1820000", "ToInput": 0},
+                        {"From": "B1820000B1820000B1820000B1820000", "To": "B1810000B1810000B1810000B1810000", "ToInput": 0}
+                      ]
+                    }
+                  }
+                ],
+                "Services": [],
+                "Children": []
+              },
+              {
+                "Id": "B1900000B1900000B1900000B1900000",
+                "Class": "/Script/AIModule.BTTask_Wait",
+                "Properties": {
+                  "bIgnoreRestartSelf": true,
+                  "NodeName": "Nested wait"
+                },
+                "Editor": {"Position": {"X": 300, "Y": 600}},
+                "Decorators": [],
+                "Services": [],
+                "Children": []
+              }
+            ]
+          },
+          {
+            "Id": "B2000000B2000000B2000000B2000000",
+            "Class": "/Script/AIModule.BTTask_RunBehavior",
+            "Properties": {
+              "BehaviorAsset": {
+                "Kind": "AssetRef",
+                "Path": "__ASSET_ROOT__/BT_BTBB_Subtree.BT_BTBB_Subtree"
+              },
+              "bIgnoreRestartSelf": false,
+              "NodeName": "Run smoke subtree"
+            },
+            "Editor": {"Position": {"X": 520, "Y": 300}},
+            "Decorators": [],
+            "Services": [],
+            "Children": []
+          }
+        ]
+      },
+      "Comments": [
+        {
+          "Id": "B2100000B2100000B2100000B2100000",
+          "Text": "Production BT/BB HTTP + MCP smoke",
+          "Position": {"X": -180, "Y": -220},
+          "Size": {"Width": 1100, "Height": 980},
+          "Color": {"R": 0.1, "G": 0.2, "B": 0.3, "A": 0.4},
+          "CommentDepth": 7,
+          "FontSize": 23,
+          "MoveMode": "NoGroupMovement",
+          "NodeDetails": "Persistent authored layout and comment evidence",
+          "bCommentBubblePinned": true,
+          "bCommentBubbleVisible": false
+        }
+      ]
+    }
+  }
+}

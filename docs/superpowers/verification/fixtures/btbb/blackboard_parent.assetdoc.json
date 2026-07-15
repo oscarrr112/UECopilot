@@ -1,0 +1,43 @@
+{
+  "SchemaVersion": 1,
+  "Target": "__ASSET_ROOT__/BB_BTBB_Parent",
+  "Class": "/Script/AIModule.BlackboardData",
+  "Action": "CreateOrUpdate",
+  "Definitions": {},
+  "Properties": {},
+  "Body": {
+    "Parent": null,
+    "Keys": [
+      {
+        "Name": "TargetActor",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Object"
+        },
+        "KeyTypeProperties": {
+          "BaseClass": {
+            "Kind": "ClassRef",
+            "Path": "/Script/Engine.Actor"
+          },
+          "DefaultValue": null
+        },
+        "bInstanceSynced": false,
+        "Description": "Inherited target actor",
+        "Category": "BTBBSmoke"
+      },
+      {
+        "Name": "HasTarget",
+        "KeyTypeClass": {
+          "Kind": "ClassRef",
+          "Path": "/Script/AIModule.BlackboardKeyType_Bool"
+        },
+        "KeyTypeProperties": {
+          "bDefaultValue": false
+        },
+        "bInstanceSynced": true,
+        "Description": "Inherited target gate",
+        "Category": "BTBBSmoke"
+      }
+    ]
+  }
+}
