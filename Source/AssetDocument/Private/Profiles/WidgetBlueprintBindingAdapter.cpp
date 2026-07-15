@@ -60,7 +60,7 @@ bool ParseBindingKind(const FString& KindString, EBindingKind& OutKind)
 	return false;
 }
 
-FAssetDocumentCapabilityResult RequireStringField(
+FAssetDocumentCapabilityResult WidgetBindingRequireStringField(
 	const TSharedPtr<FJsonObject>& Object,
 	const FString& FieldName,
 	const FString& Path,
@@ -154,17 +154,17 @@ FAssetDocumentCapabilityResult ParseBindingSpecs(
 		FString WidgetName;
 		FString PropertyName;
 		FString KindString;
-		FAssetDocumentCapabilityResult Result = RequireStringField(BindingObject, TEXT("Widget"), BindingPath / TEXT("Widget"), TEXT("MissingBindingWidgetName"), WidgetName);
+		FAssetDocumentCapabilityResult Result = WidgetBindingRequireStringField(BindingObject, TEXT("Widget"), BindingPath / TEXT("Widget"), TEXT("MissingBindingWidgetName"), WidgetName);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		Result = RequireStringField(BindingObject, TEXT("Property"), BindingPath / TEXT("Property"), TEXT("MissingBindingProperty"), PropertyName);
+		Result = WidgetBindingRequireStringField(BindingObject, TEXT("Property"), BindingPath / TEXT("Property"), TEXT("MissingBindingProperty"), PropertyName);
 		if (!Result.bSuccess)
 		{
 			return Result;
 		}
-		Result = RequireStringField(BindingObject, TEXT("Kind"), BindingPath / TEXT("Kind"), TEXT("MissingBindingKind"), KindString);
+		Result = WidgetBindingRequireStringField(BindingObject, TEXT("Kind"), BindingPath / TEXT("Kind"), TEXT("MissingBindingKind"), KindString);
 		if (!Result.bSuccess)
 		{
 			return Result;
@@ -201,7 +201,7 @@ FAssetDocumentCapabilityResult ParseBindingSpecs(
 		if (Spec.Kind == EBindingKind::Function)
 		{
 			FString FunctionName;
-			Result = RequireStringField(BindingObject, TEXT("Function"), BindingPath / TEXT("Function"), TEXT("MissingBindingFunction"), FunctionName);
+			Result = WidgetBindingRequireStringField(BindingObject, TEXT("Function"), BindingPath / TEXT("Function"), TEXT("MissingBindingFunction"), FunctionName);
 			if (!Result.bSuccess)
 			{
 				return Result;
