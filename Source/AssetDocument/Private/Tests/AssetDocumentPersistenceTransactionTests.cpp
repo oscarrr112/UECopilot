@@ -425,6 +425,182 @@ public:
 		FAssetDocumentServiceTestHooks::Clear();
 	}
 };
+
+bool PersistenceTestHasDiagnostic(
+	const FAssetDocumentResult& Result,
+	const TCHAR* Code)
+{
+	return Result.Diagnostics.ContainsByPredicate(
+		[Code](const FAssetDocumentDiagnostic& Diagnostic)
+		{
+			return Diagnostic.Code == Code;
+		});
+}
+
+bool PersistenceTestWriteDocument(
+	const FString& Path,
+	const TSharedPtr<FJsonObject>& Document)
+{
+	if (!Document.IsValid())
+	{
+		return false;
+	}
+	FString Contents;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Contents);
+	return FJsonSerializer::Serialize(Document.ToSharedRef(), Writer)
+		&& FFileHelper::SaveStringToFile(Contents, *Path);
+}
+
+bool PersistenceTestRunInstalledSegmentTamperCase(
+	FAutomationTestBase& Test,
+	EAssetDocumentServicePersistencePhase TamperPhase,
+	const TCHAR* Stem,
+	const TCHAR* AssertionPrefix)
+{
+	const FString Target = PersistenceTestMakeTarget(Stem);
+	const FString PackagePath = PersistenceTestToPackagePath(Target);
+	const FString SidecarPath = FPackageName::LongPackageNameToFilename(Target, TEXT(".assetdoc.json"));
+	PersistenceTestCleanup(Target, SidecarPath);
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target, SidecarPath);
+	};
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(
+		Test,
+		Service,
+		Target,
+		TEXT("Create"),
+		7);
+	if (!PersistenceTestRequireApplySuccess(
+			Test,
+			TEXT("Creates installed-segment tamper baseline"),
+			Service,
+			Initial))
+	{
+		return false;
+	}
+
+	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(
+		nullptr,
+		*PersistenceTestToObjectPath(Target));
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
+	Test.TestNotNull(FString::Printf(TEXT("%s finds live baseline"), AssertionPrefix), BlackboardBefore);
+	Test.TestNotNull(FString::Printf(TEXT("%s finds key-type baseline"), AssertionPrefix), KeyTypeBefore);
+	if (!BlackboardBefore || !KeyTypeBefore)
+	{
+		return false;
+	}
+
+	TArray64<uint8> PackageBytesBefore;
+	Test.TestTrue(
+		FString::Printf(TEXT("%s reads baseline package bytes"), AssertionPrefix),
+		PersistenceTestLoadBytes(PackagePath, PackageBytesBefore));
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(
+		Test,
+		Service,
+		Target,
+		TEXT("Update"),
+		29);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s writes sidecar fixture"), AssertionPrefix),
+		PersistenceTestWriteDocument(SidecarPath, Update));
+	TArray64<uint8> SidecarBytesBefore;
+	Test.TestTrue(
+		FString::Printf(TEXT("%s reads baseline sidecar bytes"), AssertionPrefix),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesBefore));
+
+	int32 CanonicalEventCount = 0;
+	FString ExpectedCanonicalFilename = FPaths::ConvertRelativePathToFull(PackagePath);
+	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
+	const FDelegateHandle SavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[&](const FString& Filename, UPackage* SavedPackage, FObjectPostSaveContext)
+		{
+			FString NormalizedFilename = FPaths::ConvertRelativePathToFull(Filename);
+			FPaths::NormalizeFilename(NormalizedFilename);
+			if (SavedPackage && SavedPackage->GetName() == Target && NormalizedFilename == ExpectedCanonicalFilename)
+			{
+				++CanonicalEventCount;
+			}
+		});
+	ON_SCOPE_EXIT
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(SavedHandle);
+	};
+
+	bool bTamperedCanonicalSegment = false;
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		TamperPhase,
+		[&]()
+		{
+			TArray64<uint8> TamperedBytes;
+			if (!PersistenceTestLoadBytes(PackagePath, TamperedBytes) || TamperedBytes.IsEmpty())
+			{
+				return;
+			}
+			TamperedBytes.Last() ^= 0x5a;
+			bTamperedCanonicalSegment = FFileHelper::SaveArrayToFile(TamperedBytes, *PackagePath);
+		});
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Update;
+	Request.SourceDocumentPath = SidecarPath;
+	Request.bWriteSidecar = true;
+	Request.bSaveAsset = true;
+	const FAssetDocumentResult Failure = Service.Apply(Request);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s executes real canonical tamper"), AssertionPrefix),
+		bTamperedCanonicalSegment);
+	Test.TestFalse(
+		FString::Printf(TEXT("%s rejects Apply"), AssertionPrefix),
+		Failure.IsSuccess());
+	Test.TestTrue(
+		FString::Printf(TEXT("%s reports installed-byte verification"), AssertionPrefix),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentInstalledPackageVerificationFailed")));
+	Test.TestEqual(
+		FString::Printf(TEXT("%s emits no canonical save event"), AssertionPrefix),
+		CanonicalEventCount,
+		0);
+
+	TArray64<uint8> PackageBytesAfter;
+	TArray64<uint8> SidecarBytesAfter;
+	Test.TestTrue(
+		FString::Printf(TEXT("%s reads rolled-back package"), AssertionPrefix),
+		PersistenceTestLoadBytes(PackagePath, PackageBytesAfter));
+	Test.TestTrue(
+		FString::Printf(TEXT("%s reads rolled-back sidecar"), AssertionPrefix),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesAfter));
+	Test.TestTrue(
+		FString::Printf(TEXT("%s restores exact package bytes"), AssertionPrefix),
+		PackageBytesAfter == PackageBytesBefore);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s restores exact sidecar bytes"), AssertionPrefix),
+		SidecarBytesAfter == SidecarBytesBefore);
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(
+		nullptr,
+		*PersistenceTestToObjectPath(Target));
+	Test.TestTrue(
+		FString::Printf(TEXT("%s preserves asset identity"), AssertionPrefix),
+		BlackboardAfter == BlackboardBefore);
+	Test.TestTrue(
+		FString::Printf(TEXT("%s preserves key-type identity"), AssertionPrefix),
+		PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(
+		PersistenceTestFindKeyType(BlackboardAfter));
+	Test.TestNotNull(
+		FString::Printf(TEXT("%s restores Int key type"), AssertionPrefix),
+		IntKey);
+	if (IntKey)
+	{
+		Test.TestEqual(
+			FString::Printf(TEXT("%s restores key default"), AssertionPrefix),
+			IntKey->DefaultValue,
+			7);
+	}
+	return true;
+}
+
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
@@ -1062,6 +1238,212 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 		PersistenceTestCapturePackageMetadata(BlackboardAfter ? BlackboardAfter->GetOutermost() : nullptr),
 		MetadataBefore,
 		TEXT("Metadata pre-commit failure restores package metadata"));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistencePreVerifySegmentTamperTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.PreVerifySegmentTamperRollsBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistencePreVerifySegmentTamperTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	return PersistenceTestRunInstalledSegmentTamperCase(
+		*this,
+		EAssetDocumentServicePersistencePhase::BeforeInstalledPackageVerification,
+		TEXT("BB_PreVerifyTamper"),
+		TEXT("Pre-verify segment tamper"));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistencePostVerifySegmentTamperTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.PostVerifySegmentTamperRollsBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistencePostVerifySegmentTamperTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	return PersistenceTestRunInstalledSegmentTamperCase(
+		*this,
+		EAssetDocumentServicePersistencePhase::AfterInstalledPackageVerificationBeforeMetadataBind,
+		TEXT("BB_PostVerifyTamper"),
+		TEXT("Post-verify segment tamper"));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.MetadataRecoveryDoubleFailurePoisonsPackage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_MetadataRecoveryDoubleFailure"));
+	const FString ObjectPath = PersistenceTestToObjectPath(Target);
+	const FString PackagePath = PersistenceTestToPackagePath(Target);
+	const FString SidecarPath = FPackageName::LongPackageNameToFilename(Target, TEXT(".assetdoc.json"));
+	PersistenceTestCleanup(Target, SidecarPath);
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target, SidecarPath);
+	};
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Create"),
+		11);
+	if (!PersistenceTestRequireApplySuccess(
+			*this,
+			TEXT("Creates metadata double-failure baseline"),
+			Service,
+			Initial))
+	{
+		return false;
+	}
+
+	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *ObjectPath);
+	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
+	TestNotNull(TEXT("Finds metadata double-failure Blackboard baseline"), BlackboardBefore);
+	TestNotNull(TEXT("Finds metadata double-failure key-type baseline"), KeyTypeBefore);
+	if (!BlackboardBefore || !KeyTypeBefore)
+	{
+		return false;
+	}
+
+	TArray64<uint8> PackageBytesBefore;
+	TestTrue(
+		TEXT("Reads metadata double-failure package baseline"),
+		PersistenceTestLoadBytes(PackagePath, PackageBytesBefore));
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Update"),
+		47);
+	TestTrue(
+		TEXT("Writes metadata double-failure sidecar fixture"),
+		PersistenceTestWriteDocument(SidecarPath, Update));
+	TArray64<uint8> SidecarBytesBefore;
+	TestTrue(
+		TEXT("Reads metadata double-failure sidecar baseline"),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesBefore));
+
+	int32 CanonicalEventCount = 0;
+	FString ExpectedCanonicalFilename = FPaths::ConvertRelativePathToFull(PackagePath);
+	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
+	const FDelegateHandle SavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[&](const FString& Filename, UPackage* SavedPackage, FObjectPostSaveContext)
+		{
+			FString NormalizedFilename = FPaths::ConvertRelativePathToFull(Filename);
+			FPaths::NormalizeFilename(NormalizedFilename);
+			if (SavedPackage && SavedPackage->GetName() == Target && NormalizedFilename == ExpectedCanonicalFilename)
+			{
+				++CanonicalEventCount;
+			}
+		});
+	ON_SCOPE_EXIT
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(SavedHandle);
+	};
+
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		PersistenceTestMakeFailure(
+			TEXT("ForcedNewMetadataBindFailure"),
+			TEXT("forced new canonical metadata bind failure")));
+	FAssetDocumentServiceTestHooks::FailNextMetadataRecoveryRefresh(
+		PersistenceTestMakeFailure(
+			TEXT("ForcedOldMetadataRecoveryFailure"),
+			TEXT("forced old canonical metadata recovery failure")));
+	FAssetDocumentApplyRequest UpdateRequest;
+	UpdateRequest.Document = Update;
+	UpdateRequest.SourceDocumentPath = SidecarPath;
+	UpdateRequest.bWriteSidecar = true;
+	UpdateRequest.bSaveAsset = true;
+	const FAssetDocumentResult Failure = Service.Apply(UpdateRequest);
+	TestFalse(TEXT("Metadata recovery double failure rejects Apply"), Failure.IsSuccess());
+	TestTrue(
+		TEXT("Metadata recovery double failure reports restart-required poison"),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentPackagePoisonedRestartRequired")));
+	TestEqual(TEXT("Metadata recovery double failure emits no canonical event"), CanonicalEventCount, 0);
+
+	TArray64<uint8> PackageBytesAfterFailure;
+	TArray64<uint8> SidecarBytesAfterFailure;
+	TestTrue(
+		TEXT("Reads package after metadata recovery double failure"),
+		PersistenceTestLoadBytes(PackagePath, PackageBytesAfterFailure));
+	TestTrue(
+		TEXT("Reads sidecar after metadata recovery double failure"),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesAfterFailure));
+	TestTrue(
+		TEXT("Metadata recovery double failure still restores exact disk package bytes"),
+		PackageBytesAfterFailure == PackageBytesBefore);
+	TestTrue(
+		TEXT("Metadata recovery double failure still restores exact sidecar bytes"),
+		SidecarBytesAfterFailure == SidecarBytesBefore);
+
+	auto TestPoisonedResult = [this](const TCHAR* Operation, const FAssetDocumentResult& Result)
+	{
+		TestFalse(FString::Printf(TEXT("Poisoned package rejects %s"), Operation), Result.IsSuccess());
+		TestTrue(
+			FString::Printf(TEXT("Poisoned %s reports restart-required diagnostic"), Operation),
+			PersistenceTestHasDiagnostic(Result, TEXT("AssetDocumentPackagePoisonedRestartRequired")));
+	};
+
+	TestPoisonedResult(TEXT("Apply"), Service.Apply(UpdateRequest));
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = true;
+	ApplyFileRequest.bAllowSidecarRewrite = true;
+	TestPoisonedResult(TEXT("ApplyFile"), Service.ApplyFile(ApplyFileRequest));
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.Document = Update;
+	TestPoisonedResult(TEXT("Validate"), Service.Validate(ValidateRequest));
+	FAssetDocumentDiffRequest DiffRequest;
+	DiffRequest.Document = Update;
+	TestPoisonedResult(TEXT("Diff"), Service.Diff(DiffRequest));
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = ObjectPath;
+	TestPoisonedResult(TEXT("Extract"), Service.Extract(ExtractRequest));
+	FAssetDocumentInspectRequest InspectRequest;
+	InspectRequest.ClassOrAsset = ObjectPath;
+	TestPoisonedResult(TEXT("Inspect"), Service.Inspect(InspectRequest));
+	FAssetDocumentProfileRequest ProfileRequest;
+	ProfileRequest.ClassOrAsset = ObjectPath;
+	TestPoisonedResult(TEXT("InspectProfile"), Service.InspectProfile(ProfileRequest));
+
+	TArray64<uint8> PackageBytesAfterRejections;
+	TArray64<uint8> SidecarBytesAfterRejections;
+	TestTrue(
+		TEXT("Reads package after poisoned operations are rejected"),
+		PersistenceTestLoadBytes(PackagePath, PackageBytesAfterRejections));
+	TestTrue(
+		TEXT("Reads sidecar after poisoned operations are rejected"),
+		PersistenceTestLoadBytes(SidecarPath, SidecarBytesAfterRejections));
+	TestTrue(
+		TEXT("Poisoned operation rejection never rewrites canonical package"),
+		PackageBytesAfterRejections == PackageBytesBefore);
+	TestTrue(
+		TEXT("Poisoned operation rejection never rewrites sidecar"),
+		SidecarBytesAfterRejections == SidecarBytesBefore);
+	TestEqual(TEXT("Poisoned operation rejection emits no canonical event"), CanonicalEventCount, 0);
+	UBlackboardData* BlackboardAfter = FindObject<UBlackboardData>(nullptr, *ObjectPath);
+	TestTrue(TEXT("Double failure preserves live asset identity"), BlackboardAfter == BlackboardBefore);
+	TestTrue(
+		TEXT("Double failure preserves live key-type identity"),
+		PersistenceTestFindKeyType(BlackboardAfter) == KeyTypeBefore);
+	const UBlackboardKeyType_Int* IntKey = Cast<UBlackboardKeyType_Int>(
+		PersistenceTestFindKeyType(BlackboardAfter));
+	TestNotNull(TEXT("Double failure preserves Int key type"), IntKey);
+	if (IntKey)
+	{
+		TestEqual(TEXT("Double failure restores old key default"), IntKey->DefaultValue, 11);
+	}
 	return true;
 }
 

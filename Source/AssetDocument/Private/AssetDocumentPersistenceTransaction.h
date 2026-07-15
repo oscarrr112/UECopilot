@@ -24,6 +24,7 @@ public:
 
 	bool StagePackage(UPackage* Package, UObject* Asset, FString& OutError);
 	bool InstallStagedPackage(FString& OutError);
+	bool VerifyInstalledPackageFiles(FString& OutError) const;
 	bool RollbackInstalledPackage(TArray<FString>& OutErrors);
 	bool RefreshCanonicalPackageMetadata(UPackage* Package, FString& OutError);
 	void BroadcastCanonicalPackageSaved(UPackage* Package) const;

@@ -9,6 +9,7 @@
 #include "AssetDocumentEditorSync.h"
 #include "AssetDocumentLifecycle.h"
 #include "AssetDocumentManagedPropertyPartition.h"
+#include "AssetDocumentModule.h"
 #include "AssetDocumentPersistenceTransaction.h"
 #include "AssetDocumentPolicyRegistry.h"
 #include "AssetDocumentProfileRegistry.h"
@@ -27,10 +28,12 @@
 #include "Misc/PackageName.h"
 #include "Misc/PackagePath.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "PackageTools.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/SavePackage.h"
+#include "UObject/Linker.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
 
@@ -71,6 +74,67 @@ FString NormalizeValidateTarget(const FString& Target)
 	}
 
 	return NormalizedTarget;
+}
+
+FCriticalSection AssetDocumentPoisonedPackageMutex;
+TSet<FName> AssetDocumentPoisonedPackages;
+
+FName AssetDocumentPoisonPackageKey(const FString& PackageOrObjectPath)
+{
+	const FString PackageName = NormalizeValidateTarget(PackageOrObjectPath);
+	return PackageName.StartsWith(TEXT("/Game/")) ? FName(*PackageName) : NAME_None;
+}
+
+bool AssetDocumentIsPackagePoisoned(const FString& PackageOrObjectPath)
+{
+	const FName PackageKey = AssetDocumentPoisonPackageKey(PackageOrObjectPath);
+	if (PackageKey.IsNone())
+	{
+		return false;
+	}
+	FScopeLock Lock(&AssetDocumentPoisonedPackageMutex);
+	return AssetDocumentPoisonedPackages.Contains(PackageKey);
+}
+
+void AssetDocumentMarkPackagePoisoned(const FString& PackageOrObjectPath)
+{
+	const FName PackageKey = AssetDocumentPoisonPackageKey(PackageOrObjectPath);
+	if (PackageKey.IsNone())
+	{
+		return;
+	}
+	FScopeLock Lock(&AssetDocumentPoisonedPackageMutex);
+	AssetDocumentPoisonedPackages.Add(PackageKey);
+}
+
+FAssetDocumentResult AssetDocumentMakePoisonedPackageFailure(
+	const FString& PackageOrObjectPath,
+	const FString& Operation)
+{
+	const FString PackageName = NormalizeValidateTarget(PackageOrObjectPath);
+	const FString Message = FString::Printf(
+		TEXT("%s rejected for poisoned package '%s': canonical metadata recovery failed; restart the Unreal Editor before any further AssetDocument access to this package"),
+		*Operation,
+		*PackageName);
+	FAssetDocumentResult Result = FAssetDocumentResult::Failure(Message);
+	Result.Target = PackageName;
+	FAssetDocumentDiagnostic Diagnostic;
+	Diagnostic.Path = TEXT("/Target");
+	Diagnostic.Code = TEXT("AssetDocumentPackagePoisonedRestartRequired");
+	Diagnostic.Message = Message;
+	Result.Diagnostics.Add(MoveTemp(Diagnostic));
+	return Result;
+}
+
+TOptional<FAssetDocumentResult> AssetDocumentRejectPoisonedPackage(
+	const FString& PackageOrObjectPath,
+	const FString& Operation)
+{
+	if (!AssetDocumentIsPackagePoisoned(PackageOrObjectPath))
+	{
+		return {};
+	}
+	return AssetDocumentMakePoisonedPackageFailure(PackageOrObjectPath, Operation);
 }
 
 bool ValidateApplyTarget(const FString& Target, FString& OutError)
@@ -1340,6 +1404,13 @@ FAssetDocumentResult ValidateGenericAssetDocument(TSharedPtr<FJsonObject> Docume
 	{
 		return MakeFailure(Error);
 	}
+	if (TOptional<FAssetDocumentResult> PoisonedResult = AssetDocumentRejectPoisonedPackage(
+			Target,
+			TEXT("AssetDocument validation")))
+	{
+		PoisonedResult->SidecarFilePath = NormalizedFilePath;
+		return MoveTemp(PoisonedResult.GetValue());
+	}
 
 	if (!FAssetDocumentSidecar::ValidateTargetMatchesSidecar(NormalizedFilePath, Document, Error))
 	{
@@ -1680,6 +1751,13 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(Error);
 		Result.Target = Target;
 		return Result;
+	}
+	if (TOptional<FAssetDocumentResult> PoisonedResult = AssetDocumentRejectPoisonedPackage(
+			Target,
+			TEXT("Apply")))
+	{
+		PoisonedResult->SidecarFilePath = NormalizedSourceDocumentPath;
+		return MoveTemp(PoisonedResult.GetValue());
 	}
 
 	FString ClassName;
@@ -2180,14 +2258,47 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 			&& LivePackageGuard.IsValid())
 		{
 			FString MetadataRollbackError;
-			if (!PersistenceTransaction->RefreshCanonicalPackageMetadata(
+			bool bMetadataRollbackFailed = false;
+#if WITH_DEV_AUTOMATION_TESTS
+			FAssetDocumentDiagnostic ForcedMetadataRecoveryFailure;
+			if (FAssetDocumentServiceTestHooks::ConsumeMetadataRecoveryRefreshFailure(
+					ForcedMetadataRecoveryFailure))
+			{
+				MetadataRollbackError = ForcedMetadataRecoveryFailure.Message;
+				bMetadataRollbackFailed = true;
+			}
+#endif
+			if (!bMetadataRollbackFailed
+				&& !PersistenceTransaction->RefreshCanonicalPackageMetadata(
 					LivePackageGuard.Get(),
 					MetadataRollbackError))
+			{
+				bMetadataRollbackFailed = true;
+			}
+			if (bMetadataRollbackFailed)
 			{
 				AssetDocumentPersistenceAddDiagnostic(
 					Result.Diagnostics,
 					TEXT("AssetDocumentMetadataRollbackFailed"),
 					MetadataRollbackError);
+
+				// The old canonical bytes are restored, but a failed recovery bind means
+				// this live package can no longer be trusted to expose those bytes.
+				// Detach any partial linker and fail closed for the rest of the process.
+				ResetLoaders(LivePackageGuard.Get());
+				const FString PoisonedPackageName = LivePackageGuard->GetName();
+				AssetDocumentMarkPackagePoisoned(PoisonedPackageName);
+				const FString RestartMessage = FString::Printf(
+					TEXT("Package '%s' is poisoned for this process because canonical metadata recovery failed after rollback: %s. Restart the Unreal Editor before any further AssetDocument access to this package."),
+					*PoisonedPackageName,
+					MetadataRollbackError.IsEmpty() ? TEXT("unknown recovery failure") : *MetadataRollbackError);
+				AssetDocumentPersistenceAddDiagnostic(
+					Result.Diagnostics,
+					TEXT("AssetDocumentPackagePoisonedRestartRequired"),
+					RestartMessage,
+					TEXT("/Target"));
+				Result.Message = RestartMessage;
+				UE_LOG(LogAssetDocument, Display, TEXT("%s"), *RestartMessage);
 			}
 		}
 		return Result;
@@ -2344,6 +2455,54 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 
 	if (Result.bSavedAsset && LifecycleResult.Asset && LifecycleResult.Asset->GetOutermost())
 	{
+		FString InstalledVerificationError;
+#if WITH_DEV_AUTOMATION_TESTS
+		FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+			EAssetDocumentServicePersistencePhase::BeforeInstalledPackageVerification);
+		FAssetDocumentDiagnostic ForcedInstalledVerificationFailure;
+		if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+				EAssetDocumentServicePersistencePhase::BeforeInstalledPackageVerification,
+				ForcedInstalledVerificationFailure))
+		{
+			return FailPersistence(
+				ForcedInstalledVerificationFailure.Message,
+				ForcedInstalledVerificationFailure.Code,
+				ForcedInstalledVerificationFailure);
+		}
+#endif
+		if (!PersistenceTransaction
+			|| !PersistenceTransaction->VerifyInstalledPackageFiles(InstalledVerificationError))
+		{
+			return FailPersistence(
+				InstalledVerificationError.IsEmpty()
+					? TEXT("Failed to verify installed package files")
+					: InstalledVerificationError,
+				TEXT("AssetDocumentInstalledPackageVerificationFailed"));
+		}
+
+#if WITH_DEV_AUTOMATION_TESTS
+		FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
+			EAssetDocumentServicePersistencePhase::AfterInstalledPackageVerificationBeforeMetadataBind);
+		if (FAssetDocumentServiceTestHooks::ConsumePersistenceFailure(
+				EAssetDocumentServicePersistencePhase::AfterInstalledPackageVerificationBeforeMetadataBind,
+				ForcedInstalledVerificationFailure))
+		{
+			return FailPersistence(
+				ForcedInstalledVerificationFailure.Message,
+				ForcedInstalledVerificationFailure.Code,
+				ForcedInstalledVerificationFailure);
+		}
+#endif
+		InstalledVerificationError.Reset();
+		if (!PersistenceTransaction->VerifyInstalledPackageFiles(InstalledVerificationError))
+		{
+			return FailPersistence(
+				InstalledVerificationError.IsEmpty()
+					? TEXT("Failed to reverify installed package files immediately before metadata binding")
+					: InstalledVerificationError,
+				TEXT("AssetDocumentInstalledPackageVerificationFailed"));
+		}
+
 		bMetadataRefreshAttempted = true;
 		FString MetadataError;
 		if (!PersistenceTransaction
@@ -2443,6 +2602,12 @@ FAssetDocumentResult FAssetDocumentService::ApplyFile(const FAssetDocumentApplyF
 
 FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectRequest& Request) const
 {
+	if (TOptional<FAssetDocumentResult> PoisonedResult = AssetDocumentRejectPoisonedPackage(
+			Request.ClassOrAsset,
+			TEXT("Inspect")))
+	{
+		return MoveTemp(PoisonedResult.GetValue());
+	}
 	FAssetDocumentResolvedTarget ResolvedTarget;
 	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("Inspect"), ResolvedTarget);
 	if (!ResolveResult.IsSuccess())
@@ -2474,6 +2639,12 @@ FAssetDocumentResult FAssetDocumentService::Inspect(const FAssetDocumentInspectR
 
 FAssetDocumentResult FAssetDocumentService::InspectProfile(const FAssetDocumentProfileRequest& Request) const
 {
+	if (TOptional<FAssetDocumentResult> PoisonedResult = AssetDocumentRejectPoisonedPackage(
+			Request.ClassOrAsset,
+			TEXT("InspectProfile")))
+	{
+		return MoveTemp(PoisonedResult.GetValue());
+	}
 	FAssetDocumentResolvedTarget ResolvedTarget;
 	FAssetDocumentResult ResolveResult = ResolveClassOrAssetTarget(Request.ClassOrAsset, TEXT("InspectProfile"), ResolvedTarget);
 	if (!ResolveResult.IsSuccess())
@@ -2580,8 +2751,15 @@ FAssetDocumentResult FAssetDocumentService::Extract(const FAssetDocumentExtractR
 		return FAssetDocumentResult::Failure(TEXT("Extract requires an asset path"));
 	}
 
-	UObject* Asset = LoadAssetFromPackageOrObjectPath(Request.AssetPath);
 	const FString Target = NormalizeValidateTarget(Request.AssetPath);
+	if (TOptional<FAssetDocumentResult> PoisonedResult = AssetDocumentRejectPoisonedPackage(
+			Target,
+			TEXT("Extract")))
+	{
+		PoisonedResult->AssetPath = ToObjectPath(Request.AssetPath);
+		return MoveTemp(PoisonedResult.GetValue());
+	}
+	UObject* Asset = LoadAssetFromPackageOrObjectPath(Request.AssetPath);
 	if (!Asset)
 	{
 		FAssetDocumentResult Result = FAssetDocumentResult::Failure(FString::Printf(TEXT("Failed to load asset '%s'"), *Request.AssetPath));

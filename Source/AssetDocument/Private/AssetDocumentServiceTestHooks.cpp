@@ -22,6 +22,7 @@ TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPe
 TOptional<FAssetDocumentDiagnostic> AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic;
 TOptional<EAssetDocumentServicePersistencePhase> AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase;
 TFunction<void()> AssetDocumentServiceTestHooksPendingPersistenceCallback;
+TOptional<FAssetDocumentDiagnostic> AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic;
 
 void CheckAssetDocumentTestHookThread()
 {
@@ -93,6 +94,13 @@ void FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
 	CheckAssetDocumentTestHookThread();
 	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase = Phase;
 	AssetDocumentServiceTestHooksPendingPersistenceCallback = MoveTemp(Callback);
+}
+
+void FAssetDocumentServiceTestHooks::FailNextMetadataRecoveryRefresh(
+	const FAssetDocumentDiagnostic& Diagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic = Diagnostic;
 }
 
 bool FAssetDocumentServiceTestHooks::ConsumeApplyFailure(
@@ -232,6 +240,20 @@ void FAssetDocumentServiceTestHooks::ConsumePersistenceCallback(
 	}
 }
 
+bool FAssetDocumentServiceTestHooks::ConsumeMetadataRecoveryRefreshFailure(
+	FAssetDocumentDiagnostic& OutDiagnostic)
+{
+	CheckAssetDocumentTestHookThread();
+	if (!AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic.IsSet())
+	{
+		return false;
+	}
+
+	OutDiagnostic = AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic.GetValue();
+	AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic.Reset();
+	return true;
+}
+
 void FAssetDocumentServiceTestHooks::Clear()
 {
 	CheckAssetDocumentTestHookThread();
@@ -250,6 +272,7 @@ void FAssetDocumentServiceTestHooks::Clear()
 	AssetDocumentServiceTestHooksPendingPersistenceFailureDiagnostic.Reset();
 	AssetDocumentServiceTestHooksPendingPersistenceCallbackPhase.Reset();
 	AssetDocumentServiceTestHooksPendingPersistenceCallback = {};
+	AssetDocumentServiceTestHooksPendingMetadataRecoveryRefreshFailureDiagnostic.Reset();
 }
 
 #endif

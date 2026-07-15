@@ -6,6 +6,7 @@
 #include "AssetDocumentServiceTestHooks.h"
 
 #include "HAL/FileManager.h"
+#include "IO/IoHash.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
@@ -286,6 +287,106 @@ bool FAssetDocumentPersistenceTransaction::InstallStagedPackage(FString& OutErro
 				TEXT("Persistence.Install.AtomicReplace: failed to install '%s': %s"),
 				*Output.CanonicalFilename,
 				*AtomicError);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool FAssetDocumentPersistenceTransaction::VerifyInstalledPackageFiles(FString& OutError) const
+{
+	OutError.Reset();
+	const TArray<EPackageExtension>& Extensions = AssetDocumentPersistencePackageExtensions();
+	if (Outputs.Num() != Extensions.Num())
+	{
+		OutError = FString::Printf(
+			TEXT("Persistence.VerifyInstalled.Validate: expected %d package segments but discovered %d"),
+			Extensions.Num(),
+			Outputs.Num());
+		return false;
+	}
+
+	IFileManager& FileManager = IFileManager::Get();
+	for (int32 Index = 0; Index < Outputs.Num(); ++Index)
+	{
+		const FOutputFile& Output = Outputs[Index];
+		const FString Segment = LexToString(Extensions[Index]);
+		const bool bCanonicalExists = FileManager.FileExists(*Output.CanonicalFilename);
+		if (Output.StagedFilename.IsEmpty())
+		{
+			if (bCanonicalExists)
+			{
+				TArray64<uint8> UnexpectedBytes;
+				const bool bReadUnexpected = FFileHelper::LoadFileToArray(
+					UnexpectedBytes,
+					*Output.CanonicalFilename);
+				const FString ActualHash = bReadUnexpected
+					? LexToString(FIoHash::HashBuffer(
+						UnexpectedBytes.GetData(),
+						static_cast<uint64>(UnexpectedBytes.Num())))
+					: TEXT("unreadable");
+				OutError = FString::Printf(
+					TEXT("Persistence.VerifyInstalled.UnexpectedSegment: segment='%s' canonical='%s' expected_size=absent actual_size=%lld expected_hash=absent actual_hash=%s"),
+					*Segment,
+					*Output.CanonicalFilename,
+					static_cast<long long>(FileManager.FileSize(*Output.CanonicalFilename)),
+					*ActualHash);
+				return false;
+			}
+			continue;
+		}
+
+		TArray64<uint8> ExpectedBytes;
+		if (!FFileHelper::LoadFileToArray(ExpectedBytes, *Output.StagedFilename))
+		{
+			OutError = FString::Printf(
+				TEXT("Persistence.VerifyInstalled.ReadStage: segment='%s' failed to read staged output '%s'"),
+				*Segment,
+				*Output.StagedFilename);
+			return false;
+		}
+		const FIoHash ExpectedHash = FIoHash::HashBuffer(
+			ExpectedBytes.GetData(),
+			static_cast<uint64>(ExpectedBytes.Num()));
+
+		if (!bCanonicalExists)
+		{
+			OutError = FString::Printf(
+				TEXT("Persistence.VerifyInstalled.MissingSegment: segment='%s' canonical='%s' expected_size=%lld actual_size=absent expected_hash=%s actual_hash=absent"),
+				*Segment,
+				*Output.CanonicalFilename,
+				static_cast<long long>(ExpectedBytes.Num()),
+				*LexToString(ExpectedHash));
+			return false;
+		}
+
+		TArray64<uint8> ActualBytes;
+		if (!FFileHelper::LoadFileToArray(ActualBytes, *Output.CanonicalFilename))
+		{
+			OutError = FString::Printf(
+				TEXT("Persistence.VerifyInstalled.ReadCanonical: segment='%s' canonical='%s' expected_size=%lld actual_size=%lld expected_hash=%s actual_hash=unreadable"),
+				*Segment,
+				*Output.CanonicalFilename,
+				static_cast<long long>(ExpectedBytes.Num()),
+				static_cast<long long>(FileManager.FileSize(*Output.CanonicalFilename)),
+				*LexToString(ExpectedHash));
+			return false;
+		}
+		const FIoHash ActualHash = FIoHash::HashBuffer(
+			ActualBytes.GetData(),
+			static_cast<uint64>(ActualBytes.Num()));
+		if (ExpectedBytes.Num() != ActualBytes.Num()
+			|| ExpectedHash != ActualHash
+			|| ExpectedBytes != ActualBytes)
+		{
+			OutError = FString::Printf(
+				TEXT("Persistence.VerifyInstalled.Mismatch: segment='%s' canonical='%s' expected_size=%lld actual_size=%lld expected_hash=%s actual_hash=%s"),
+				*Segment,
+				*Output.CanonicalFilename,
+				static_cast<long long>(ExpectedBytes.Num()),
+				static_cast<long long>(ActualBytes.Num()),
+				*LexToString(ExpectedHash),
+				*LexToString(ActualHash));
 			return false;
 		}
 	}

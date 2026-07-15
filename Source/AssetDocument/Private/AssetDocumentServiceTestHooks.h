@@ -27,6 +27,8 @@ enum class EAssetDocumentServicePersistencePhase : uint8
 	AfterFreshReloadBeforeVerification,
 	AfterPackageInstall,
 	BeforeSidecarWrite,
+	BeforeInstalledPackageVerification,
+	AfterInstalledPackageVerificationBeforeMetadataBind,
 	AfterCanonicalMetadataBindBeforeCommit,
 };
 
@@ -51,6 +53,7 @@ public:
 	static void RunNextPersistenceCallbackAtPhase(
 		EAssetDocumentServicePersistencePhase Phase,
 		TFunction<void()> Callback);
+	static void FailNextMetadataRecoveryRefresh(const FAssetDocumentDiagnostic& Diagnostic);
 
 	static bool ConsumeApplyFailure(
 		EAssetDocumentServiceApplyPhase Phase,
@@ -70,6 +73,7 @@ public:
 		EAssetDocumentServicePersistencePhase Phase,
 		FAssetDocumentDiagnostic& OutDiagnostic);
 	static void ConsumePersistenceCallback(EAssetDocumentServicePersistencePhase Phase);
+	static bool ConsumeMetadataRecoveryRefreshFailure(FAssetDocumentDiagnostic& OutDiagnostic);
 
 	static void Clear();
 };
