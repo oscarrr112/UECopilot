@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -42,6 +43,19 @@ FIXTURE_SPECS = {
 APPLY_ORDER = ["blackboard_parent", "blackboard", "behavior_tree_subtree", "behavior_tree"]
 PRIMARY_DOCUMENTS = ["blackboard", "behavior_tree"]
 FAILURE_BUCKETS = ("changed", "added", "removed", "missing", "extra", "skipped", "failed", "errors")
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1"}
+REQUIRED_SERVICE_ENDPOINTS = {
+    ("GET", "/assetfactory/health"),
+    ("POST", "/assetfactory/assetdocument/apply"),
+    ("POST", "/assetfactory/assetdocument/apply-file"),
+    ("GET", "/assetfactory/assetdocument/schema"),
+    ("GET", "/assetfactory/assetdocument/inspect"),
+    ("GET", "/assetfactory/assetdocument/profile"),
+    ("POST", "/assetfactory/assetdocument/template"),
+    ("POST", "/assetfactory/assetdocument/extract"),
+    ("POST", "/assetfactory/assetdocument/validate"),
+    ("POST", "/assetfactory/assetdocument/diff"),
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -335,6 +349,110 @@ def parse_listener_pids(output: str) -> list[dict[str, Any]]:
     return list(by_pid.values())
 
 
+def assert_service_identity(service: dict[str, Any], requested_host: str, requested_port: int) -> None:
+    if service.get("service") != "AssetFactory":
+        raise SmokeFailure(f"service.json service identity is not AssetFactory: {service.get('service')!r}")
+    try:
+        service_port = int(service.get("port", -1))
+    except (TypeError, ValueError) as error:
+        raise SmokeFailure(f"service.json port is invalid: {service.get('port')!r}") from error
+    if service_port != requested_port:
+        raise SmokeFailure(f"service.json port {service_port} != requested {requested_port}")
+
+    normalized_requested_host = requested_host.strip().lower()
+    normalized_service_host = str(service.get("host", "")).strip().lower()
+    if normalized_requested_host not in LOOPBACK_HOSTS:
+        raise SmokeFailure(f"Requested host must be localhost or 127.0.0.1, got {requested_host!r}")
+    if normalized_service_host not in LOOPBACK_HOSTS:
+        raise SmokeFailure(f"service.json host must be localhost or 127.0.0.1, got {service.get('host')!r}")
+
+    base_url = service.get("baseUrl")
+    if not isinstance(base_url, str):
+        raise SmokeFailure(f"service.json baseUrl must be a string, got {base_url!r}")
+    parsed_url = urllib.parse.urlparse(base_url)
+    try:
+        base_url_port = parsed_url.port
+    except ValueError as error:
+        raise SmokeFailure(f"service.json baseUrl has an invalid port: {base_url!r}") from error
+    if (
+        parsed_url.scheme != "http"
+        or (parsed_url.hostname or "").lower() not in LOOPBACK_HOSTS
+        or base_url_port != requested_port
+        or parsed_url.path not in ("", "/")
+        or parsed_url.params
+        or parsed_url.query
+        or parsed_url.fragment
+        or parsed_url.username
+        or parsed_url.password
+    ):
+        raise SmokeFailure(
+            f"service.json baseUrl must point exactly at loopback port {requested_port}, got {base_url!r}"
+        )
+
+    endpoints = service.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise SmokeFailure("service.json endpoints must be an array")
+    actual_endpoints = {
+        (str(endpoint.get("method", "")).strip().upper(), endpoint.get("path"))
+        for endpoint in endpoints
+        if isinstance(endpoint, dict)
+    }
+    missing_endpoints = REQUIRED_SERVICE_ENDPOINTS - actual_endpoints
+    if missing_endpoints:
+        raise SmokeFailure(f"service.json endpoints missing required routes: {sorted(missing_endpoints)}")
+
+    start_time = service.get("startTime")
+    if not isinstance(start_time, str) or not start_time.strip():
+        raise SmokeFailure("service.json startTime is missing")
+    try:
+        parsed_start_time = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise SmokeFailure(f"service.json startTime is not ISO-8601: {start_time!r}") from error
+    if parsed_start_time.tzinfo is None:
+        raise SmokeFailure(f"service.json startTime must include a timezone: {start_time!r}")
+
+
+def assert_listener_identity(command: str, engine: Path, project: Path) -> dict[str, Any]:
+    try:
+        tokens = shlex.split(command)
+    except ValueError as error:
+        raise SmokeFailure(f"Listener command could not be parsed: {error}") from error
+    if not tokens:
+        raise SmokeFailure("Listener command is empty")
+
+    engine_root = engine.expanduser().resolve()
+    editor_path = Path(tokens[0]).expanduser().resolve()
+    editor_kind = editor_path.name.removesuffix(".exe")
+    if editor_kind not in {"UnrealEditor", "UnrealEditor-Cmd"}:
+        raise SmokeFailure(f"Listener executable must be UnrealEditor or UnrealEditor-Cmd, got {editor_path}")
+    try:
+        relative_editor_path = editor_path.relative_to(engine_root)
+    except ValueError as error:
+        raise SmokeFailure(f"Listener UnrealEditor is not from requested engine {engine_root}: {editor_path}") from error
+    if len(relative_editor_path.parts) < 3 or relative_editor_path.parts[:2] != ("Engine", "Binaries"):
+        raise SmokeFailure(
+            f"Listener UnrealEditor is not under requested engine's Engine/Binaries directory: {editor_path}"
+        )
+
+    expected_project = project.expanduser().resolve()
+    command_projects: list[Path] = []
+    for token in tokens[1:]:
+        candidate = token
+        if token.lower().startswith("-project="):
+            candidate = token.split("=", 1)[1]
+        if candidate.lower().endswith(".uproject"):
+            command_projects.append(Path(candidate).expanduser().resolve())
+    if expected_project not in command_projects:
+        raise SmokeFailure(
+            f"Listener command does not contain requested project {expected_project}; found {[str(path) for path in command_projects]}"
+        )
+    return {
+        "editor_path": str(editor_path),
+        "editor_kind": editor_kind,
+        "project_path": str(expected_project),
+    }
+
+
 def capture_service_evidence(
     project: Path,
     engine: Path,
@@ -349,8 +467,7 @@ def capture_service_evidence(
     if not service_path.is_file():
         raise SmokeFailure(f"service.json missing: {service_path}")
     service = read_json(service_path)
-    if int(service.get("port", -1)) != port:
-        raise SmokeFailure(f"service.json port {service.get('port')} != requested {port}")
+    assert_service_identity(service, host, port)
 
     lsof = subprocess.run(
         ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpctn"],
@@ -373,6 +490,7 @@ def capture_service_evidence(
     if ps.returncode != 0 or not ps.stdout.strip():
         raise SmokeFailure(f"Failed to read listener command for PID {listener['pid']}: {ps.stderr.strip()}")
     listener["command"] = ps.stdout.strip()
+    listener["identity"] = assert_listener_identity(listener["command"], engine, project)
 
     health = client.wait_for_health(health_timeout)
     if int(health.get("port", -1)) != port or health.get("subsystemAvailable") is not True:
@@ -384,9 +502,12 @@ def capture_service_evidence(
         "expected_editor_binaries": [
             str(engine / "Engine" / "Binaries" / "Mac" / "UnrealEditor.app" / "Contents" / "MacOS" / "UnrealEditor"),
             str(engine / "Engine" / "Binaries" / "Mac" / "UnrealEditor"),
+            str(engine / "Engine" / "Binaries" / "Mac" / "UnrealEditor-Cmd.app" / "Contents" / "MacOS" / "UnrealEditor-Cmd"),
+            str(engine / "Engine" / "Binaries" / "Mac" / "UnrealEditor-Cmd"),
         ],
         "service_json_path": str(service_path),
         "service_json_mtime_ns": service_path.stat().st_mtime_ns,
+        "service_start_time": service["startTime"],
         "service_json": service,
         "listener": listener,
         "health": health,
@@ -404,6 +525,12 @@ def assert_fresh_restart(token: dict[str, Any], current: dict[str, Any]) -> None
     current_mtime = int(current.get("service_json_mtime_ns", 0))
     if current_mtime <= previous_mtime:
         raise SmokeFailure(f"Post-restart service.json must be newer than token ({current_mtime} <= {previous_mtime})")
+    previous_start_time = token.get("service_start_time")
+    current_start_time = current.get("service_start_time")
+    if not previous_start_time or not current_start_time or current_start_time == previous_start_time:
+        raise SmokeFailure(
+            f"Post-restart service.json startTime must change; before={previous_start_time!r}, after={current_start_time!r}"
+        )
 
 
 def assert_schema(response: dict[str, Any]) -> None:
@@ -701,6 +828,7 @@ def pre_restart(args: argparse.Namespace) -> dict[str, Any]:
         "manifest_path": str(manifest_path),
         "listener": service_end["listener"],
         "service_json_mtime_ns": service_end["service_json_mtime_ns"],
+        "service_start_time": service_end["service_start_time"],
         "mcp_summary": mcp_summary,
         "requires_new_listener_pid": True,
     }
@@ -772,6 +900,8 @@ def post_restart(args: argparse.Namespace) -> dict[str, Any]:
         "asset_root": args.asset_root.rstrip("/"),
         "listener_pid_before_restart": token["listener"]["pid"],
         "listener_pid_after_restart": service["listener"]["pid"],
+        "service_start_time_before_restart": token["service_start_time"],
+        "service_start_time_after_restart": service["service_start_time"],
         "http_pre_restart": "passed",
         "mcp_pre_restart": "passed",
         "fresh_http_post_restart": "passed",

@@ -71,6 +71,20 @@ class FixtureContractTests(unittest.TestCase):
 
 
 class FailureGateTests(unittest.TestCase):
+    def make_service_json(self) -> dict[str, object]:
+        endpoints = [
+            {"method": method, "path": path}
+            for method, path in sorted(smoke.REQUIRED_SERVICE_ENDPOINTS)
+        ]
+        return {
+            "service": "AssetFactory",
+            "host": "localhost",
+            "port": 8562,
+            "baseUrl": "http://localhost:8562",
+            "startTime": "2026-07-16T01:02:03.000Z",
+            "endpoints": endpoints,
+        }
+
     def test_response_gate_rejects_nonempty_diff_or_sync_skip(self) -> None:
         bad = {
             "success": True,
@@ -90,13 +104,83 @@ class FailureGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(smoke.SmokeFailure, bucket):
                     smoke.assert_clean_response({"success": True, "payload": {bucket: [bucket]}}, "gate")
 
-    def test_restart_gate_requires_new_listener_pid_and_new_service_file(self) -> None:
-        token = {"listener": {"pid": 1200}, "service_json_mtime_ns": 100}
+    def test_service_identity_requires_loopback_url_port_and_all_routes(self) -> None:
+        service = self.make_service_json()
+        smoke.assert_service_identity(service, "127.0.0.1", 8562)
+
+        wrong_url = dict(service, baseUrl="http://localhost:9999")
+        with self.assertRaisesRegex(smoke.SmokeFailure, "baseUrl"):
+            smoke.assert_service_identity(wrong_url, "127.0.0.1", 8562)
+
+        wrong_host = dict(service, host="0.0.0.0")
+        with self.assertRaisesRegex(smoke.SmokeFailure, "host"):
+            smoke.assert_service_identity(wrong_host, "127.0.0.1", 8562)
+
+        missing_route = dict(service, endpoints=service["endpoints"][:-1])
+        with self.assertRaisesRegex(smoke.SmokeFailure, "endpoints"):
+            smoke.assert_service_identity(missing_route, "localhost", 8562)
+
+        missing_start = dict(service)
+        missing_start.pop("startTime")
+        with self.assertRaisesRegex(smoke.SmokeFailure, "startTime"):
+            smoke.assert_service_identity(missing_start, "localhost", 8562)
+
+    def test_listener_identity_requires_same_engine_editor_and_project(self) -> None:
+        engine = Path("/opt/UE")
+        project = Path("/work/Smoke/Smoke.uproject")
+        command = "/opt/UE/Engine/Binaries/Mac/UnrealEditor-Cmd /work/Smoke/Smoke.uproject -log"
+        identity = smoke.assert_listener_identity(command, engine, project)
+        self.assertEqual(identity["editor_kind"], "UnrealEditor-Cmd")
+
+        with self.assertRaisesRegex(smoke.SmokeFailure, "engine"):
+            smoke.assert_listener_identity(
+                "/other/UE/Engine/Binaries/Mac/UnrealEditor /work/Smoke/Smoke.uproject",
+                engine,
+                project,
+            )
+        with self.assertRaisesRegex(smoke.SmokeFailure, "project"):
+            smoke.assert_listener_identity(
+                "/opt/UE/Engine/Binaries/Mac/UnrealEditor /work/Other/Other.uproject",
+                engine,
+                project,
+            )
+        with self.assertRaisesRegex(smoke.SmokeFailure, "UnrealEditor"):
+            smoke.assert_listener_identity("/usr/bin/python3 /work/Smoke/Smoke.uproject", engine, project)
+
+    def test_restart_gate_requires_new_pid_service_file_and_start_time(self) -> None:
+        token = {
+            "listener": {"pid": 1200},
+            "service_json_mtime_ns": 100,
+            "service_start_time": "2026-07-16T01:02:03.000Z",
+        }
 
         with self.assertRaisesRegex(smoke.SmokeFailure, "PID"):
-            smoke.assert_fresh_restart(token, {"listener": {"pid": 1200}, "service_json_mtime_ns": 101})
+            smoke.assert_fresh_restart(
+                token,
+                {
+                    "listener": {"pid": 1200},
+                    "service_json_mtime_ns": 101,
+                    "service_start_time": "2026-07-16T01:03:03.000Z",
+                },
+            )
         with self.assertRaisesRegex(smoke.SmokeFailure, "service.json"):
-            smoke.assert_fresh_restart(token, {"listener": {"pid": 1201}, "service_json_mtime_ns": 100})
+            smoke.assert_fresh_restart(
+                token,
+                {
+                    "listener": {"pid": 1201},
+                    "service_json_mtime_ns": 100,
+                    "service_start_time": "2026-07-16T01:03:03.000Z",
+                },
+            )
+        with self.assertRaisesRegex(smoke.SmokeFailure, "startTime"):
+            smoke.assert_fresh_restart(
+                token,
+                {
+                    "listener": {"pid": 1201},
+                    "service_json_mtime_ns": 101,
+                    "service_start_time": "2026-07-16T01:02:03.000Z",
+                },
+            )
 
 
 if __name__ == "__main__":

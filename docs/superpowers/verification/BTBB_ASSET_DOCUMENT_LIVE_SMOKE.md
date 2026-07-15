@@ -6,7 +6,7 @@ The smoke is intentionally split across an actual Editor restart:
 
 1. `pre-restart` records `service.json`, the single listener PID/command, and health; renders four canonical sidecars into the validation project; runs HTTP schema/profile/template/validate/apply-file with `save_asset=true`/extract/diff; runs the same live profile/template/validate/apply-file/extract/diff path through the stdio MCP broker; verifies sidecar sync hashes and `.uasset` existence; then writes `resume_token.json`.
 2. Stop that Editor and restart the same project with the same plugin build and port. Do not reuse the old process.
-3. `post-restart` rejects the run unless both the listener PID changed and the project's `Saved/AssetFactory/service.json` was rewritten. It performs fresh HTTP profile/template/schema/extract/diff from the saved packages without applying again and writes the final `summary.json`.
+3. `post-restart` rejects the run unless the listener PID changed and the project's `Saved/AssetFactory/service.json` was rewritten with a different `startTime`. It performs fresh HTTP profile/template/schema/extract/diff from the saved packages without applying again and writes the final `summary.json`.
 
 The fixtures cover parent and ordered local Blackboard keys, Object/Bool/Vector/Name/Float/Class/Enum key types, `BaseClass`, `EnumType`, explicit `KeyTypeClass`, inheritance, a selector root, nested composite children, tasks, ordinary and composite decorators, service, subtree task/reference, decorator BoundGraph logic, inline node layout, and comments.
 
@@ -64,7 +64,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 docs/superpowers/verification/btbb_asset_docum
 
 ## Failure semantics and evidence
 
-The harness returns nonzero for any failed HTTP/MCP call, diagnostic, nonempty `changed`/`added`/`removed`/`missing`/`extra`/`skipped`/`failed` bucket, sidecar sync skip, missing sidecar/asset, mismatched sync hash, incomplete authored-surface coverage, stale `service.json`, or reused listener PID.
+The harness returns nonzero for any failed HTTP/MCP call, diagnostic, nonempty `changed`/`added`/`removed`/`missing`/`extra`/`skipped`/`failed` bucket, sidecar sync skip, missing sidecar/asset, mismatched sync hash, incomplete authored-surface coverage, stale or incomplete `service.json`, reused listener PID/start time, wrong-engine listener, or listener command targeting another project. Service discovery must identify loopback on the requested port and contain health plus all nine AssetDocument routes.
 
 The evidence directory contains:
 
