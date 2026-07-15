@@ -369,7 +369,6 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 		: TEXT("unresolved");
 	const FString LoadedPathDescription = AssetDocumentPersistenceDescribePackagePath(Package->GetLoadedPath());
 	const uint32 PackageFlags = static_cast<uint32>(Package->GetPackageFlags());
-	const bool bInMemoryOnly = Package->HasAnyPackageFlags(PKG_InMemoryOnly);
 	const bool bHadLinkerBeforeReset = Package->GetLinker() != nullptr;
 	if (!bDoesPackageExist)
 	{
@@ -380,30 +379,76 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 			static_cast<long long>(CanonicalFileSize),
 			*CanonicalPathDescription,
 			PackageFlags,
-			bInMemoryOnly ? TEXT("true") : TEXT("false"),
+			Package->HasAnyPackageFlags(PKG_InMemoryOnly) ? TEXT("true") : TEXT("false"),
 			bHadLinkerBeforeReset ? TEXT("true") : TEXT("false"),
 			*LoadedPathDescription);
 		return false;
 	}
 
+	if (Package->HasAnyPackageFlags(PKG_CompiledIn))
+	{
+		OutError = FString::Printf(
+			TEXT("Persistence.Metadata.Validate: cannot bind a canonical disk linker to compiled-in package '%s'"),
+			*PackageName);
+		return false;
+	}
+
+	const FPackagePath LoadedPathBefore = Package->GetLoadedPath();
+	const TArray<int32> ChunkIDsBefore = Package->GetChunkIDs();
+	const int64 FileSizeBefore = Package->GetFileSize();
+#if WITH_EDITORONLY_DATA
+	const FIoHash SavedHashBefore = Package->GetSavedHash();
+	const FGuid PersistentGuidBefore = Package->GetPersistentGuid();
+	const bool bWasCookedForEditor = Package->bIsCookedForEditor;
+#endif
+	bool bMetadataRefreshCommitted = false;
+	ON_SCOPE_EXIT
+	{
+		if (bMetadataRefreshCommitted)
+		{
+			return;
+		}
+
+		// CreateLinker can update the live package from the file summary before a
+		// later map/import failure. Detach any partial linker and restore every
+		// publicly restorable field. Newly-created packages also use the engine's
+		// helper to restore their authoritative zero file size.
+		ResetLoaders(Package);
+#if WITH_EDITOR
+		if ((PackageFlags & PKG_NewlyCreated) != 0 && FileSizeBefore == 0)
+		{
+			Package->MarkAsNewlyCreated();
+		}
+#endif
+		Package->SetPackageFlagsTo(PackageFlags);
+		Package->SetChunkIDs(ChunkIDsBefore);
+		Package->SetLoadedPath(LoadedPathBefore);
+#if WITH_EDITORONLY_DATA
+		Package->SetSavedHash(SavedHashBefore);
+		Package->SetPersistentGuid(PersistentGuidBefore);
+		Package->bIsCookedForEditor = bWasCookedForEditor;
+#endif
+	};
+
 	ResetLoaders(Package);
-	const bool bHadLinkerAfterReset = Package->GetLinker() != nullptr;
-	FLinkerLoad* CanonicalLinker = GetPackageLinker(Package, ResolvedCanonicalPath, LOAD_None, nullptr);
+	// A newly-created /Game package is considered PKG_InMemoryOnly because that
+	// mask includes PKG_NewlyCreated. The canonical file is now durably installed,
+	// so temporarily clear only the newly-created bit to allow the disk linker.
+	Package->ClearPackageFlags(PKG_NewlyCreated);
+	FLinkerLoad* CanonicalLinker = GetPackageLinker(
+		Package,
+		ResolvedCanonicalPath,
+		LOAD_NoVerify | LOAD_NoWarn | LOAD_Quiet,
+		nullptr);
 	if (!CanonicalLinker)
 	{
 		OutError = FString::Printf(
-			TEXT("Persistence.Metadata.Linker: failed to bind canonical package linker; canonical_filename=\"%s\" raw_exists=%s raw_size=%lld does_package_exist=true canonical_path={%s} resolved_path={%s} package_flags=0x%08x in_memory_only=%s linker_before_reset=%s linker_after_reset=%s linker_after_attempt=%s loaded_path={%s}"),
+			TEXT("Persistence.Metadata.Linker: canonical file exists but linker binding failed; canonical_filename=\"%s\" raw_size=%lld resolved_path={%s} original_package_flags=0x%08x linker_before_reset=%s"),
 			*CanonicalPackageFilename,
-			bCanonicalFileExists ? TEXT("true") : TEXT("false"),
 			static_cast<long long>(CanonicalFileSize),
-			*CanonicalPathDescription,
 			*ResolvedPathDescription,
 			PackageFlags,
-			bInMemoryOnly ? TEXT("true") : TEXT("false"),
-			bHadLinkerBeforeReset ? TEXT("true") : TEXT("false"),
-			bHadLinkerAfterReset ? TEXT("true") : TEXT("false"),
-			Package->GetLinker() ? TEXT("true") : TEXT("false"),
-			*LoadedPathDescription);
+			bHadLinkerBeforeReset ? TEXT("true") : TEXT("false"));
 		return false;
 	}
 	Package->SetLoadedPath(ResolvedCanonicalPath);
@@ -415,6 +460,7 @@ bool FAssetDocumentPersistenceTransaction::RefreshCanonicalPackageMetadata(
 		OutError = TEXT("Persistence.Metadata.Identity: canonical metadata refresh changed live package UObject identity");
 		return false;
 	}
+	bMetadataRefreshCommitted = true;
 	return true;
 }
 

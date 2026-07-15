@@ -758,6 +758,18 @@ bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&
 	bool bLastEventWasAutosave = true;
 	bool bLastEventUpdatedLoadedPath = false;
 	UPackage* LastEventPackage = nullptr;
+	bool bObservedPackageBeforeMetadataRefresh = false;
+	bool bWasInMemoryOnlyBeforeMetadataRefresh = false;
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
+		[&]()
+		{
+			UPackage* InstalledPackage = FindObject<UPackage>(nullptr, *Target);
+			bObservedPackageBeforeMetadataRefresh = InstalledPackage != nullptr;
+			bWasInMemoryOnlyBeforeMetadataRefresh = InstalledPackage
+				&& InstalledPackage->HasAnyPackageFlags(PKG_InMemoryOnly);
+		});
 	const FDelegateHandle SavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
 		[&](const FString& Filename, UPackage* Package, FObjectPostSaveContext Context)
 		{
@@ -795,7 +807,10 @@ bool FAssetDocumentPersistenceCanonicalMetadataEventTest::RunTest(const FString&
 	const FPersistenceTestPackageMetadata Metadata = PersistenceTestCapturePackageMetadata(Package);
 	FString ExpectedCanonicalFilename = CanonicalFilename;
 	FPaths::NormalizeFilename(ExpectedCanonicalFilename);
+	TestTrue(TEXT("Observes the installed live package before metadata refresh"), bObservedPackageBeforeMetadataRefresh);
+	TestTrue(TEXT("New live package is initially PKG_InMemoryOnly"), bWasInMemoryOnlyBeforeMetadataRefresh);
 	TestEqual(TEXT("LoadedPath is canonical after strict success"), Metadata.LoadedFilename, ExpectedCanonicalFilename);
+	TestFalse(TEXT("Strict success clears PKG_InMemoryOnly"), Package && Package->HasAnyPackageFlags(PKG_InMemoryOnly));
 	TestFalse(TEXT("Strict success clears PKG_NewlyCreated"), Package && Package->HasAnyPackageFlags(PKG_NewlyCreated));
 	TestTrue(TEXT("Strict success records a valid saved hash"), Metadata.SavedHash != FIoHash());
 	TestTrue(TEXT("Strict success records a positive canonical file size"), Metadata.FileSize > 0);
