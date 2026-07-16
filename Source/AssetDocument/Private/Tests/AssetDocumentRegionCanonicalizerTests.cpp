@@ -3,6 +3,7 @@
 #include "AssetDocumentRegionCanonicalizer.h"
 #include "AssetDocumentCanonicalJson.h"
 #include "AssetDocumentPolicy.h"
+#include "Tests/AssetDocumentReflectedPropertyTestTypes.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
@@ -408,6 +409,331 @@ bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesExtractDefa
 		TEXT("omitted BehaviorTree editor/comment defaults and FLinearColor storage precision hash equally"),
 		HashBehaviorTreePostApplyRegion(SparseAuthored, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
 		HashBehaviorTreePostApplyRegion(ExplicitEvidence, EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesNodeClassDefaultsTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.NormalizesNodeClassDefaults",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesNodeClassDefaultsTest::RunTest(const FString& Parameters)
+{
+	const auto MakeWaitTree = [](
+		bool bIncludeExtractedClassDefaults,
+		double WaitDefaultValue = 5.0,
+		const TCHAR* ClassPath = TEXT("/Script/AIModule.BTTask_Wait"))
+	{
+		TSharedPtr<FJsonObject> WaitProperties = MakeShared<FJsonObject>();
+		WaitProperties->SetStringField(TEXT("NodeName"), TEXT("Subtree wait"));
+		WaitProperties->SetBoolField(TEXT("bIgnoreRestartSelf"), true);
+		if (bIncludeExtractedClassDefaults)
+		{
+			TSharedPtr<FJsonObject> WaitTime = MakeShared<FJsonObject>();
+			WaitTime->SetNumberField(TEXT("DefaultValue"), WaitDefaultValue);
+			WaitTime->SetStringField(TEXT("Key"), TEXT("None"));
+			WaitProperties->SetObjectField(TEXT("WaitTime"), WaitTime);
+
+			TSharedPtr<FJsonObject> RandomDeviation = MakeShared<FJsonObject>();
+			RandomDeviation->SetNumberField(TEXT("DefaultValue"), 0.0);
+			RandomDeviation->SetStringField(TEXT("Key"), TEXT("None"));
+			WaitProperties->SetObjectField(TEXT("RandomDeviation"), RandomDeviation);
+		}
+
+		TSharedPtr<FJsonObject> WaitNode = MakeShared<FJsonObject>();
+		WaitNode->SetStringField(TEXT("Id"), TEXT("44444444444444444444444444444444"));
+		WaitNode->SetStringField(TEXT("Class"), ClassPath);
+		WaitNode->SetObjectField(TEXT("Properties"), WaitProperties);
+
+		TSharedPtr<FJsonValue> TreeValue = MakeBehaviorTreePostApplyRegionValue(false, false);
+		TreeValue->AsObject()
+			->GetObjectField(TEXT("Root"))
+			->SetArrayField(TEXT("Children"), {RegionCanonicalizerTestMakeObjectValue(WaitNode.ToSharedRef())});
+		return TreeValue;
+	};
+
+	const FString SparseHash = HashBehaviorTreePostApplyRegion(
+		MakeWaitTree(false),
+		EAssetDocumentRegionCanonicalizeSource::SidecarAuthored);
+	TestEqual(
+		TEXT("omitted BehaviorTree node CDO defaults and extracted defaults hash equally"),
+		SparseHash,
+		HashBehaviorTreePostApplyRegion(MakeWaitTree(true), EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	TestNotEqual(
+		TEXT("non-default BehaviorTree node property remains hash-significant"),
+		SparseHash,
+		HashBehaviorTreePostApplyRegion(MakeWaitTree(true, 7.5), EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	TestNotEqual(
+		TEXT("unresolved BehaviorTree node class leaves default-looking properties hash-significant"),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(false, 5.0, TEXT("/Script/AIModule.DoesNotExist")),
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(true, 5.0, TEXT("/Script/AIModule.DoesNotExist")),
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	TestNotEqual(
+		TEXT("non-BehaviorTree class leaves default-looking properties hash-significant"),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(false, 5.0, TEXT("/Script/CoreUObject.Object")),
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(true, 5.0, TEXT("/Script/CoreUObject.Object")),
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	TestNotEqual(
+		TEXT("valid BehaviorTree class with an unsupported CDO property leaves authored properties hash-significant"),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(
+				false,
+				5.0,
+				*UAssetDocumentUnsupportedExtractTaskTestNode::StaticClass()->GetPathName()),
+			EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(
+			MakeWaitTree(
+				true,
+				5.0,
+				*UAssetDocumentUnsupportedExtractTaskTestNode::StaticClass()->GetPathName()),
+			EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredPropertyShapesOpaqueTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.KeepsAuthoredPropertyShapesOpaque",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsAuthoredPropertyShapesOpaqueTest::RunTest(const FString& Parameters)
+{
+	const auto MakeClassShapeTree = [](bool bIncludeDefaultLookingValue)
+	{
+		TSharedPtr<FJsonObject> NestedProperties = MakeShared<FJsonObject>();
+		if (bIncludeDefaultLookingValue)
+		{
+			TSharedPtr<FJsonObject> WaitTime = MakeShared<FJsonObject>();
+			WaitTime->SetNumberField(TEXT("DefaultValue"), 5.0);
+			WaitTime->SetStringField(TEXT("Key"), TEXT("None"));
+			NestedProperties->SetObjectField(TEXT("WaitTime"), WaitTime);
+		}
+
+		TSharedPtr<FJsonObject> ClassShape = MakeShared<FJsonObject>();
+		ClassShape->SetStringField(TEXT("Class"), TEXT("/Script/AIModule.BTTask_Wait"));
+		ClassShape->SetObjectField(TEXT("Properties"), NestedProperties);
+
+		TSharedPtr<FJsonValue> TreeValue = MakeBehaviorTreePostApplyRegionValue(false, false);
+		TreeValue->AsObject()
+			->GetObjectField(TEXT("Root"))
+			->GetObjectField(TEXT("Properties"))
+			->SetObjectField(TEXT("ClassShape"), ClassShape);
+		return TreeValue;
+	};
+
+	const auto MakeBoundGraphShapeTree = [](bool bPermuteNodes)
+	{
+		const auto MakeNode = [](const TCHAR* Id)
+		{
+			TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+			Node->SetStringField(TEXT("Id"), Id);
+			return RegionCanonicalizerTestMakeObjectValue(Node.ToSharedRef());
+		};
+
+		TArray<TSharedPtr<FJsonValue>> Nodes = {
+			MakeNode(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1")),
+			MakeNode(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2")),
+		};
+		if (bPermuteNodes)
+		{
+			Nodes.Swap(0, 1);
+		}
+
+		TSharedPtr<FJsonObject> BoundGraph = MakeShared<FJsonObject>();
+		BoundGraph->SetStringField(TEXT("GraphGuid"), TEXT("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+		BoundGraph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+
+		TSharedPtr<FJsonObject> GraphShape = MakeShared<FJsonObject>();
+		GraphShape->SetObjectField(TEXT("BoundGraph"), BoundGraph);
+
+		TSharedPtr<FJsonValue> TreeValue = MakeBehaviorTreePostApplyRegionValue(false, false);
+		TreeValue->AsObject()
+			->GetObjectField(TEXT("Root"))
+			->GetObjectField(TEXT("Properties"))
+			->SetObjectField(TEXT("GraphShape"), GraphShape);
+		return TreeValue;
+	};
+
+	TestNotEqual(
+		TEXT("Class and Properties fields inside authored properties are ordinary hash-significant data"),
+		HashBehaviorTreePostApplyRegion(MakeClassShapeTree(false)),
+		HashBehaviorTreePostApplyRegion(MakeClassShapeTree(true)));
+	TestNotEqual(
+		TEXT("BoundGraph-shaped data inside authored properties keeps authored array order"),
+		HashBehaviorTreePostApplyRegion(MakeBoundGraphShapeTree(false)),
+		HashBehaviorTreePostApplyRegion(MakeBoundGraphShapeTree(true)));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesStorageOrderTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.NormalizesStorageOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyNormalizesStorageOrderTest::RunTest(const FString& Parameters)
+{
+	const auto MakeStorageOrderTree = [](bool bPermuteStorageOrder, bool bChangeLinkInput)
+	{
+		const auto MakeBoundNode = [](const TCHAR* Id, const TCHAR* Kind)
+		{
+			TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+			Node->SetStringField(TEXT("Id"), Id);
+			Node->SetStringField(TEXT("Kind"), Kind);
+			return RegionCanonicalizerTestMakeObjectValue(Node.ToSharedRef());
+		};
+		const auto MakeBoundLink = [](const TCHAR* From, const TCHAR* To, int32 ToInput)
+		{
+			TSharedPtr<FJsonObject> Link = MakeShared<FJsonObject>();
+			Link->SetStringField(TEXT("From"), From);
+			Link->SetStringField(TEXT("To"), To);
+			Link->SetNumberField(TEXT("ToInput"), ToInput);
+			return RegionCanonicalizerTestMakeObjectValue(Link.ToSharedRef());
+		};
+
+		TArray<TSharedPtr<FJsonValue>> Nodes = {
+			MakeBoundNode(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"), TEXT("Sink")),
+			MakeBoundNode(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2"), TEXT("Not")),
+			MakeBoundNode(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3"), TEXT("Not")),
+		};
+		TArray<TSharedPtr<FJsonValue>> Links = {
+			MakeBoundLink(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2"), TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"), 0),
+			MakeBoundLink(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3"), TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2"), bChangeLinkInput ? 1 : 0),
+		};
+		if (bPermuteStorageOrder)
+		{
+			Nodes.Swap(0, 2);
+			Links.Swap(0, 1);
+		}
+
+		TSharedPtr<FJsonObject> BoundGraph = MakeShared<FJsonObject>();
+		BoundGraph->SetStringField(TEXT("GraphGuid"), TEXT("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+		BoundGraph->SetArrayField(TEXT("Nodes"), MoveTemp(Nodes));
+		BoundGraph->SetArrayField(TEXT("Links"), MoveTemp(Links));
+
+		TSharedPtr<FJsonObject> CompositeDecorator = MakeShared<FJsonObject>();
+		CompositeDecorator->SetStringField(TEXT("Id"), TEXT("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"));
+		CompositeDecorator->SetStringField(TEXT("Kind"), TEXT("Composite"));
+		CompositeDecorator->SetObjectField(TEXT("Properties"), MakeShared<FJsonObject>());
+		CompositeDecorator->SetObjectField(TEXT("BoundGraph"), BoundGraph);
+
+		TSharedPtr<FJsonValue> TreeValue = MakeBehaviorTreePostApplyRegionValue(false, false);
+		const TSharedPtr<FJsonObject> Tree = TreeValue->AsObject();
+		Tree->GetObjectField(TEXT("Root"))->SetArrayField(
+			TEXT("Decorators"),
+			{RegionCanonicalizerTestMakeObjectValue(CompositeDecorator.ToSharedRef())});
+		if (bPermuteStorageOrder)
+		{
+			const TArray<TSharedPtr<FJsonValue>>* ExistingComments = nullptr;
+			Tree->TryGetArrayField(TEXT("Comments"), ExistingComments);
+			TArray<TSharedPtr<FJsonValue>> Comments = ExistingComments ? *ExistingComments : TArray<TSharedPtr<FJsonValue>>();
+			if (Comments.Num() == 2)
+			{
+				Comments.Swap(0, 1);
+			}
+			Tree->SetArrayField(TEXT("Comments"), MoveTemp(Comments));
+		}
+		return TreeValue;
+	};
+
+	const TSharedPtr<FJsonValue> PermutedAuthored = MakeStorageOrderTree(true, false);
+	const TSharedPtr<FJsonValue> ExtractOrderEvidence = MakeStorageOrderTree(false, false);
+	TestEqual(
+		TEXT("BehaviorTree comment and BoundGraph node/link storage order do not affect the hash"),
+		HashBehaviorTreePostApplyRegion(PermutedAuthored, EAssetDocumentRegionCanonicalizeSource::SidecarAuthored),
+		HashBehaviorTreePostApplyRegion(ExtractOrderEvidence, EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+	TestNotEqual(
+		TEXT("BehaviorTree BoundGraph link input remains hash-significant"),
+		HashBehaviorTreePostApplyRegion(ExtractOrderEvidence, EAssetDocumentRegionCanonicalizeSource::AssetEvidence),
+		HashBehaviorTreePostApplyRegion(MakeStorageOrderTree(false, true), EAssetDocumentRegionCanonicalizeSource::AssetEvidence));
+
+	const FAssetDocumentRegionPolicy Policy = MakeBehaviorTreePostApplyPolicy();
+	FAssetDocumentRegionCanonicalizeContext Context;
+	Context.Policy = &Policy;
+	Context.Source = EAssetDocumentRegionCanonicalizeSource::SidecarAuthored;
+	const TSharedPtr<FJsonValue> Writeback =
+		FAssetDocumentRegionCanonicalizer::CanonicalizeForSidecarWriteback(Context, PermutedAuthored);
+	const TSharedPtr<FJsonObject> WritebackTree = Writeback->AsObject();
+	const TArray<TSharedPtr<FJsonValue>>* WritebackComments = nullptr;
+	WritebackTree->TryGetArrayField(TEXT("Comments"), WritebackComments);
+	TestEqual(
+		TEXT("writeback preserves authored comment order"),
+		WritebackComments && WritebackComments->Num() > 0
+			? (*WritebackComments)[0]->AsObject()->GetStringField(TEXT("Id"))
+			: FString(),
+		FString(TEXT("33333333333333333333333333333333")));
+
+	const TArray<TSharedPtr<FJsonValue>>* WritebackDecorators = nullptr;
+	WritebackTree->GetObjectField(TEXT("Root"))->TryGetArrayField(TEXT("Decorators"), WritebackDecorators);
+	const TSharedPtr<FJsonObject> WritebackBoundGraph =
+		WritebackDecorators && WritebackDecorators->Num() > 0
+			? (*WritebackDecorators)[0]->AsObject()->GetObjectField(TEXT("BoundGraph"))
+			: nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* WritebackNodes = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* WritebackLinks = nullptr;
+	if (WritebackBoundGraph.IsValid())
+	{
+		WritebackBoundGraph->TryGetArrayField(TEXT("Nodes"), WritebackNodes);
+		WritebackBoundGraph->TryGetArrayField(TEXT("Links"), WritebackLinks);
+	}
+	TestEqual(
+		TEXT("writeback preserves authored BoundGraph node order"),
+		WritebackNodes && WritebackNodes->Num() > 0
+			? (*WritebackNodes)[0]->AsObject()->GetStringField(TEXT("Id"))
+			: FString(),
+		FString(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3")));
+	TestEqual(
+		TEXT("writeback preserves authored BoundGraph link order"),
+		WritebackLinks && WritebackLinks->Num() > 0
+			? (*WritebackLinks)[0]->AsObject()->GetStringField(TEXT("From"))
+			: FString(),
+		FString(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsSemanticArrayOrderTest,
+	"AssetDocument.RegionCanonicalizer.BehaviorTreePostApply.KeepsSemanticArrayOrder",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentRegionCanonicalizerBehaviorTreePostApplyKeepsSemanticArrayOrderTest::RunTest(const FString& Parameters)
+{
+	const auto MakeOrderedTree = [](const TCHAR* FieldName, bool bSwap)
+	{
+		const auto MakeEntry = [](const TCHAR* Id)
+		{
+			TSharedPtr<FJsonObject> Entry = MakeShared<FJsonObject>();
+			Entry->SetStringField(TEXT("Id"), Id);
+			return RegionCanonicalizerTestMakeObjectValue(Entry.ToSharedRef());
+		};
+
+		TArray<TSharedPtr<FJsonValue>> Entries = {
+			MakeEntry(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1")),
+			MakeEntry(TEXT("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2")),
+		};
+		if (bSwap)
+		{
+			Entries.Swap(0, 1);
+		}
+
+		TSharedPtr<FJsonValue> TreeValue = MakeBehaviorTreePostApplyRegionValue(false, false);
+		TreeValue->AsObject()
+			->GetObjectField(TEXT("Root"))
+			->SetArrayField(FieldName, MoveTemp(Entries));
+		return TreeValue;
+	};
+
+	for (const TCHAR* FieldName : {TEXT("Children"), TEXT("Services"), TEXT("Decorators")})
+	{
+		TestNotEqual(
+			*FString::Printf(TEXT("%s semantic order remains hash-significant"), FieldName),
+			HashBehaviorTreePostApplyRegion(MakeOrderedTree(FieldName, false)),
+			HashBehaviorTreePostApplyRegion(MakeOrderedTree(FieldName, true)));
+	}
 	return true;
 }
 

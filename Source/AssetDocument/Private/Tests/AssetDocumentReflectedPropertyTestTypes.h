@@ -178,3 +178,17 @@ public:
 	int32 InitializeFromAssetCallCountForTest = 0;
 	TArray<FAssetDocumentReflectedPropertyNestedTestValue> RetiredArrayValues;
 };
+
+/**
+ * Canonicalization fail-closed fixture. Integer map keys are valid UE authored
+ * data but intentionally unsupported by the reflected JSON extractor.
+ */
+UCLASS()
+class UAssetDocumentUnsupportedExtractTaskTestNode : public UBTTaskNode
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, Category = "AssetDocumentTest")
+	TMap<int32, float> UnsupportedMap;
+};

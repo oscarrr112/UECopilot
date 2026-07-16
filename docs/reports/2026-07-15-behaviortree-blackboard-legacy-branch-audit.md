@@ -1,26 +1,28 @@
 # BehaviorTree / BlackboardData 旧分支逐提交审计
 
-**日期**：2026-07-15
+**审计日期**：2026-07-15
+**执行结果更新**：2026-07-16
 **候选分支**：`origin/feature/asset-document-behaviortree-blackboard-impl`
+**候选 tip**：`d2e55e5bda3c30e633b3cd9847bc8967e1c36e2a`
 **共同基点**：`12ea6ae87c37227cb73f65dd848b2a79c8ac2ee8`
-**当前权威基线**：`da7b1c82ea5cabf02cd6e0675d4f2732272590dd`
+**当前实现分支**：`codex/finish-bt-bb-assetdocument`
 
 ## 结论
 
-旧分支 42 个提交不是可直接整体合入的 production unit。分类为：19 个语义可集成、10 个需按当前公共 runtime 适配、4 个需重写、6 个过时丢弃、3 个与当前基线架构冲突并由新实现替代。
+候选分支从共同基点起共有 42 个提交。当前分支通过 merge commit `f18e523b632dd7df35e7ae68f9e74ff704173891` 引入候选 tip；该 merge 的父提交是 `77284ac8dd27ee26e0c5a3a42ed94d60b2db8ada` 和 `d2e55e5bda3c30e633b3cd9847bc8967e1c36e2a`。因此候选 tip 已是当前 HEAD 的祖先，历史审计链可追溯。
 
-“可集成”只表示提交所建立的行为和测试意图保留，不表示原 SHA 可以绕过当前 TDD、Unity Build 或 save-reload 验证。为保留可审计历史，集成可使用三方 merge 作为候选代码落点，但冲突、重写和替代项在最终实现中必须有当前合同与测试证明，不能以 merge 成功作为完成证据。
+“已在 ancestry 中”不等于 42 个提交未经修改地获得 production 接受。语义处置仍为：19 个集成、10 个修改后集成、4 个重写、6 个丢弃、3 个冲突并替代。最终验收来自当前代码、当前合同和 fresh scoped evidence，不来自 merge 成功本身。
 
-旧证据的已确认缺口：
+旧证据的缺口及当前处置：
 
-- focused 报告的 33 条只对应 BehaviorTree；没有证明 23 条 Blackboard focused suite；
-- HTTP `127.0.0.1:8560` 绑定失败，真实外部 smoke 从未通过；
-- `FInstancedStruct` 被明确作为 unsupported，违反动态完整 reflected authored surface；
-- selector AllowedTypes/filter 被当作可写 authored 数据，实际是 concrete node class policy；
-- `NodeName` 被用于 identity，而 UE graph 的稳定 identity 是 NodeGuid；
-- runtime tree 被当作主要模型，未以 BTGraph 为唯一 authored truth；
-- KeyType metadata、Comment Box fields、项目自定义节点、existing-asset save/reload rollback 覆盖不足；
-- spec/plan/report 仍是旧里程碑状态，69 个 plan 项全部未勾选。
+- 旧 focused 报告只有 33 条 BehaviorTree 证据；当前以 BehaviorTree `69/69` 和 BlackboardData `33/33` fresh reports 替代。
+- 旧 HTTP `127.0.0.1:8560` 绑定失败；当前 8562 pre/post restart HTTP + MCP smoke 全通过。
+- 旧实现把 `FInstancedStruct` 视为 unsupported；当前由共享 reflected-property runtime 覆盖 Struct/custom KeyType。
+- selector AllowedTypes/filter 不再作为可写 authored 数据；只写 canonical Key，filter/ID/type/None policy 保持 class-derived。
+- identity 使用稳定 NodeGuid，不再用 `NodeName` 代替。
+- BTGraph 是 authored source；runtime tree、selector caches 和 DecoratorOps 由 UE rebuild。
+- KeyType metadata、Comment Box、项目自定义节点和 existing-asset rollback 已进入当前 focused coverage。
+- 旧 plan 的 69 个未勾选项已被当前 production plan 与 fresh evidence 取代。
 
 ## 逐提交分类
 
@@ -30,7 +32,7 @@
 | 2 | `5478beb627` | editor layout 里程碑 | 丢弃 | 增量文档过时 |
 | 3 | `f7e15bf0ad` | 完整 BT semantics 要求 | 丢弃 | 要求并入新 production design，原提交无独立实现 |
 | 4 | `c563b6bd50` | 动态节点设计 | 修改后集成 | 保留动态类目标；改为 BTGraph/NodeGuid、完整反射和 class-policy selector |
-| 5 | `8d846beef9` | 实施计划 | 重写 | 69 项未勾且架构落后；由 2026-07-15 production plan 替代 |
+| 5 | `8d846beef9` | 实施计划 | 重写 | 旧计划架构和证据状态过时；由 2026-07-15 production plan 替代 |
 | 6 | `9d19545a74` | profiles 注册 | 冲突/替代 | stub 生命周期和 Build.cs 与 baseline 冲突；按当前 profile runtime 重接 |
 | 7 | `51fb289a35` | key schema utility | 修改后集成 | 保留解析/诊断意图；扩展 ordered keys、Struct/default/custom properties |
 | 8 | `d57ed86fb7` | duplicate key validation | 集成 | duplicate rejection 行为有效 |
@@ -46,7 +48,7 @@
 | 18 | `f1ec3c6f09` | selector filters | 修改后集成 | filter 只读/class-derived；只写 SelectedKeyName |
 | 19 | `b869251ee9` | unsupported diagnostics | 重写 | 不允许以 unsupported/_Skipped 缩减合法 authored scope |
 | 20 | `8465ad9a06` | nested reflected refs | 修改后集成 | 测试意图迁入公共 property runtime |
-| 21 | `b3c2f6788d` | containers | 重写 | 原实现拒绝 FInstancedStruct；公共 runtime 必须完整支持 |
+| 21 | `b3c2f6788d` | containers | 重写 | 原实现拒绝 FInstancedStruct；公共 runtime 必须支持 |
 | 22 | `65e29ef7bb` | public tree adapter | 修改后集成 | 保留公共 region/diagnostic 合同；模型改为 graph-authored projection |
 | 23 | `9296cbe36c` | authored diagnostic paths | 集成 | identity path/duplicate diagnostics 有效 |
 | 24 | `6ca3a45acf` | validation lifecycle | 集成 | unknown fields/hooks/config path 行为有效 |
@@ -91,10 +93,20 @@
 
 `9d19545a74`, `609fa703e6`, `8282ef0975`。
 
-## 集成顺序
+## 当前执行结果
 
-1. 先固定公共 property runtime、tree/recursive graph 边界、field rules 和 canonical/layout 合同。
-2. 接入 Blackboard schema/profile，再保留 #8–16 的行为加固。
-3. 接入 graph-first Tree adapter/materializer，再保留相关 validation/order 修正。
-4. 重写 reflected runtime，补 `FInstancedStruct`、custom classes 和完整 editor surface。
-5. 最后使用当前 Mac/UE 5.7 环境重新建立 build、BT、BB、full、MCP、8562 HTTP 证据。
+- 候选历史已通过 merge commit 落入当前 ancestry；分类合计仍为 `19 + 10 + 4 + 6 + 3 = 42`。
+- 默认 Unity Build 在 `AssetFactorySandboxBTBBEditor` fresh pass；helper collision 通过文件/领域前缀命名解决，没有禁用 Unity。
+- Fresh focused UE evidence：
+  - BehaviorTree `69/69`
+  - BlackboardData `33/33`
+  - Persistence `18/18`
+  - AtomicFile `11/11`
+  - RegionCanonicalizer `28/28`
+  - ManagedProperties `2/2`
+- Combined scoped report `BTBB_SCOPED_FINAL_AFTER_REVIEW_R2`：`161/161`，0 warnings，0 failures。
+- MCP `39/39`；Python live-smoke harness unit `8/8`。
+- 8562 pre-restart PID `90644` 与 post-restart PID `97092` 均通过；保存后的资产在新进程中 fresh extract/diff 成功。
+- 完整 `AssetFactory.AssetDocument` 聚合套件不是本 Goal 门槛。ABP/AnimGraph/StateMachines 是另一分支处理的已知未完成功能，不阻塞本审计结论。
+
+最终 scoped checkpoint SHA 与 clean-worktree 状态在提交后记录于 production plan 和交付汇报。

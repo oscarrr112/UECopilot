@@ -4,12 +4,15 @@
 
 #include "AssetDocumentCanonicalJson.h"
 #include "Graphs/AssetDocumentGraphParser.h"
+#include "Regions/AssetDocumentReflectedPropertyUtils.h"
 
 #include "Animation/AnimBoneCompressionSettings.h"
 #include "Animation/AnimCurveCompressionSettings.h"
 #include "AnimationUtils.h"
+#include "BehaviorTree/BTNode.h"
 #include "Misc/SecureHash.h"
 #include "UObject/Class.h"
+#include "UObject/UObjectGlobals.h"
 #include "UObject/UnrealType.h"
 
 namespace
@@ -414,6 +417,209 @@ void NormalizeBehaviorTreeCommentDefaults(const TSharedPtr<FJsonObject>& Comment
 	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bCommentBubbleVisible"), true);
 	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bCommentBubbleVisible_InDetailsPanel"), true);
 	RemoveBehaviorTreeDefaultBoolField(Comment, TEXT("bColorCommentBubble"), false);
+}
+
+void NormalizeBehaviorTreePostApplyNodeClassDefaults(const TSharedPtr<FJsonObject>& Node)
+{
+	if (!Node.IsValid())
+	{
+		return;
+	}
+
+	FString ClassPath;
+	const TSharedPtr<FJsonObject>* Properties = nullptr;
+	if (Node->TryGetStringField(TEXT("Class"), ClassPath)
+		&& !ClassPath.IsEmpty()
+		&& Node->TryGetObjectField(TEXT("Properties"), Properties)
+		&& Properties
+		&& Properties->IsValid())
+	{
+		UClass* NodeClass = FindObject<UClass>(nullptr, *ClassPath);
+		if (NodeClass && !NodeClass->IsChildOf(UBTNode::StaticClass()))
+		{
+			NodeClass = nullptr;
+		}
+		if (!NodeClass)
+		{
+			NodeClass = StaticLoadClass(UBTNode::StaticClass(), nullptr, *ClassPath, nullptr, LOAD_NoWarn);
+		}
+
+		UObject* DefaultObject = NodeClass ? NodeClass->GetDefaultObject() : nullptr;
+		if (DefaultObject)
+		{
+			TSharedRef<FJsonObject> DefaultProperties = MakeShared<FJsonObject>();
+			const FAssetDocumentCapabilityResult ExtractResult =
+				FAssetDocumentReflectedPropertyUtils::ExtractAuthoredProperties(
+					DefaultObject,
+					DefaultProperties,
+					TEXT("/BehaviorTreePostApply/Defaults"));
+			if (ExtractResult.bSuccess)
+			{
+				TArray<FString> DefaultValuedFields;
+				for (const TPair<FString, TSharedPtr<FJsonValue>>& Property : (*Properties)->Values)
+				{
+					const TSharedPtr<FJsonValue>* DefaultValue = DefaultProperties->Values.Find(Property.Key);
+					if (DefaultValue
+						&& FAssetDocumentCanonicalJson::WriteCanonicalJson(Property.Value)
+							== FAssetDocumentCanonicalJson::WriteCanonicalJson(*DefaultValue))
+					{
+						DefaultValuedFields.Add(Property.Key);
+					}
+				}
+				for (const FString& FieldName : DefaultValuedFields)
+				{
+					(*Properties)->RemoveField(FieldName);
+				}
+			}
+		}
+	}
+}
+
+FString GetBehaviorTreeObjectStringField(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject> Object =
+		Value.IsValid() && Value->Type == EJson::Object
+			? Value->AsObject()
+			: nullptr;
+	FString Result;
+	if (Object.IsValid())
+	{
+		Object->TryGetStringField(FieldName, Result);
+	}
+	return Result;
+}
+
+double GetBehaviorTreeObjectNumberField(
+	const TSharedPtr<FJsonValue>& Value,
+	const FString& FieldName)
+{
+	const TSharedPtr<FJsonObject> Object =
+		Value.IsValid() && Value->Type == EJson::Object
+			? Value->AsObject()
+			: nullptr;
+	double Result = 0.0;
+	if (Object.IsValid())
+	{
+		Object->TryGetNumberField(FieldName, Result);
+	}
+	return Result;
+}
+
+void SortBehaviorTreeObjectArrayById(
+	const TSharedPtr<FJsonObject>& Object,
+	const FString& FieldName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Existing = nullptr;
+	if (!Object.IsValid() || !Object->TryGetArrayField(FieldName, Existing) || !Existing)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Sorted = *Existing;
+	Sorted.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		return GetBehaviorTreeObjectStringField(Left, TEXT("Id"))
+			< GetBehaviorTreeObjectStringField(Right, TEXT("Id"));
+	});
+	Object->SetArrayField(FieldName, MoveTemp(Sorted));
+}
+
+void SortBehaviorTreeBoundGraphLinks(const TSharedPtr<FJsonObject>& BoundGraph)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Existing = nullptr;
+	if (!BoundGraph.IsValid() || !BoundGraph->TryGetArrayField(TEXT("Links"), Existing) || !Existing)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FJsonValue>> Sorted = *Existing;
+	Sorted.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+	{
+		const FString LeftFrom = GetBehaviorTreeObjectStringField(Left, TEXT("From"));
+		const FString RightFrom = GetBehaviorTreeObjectStringField(Right, TEXT("From"));
+		if (LeftFrom != RightFrom)
+		{
+			return LeftFrom < RightFrom;
+		}
+
+		const FString LeftTo = GetBehaviorTreeObjectStringField(Left, TEXT("To"));
+		const FString RightTo = GetBehaviorTreeObjectStringField(Right, TEXT("To"));
+		if (LeftTo != RightTo)
+		{
+			return LeftTo < RightTo;
+		}
+
+		return GetBehaviorTreeObjectNumberField(Left, TEXT("ToInput"))
+			< GetBehaviorTreeObjectNumberField(Right, TEXT("ToInput"));
+	});
+	BoundGraph->SetArrayField(TEXT("Links"), MoveTemp(Sorted));
+}
+
+void NormalizeBehaviorTreePostApplyNodeForHash(const TSharedPtr<FJsonObject>& Node);
+
+void NormalizeBehaviorTreePostApplyNodeArrayForHash(
+	const TSharedPtr<FJsonObject>& Owner,
+	const TCHAR* FieldName)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Entries = nullptr;
+	if (!Owner.IsValid()
+		|| !Owner->TryGetArrayField(FieldName, Entries)
+		|| !Entries)
+	{
+		return;
+	}
+
+	for (const TSharedPtr<FJsonValue>& Entry : *Entries)
+	{
+		if (Entry.IsValid() && Entry->Type == EJson::Object)
+		{
+			NormalizeBehaviorTreePostApplyNodeForHash(Entry->AsObject());
+		}
+	}
+}
+
+void NormalizeBehaviorTreePostApplyNodeForHash(const TSharedPtr<FJsonObject>& Node)
+{
+	if (!Node.IsValid())
+	{
+		return;
+	}
+
+	NormalizeBehaviorTreePostApplyNodeClassDefaults(Node);
+	NormalizeBehaviorTreePostApplyNodeArrayForHash(Node, TEXT("Decorators"));
+	NormalizeBehaviorTreePostApplyNodeArrayForHash(Node, TEXT("Services"));
+	NormalizeBehaviorTreePostApplyNodeArrayForHash(Node, TEXT("Children"));
+
+	const TSharedPtr<FJsonObject>* BoundGraph = nullptr;
+	if (Node->TryGetObjectField(TEXT("BoundGraph"), BoundGraph)
+		&& BoundGraph
+		&& BoundGraph->IsValid())
+	{
+		SortBehaviorTreeObjectArrayById(*BoundGraph, TEXT("Nodes"));
+		SortBehaviorTreeBoundGraphLinks(*BoundGraph);
+		NormalizeBehaviorTreePostApplyNodeArrayForHash(*BoundGraph, TEXT("Nodes"));
+	}
+}
+
+void NormalizeBehaviorTreePostApplyHashOnly(const TSharedPtr<FJsonValue>& Value)
+{
+	const TSharedPtr<FJsonObject> Tree =
+		Value.IsValid() && Value->Type == EJson::Object
+			? Value->AsObject()
+			: nullptr;
+	if (!Tree.IsValid())
+	{
+		return;
+	}
+
+	SortBehaviorTreeObjectArrayById(Tree, TEXT("Comments"));
+	const TSharedPtr<FJsonObject>* Root = nullptr;
+	if (Tree->TryGetObjectField(TEXT("Root"), Root) && Root && Root->IsValid())
+	{
+		NormalizeBehaviorTreePostApplyNodeForHash(*Root);
+	}
 }
 
 void NormalizeBehaviorTreePostApplyValue(
@@ -1354,6 +1560,7 @@ public:
 		const TSharedPtr<FJsonValue>& RegionValue) const override
 	{
 		TSharedPtr<FJsonValue> CanonicalValue = GetIdentityStrategy().CanonicalizeForHash(Context, RegionValue);
+		NormalizeBehaviorTreePostApplyHashOnly(CanonicalValue);
 		NormalizeBehaviorTreePostApplyValue(CanonicalValue);
 		return CanonicalValue;
 	}
