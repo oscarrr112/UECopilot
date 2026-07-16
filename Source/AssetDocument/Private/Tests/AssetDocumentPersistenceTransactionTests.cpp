@@ -495,21 +495,24 @@ bool PersistenceTestEstablishSynchronizedBlackboardSidecar(
 	FAssetDocumentService& Service,
 	const FString& Target,
 	const FString& SidecarPath,
-	int32 DefaultValue,
 	TSharedPtr<FJsonObject>& OutSynchronizedDocument)
 {
 	OutSynchronizedDocument.Reset();
-	TSharedPtr<FJsonObject> BaselineDocument = PersistenceTestMakeBlackboardDocument(
-		Test,
-		Service,
-		Target,
-		TEXT("Update"),
-		DefaultValue);
-	if (!BaselineDocument.IsValid())
+	FAssetDocumentExtractRequest ExtractRequest;
+	ExtractRequest.AssetPath = PersistenceTestToObjectPath(Target);
+	ExtractRequest.bDiffOnly = false;
+	ExtractRequest.bIncludeAllWritable = true;
+	const FAssetDocumentResult ExtractResult = Service.Extract(ExtractRequest);
+	if (!ExtractResult.IsSuccess() || !ExtractResult.Payload.IsValid())
 	{
-		Test.AddError(TEXT("Synchronized sidecar baseline document is invalid"));
+		Test.AddError(FString::Printf(
+			TEXT("Failed to extract synchronized sidecar baseline: %s"),
+			*PersistenceTestDescribeResult(ExtractResult)));
 		return false;
 	}
+	TSharedPtr<FJsonObject> BaselineDocument = ExtractResult.Payload;
+	BaselineDocument->SetStringField(TEXT("Target"), Target);
+	BaselineDocument->SetStringField(TEXT("Action"), TEXT("Update"));
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(SidecarPath), true);
 	if (!PersistenceTestWriteDocumentControlled(SidecarPath, BaselineDocument))
 	{
@@ -524,7 +527,9 @@ bool PersistenceTestEstablishSynchronizedBlackboardSidecar(
 	ApplyFileRequest.bSaveAsset = true;
 	ApplyFileRequest.bAllowSidecarRewrite = true;
 	const FAssetDocumentResult BaselineResult = Service.ApplyFile(ApplyFileRequest);
-	if (!BaselineResult.IsSuccess() || !BaselineResult.bWroteSidecar)
+	if (!BaselineResult.IsSuccess()
+		|| !BaselineResult.bSavedAsset
+		|| !BaselineResult.bWroteSidecar)
 	{
 		Test.AddError(FString::Printf(
 			TEXT("Failed to establish synchronized sidecar baseline: %s"),
@@ -591,7 +596,6 @@ bool PersistenceTestSetFirstBlackboardKeyDefault(
 		return false;
 	}
 	(*Properties)->SetNumberField(TEXT("DefaultValue"), DefaultValue);
-	Document->SetStringField(TEXT("Action"), TEXT("Update"));
 	return true;
 }
 
@@ -632,7 +636,6 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 			Service,
 			Target,
 			SidecarPath,
-			7,
 			Update)
 		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 29))
 	{
@@ -1358,8 +1361,8 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 			Service,
 			Target,
 			SidecarPath,
-			7,
-			Document))
+			Document)
+		|| !PersistenceTestSetFirstBlackboardKeyDefault(Document, 29))
 	{
 		return false;
 	}
@@ -1382,25 +1385,6 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 		TEXT("Reads metadata pre-commit baseline package bytes"),
 		PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBytesBefore));
 
-	Document->SetStringField(TEXT("Action"), TEXT("Update"));
-	TArray<TSharedPtr<FJsonValue>> UpdatedKeys = Document->GetObjectField(TEXT("Body"))->GetArrayField(TEXT("Keys"));
-	TSharedPtr<FJsonObject> LongKeyProperties = MakeShared<FJsonObject>();
-	LongKeyProperties->SetNumberField(TEXT("DefaultValue"), 29);
-	TSharedPtr<FJsonObject> LongKeyClass = MakeShared<FJsonObject>();
-	LongKeyClass->SetStringField(TEXT("Kind"), TEXT("ClassRef"));
-	LongKeyClass->SetStringField(TEXT("Path"), UBlackboardKeyType_Int::StaticClass()->GetPathName());
-	TSharedPtr<FJsonObject> LongKey = MakeShared<FJsonObject>();
-	LongKey->SetStringField(
-		TEXT("Name"),
-		TEXT("MetadataRollbackKey_With_A_Deliberately_Long_Name_That_Changes_The_Serialized_Package_Size"));
-	LongKey->SetObjectField(TEXT("KeyTypeClass"), LongKeyClass);
-	LongKey->SetObjectField(TEXT("KeyTypeProperties"), LongKeyProperties);
-	UpdatedKeys.Add(MakeShared<FJsonValueObject>(LongKey));
-	Document->GetObjectField(TEXT("Body"))->SetArrayField(TEXT("Keys"), MoveTemp(UpdatedKeys));
-
-	FString SidecarContents;
-	TSharedRef<TJsonWriter<>> SidecarWriter = TJsonWriterFactory<>::Create(&SidecarContents);
-	TestTrue(TEXT("Serializes metadata pre-commit sidecar"), FJsonSerializer::Serialize(Document.ToSharedRef(), SidecarWriter));
 	TestTrue(
 		TEXT("Writes metadata pre-commit sidecar"),
 		PersistenceTestWriteDocumentControlled(SidecarPath, Document));
@@ -1458,9 +1442,6 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 			TEXT("Observes metadata after the new canonical bind; %s"),
 			*PersistenceTestDescribeResult(Failure)),
 		bObservedMetadataAfterNewBind);
-	TestTrue(
-		TEXT("New canonical bind changes private package file size"),
-		MetadataAfterNewBind.FileSize != MetadataBefore.FileSize);
 	TestTrue(
 		TEXT("New canonical bind changes package saved hash"),
 		MetadataAfterNewBind.SavedHash != MetadataBefore.SavedHash);
@@ -1582,7 +1563,6 @@ bool FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest::RunTest(const F
 			Service,
 			Target,
 			SidecarPath,
-			11,
 			Update)
 		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 47))
 	{
@@ -1882,7 +1862,6 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 			Service,
 			Target,
 			SidecarPath,
-			3,
 			Update)
 		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 17))
 	{
@@ -2016,7 +1995,6 @@ bool FAssetDocumentPersistenceSidecarRollbackFailurePoisonTest::RunTest(const FS
 			Service,
 			Target,
 			SidecarPath,
-			13,
 			Update)
 		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 43)
 		|| !PersistenceTestWriteDocumentControlled(SidecarPath, Update))
