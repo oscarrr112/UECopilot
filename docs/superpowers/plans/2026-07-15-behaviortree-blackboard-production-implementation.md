@@ -16,6 +16,13 @@
 - HTTP port：`8562`
 - Candidate only：`origin/feature/asset-document-behaviortree-blackboard-impl`
 
+## 交付合入
+
+- Baseline branch：`codex/asset-document-structured-capabilities`
+- Baseline worktree：`/Volumes/External/Unreal/Projects/UECopilotWorktrees/dev-environment`
+- Feature branch 以 ff-only 方式在 `989701aa42e537216aebf8e88265c956ce67a753` 合入 baseline；该合入点的 feature/baseline tree 完全相同。
+- BTBB validation project 的插件链接已从验证 worktree 切到 baseline worktree。
+
 ## 验收边界
 
 本 Goal 的完成门槛只包括：
@@ -122,6 +129,10 @@
 - [x] 运行 `git diff --check`、review range 和 clean-worktree 检查；最终 reviewer 结论为 Critical `0`、Important `0`、Ready to merge。
 - [x] 提交全部 implementation/scoped 变更；implementation checkpoint 为 `aa3637ba3ec795c7919f891153891bf163d18de9`。
 - [x] documentation closure 提交后再次确认 worktree clean；最终 HEAD 在交付汇报中记录。
+- [x] 将 feature 以 ff-only 方式合入 `codex/asset-document-structured-capabilities`，未创建 merge commit、未改写历史。
+- [x] 合入后在 baseline fresh 运行 MCP `39/39`、Python harness `8/8`，并确认 `git diff --check` 通过。
+- [x] 核对 scoped UE/8562 证据对应 implementation checkpoint；其后的提交只修改交付文档，因此 runtime tree 与已验证实现一致。
+- [x] 将 validation project 插件链接切到 baseline，并完成 baseline clean-worktree 审查。
 
 ## 证据索引
 

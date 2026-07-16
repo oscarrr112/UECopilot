@@ -5,7 +5,8 @@
 **候选分支**：`origin/feature/asset-document-behaviortree-blackboard-impl`
 **候选 tip**：`d2e55e5bda3c30e633b3cd9847bc8967e1c36e2a`
 **共同基点**：`12ea6ae87c37227cb73f65dd848b2a79c8ac2ee8`
-**当前实现分支**：`codex/finish-bt-bb-assetdocument`
+**验证实现分支**：`codex/finish-bt-bb-assetdocument`
+**已合入 baseline**：`codex/asset-document-structured-capabilities`
 
 ## 结论
 
@@ -108,5 +109,7 @@
 - MCP `39/39`；Python live-smoke harness unit `8/8`。
 - 8562 pre-restart PID `90644` 与 post-restart PID `97092` 均通过；保存后的资产在新进程中 fresh extract/diff 成功。
 - 完整 `AssetFactory.AssetDocument` 聚合套件不是本 Goal 门槛。ABP/AnimGraph/StateMachines 是另一分支处理的已知未完成功能，不阻塞本审计结论。
+- Feature 已在 `989701aa42e537216aebf8e88265c956ce67a753` 以 ff-only 方式合入 `codex/asset-document-structured-capabilities`，没有 merge commit 或历史改写；该合入点 baseline/feature tree 完全相同。
+- 合入后 baseline fresh MCP `39/39`、Python harness `8/8`、`git diff --check` 与 clean-worktree 审查通过。Implementation checkpoint 之后只有交付文档变化，因此 scoped UE 与 8562 证据对应的运行时代码未发生变化。
 
 最终 implementation checkpoint 为 `aa3637ba3ec795c7919f891153891bf163d18de9`；documentation closure HEAD 与 clean-worktree 状态记录于交付汇报。

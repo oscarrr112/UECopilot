@@ -3,11 +3,13 @@
 ## Scope
 
 - Verification date: `2026-07-16`
-- Branch: `codex/finish-bt-bb-assetdocument`
-- Worktree: `/Users/pengao/Documents/AssetFactory/UECopilot/.worktrees/finish-bt-bb-assetdocument`
+- Verification branch: `codex/finish-bt-bb-assetdocument`
+- Verification worktree: `/Users/pengao/Documents/AssetFactory/UECopilot/.worktrees/finish-bt-bb-assetdocument`
+- Integrated baseline: `codex/asset-document-structured-capabilities`
+- Baseline worktree: `/Volumes/External/Unreal/Projects/UECopilotWorktrees/dev-environment`
 - UE: `/Volumes/External/Unreal/Engines/UnrealEngine`
 - Validation project: `/Volumes/External/Unreal/Projects/AssetFactorySandbox-BTBB/AssetFactorySandbox.uproject`
-- Plugin link: `/Volumes/External/Unreal/Projects/AssetFactorySandbox-BTBB/Plugins/AssetFactory` points only to this worktree.
+- Plugin link: during production verification, `/Volumes/External/Unreal/Projects/AssetFactorySandbox-BTBB/Plugins/AssetFactory` pointed only to the verification worktree; after the ff-only integration it points to the baseline worktree.
 - HTTP: `127.0.0.1:8562`
 - Production design: `docs/superpowers/specs/2026-07-15-behaviortree-blackboard-asset-document-production-design.md`
 - Surface inventory: `docs/superpowers/specs/asset-document-surface-inventory/2026-07-15-behaviortree-blackboard.md`
@@ -159,7 +161,9 @@ All are under:
 
 - All corrected BT/Blackboard Goal gates pass.
 - The real save → restart → fresh reload → extract/diff path passes on 8562 with a changed listener PID.
+- The feature branch was integrated into `codex/asset-document-structured-capabilities` by ff-only at `989701aa42e537216aebf8e88265c956ce67a753`; the baseline and feature trees were identical at that integration point.
+- Post-integration baseline verification passed for MCP `39/39`, Python harness `8/8`, `git diff --check`, and clean-worktree inspection. The scoped UE and 8562 evidence remains runtime-exact because the commits after implementation checkpoint `aa3637ba3ec795c7919f891153891bf163d18de9` change only these delivery documents.
 - `git diff --check` passes.
 - ABP remains explicitly out of scope and is handled by another branch.
 - Implementation checkpoint: `aa3637ba3ec795c7919f891153891bf163d18de9`.
-- The documentation closure commit and final clean-worktree HEAD are recorded in the delivery handoff.
+- The baseline integration documentation commit and final clean-worktree HEAD are recorded in the delivery handoff.
