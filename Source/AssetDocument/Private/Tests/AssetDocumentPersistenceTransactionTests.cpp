@@ -682,19 +682,31 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 		UPackage::PackageSavedWithContextEvent.Remove(SavedHandle);
 	};
 
+	bool bReachedTamperPhase = false;
 	bool bTamperedCanonicalSegment = false;
+	FString TamperError;
 	FPersistenceTestScopedHookReset Hooks;
 	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
 		TamperPhase,
 		[&]()
 		{
+			bReachedTamperPhase = true;
 			TArray64<uint8> TamperedBytes;
 			if (!PersistenceTestLoadBytes(PackagePath, TamperedBytes) || TamperedBytes.IsEmpty())
 			{
+				TamperError = FString::Printf(
+					TEXT("Failed to read installed segment '%s' for tamper"),
+					*PackagePath);
 				return;
 			}
 			TamperedBytes.Last() ^= 0x5a;
-			bTamperedCanonicalSegment = FFileHelper::SaveArrayToFile(TamperedBytes, *PackagePath);
+			// An in-place writer is unavailable once the canonical linker holds
+			// the editor's shared file lock. Atomic pathname replacement also
+			// models the same external tamper consistently at earlier phases.
+			bTamperedCanonicalSegment = FAssetDocumentAtomicFile::WriteBytesAtomically(
+				PackagePath,
+				TamperedBytes,
+				TamperError);
 		});
 	FAssetDocumentApplyRequest Request;
 	Request.Document = Update;
@@ -704,8 +716,15 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 	const FAssetDocumentResult Failure = Service.Apply(Request);
 	Test.TestTrue(
 		FString::Printf(
-			TEXT("%s executes real canonical tamper; %s"),
+			TEXT("%s reaches requested persistence phase; %s"),
 			AssertionPrefix,
+			*PersistenceTestDescribeResult(Failure)),
+		bReachedTamperPhase);
+	Test.TestTrue(
+		FString::Printf(
+			TEXT("%s executes real canonical tamper; tamper_error='%s'; %s"),
+			AssertionPrefix,
+			*TamperError,
 			*PersistenceTestDescribeResult(Failure)),
 		bTamperedCanonicalSegment);
 	Test.TestFalse(
