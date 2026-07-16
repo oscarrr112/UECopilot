@@ -2,8 +2,10 @@
 
 #include "AssetDocumentAtomicFile.h"
 #include "AssetDocumentCanonicalJson.h"
+#include "AssetDocumentEditorSync.h"
 #include "AssetDocumentService.h"
 #include "AssetDocumentServiceTestHooks.h"
+#include "AssetDocumentSidecar.h"
 #include "TestDataAsset.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -14,6 +16,7 @@
 #include "BehaviorTree/BTTaskNode.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "HAL/FileManager.h"
 #include "IO/IoHash.h"
 #include "Misc/AutomationTest.h"
@@ -21,8 +24,6 @@
 #include "Misc/Guid.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
-#include "ObjectTools.h"
-#include "EdGraph/EdGraph.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "UObject/Linker.h"
@@ -55,6 +56,22 @@ FString PersistenceTestToPackagePath(const FString& Target)
 void PersistenceTestCleanup(const FString& Target, const FString& SidecarPath = FString())
 {
 	const FString PackagePath = PersistenceTestToPackagePath(Target);
+	const FString PackageBasePath = PackagePath.LeftChop(
+		FCString::Strlen(TEXT(".uasset")));
+	const TArray<FString> PackageSegmentPaths{
+		PackagePath,
+		PackageBasePath + TEXT(".uexp"),
+		PackageBasePath + TEXT(".ubulk"),
+		PackageBasePath + TEXT(".uptnl"),
+		PackageBasePath + TEXT(".m.ubulk"),
+		PackageBasePath + TEXT(".upayload")};
+	auto DeletePackageSegments = [&PackageSegmentPaths]()
+	{
+		for (const FString& SegmentPath : PackageSegmentPaths)
+		{
+			IFileManager::Get().Delete(*SegmentPath, false, true);
+		}
+	};
 	UObject* Asset = FindObject<UObject>(nullptr, *PersistenceTestToObjectPath(Target));
 	if (!Asset && IFileManager::Get().FileExists(*PackagePath))
 	{
@@ -62,17 +79,31 @@ void PersistenceTestCleanup(const FString& Target, const FString& SidecarPath = 
 	}
 	if (Asset)
 	{
-		ResetLoaders(Asset->GetOutermost());
-		TArray<UObject*> Objects{Asset};
-		ObjectTools::DeleteObjectsUnchecked(Objects);
+		UPackage* Package = Asset->GetOutermost();
+		ResetLoaders(Package);
+		if (!SidecarPath.IsEmpty())
+		{
+			FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarPath);
+			IFileManager::Get().Delete(*SidecarPath, false, true);
+		}
+		DeletePackageSegments();
+		// Test teardown must not call AssetDeleted while a queued directory
+		// modification for the just-saved package can still be delivered. Remove
+		// the whole package from the registry and retire the live asset directly;
+		// this avoids CachedEmptyPackages and its false external-modification warning.
+		FAssetRegistryModule::GetRegistry().PackageDeleted(Package);
+		Asset->ClearFlags(RF_Public | RF_Standalone);
+		Asset->MarkAsGarbage();
+		Package->SetDirtyFlag(false);
 	}
-	IFileManager::Get().Delete(*PackagePath, false, true);
-	// Synchronize the explicit delete before the directory watcher can replay a
-	// queued save/replace notification against AssetDeleted's empty-package mark.
-	FAssetRegistryModule::GetRegistry().ScanModifiedAssetFiles({PackagePath});
-	if (!SidecarPath.IsEmpty())
+	else
 	{
-		IFileManager::Get().Delete(*SidecarPath, false, true);
+		DeletePackageSegments();
+		if (!SidecarPath.IsEmpty())
+		{
+			FAssetDocumentEditorSync::FScopedSidecarWrite Guard(SidecarPath);
+			IFileManager::Get().Delete(*SidecarPath, false, true);
+		}
 	}
 }
 
@@ -451,6 +482,119 @@ bool PersistenceTestWriteDocument(
 		&& FFileHelper::SaveStringToFile(Contents, *Path);
 }
 
+bool PersistenceTestWriteDocumentControlled(
+	const FString& Path,
+	const TSharedPtr<FJsonObject>& Document)
+{
+	FAssetDocumentEditorSync::FScopedSidecarWrite Guard(Path);
+	return PersistenceTestWriteDocument(Path, Document);
+}
+
+bool PersistenceTestEstablishSynchronizedBlackboardSidecar(
+	FAutomationTestBase& Test,
+	FAssetDocumentService& Service,
+	const FString& Target,
+	const FString& SidecarPath,
+	int32 DefaultValue,
+	TSharedPtr<FJsonObject>& OutSynchronizedDocument)
+{
+	OutSynchronizedDocument.Reset();
+	TSharedPtr<FJsonObject> BaselineDocument = PersistenceTestMakeBlackboardDocument(
+		Test,
+		Service,
+		Target,
+		TEXT("Update"),
+		DefaultValue);
+	if (!BaselineDocument.IsValid())
+	{
+		Test.AddError(TEXT("Synchronized sidecar baseline document is invalid"));
+		return false;
+	}
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(SidecarPath), true);
+	if (!PersistenceTestWriteDocumentControlled(SidecarPath, BaselineDocument))
+	{
+		Test.AddError(FString::Printf(
+			TEXT("Failed to write synchronized sidecar baseline '%s'"),
+			*SidecarPath));
+		return false;
+	}
+
+	FAssetDocumentApplyFileRequest ApplyFileRequest;
+	ApplyFileRequest.FilePath = SidecarPath;
+	ApplyFileRequest.bSaveAsset = true;
+	ApplyFileRequest.bAllowSidecarRewrite = true;
+	const FAssetDocumentResult BaselineResult = Service.ApplyFile(ApplyFileRequest);
+	if (!BaselineResult.IsSuccess() || !BaselineResult.bWroteSidecar)
+	{
+		Test.AddError(FString::Printf(
+			TEXT("Failed to establish synchronized sidecar baseline: %s"),
+			*PersistenceTestDescribeResult(BaselineResult)));
+		return false;
+	}
+
+	FString LoadError;
+	if (!FAssetDocumentSidecar::LoadJsonFile(
+			SidecarPath,
+			OutSynchronizedDocument,
+			LoadError)
+		|| !OutSynchronizedDocument.IsValid())
+	{
+		Test.AddError(FString::Printf(
+			TEXT("Failed to reload synchronized sidecar baseline '%s': %s"),
+			*SidecarPath,
+			*LoadError));
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* Meta = nullptr;
+	const TSharedPtr<FJsonObject>* Sync = nullptr;
+	if (!OutSynchronizedDocument->TryGetObjectField(TEXT("_meta"), Meta)
+		|| !Meta
+		|| !Meta->IsValid()
+		|| !(*Meta)->TryGetObjectField(TEXT("sync"), Sync)
+		|| !Sync
+		|| !Sync->IsValid())
+	{
+		Test.AddError(TEXT("Synchronized sidecar baseline is missing _meta.sync"));
+		return false;
+	}
+	return true;
+}
+
+bool PersistenceTestSetFirstBlackboardKeyDefault(
+	const TSharedPtr<FJsonObject>& Document,
+	int32 DefaultValue)
+{
+	if (!Document.IsValid())
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject>* Body = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* Keys = nullptr;
+	if (!Document->TryGetObjectField(TEXT("Body"), Body)
+		|| !Body
+		|| !Body->IsValid()
+		|| !(*Body)->TryGetArrayField(TEXT("Keys"), Keys)
+		|| !Keys
+		|| Keys->Num() == 0)
+	{
+		return false;
+	}
+	const TSharedPtr<FJsonObject> Key = (*Keys)[0].IsValid()
+		? (*Keys)[0]->AsObject()
+		: nullptr;
+	const TSharedPtr<FJsonObject>* Properties = nullptr;
+	if (!Key.IsValid()
+		|| !Key->TryGetObjectField(TEXT("KeyTypeProperties"), Properties)
+		|| !Properties
+		|| !Properties->IsValid())
+	{
+		return false;
+	}
+	(*Properties)->SetNumberField(TEXT("DefaultValue"), DefaultValue);
+	Document->SetStringField(TEXT("Action"), TEXT("Update"));
+	return true;
+}
+
 bool PersistenceTestRunInstalledSegmentTamperCase(
 	FAutomationTestBase& Test,
 	EAssetDocumentServicePersistencePhase TamperPhase,
@@ -482,6 +626,18 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 		return false;
 	}
 
+	TSharedPtr<FJsonObject> Update;
+	if (!PersistenceTestEstablishSynchronizedBlackboardSidecar(
+			Test,
+			Service,
+			Target,
+			SidecarPath,
+			7,
+			Update)
+		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 29))
+	{
+		return false;
+	}
 	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(
 		nullptr,
 		*PersistenceTestToObjectPath(Target));
@@ -497,15 +653,9 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 	Test.TestTrue(
 		FString::Printf(TEXT("%s reads baseline package bytes"), AssertionPrefix),
 		PersistenceTestLoadBytes(PackagePath, PackageBytesBefore));
-	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(
-		Test,
-		Service,
-		Target,
-		TEXT("Update"),
-		29);
 	Test.TestTrue(
 		FString::Printf(TEXT("%s writes sidecar fixture"), AssertionPrefix),
-		PersistenceTestWriteDocument(SidecarPath, Update));
+		PersistenceTestWriteDocumentControlled(SidecarPath, Update));
 	TArray64<uint8> SidecarBytesBefore;
 	Test.TestTrue(
 		FString::Printf(TEXT("%s reads baseline sidecar bytes"), AssertionPrefix),
@@ -550,7 +700,10 @@ bool PersistenceTestRunInstalledSegmentTamperCase(
 	Request.bSaveAsset = true;
 	const FAssetDocumentResult Failure = Service.Apply(Request);
 	Test.TestTrue(
-		FString::Printf(TEXT("%s executes real canonical tamper"), AssertionPrefix),
+		FString::Printf(
+			TEXT("%s executes real canonical tamper; %s"),
+			AssertionPrefix,
+			*PersistenceTestDescribeResult(Failure)),
 		bTamperedCanonicalSegment);
 	Test.TestFalse(
 		FString::Printf(TEXT("%s rejects Apply"), AssertionPrefix),
@@ -795,6 +948,92 @@ bool FAssetDocumentPersistencePackageAtomicOuterRollbackTest::RunTest(const FStr
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistencePackageRollbackFailurePoisonTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.PackageRollbackFailurePoisonsPackage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistencePackageRollbackFailurePoisonTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_PackageRollbackPoison"));
+	PersistenceTestCleanup(Target);
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target);
+	};
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Create"),
+		5);
+	if (!PersistenceTestRequireApplySuccess(
+			*this,
+			TEXT("Creates package rollback poison baseline"),
+			Service,
+			Initial))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Update"),
+		41);
+
+	bool bReachedAfterPackageInstall = false;
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
+		[&]()
+		{
+			bReachedAfterPackageInstall = true;
+			// No atomic operation occurs between the primary phase failure and
+			// RollbackInstalledPackage, so this injection targets the rollback write.
+			FAssetDocumentAtomicFile::FailNextWriteAtForTest(
+				EAssetDocumentAtomicFileFailurePoint::Open);
+		});
+	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
+		PersistenceTestMakeFailure(
+			TEXT("ForcedPackageRollbackPoisonPrimaryFailure"),
+			TEXT("forced primary failure before package rollback injection")));
+	const FAssetDocumentResult Failure = PersistenceTestApply(Service, Update);
+	TestTrue(
+		FString::Printf(
+			TEXT("Package rollback poison reaches AfterPackageInstall; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		bReachedAfterPackageInstall);
+	TestFalse(TEXT("Package rollback failure rejects Apply"), Failure.IsSuccess());
+	TestTrue(
+		FString::Printf(
+			TEXT("Package rollback failure is reported; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentPersistenceRollbackFailed")));
+	TestTrue(
+		FString::Printf(
+			TEXT("Package rollback failure poisons the package; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentPackagePoisonedRestartRequired")));
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.Document = Update;
+	const FAssetDocumentResult PoisonedValidate = Service.Validate(ValidateRequest);
+	TestFalse(TEXT("Package rollback poison rejects Validate"), PoisonedValidate.IsSuccess());
+	TestTrue(
+		FString::Printf(
+			TEXT("Package rollback poison Validate requires restart; %s"),
+			*PersistenceTestDescribeResult(PoisonedValidate)),
+		PersistenceTestHasDiagnostic(
+			PoisonedValidate,
+			TEXT("AssetDocumentPackagePoisonedRestartRequired")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentPersistenceSnapshotReadinessTest,
 	"AssetFactory.AssetDocument.Persistence.Blackboard.SnapshotFailureFailsBeforeLiveMutation",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -903,6 +1142,8 @@ bool FAssetDocumentPersistenceStaleSiblingTest::RunTest(const FString&)
 	};
 	const TArray<FStaleSiblingFixture> StaleSiblings{
 		{CanonicalBasePath + TEXT(".uexp"), {0xe1, 0xe2, 0xe3}},
+		{CanonicalBasePath + TEXT(".ubulk"), {0xc1, 0xc2, 0xc3, 0xc4}},
+		{CanonicalBasePath + TEXT(".uptnl"), {0xd1, 0xd2, 0xd3, 0xd4, 0xd5}},
 		{CanonicalBasePath + TEXT(".m.ubulk"), {0xb1, 0xb2, 0xb3, 0xb4}},
 		{CanonicalBasePath + TEXT(".upayload"), {0xa1, 0xa2, 0xa3, 0xa4, 0xa5}}};
 	PersistenceTestCleanup(Target);
@@ -1112,6 +1353,16 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 	{
 		return false;
 	}
+	if (!PersistenceTestEstablishSynchronizedBlackboardSidecar(
+			*this,
+			Service,
+			Target,
+			SidecarPath,
+			7,
+			Document))
+	{
+		return false;
+	}
 
 	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(
 		nullptr,
@@ -1150,7 +1401,9 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 	FString SidecarContents;
 	TSharedRef<TJsonWriter<>> SidecarWriter = TJsonWriterFactory<>::Create(&SidecarContents);
 	TestTrue(TEXT("Serializes metadata pre-commit sidecar"), FJsonSerializer::Serialize(Document.ToSharedRef(), SidecarWriter));
-	TestTrue(TEXT("Writes metadata pre-commit sidecar"), FFileHelper::SaveStringToFile(SidecarContents, *SidecarPath));
+	TestTrue(
+		TEXT("Writes metadata pre-commit sidecar"),
+		PersistenceTestWriteDocumentControlled(SidecarPath, Document));
 	TArray64<uint8> SidecarBytesBefore;
 	TestTrue(
 		TEXT("Reads metadata pre-commit sidecar bytes"),
@@ -1200,7 +1453,11 @@ bool FAssetDocumentPersistenceMetadataPreCommitRollbackTest::RunTest(const FStri
 	UpdateRequest.bSaveAsset = true;
 	const FAssetDocumentResult Failure = Service.Apply(UpdateRequest);
 	TestFalse(TEXT("Metadata pre-commit failure rejects update"), Failure.IsSuccess());
-	TestTrue(TEXT("Observes metadata after the new canonical bind"), bObservedMetadataAfterNewBind);
+	TestTrue(
+		FString::Printf(
+			TEXT("Observes metadata after the new canonical bind; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		bObservedMetadataAfterNewBind);
 	TestTrue(
 		TEXT("New canonical bind changes private package file size"),
 		MetadataAfterNewBind.FileSize != MetadataBefore.FileSize);
@@ -1272,6 +1529,21 @@ bool FAssetDocumentPersistencePostVerifySegmentTamperTest::RunTest(const FString
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistencePostBindSegmentTamperTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.PostBindSegmentTamperRollsBack",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistencePostBindSegmentTamperTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	return PersistenceTestRunInstalledSegmentTamperCase(
+		*this,
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		TEXT("BB_PostBindTamper"),
+		TEXT("Post-bind segment tamper"));
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest,
 	"AssetFactory.AssetDocument.Persistence.Blackboard.MetadataRecoveryDoubleFailurePoisonsPackage",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -1304,6 +1576,18 @@ bool FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest::RunTest(const F
 	{
 		return false;
 	}
+	TSharedPtr<FJsonObject> Update;
+	if (!PersistenceTestEstablishSynchronizedBlackboardSidecar(
+			*this,
+			Service,
+			Target,
+			SidecarPath,
+			11,
+			Update)
+		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 47))
+	{
+		return false;
+	}
 
 	UBlackboardData* BlackboardBefore = FindObject<UBlackboardData>(nullptr, *ObjectPath);
 	UBlackboardKeyType* KeyTypeBefore = PersistenceTestFindKeyType(BlackboardBefore);
@@ -1318,15 +1602,9 @@ bool FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest::RunTest(const F
 	TestTrue(
 		TEXT("Reads metadata double-failure package baseline"),
 		PersistenceTestLoadBytes(PackagePath, PackageBytesBefore));
-	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(
-		*this,
-		Service,
-		Target,
-		TEXT("Update"),
-		47);
 	TestTrue(
 		TEXT("Writes metadata double-failure sidecar fixture"),
-		PersistenceTestWriteDocument(SidecarPath, Update));
+		PersistenceTestWriteDocumentControlled(SidecarPath, Update));
 	TArray64<uint8> SidecarBytesBefore;
 	TestTrue(
 		TEXT("Reads metadata double-failure sidecar baseline"),
@@ -1368,7 +1646,9 @@ bool FAssetDocumentPersistenceMetadataRecoveryDoubleFailureTest::RunTest(const F
 	const FAssetDocumentResult Failure = Service.Apply(UpdateRequest);
 	TestFalse(TEXT("Metadata recovery double failure rejects Apply"), Failure.IsSuccess());
 	TestTrue(
-		TEXT("Metadata recovery double failure reports restart-required poison"),
+		FString::Printf(
+			TEXT("Metadata recovery double failure reports restart-required poison; %s"),
+			*PersistenceTestDescribeResult(Failure)),
 		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentPackagePoisonedRestartRequired")));
 	TestEqual(TEXT("Metadata recovery double failure emits no canonical event"), CanonicalEventCount, 0);
 
@@ -1596,6 +1876,19 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 		PersistenceTestCleanup(Target, SidecarPath);
 		return false;
 	}
+	TSharedPtr<FJsonObject> Update;
+	if (!PersistenceTestEstablishSynchronizedBlackboardSidecar(
+			*this,
+			Service,
+			Target,
+			SidecarPath,
+			3,
+			Update)
+		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 17))
+	{
+		PersistenceTestCleanup(Target, SidecarPath);
+		return false;
+	}
 
 	TArray64<uint8> PackageBefore;
 	TestTrue(TEXT("Reads Blackboard baseline package bytes"), PersistenceTestLoadBytes(PersistenceTestToPackagePath(Target), PackageBefore));
@@ -1611,19 +1904,22 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 		PersistenceTestCleanup(Target, SidecarPath);
 		return false;
 	}
-	TSharedPtr<FJsonObject> Update = PersistenceTestMakeBlackboardDocument(*this, Service, Target, TEXT("Update"), 17);
 	FString SidecarContents;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&SidecarContents);
 	TestTrue(TEXT("Serializes Blackboard sidecar fixture"), FJsonSerializer::Serialize(Update.ToSharedRef(), Writer));
-	TestTrue(TEXT("Writes Blackboard sidecar fixture"), FFileHelper::SaveStringToFile(SidecarContents, *SidecarPath));
+	TestTrue(
+		TEXT("Writes Blackboard sidecar fixture"),
+		PersistenceTestWriteDocumentControlled(SidecarPath, Update));
 	TArray64<uint8> SidecarBefore;
 	TestTrue(TEXT("Reads Blackboard sidecar fixture bytes"), PersistenceTestLoadBytes(SidecarPath, SidecarBefore));
 
+	bool bReachedAfterPackageInstall = false;
 	FPersistenceTestScopedHookReset Hooks;
 	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
 		EAssetDocumentServicePersistencePhase::AfterPackageInstall,
-		[]()
+		[&]()
 		{
+			bReachedAfterPackageInstall = true;
 			FAssetDocumentAtomicFile::FailNextWriteAtForTest(EAssetDocumentAtomicFileFailurePoint::DirectoryFlush);
 			FAssetDocumentAtomicFile::ForceNextCommittedRenameRollbackFailureForTest();
 		});
@@ -1632,7 +1928,22 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 	Request.bSaveAsset = true;
 	Request.bAllowSidecarRewrite = true;
 	const FAssetDocumentResult Result = Service.ApplyFile(Request);
+	TestTrue(
+		FString::Printf(
+			TEXT("Atomic sidecar failure reaches AfterPackageInstall; %s"),
+			*PersistenceTestDescribeResult(Result)),
+		bReachedAfterPackageInstall);
 	TestFalse(TEXT("Atomic sidecar failure rejects ApplyFile"), Result.IsSuccess());
+	TestTrue(
+		FString::Printf(
+			TEXT("Atomic sidecar failure reports the injected AtomicFile stage; %s"),
+			*PersistenceTestDescribeResult(Result)),
+		Result.Message.Contains(TEXT("AtomicFile.DirectoryFlush"))
+			|| Result.Diagnostics.ContainsByPredicate(
+				[](const FAssetDocumentDiagnostic& Diagnostic)
+				{
+					return Diagnostic.Message.Contains(TEXT("AtomicFile.DirectoryFlush"));
+				}));
 	TestFalse(
 		TEXT("Atomic sidecar failure is not reported as a skipped success"),
 		Result.Payload.IsValid() && Result.Payload->HasField(TEXT("sidecar_sync_update_skipped")));
@@ -1663,6 +1974,107 @@ bool FAssetDocumentPersistenceBlackboardSidecarFailureTest::RunTest(const FStrin
 		}
 	}
 	PersistenceTestCleanup(Target, SidecarPath);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentPersistenceSidecarRollbackFailurePoisonTest,
+	"AssetFactory.AssetDocument.Persistence.Blackboard.SidecarRollbackFailurePoisonsPackage",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentPersistenceSidecarRollbackFailurePoisonTest::RunTest(const FString&)
+{
+	using namespace AssetDocumentPersistenceTransactionTests;
+	const FString Target = PersistenceTestMakeTarget(TEXT("BB_SidecarRollbackPoison"));
+	const FString SidecarPath = FPackageName::LongPackageNameToFilename(
+		Target,
+		TEXT(".assetdoc.json"));
+	PersistenceTestCleanup(Target, SidecarPath);
+	ON_SCOPE_EXIT
+	{
+		PersistenceTestCleanup(Target, SidecarPath);
+	};
+
+	FAssetDocumentService Service;
+	TSharedPtr<FJsonObject> Initial = PersistenceTestMakeBlackboardDocument(
+		*this,
+		Service,
+		Target,
+		TEXT("Create"),
+		13);
+	if (!PersistenceTestRequireApplySuccess(
+			*this,
+			TEXT("Creates sidecar rollback poison baseline"),
+			Service,
+			Initial))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Update;
+	if (!PersistenceTestEstablishSynchronizedBlackboardSidecar(
+			*this,
+			Service,
+			Target,
+			SidecarPath,
+			13,
+			Update)
+		|| !PersistenceTestSetFirstBlackboardKeyDefault(Update, 43)
+		|| !PersistenceTestWriteDocumentControlled(SidecarPath, Update))
+	{
+		return false;
+	}
+
+	bool bReachedMetadataBind = false;
+	FPersistenceTestScopedHookReset Hooks;
+	FAssetDocumentServiceTestHooks::RunNextPersistenceCallbackAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		[&]()
+		{
+			bReachedMetadataBind = true;
+			// The forced metadata failure returns directly into FailPersistence;
+			// its first atomic operation is restoration of the installed sidecar.
+			FAssetDocumentAtomicFile::FailNextWriteAtForTest(
+				EAssetDocumentAtomicFileFailurePoint::Open);
+		});
+	FAssetDocumentServiceTestHooks::FailNextPersistenceAtPhase(
+		EAssetDocumentServicePersistencePhase::AfterCanonicalMetadataBindBeforeCommit,
+		PersistenceTestMakeFailure(
+			TEXT("ForcedSidecarRollbackPoisonPrimaryFailure"),
+			TEXT("forced primary failure before sidecar rollback injection")));
+	FAssetDocumentApplyRequest Request;
+	Request.Document = Update;
+	Request.SourceDocumentPath = SidecarPath;
+	Request.bWriteSidecar = true;
+	Request.bSaveAsset = true;
+	const FAssetDocumentResult Failure = Service.Apply(Request);
+	TestTrue(
+		FString::Printf(
+			TEXT("Sidecar rollback poison reaches metadata bind; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		bReachedMetadataBind);
+	TestFalse(TEXT("Sidecar rollback failure rejects Apply"), Failure.IsSuccess());
+	TestTrue(
+		FString::Printf(
+			TEXT("Sidecar rollback failure is reported; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentSidecarRollbackFailed")));
+	TestTrue(
+		FString::Printf(
+			TEXT("Sidecar rollback failure poisons the package; %s"),
+			*PersistenceTestDescribeResult(Failure)),
+		PersistenceTestHasDiagnostic(Failure, TEXT("AssetDocumentPackagePoisonedRestartRequired")));
+
+	FAssetDocumentValidateRequest ValidateRequest;
+	ValidateRequest.Document = Update;
+	const FAssetDocumentResult PoisonedValidate = Service.Validate(ValidateRequest);
+	TestFalse(TEXT("Sidecar rollback poison rejects Validate"), PoisonedValidate.IsSuccess());
+	TestTrue(
+		FString::Printf(
+			TEXT("Sidecar rollback poison Validate requires restart; %s"),
+			*PersistenceTestDescribeResult(PoisonedValidate)),
+		PersistenceTestHasDiagnostic(
+			PoisonedValidate,
+			TEXT("AssetDocumentPackagePoisonedRestartRequired")));
 	return true;
 }
 

@@ -2170,48 +2170,65 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		&SidecarOriginalBytes,
 		&NormalizedSourceDocumentPath]()
 	{
+		bool bRollbackSucceeded = true;
 		if (bSidecarInstalled)
 		{
 			FString SidecarRollbackError;
 			bool bSidecarRestored = true;
-			if (bSidecarOriginalExisted)
 			{
-				bSidecarRestored = FAssetDocumentAtomicFile::WriteBytesAtomically(
-					NormalizedSourceDocumentPath,
-					SidecarOriginalBytes,
-					SidecarRollbackError);
-			}
-			else if (IFileManager::Get().FileExists(*NormalizedSourceDocumentPath))
-			{
-				bSidecarRestored = IFileManager::Get().Delete(*NormalizedSourceDocumentPath, false, true);
-				if (bSidecarRestored)
+				FAssetDocumentEditorSync::FScopedSidecarWrite Guard(
+					NormalizedSourceDocumentPath);
+				if (bSidecarOriginalExisted)
 				{
-					bSidecarRestored = FAssetDocumentAtomicFile::FlushParentDirectory(
+					bSidecarRestored = FAssetDocumentAtomicFile::WriteBytesAtomically(
 						NormalizedSourceDocumentPath,
+						SidecarOriginalBytes,
 						SidecarRollbackError);
 				}
-				if (!bSidecarRestored && SidecarRollbackError.IsEmpty())
+				else if (IFileManager::Get().FileExists(*NormalizedSourceDocumentPath))
 				{
-					SidecarRollbackError = FString::Printf(
-						TEXT("Failed to remove newly written sidecar '%s'"),
-						*NormalizedSourceDocumentPath);
+					bSidecarRestored = IFileManager::Get().Delete(
+						*NormalizedSourceDocumentPath,
+						false,
+						true);
+					if (bSidecarRestored)
+					{
+						bSidecarRestored = FAssetDocumentAtomicFile::FlushParentDirectory(
+							NormalizedSourceDocumentPath,
+							SidecarRollbackError);
+					}
+					if (!bSidecarRestored && SidecarRollbackError.IsEmpty())
+					{
+						SidecarRollbackError = FString::Printf(
+							TEXT("Failed to remove newly written sidecar '%s'"),
+							*NormalizedSourceDocumentPath);
+					}
 				}
 			}
 			if (!bSidecarRestored)
 			{
+				bRollbackSucceeded = false;
 				AssetDocumentPersistenceAddDiagnostic(
 					Result.Diagnostics,
 					TEXT("AssetDocumentSidecarRollbackFailed"),
-					SidecarRollbackError);
+					SidecarRollbackError.IsEmpty()
+						? TEXT("Failed to restore the AssetDocument sidecar")
+						: SidecarRollbackError);
 			}
 			bSidecarInstalled = false;
 		}
 		if (!PersistenceTransaction || !PersistenceTransaction->HasInstalledFiles())
 		{
-			return;
+			return bRollbackSucceeded;
 		}
 		TArray<FString> RollbackErrors;
-		PersistenceTransaction->RollbackInstalledPackage(RollbackErrors);
+		const bool bPackageRollbackSucceeded =
+			PersistenceTransaction->RollbackInstalledPackage(RollbackErrors);
+		bRollbackSucceeded = bPackageRollbackSucceeded && bRollbackSucceeded;
+		if (!bPackageRollbackSucceeded && RollbackErrors.Num() == 0)
+		{
+			RollbackErrors.Add(TEXT("Failed to restore canonical package outputs"));
+		}
 		for (const FString& RollbackError : RollbackErrors)
 		{
 			AssetDocumentPersistenceAddDiagnostic(
@@ -2219,6 +2236,7 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 				TEXT("AssetDocumentPersistenceRollbackFailed"),
 				RollbackError);
 		}
+		return bRollbackSucceeded;
 	};
 	auto FailPersistence = [
 		&Result,
@@ -2250,9 +2268,17 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 		{
 			AssetDocumentPersistenceAddDiagnostic(Result.Diagnostics, Code, Message);
 		}
-		RollbackPersistence();
+		const bool bDiskRollbackSucceeded = RollbackPersistence();
 		RollbackAssetDocumentApply(Transaction, Result);
-		if (bMetadataRefreshAttempted
+		bool bPoisonPackage = !bDiskRollbackSucceeded;
+		FString PoisonReason = bDiskRollbackSucceeded
+			? FString()
+			: TEXT("canonical package or sidecar rollback failed; disk state is untrusted");
+		// Metadata recovery may bind a linker only after exact disk rollback
+		// succeeds. If disk restoration failed, skip the untrusted bytes and
+		// detach/poison the live package below.
+		if (bDiskRollbackSucceeded
+			&& bMetadataRefreshAttempted
 			&& LifecyclePreflight.Asset
 			&& PersistenceTransaction
 			&& LivePackageGuard.IsValid())
@@ -2281,25 +2307,39 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 					Result.Diagnostics,
 					TEXT("AssetDocumentMetadataRollbackFailed"),
 					MetadataRollbackError);
-
-				// The old canonical bytes are restored, but a failed recovery bind means
-				// this live package can no longer be trusted to expose those bytes.
-				// Detach any partial linker and fail closed for the rest of the process.
-				ResetLoaders(LivePackageGuard.Get());
-				const FString PoisonedPackageName = LivePackageGuard->GetName();
-				AssetDocumentMarkPackagePoisoned(PoisonedPackageName);
-				const FString RestartMessage = FString::Printf(
-					TEXT("Package '%s' is poisoned for this process because canonical metadata recovery failed after rollback: %s. Restart the Unreal Editor before any further AssetDocument access to this package."),
-					*PoisonedPackageName,
-					MetadataRollbackError.IsEmpty() ? TEXT("unknown recovery failure") : *MetadataRollbackError);
-				AssetDocumentPersistenceAddDiagnostic(
-					Result.Diagnostics,
-					TEXT("AssetDocumentPackagePoisonedRestartRequired"),
-					RestartMessage,
-					TEXT("/Target"));
-				Result.Message = RestartMessage;
-				UE_LOG(LogAssetDocument, Display, TEXT("%s"), *RestartMessage);
+				bPoisonPackage = true;
+				PoisonReason = FString::Printf(
+					TEXT("canonical metadata recovery failed after rollback: %s"),
+					MetadataRollbackError.IsEmpty()
+						? TEXT("unknown recovery failure")
+						: *MetadataRollbackError);
 			}
+		}
+		if (bPoisonPackage)
+		{
+			// Any failed disk rollback leaves canonical bytes untrustworthy, even
+			// if metadata was never rebound or could otherwise be refreshed.
+			// Likewise, a failed old-metadata recovery makes the live package
+			// untrustworthy after exact disk bytes were restored.
+			if (LivePackageGuard.IsValid())
+			{
+				ResetLoaders(LivePackageGuard.Get());
+			}
+			const FString PoisonedPackageName = LivePackageGuard.IsValid()
+				? LivePackageGuard->GetName()
+				: Target;
+			AssetDocumentMarkPackagePoisoned(PoisonedPackageName);
+			const FString RestartMessage = FString::Printf(
+				TEXT("Package '%s' is poisoned for this process because %s. Restart the Unreal Editor before any further AssetDocument access to this package."),
+				*PoisonedPackageName,
+				PoisonReason.IsEmpty() ? TEXT("persistence recovery failed") : *PoisonReason);
+			AssetDocumentPersistenceAddDiagnostic(
+				Result.Diagnostics,
+				TEXT("AssetDocumentPackagePoisonedRestartRequired"),
+				RestartMessage,
+				TEXT("/Target"));
+			Result.Message = RestartMessage;
+			UE_LOG(LogAssetDocument, Display, TEXT("%s"), *RestartMessage);
 		}
 		return Result;
 	};
@@ -2515,6 +2555,18 @@ FAssetDocumentResult FAssetDocumentService::Apply(const FAssetDocumentApplyReque
 					? TEXT("Failed to refresh canonical package metadata")
 					: MetadataError,
 				TEXT("AssetDocumentCanonicalMetadataRefreshFailed"));
+		}
+		// Metadata binding can execute engine reads and test callbacks after the
+		// pre-bind check. Close that window before clearing dirty state or commit.
+		InstalledVerificationError.Reset();
+		if (!PersistenceTransaction->VerifyInstalledPackageFiles(
+				InstalledVerificationError))
+		{
+			return FailPersistence(
+				InstalledVerificationError.IsEmpty()
+					? TEXT("Failed to verify installed package files immediately after metadata binding")
+					: InstalledVerificationError,
+				TEXT("AssetDocumentInstalledPackageVerificationFailed"));
 		}
 		LifecycleResult.Asset->GetOutermost()->SetDirtyFlag(false);
 	}
