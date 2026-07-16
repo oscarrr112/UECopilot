@@ -161,4 +161,5 @@ All are under:
 - The real save → restart → fresh reload → extract/diff path passes on 8562 with a changed listener PID.
 - `git diff --check` passes.
 - ABP remains explicitly out of scope and is handled by another branch.
-- Final commit SHA and clean-worktree state are recorded only after the reviewed changes are committed.
+- Implementation checkpoint: `aa3637ba3ec795c7919f891153891bf163d18de9`.
+- The documentation closure commit and final clean-worktree HEAD are recorded in the delivery handoff.

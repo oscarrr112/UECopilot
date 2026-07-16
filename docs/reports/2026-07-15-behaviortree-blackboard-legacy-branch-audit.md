@@ -109,4 +109,4 @@
 - 8562 pre-restart PID `90644` 与 post-restart PID `97092` 均通过；保存后的资产在新进程中 fresh extract/diff 成功。
 - 完整 `AssetFactory.AssetDocument` 聚合套件不是本 Goal 门槛。ABP/AnimGraph/StateMachines 是另一分支处理的已知未完成功能，不阻塞本审计结论。
 
-最终 scoped checkpoint SHA 与 clean-worktree 状态在提交后记录于 production plan 和交付汇报。
+最终 implementation checkpoint 为 `aa3637ba3ec795c7919f891153891bf163d18de9`；documentation closure HEAD 与 clean-worktree 状态记录于交付汇报。

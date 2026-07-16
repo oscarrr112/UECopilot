@@ -119,8 +119,9 @@
 - [x] 停止 pre-restart PID `90644`，以新 PID `97092` 重启并通过 fresh extract/diff；最后停止 Editor 并释放 8562。
 - [x] 更新 plan、legacy audit、benchmark/report，移除旧聚合门槛和 stale 状态。
 - [x] 完成独立最终 code review；修复 schema traversal，并补齐 unresolved、non-BT、CDO extraction failure 与 semantic-order 覆盖。
-- [ ] 运行 `git diff --check`、review range 和 clean-worktree 检查。
-- [ ] 提交全部 scoped 变更并记录最终 SHA。
+- [x] 运行 `git diff --check`、review range 和 clean-worktree 检查；最终 reviewer 结论为 Critical `0`、Important `0`、Ready to merge。
+- [x] 提交全部 implementation/scoped 变更；implementation checkpoint 为 `aa3637ba3ec795c7919f891153891bf163d18de9`。
+- [x] documentation closure 提交后再次确认 worktree clean；最终 HEAD 在交付汇报中记录。
 
 ## 证据索引
 
