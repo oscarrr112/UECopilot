@@ -3,9 +3,12 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "Graphs/AssetDocumentGraphFieldRules.h"
+#include "Graphs/AssetDocumentAnimationGraphNodeActionProvider.h"
 #include "Graphs/AssetDocumentAnimationGraphRuntime.h"
 
 #include "Animation/AnimBlueprint.h"
+#include "Animation/AnimBlueprintGeneratedClass.h"
+#include "Animation/AnimInstance.h"
 #include "Animation/AnimationAsset.h"
 #include "AnimationGraph.h"
 #include "AnimationGraphSchema.h"
@@ -16,7 +19,9 @@
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Misc/AutomationTest.h"
+#include "UObject/UObjectHash.h"
 
 namespace
 {
@@ -1517,6 +1522,95 @@ bool FAssetDocumentAnimationGraphRuntimeNoShellSkippedForManagedNodesTest::RunTe
 	TestTrue(TEXT("Managed graph extract succeeds"), Result.bSuccess);
 	TestEqual(TEXT("Managed node is extracted instead of shell skipped"), ExtractedGraph.Nodes.Num(), 1);
 	TestFalse(TEXT("Managed-only graph does not emit shell _Skipped"), ExtractedGraph.UnderscoreSkipped.IsValid());
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAssetDocumentAnimationGraphNodeActionProviderTransientGraphFallbackTest,
+	"AssetFactory.AssetDocument.AnimationGraphRuntime.NodeRules.TransientGraphUsesClassFallback",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAssetDocumentAnimationGraphNodeActionProviderTransientGraphFallbackTest::RunTest(const FString&)
+{
+	const FName BlueprintName = MakeUniqueObjectName(
+		GetTransientPackage(),
+		UAnimBlueprint::StaticClass(),
+		TEXT("AssetDocumentTransientActionProviderTest"));
+	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FKismetEditorUtilities::CreateBlueprint(
+		UAnimInstance::StaticClass(),
+		GetTransientPackage(),
+		BlueprintName,
+		BPTYPE_Normal,
+		UAnimBlueprint::StaticClass(),
+		UAnimBlueprintGeneratedClass::StaticClass()));
+	UAnimationGraph* AnimGraph = nullptr;
+	if (AnimBlueprint)
+	{
+		UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+			AnimBlueprint,
+			UEdGraphSchema_K2::GN_AnimGraph,
+			UAnimationGraph::StaticClass(),
+			UAnimationGraphSchema::StaticClass());
+		FBlueprintEditorUtils::AddDomainSpecificGraph(AnimBlueprint, NewGraph);
+		AnimGraph = Cast<UAnimationGraph>(NewGraph);
+		FKismetEditorUtilities::CompileBlueprint(AnimBlueprint);
+	}
+	TestNotNull(TEXT("Transient AnimBlueprint is created"), AnimBlueprint);
+	TestNotNull(TEXT("Transient AnimGraph is created"), AnimGraph);
+	if (!AnimBlueprint || !AnimGraph)
+	{
+		return false;
+	}
+
+	AnimBlueprint->SetFlags(RF_Transient);
+	TArray<UObject*> OwnedObjects;
+	GetObjectsWithOuter(AnimBlueprint, OwnedObjects, true);
+	for (UObject* OwnedObject : OwnedObjects)
+	{
+		if (OwnedObject)
+		{
+			OwnedObject->SetFlags(RF_Transient);
+		}
+	}
+
+	UClass* SequencePlayerClass = StaticLoadClass(
+		UEdGraphNode::StaticClass(),
+		nullptr,
+		TEXT("/Script/AnimGraph.AnimGraphNode_SequencePlayer"));
+	TestNotNull(TEXT("Sequence player class loads"), SequencePlayerClass);
+	if (!SequencePlayerClass)
+	{
+		return false;
+	}
+
+	FAssetDocumentAnimationGraphContext Context;
+	Context.Asset = AnimBlueprint;
+	Context.Blueprint = AnimBlueprint;
+	Context.Graph = AnimGraph;
+	Context.GraphKind = TEXT("AnimGraph");
+	Context.GraphPath = TEXT("/Body/AnimGraph/Graphs/AnimGraph");
+
+	const FAssetDocumentNodeSpec NodeSpec = MakeRuntimeNode(TEXT("IdlePlayer"), SequencePlayerClass->GetPathName());
+	const FAssetDocumentAnimationGraphNodeActionProvider Provider;
+	const TArray<FAssetDocumentAnimationGraphNodeActionCandidate> Candidates =
+		Provider.FindActionCandidates(NodeSpec, Context);
+
+	TestEqual(TEXT("Transient graph resolves one class fallback candidate"), Candidates.Num(), 1);
+	if (Candidates.Num() == 1)
+	{
+		TestTrue(TEXT("Transient graph candidate is the class fallback"), Candidates[0].bFallback);
+		TestEqual(TEXT("Fallback candidate preserves class path"), Candidates[0].Candidate.ClassPath, NodeSpec.Class);
+		TestTrue(TEXT("Fallback candidate remains spawnable"), Candidates[0].Candidate.bSpawnable);
+
+		FAssetDocumentGraphSpec GraphSpec;
+		GraphSpec.Id = TEXT("AnimGraph");
+		GraphSpec.Kind = TEXT("AnimGraph");
+		UEdGraphNode* SpawnedNode = nullptr;
+		const FAssetDocumentCapabilityResult SpawnResult =
+			Provider.SpawnNode(GraphSpec, NodeSpec, Context, Candidates[0].Candidate, SpawnedNode);
+		TestTrue(TEXT("Fallback candidate spawns in transient graph"), SpawnResult.bSuccess);
+		TestNotNull(TEXT("Fallback candidate produces an AnimGraph node"), SpawnedNode);
+	}
 	return true;
 }
 

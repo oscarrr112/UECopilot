@@ -254,7 +254,13 @@ FAssetDocumentAnimationGraphNodeActionProvider::FindActionCandidates(
 	TArray<FAssetDocumentAnimationGraphNodeActionCandidate> Candidates;
 
 	const FBlueprintActionContext ActionContext = MakeActionContext(Context);
-	if (ActionContext.Blueprints.Num() > 0 && ActionContext.Graphs.Num() > 0 && !GIsSavingPackage && !IsGarbageCollecting())
+	const bool bCanUseEditorActionMenu =
+		Context.Graph && !Context.Graph->HasAnyFlags(RF_Transient);
+	if (bCanUseEditorActionMenu
+		&& ActionContext.Blueprints.Num() > 0
+		&& ActionContext.Graphs.Num() > 0
+		&& !GIsSavingPackage
+		&& !IsGarbageCollecting())
 	{
 		FBlueprintActionMenuBuilder MenuBuilder(FBlueprintActionMenuBuilder::DefaultConfig);
 		FBlueprintActionMenuUtils::MakeContextMenu(ActionContext, bContextSensitive, ContextTargetMask, MenuBuilder);
@@ -298,7 +304,12 @@ FAssetDocumentAnimationGraphNodeActionProvider::FindActionCandidates(
 
 	if (Candidates.IsEmpty() && bAllowClassFallback && !NodeSpec.Class.IsEmpty())
 	{
-		UClass* NodeClass = StaticLoadClass(UEdGraphNode::StaticClass(), nullptr, *NodeSpec.Class);
+		UClass* NodeClass = StaticLoadClass(
+			UEdGraphNode::StaticClass(),
+			nullptr,
+			*NodeSpec.Class,
+			{},
+			LOAD_NoWarn);
 		UBlueprintNodeSpawner* FallbackSpawner = NodeClass
 			? UBlueprintNodeSpawner::Create(TSubclassOf<UEdGraphNode>(NodeClass), GetTransientPackage())
 			: nullptr;

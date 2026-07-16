@@ -2050,7 +2050,7 @@ bool FAssetDocumentAnimBlueprintAnimGraphTest::RunTest(const FString&)
 			MissingOutputPoseApplyResult,
 			TEXT("/Body/AnimGraph/Graphs/AnimGraph"),
 			TEXT("MissingAnimGraphOutputPose")));
-	if (UAnimBlueprint* MissingOutputPoseAnimBlueprint = LoadObject<UAnimBlueprint>(nullptr, *MissingOutputPoseObjectPath))
+	if (UAnimBlueprint* MissingOutputPoseAnimBlueprint = FindObject<UAnimBlueprint>(nullptr, *MissingOutputPoseObjectPath))
 	{
 		TestNull(
 			TEXT("Missing OutputPose apply does not materialize managed node"),
