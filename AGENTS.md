@@ -23,6 +23,20 @@
 - 如果远程 baseline 在现有任务进行期间前进，不要静默 reset 或 rebase；先核对差异，再显式合并或变基。
 - 除非用户明确更新本文件中的决定，不得默认切回 `master` 或从其他旧分支开始后续开发。
 
+## AssetDocument Architecture Authority
+
+- AssetDocument 的长期架构、设计哲学、数据所有权和扩展原则以 [`docs/architecture/asset-document-architecture-and-extension-principles.md`](docs/architecture/asset-document-architecture-and-extension-principles.md) 为准。
+- 新增或修改 profile、region、adapter、fragment、graph 或公共 runtime 前必须遵守该文档；若实现需要改变其中的长期不变量，应先更新架构文档并说明影响。
+
+## Goal Scope And Environment Boundaries
+
+- 每个 Goal 的验收范围以用户最新指令、当前 Goal、spec 和 plan 为准；开始执行以及用户纠偏后，都要重新列明 in-scope gates、依赖项和明确排除项。
+- 不得在本文件中把任何具体资产类型或功能长期标记为“未完成”或“范围外”。功能状态必须按当前 checkout、当前任务和最新证据重新判断。
+- 聚合测试命中当前 Goal 范围外的功能时，只记录其当次状态，不得自动把它升级为当前 Goal 的 blocker，也不得未经用户授权扩展为对该功能的排查或修改。
+- 产品代码失败与 OS、toolchain、共享 Engine 或其他运行环境失败必须分开归因。Editor 尚未进入项目初始化、没有产生项目日志或服务端口时，优先检查进程状态、动态加载、签名和系统日志，不得直接推断为当前产品改动回归。
+- 一旦证据表明故障来自 OS、toolchain 或共享运行环境，应停止把它归因于当前产品改动；不得因此扩展到当前 Goal 之外的功能域。
+- 除非当前 Goal 明确包含相关工作，不得擅自修改共享 Engine 源码或全局生成物、替换工具链、修改系统安全策略。若继续完成任务需要这些权限或扩大范围，先向用户说明证据、影响和所需授权。
+
 ## BehaviorTree / BlackboardData AssetDocument Invariants
 
 - `UBehaviorTree` 的 authored source-of-truth 是 `BTGraph`、持久 `NodeGuid`、graph topology、graph-node `NodeInstance` 和 editor-authored state；`RootNode`、Children、Services、DecoratorOps 等 runtime tree 只由 UE 标准 graph rebuild 产生，不能成为第二份可写真源。
