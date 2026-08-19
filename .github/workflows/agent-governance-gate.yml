@@ -51,6 +51,7 @@ jobs:
           persist-credentials: false
 
       - name: Fetch coordinator contract and final review receipt
+        id: receipt
         uses: actions/github-script@v7
         env:
           CONTRACT_ISSUE_NUMBER: ${{ steps.route.outputs.contract_issue_number }}
@@ -79,7 +80,8 @@ jobs:
               /<!-- agent-governance-review:start -->/.test(comment.body || '')
             );
             if (!reviewComments.length) {
-              core.setFailed('No owner-authored final agent-governance review receipt exists on this PR.');
+              core.notice('Awaiting an owner-authored final agent-governance review receipt.');
+              core.setOutput('waiting', 'true');
               return;
             }
 
@@ -88,6 +90,7 @@ jobs:
             fs.writeFileSync('.governance-review-body', reviewComments.at(-1).body || '');
 
       - name: Validate contract, candidate SHA, write set, review, and commands
+        if: steps.receipt.outputs.waiting != 'true'
         env:
           CANDIDATE_SHA: ${{ steps.route.outputs.candidate_sha }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
@@ -101,6 +104,7 @@ jobs:
             --review-receipt-body .governance-review-body
 
       - name: Publish admission check to the candidate commit
+        if: steps.receipt.outputs.waiting != 'true'
         uses: actions/github-script@v7
         env:
           CANDIDATE_SHA: ${{ steps.route.outputs.candidate_sha }}

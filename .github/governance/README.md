@@ -13,6 +13,10 @@ the candidate commit only after validation succeeds. This makes a reviewer
 receipt comment an event-driven recheck, rather than a status attached to
 `master`.
 
+Before a receipt exists, the controller reports an explicit waiting state and
+does not publish the required check; the protected branch remains blocked
+without turning an ordinary pending-review state into a failed PR.
+
 ## Coordinator contract
 
 Before assigning a write task, the Coordinator opens a GitHub Issue as the
