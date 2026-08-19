@@ -1,5 +1,5 @@
-import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,6 +105,47 @@ class AgentGovernanceGateTests(unittest.TestCase):
 
         with self.assertRaisesRegex(GateError, "exactly one"):
             extract_marked_json(duplicate, "review")
+
+    def test_cli_accepts_marked_issue_and_review_bodies(self):
+        repo = self.init_repo()
+        base_sha = self.git(repo, "rev-parse", "HEAD")
+        head_sha = self.commit(repo, Path("docs") / "candidate.md", "candidate\n")
+        contract_body = repo / "contract-body.md"
+        contract_body.write_text(
+            "<!-- agent-governance-contract:start -->\n"
+            + str(self.contract(base_sha)).replace("'", '"')
+            + "\n<!-- agent-governance-contract:end -->\n",
+            encoding="utf-8",
+        )
+        review_body = repo / "review-body.md"
+        review_body.write_text(
+            "<!-- agent-governance-review:start -->\n"
+            + f'{{"verdict": "PASS", "candidate_sha": "{head_sha}"}}'
+            + "\n<!-- agent-governance-review:end -->\n",
+            encoding="utf-8",
+        )
+        script = Path(__file__).parents[2] / "tools" / "agent_governance_gate.py"
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(repo),
+                "--head-sha",
+                head_sha,
+                "--contract-body",
+                str(contract_body),
+                "--review-receipt-body",
+                str(review_body),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn('"status": "PASS"', completed.stdout)
 
 
 if __name__ == "__main__":

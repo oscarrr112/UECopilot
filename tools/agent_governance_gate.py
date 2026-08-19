@@ -120,11 +120,23 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--head-sha", required=True)
-    parser.add_argument("--contract", type=Path, required=True)
-    parser.add_argument("--review-receipt", type=Path, required=True)
+    contract_input = parser.add_mutually_exclusive_group(required=True)
+    contract_input.add_argument("--contract", type=Path)
+    contract_input.add_argument("--contract-body", type=Path)
+    receipt_input = parser.add_mutually_exclusive_group(required=True)
+    receipt_input.add_argument("--review-receipt", type=Path)
+    receipt_input.add_argument("--review-receipt-body", type=Path)
     args = parser.parse_args()
-    contract = json.loads(args.contract.read_text(encoding="utf-8"))
-    receipt = json.loads(args.review_receipt.read_text(encoding="utf-8"))
+    contract = (
+        json.loads(args.contract.read_text(encoding="utf-8"))
+        if args.contract
+        else extract_marked_json(args.contract_body.read_text(encoding="utf-8"), "contract")
+    )
+    receipt = (
+        json.loads(args.review_receipt.read_text(encoding="utf-8"))
+        if args.review_receipt
+        else extract_marked_json(args.review_receipt_body.read_text(encoding="utf-8"), "review")
+    )
     result = validate_gate(
         repo=args.repo,
         head_sha=args.head_sha,

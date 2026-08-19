@@ -1,9 +1,11 @@
 name: Agent Governance Gate
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [master]
     types: [opened, reopened, synchronize, edited]
+  issue_comment:
+    types: [created, edited]
 
 permissions:
   contents: read
@@ -13,19 +15,22 @@ permissions:
 jobs:
   governance:
     name: Agent Governance Gate
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
-      - name: Check out candidate
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
-      - name: Fetch coordinator contract and final review receipt
+      - name: Resolve candidate and coordinator contract
+        id: route
         uses: actions/github-script@v7
         with:
           script: |
-            const prBody = context.payload.pull_request.body || '';
+            const pr = context.payload.pull_request || (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            })).data;
+            const prBody = pr.body || '';
             const references = [...prBody.matchAll(/^Governance-Contract:\s*#(\d+)\s*$/gm)];
             if (references.length !== 1) {
               core.setFailed('PR body must contain exactly one Governance-Contract: #<issue-number> line.');
@@ -33,6 +38,26 @@ jobs:
             }
 
             const issueNumber = Number(references[0][1]);
+            core.setOutput('candidate_sha', pr.head.sha);
+            core.setOutput('contract_issue_number', issueNumber);
+            core.setOutput('pr_number', pr.number);
+
+      - name: Check out candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.route.outputs.candidate_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch coordinator contract and final review receipt
+        uses: actions/github-script@v7
+        env:
+          CONTRACT_ISSUE_NUMBER: ${{ steps.route.outputs.contract_issue_number }}
+          PR_NUMBER: ${{ steps.route.outputs.pr_number }}
+        with:
+          script: |
+            const issueNumber = Number(process.env.CONTRACT_ISSUE_NUMBER);
+            const prNumber = Number(process.env.PR_NUMBER);
             const { data: contractIssue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -42,11 +67,10 @@ jobs:
               core.setFailed('Governance contract issue must be authored by the repository owner.');
               return;
             }
-
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: prNumber,
               per_page: 100,
             });
             const reviewComments = comments.filter((comment) =>
@@ -64,24 +88,13 @@ jobs:
 
       - name: Validate contract, candidate SHA, write set, review, and commands
         env:
-          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+          CANDIDATE_SHA: ${{ steps.route.outputs.candidate_sha }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          from tools.agent_governance_gate import extract_marked_json
-
-          Path('.governance-contract.json').write_text(
-              json.dumps(extract_marked_json(Path('.governance-contract-body').read_text(), 'contract')),
-              encoding='utf-8',
-          )
-          Path('.governance-review.json').write_text(
-              json.dumps(extract_marked_json(Path('.governance-review-body').read_text(), 'review')),
-              encoding='utf-8',
-          )
-          PY
-          python3 tools/agent_governance_gate.py \
+          git fetch --no-tags origin "$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"
+          git show "origin/$BASE_BRANCH:tools/agent_governance_gate.py" > "$RUNNER_TEMP/agent_governance_gate.py"
+          python3 "$RUNNER_TEMP/agent_governance_gate.py" \
             --repo . \
             --head-sha "$CANDIDATE_SHA" \
-            --contract .governance-contract.json \
-            --review-receipt .governance-review.json
+            --contract-body .governance-contract-body \
+            --review-receipt-body .governance-review-body

@@ -4,6 +4,10 @@
 pull request. It makes the integration boundary mechanical without depending on a
 Multica plugin, wrapper, or a locally running coordinator.
 
+The workflow uses `pull_request_target` and loads its verifier from the protected
+default branch, while checking out the candidate only as data. A worker cannot
+make a passing result by editing the workflow or verifier in its own PR.
+
 ## Coordinator contract
 
 Before assigning a write task, the Coordinator opens a GitHub Issue as the
