@@ -8,6 +8,11 @@ The workflow uses `pull_request_target` and loads its verifier from the protecte
 default branch, while checking out the candidate only as data. A worker cannot
 make a passing result by editing the workflow or verifier in its own PR.
 
+The controller publishes the required `Agent Governance Gate` check directly to
+the candidate commit only after validation succeeds. This makes a reviewer
+receipt comment an event-driven recheck, rather than a status attached to
+`master`.
+
 ## Coordinator contract
 
 Before assigning a write task, the Coordinator opens a GitHub Issue as the
